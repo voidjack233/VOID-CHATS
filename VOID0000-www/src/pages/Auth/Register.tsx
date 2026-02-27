@@ -1,0 +1,181 @@
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { authService } from '../../Services/Auth/authServiceApi';
+import PasswordInput from '../../components/Auth/PasswordInput';
+import AuthContainer from '../../components/Auth/AuthContainer';
+import CaptchaModal from '../../components/Auth/CaptchaModal';
+
+export default function Register() {
+  const [formData, setFormData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    confirmPassword: ''
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showCaptcha, setShowCaptcha] = useState(false);
+  const [captchaRequired, setCaptchaRequired] = useState<boolean | null>(null);
+  const navigate = useNavigate();
+
+  // Check if captcha is needed on mount
+  useEffect(() => {
+    const check = async () => {
+      const result = await authService.checkCaptchaRequired('register');
+      setCaptchaRequired(result.captchaRequired);
+    };
+    check();
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+    setError('');
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (formData.password !== formData.confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    setError('');
+
+    if (captchaRequired === false) {
+      await doRegister();
+    } else {
+      setShowCaptcha(true);
+    }
+  };
+
+  const handleCaptchaVerified = async (captchaId: string, captchaAnswer: string) => {
+    setShowCaptcha(false);
+    await doRegister(captchaId, captchaAnswer);
+  };
+
+  const doRegister = async (captchaId?: string, captchaAnswer?: string) => {
+    setLoading(true);
+
+    try {
+      const payload: any = {
+        username: formData.username,
+        email: formData.email,
+        password: formData.password,
+      };
+      if (captchaId && captchaAnswer) {
+        payload.captchaId = captchaId;
+        payload.captchaAnswer = captchaAnswer;
+      }
+
+      const response = await authService.register(payload);
+
+      if (!response.success) throw new Error(response.message);
+
+      navigate(`/auth?view=email-verification&vtoken=${response.verificationToken}`);
+    } catch (err: any) {
+      if (err?.code === 'CAPTCHA_REQUIRED') {
+        setCaptchaRequired(true);
+        setShowCaptcha(true);
+        setLoading(false);
+        return;
+      }
+      if (err?.code === 'CAPTCHA_WRONG' || err?.code === 'CAPTCHA_EXPIRED' || err?.code === 'CAPTCHA_INVALID' || err?.code === 'CAPTCHA_MAX_ATTEMPTS') {
+        setError(err.message || 'Captcha verification failed.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Registration failed');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AuthContainer>
+      <div className="space-y-6">
+        <div className="text-center">
+          <h2 className="text-3xl font-bold text-white mb-2">Create Account</h2>
+          <p className="text-gray-400">Join our community</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <label htmlFor="username" className="block text-sm font-medium text-gray-300">
+              Username
+            </label>
+            <input
+              id="username"
+              type="text"
+              name="username"
+              value={formData.username}
+              onChange={handleChange}
+              className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              required
+              disabled={loading}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label htmlFor="email" className="block text-sm font-medium text-gray-300">
+              Email
+            </label>
+            <input
+              id="email"
+              type="email"
+              name="email"
+              value={formData.email}
+              onChange={handleChange}
+              className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              required
+              disabled={loading}
+            />
+          </div>
+
+          <PasswordInput
+            name="password"
+            value={formData.password}
+            onChange={handleChange}
+            disabled={loading}
+            label="Password"
+          />
+
+          <PasswordInput
+            name="confirmPassword"
+            value={formData.confirmPassword}
+            onChange={handleChange}
+            disabled={loading}
+            label="Confirm Password"
+          />
+
+          {error && <p className="text-red-500 text-center">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {loading ? 'Creating Account...' : 'Create Account'}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center">
+          <p className="text-gray-400">
+            Already have an account?{' '}
+            <button
+              onClick={() => navigate('/auth?view=login')}
+              type="button"
+              className="text-blue-400 hover:text-blue-300 font-medium transition-colors">
+              Sign in
+            </button>
+          </p>
+        </div>
+      </div>
+
+      <CaptchaModal
+        isOpen={showCaptcha}
+        onVerified={handleCaptchaVerified}
+        onClose={() => setShowCaptcha(false)}
+      />
+    </AuthContainer>
+  );
+}

@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2e3338 transparent;
+}
+
+/* Chrome, Edge, Safari */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #2e3338;
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #3e4347;
+}
+
+/* Hide scrollbar until hover (optional) */
+*::-webkit-scrollbar-thumb {
+  visibility: hidden;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  visibility: visible;
+}
