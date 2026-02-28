@@ -5,14 +5,21 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
-import { setupGateway } from './gateway/index.js';
+import { createRequire } from 'module';
 import { securityMiddleware } from './middleware/xss/index.js';
 import captchaRouter from './routes/captcha/index.js';
+import { startImageWorker } from './queues/imageQueue.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config({ path: path.resolve(__dirname, '.env') });
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+
+// ================== CLUSTER CONFIG ==================
+
+const require2 = createRequire(import.meta.url);
+const config = require2('./config.json');
+const isCluster = config.cluster.enabled;
 
 // ================== APP SETUP ==================
 
@@ -31,7 +38,6 @@ const allowedOrigins = [
 
 app.set('trust proxy', true);
 
-// CORS must be first — handles preflight OPTIONS requests
 app.use(
   cors({
     origin: allowedOrigins,
@@ -39,10 +45,8 @@ app.use(
   })
 );
 
-// Security headers (spread the array)
 securityMiddleware(allowedOrigins).forEach(mw => app.use(mw));
 
-// Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
@@ -70,7 +74,6 @@ import profileUpdateRouter from './routes/user/profileUpdate.js';
 import profileAvatarRouter from './routes/user/profileAvatar.js';
 import friendRouter from './routes/friends/index.js';
 import userSearchRouter from './routes/user/userSearch.js';
-import { getConnectionStats } from './gateway/index.js';
 import { noCache } from './middleware/noCache.js';
 
 import {
@@ -84,22 +87,44 @@ import {
   captchaGenerateLimiter
 } from './middleware/rate_limit.js';
 
+// ================== GATEWAY / PUBSUB SETUP ==================
+
+let getConnectionStats;
+
+if (isCluster) {
+  const { initPublisher } = await import('./valkey-pubsub.js');
+  initPublisher();
+  console.log('📡 Cluster mode: API worker started (pub/sub publisher ready)');
+  getConnectionStats = () => ({ mode: 'cluster', pid: process.pid, note: 'Stats available on gateway' });
+} else {
+  const gateway = await import('./gateway/index.js');
+  getConnectionStats = gateway.getConnectionStats;
+}
+
+// ================== API ROUTES ==================
+
 app.get('/api/debug/ws-stats', (req, res) => {
   res.json(getConnectionStats());
 });
 
-
-// Temporary endpoint to clear cookies for testing logout and stale cookie scenarios
 app.get('/api/clear-stale', (req, res) => {
   const names = ['accessToken', 'refreshToken', '_csrf'];
-  
-  // Clear without domain (stale api.void0000.online cookies)
   names.forEach(n => res.clearCookie(n, { path: '/' }));
-  
-  // Clear with domain (.void0000.online)
   names.forEach(n => res.clearCookie(n, { path: '/', domain: '.void0000.online' }));
-  
   res.json({ success: true, message: 'All cookies cleared. Please log in again.' });
+});
+
+// Clear any stale cookies on login attempts
+app.use('/api/auth/login', (req, res, next) => {
+  if (req.method === 'POST') {
+    res.clearCookie('accessToken', { path: '/' });
+    res.clearCookie('refreshToken', { path: '/' });
+    res.clearCookie('_csrf', { path: '/' });
+    res.clearCookie('accessToken', { path: '/', domain: '.void0000.online' });
+    res.clearCookie('refreshToken', { path: '/', domain: '.void0000.online' });
+    res.clearCookie('_csrf', { path: '/', domain: '.void0000.online' });
+  }
+  next();
 });
 
 // Rate limiting
@@ -108,7 +133,6 @@ app.use('/api/auth/forgot-password', forgotPasswordLimiter);
 app.use('/api/auth/reset-password', resetDeviceLimiter);
 app.use('/api/auth/register', registerDeviceLimiter);
 app.use('/api/auth/me', authCheckLimiter);
-// For profile
 app.use('/api/users/profile', profileUpdateLimiter);
 app.use('/api/users/avatar', avatarUploadLimiter);
 
@@ -122,11 +146,8 @@ app.post('/api/security/csp-report',
   }
 );
 
-// ROUTE ORDER MATTERS
-
 // CSRF token
 app.use('/api/csrf', csrfRouter);
-
 app.use('/api/captcha', captchaGenerateLimiter, captchaRouter);
 
 // CSRF protection
@@ -134,8 +155,6 @@ app.use(encryptedCSRFProtection);
 
 // Auth routes
 app.use('/api/auth', authRouter);
-
-// 2FA routes (must be after auth routes to ensure user is authenticated) — includes backup codes, TOTP, email verification, etc.
 app.use('/api/auth/2fa', twoFARouter);
 
 // Me
@@ -160,13 +179,23 @@ cleanupAllExpired().then(() => {
 setInterval(cleanupAllExpired, 6 * 60 * 60 * 1000);
 
 // ================== HTTP SERVER ==================
+
 const httpServer = createServer(app);
 
-// ================== GATEWAY ==================
-setupGateway(httpServer);
+// ================== GATEWAY (SINGLE MODE ONLY) ==================
+
+if (!isCluster) {
+  const { setupGateway } = await import('./gateway/index.js');
+  setupGateway(httpServer);
+}
+
+// ================== IMAGE WORKER ==================
+
+startImageWorker();
 
 // ================== START ==================
+
 httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-  console.log(`🔌 Gateway ready`);
+  console.log(`✅ Server running on port ${PORT} (${isCluster ? 'cluster worker PID ' + process.pid : 'single mode'})`);
+  if (!isCluster) console.log(`🔌 Gateway ready`);
 });

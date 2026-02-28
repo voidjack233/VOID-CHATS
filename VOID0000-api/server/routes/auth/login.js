@@ -9,6 +9,7 @@ import { hashToken } from '../../utils/hashToken.js';
 import { updateTrustScore } from '../../middleware/captcha/trustScore.js';
 import { DeviceFingerprint } from '../../utils/deviceFingerprint.js';
 import { create2FASession } from './2fa/verify-login.js';
+import { sessionStore } from '../../middleware/sessionStore.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
@@ -166,7 +167,14 @@ router.post('/', async (req, res) => {
       ]
     );
 
-    await client.query('COMMIT');
+  await client.query('COMMIT');
+
+  await sessionStore.create(user.id, deviceId, {
+      ip: userIp,
+      userAgent,
+      deviceName: deviceInfo.deviceName,
+      deviceType: deviceInfo.deviceType,
+    });
 
     // Record successful login for trust scoring
     await updateTrustScore(trustDeviceId, 'LOGIN_SUCCESS', req);

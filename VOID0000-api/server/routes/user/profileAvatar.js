@@ -1,23 +1,18 @@
+// server/routes/user/profileAvatar.js
 import express from 'express';
 import { pool as db } from '../../db.js';
 import sharp from 'sharp';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { broadcastToFriends, EVENTS } from '../../gateway/index.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { profileCache } from '../../middleware/profileCache.js';
+import { queueImageUpload, imageQueueEvents } from '../../queues/imageQueue.js';
+import { minioClient, BUCKET } from '../../minio.js';
 
 const router = express.Router();
-const AVATARS_DIR = path.join(__dirname, 'avatars');
-
-await fs.mkdir(AVATARS_DIR, { recursive: true });
 
 // ==================== CONFIG ====================
 
 const MAX_AVATAR_SIZE = 5 * 1024 * 1024; // 5MB raw base64
-const MAX_IMAGE_DIMENSION = 4096; // Max input dimension before resize
+const MAX_IMAGE_DIMENSION = 4096;
 const ALLOWED_MIME_PREFIXES = [
   'data:image/jpeg',
   'data:image/jpg',
@@ -26,12 +21,11 @@ const ALLOWED_MIME_PREFIXES = [
   'data:image/webp',
 ];
 
-// Magic bytes for image format validation
 const MAGIC_BYTES = {
   jpeg: [0xFF, 0xD8, 0xFF],
   png: [0x89, 0x50, 0x4E, 0x47],
   gif: [0x47, 0x49, 0x46],
-  webp: [0x52, 0x49, 0x46, 0x46], // RIFF header
+  webp: [0x52, 0x49, 0x46, 0x46],
 };
 
 const isValidImage = (buffer) => {
@@ -66,7 +60,7 @@ router.put('/avatar', async (req, res) => {
     return res.status(400).json({ error: 'No avatar data provided' });
   }
 
-  // 2. Check base64 size (before decoding)
+  // 2. Check base64 size
   if (avatar.length > MAX_AVATAR_SIZE) {
     return res.status(400).json({ error: 'Image too large. Maximum 5MB.' });
   }
@@ -111,43 +105,37 @@ router.put('/avatar', async (req, res) => {
 
     const { avatar_filename: oldFilename, username } = userResult.rows[0];
 
-    // 7. Process image (strip EXIF, resize, convert)
-    const processedImage = await sharp(imageBuffer)
-      .resize(200, 200, { fit: 'cover', position: 'center' })
-      .rotate() // Auto-rotate based on EXIF then strip it
-      .webp({ quality: 80, effort: 6 })
-      .toBuffer();
+    // 7. Queue the image for processing and wait for result
+    const imageData = imageBuffer.toString('base64');
+    const { jobId, job } = await queueImageUpload({
+      userId: req.userId,
+      profileId: profile_id,
+      imageData,
+      oldFilename,
+    });
 
-    const filename = `avatar-${profile_id}-${Date.now()}.webp`;
-    const filepath = path.join(AVATARS_DIR, filename);
-    await fs.writeFile(filepath, processedImage);
+    // 8. Wait for the worker to finish (timeout after 30s)
+    const result = await job.waitUntilFinished(imageQueueEvents, 30000);
 
-    // 8. Remove old avatar
-    if (oldFilename) {
-      const oldFilepath = path.join(AVATARS_DIR, oldFilename);
-      await fs.unlink(oldFilepath).catch((err) =>
-        console.warn('Could not delete old avatar:', err.message)
-      );
-    }
+    const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+    const newAvatarUrl = `${baseUrl}/avatars/${result.filename}`;
 
-    // 9. Update database
-    const updateResult = await db.query(
-      `UPDATE user_profiles
-       SET avatar_filename = $1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2
-       RETURNING id AS profile_id, avatar_filename, display_name, bio, created_at, updated_at`,
-      [filename, profile_id]
+    // 9. Get updated profile from DB
+    const updatedResult = await db.query(
+      `SELECT id AS profile_id, avatar_filename, display_name, bio, created_at, updated_at
+       FROM user_profiles WHERE id = $1`,
+      [profile_id]
     );
 
-    const updatedProfile = updateResult.rows[0];
-    updatedProfile.avatar_url = `https://api.void0000.online/api/users/avatar/${filename}`;
+    const updatedProfile = updatedResult.rows[0];
+    updatedProfile.avatar_url = newAvatarUrl;
 
     // 10. Broadcast to friends
     broadcastToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
       user_id: req.userId,
       profile_id: updatedProfile.profile_id,
       display_name: updatedProfile.display_name,
-      avatar_url: updatedProfile.avatar_url,
+      avatar_url: newAvatarUrl,
       bio: updatedProfile.bio,
     });
 
@@ -155,9 +143,10 @@ router.put('/avatar', async (req, res) => {
       ...updatedProfile,
       username,
     });
+
   } catch (error) {
     console.error('Avatar upload error:', error);
-    res.status(500).json({ error: 'Failed to process avatar' });
+    res.status(500).json({ error: 'Failed to queue avatar upload' });
   }
 });
 
@@ -181,13 +170,16 @@ router.delete('/avatar', async (req, res) => {
 
     const { avatar_filename: oldFilename, username } = userResult.rows[0];
 
+    // Delete from MinIO
     if (oldFilename) {
-      const filepath = path.join(AVATARS_DIR, oldFilename);
-      await fs.unlink(filepath).catch((err) =>
-        console.warn('Could not delete avatar file:', err.message)
-      );
+      try {
+        await minioClient.removeObject(BUCKET, oldFilename);
+      } catch (err) {
+        console.warn('Could not delete avatar from MinIO:', err.message);
+      }
     }
 
+    // Update database
     const updateResult = await db.query(
       `UPDATE user_profiles
        SET avatar_filename = NULL, updated_at = CURRENT_TIMESTAMP
@@ -199,6 +191,10 @@ router.delete('/avatar', async (req, res) => {
     const updatedProfile = updateResult.rows[0];
     updatedProfile.avatar_url = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
 
+    // Invalidate cache
+    await profileCache.invalidate(profile_id);
+
+    // Broadcast
     broadcastToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
       user_id: req.userId,
       profile_id: updatedProfile.profile_id,
@@ -217,26 +213,18 @@ router.delete('/avatar', async (req, res) => {
   }
 });
 
-// ==================== SERVE ====================
+// ==================== SERVE (legacy fallback) ====================
 
 router.get('/avatar/:filename', async (req, res) => {
   const { filename } = req.params;
 
-  // Sanitize filename — only allow expected pattern
   if (!/^avatar-\d+-\d+\.webp$/.test(filename)) {
     return res.status(400).json({ error: 'Invalid filename format' });
   }
 
-  const filepath = path.join(AVATARS_DIR, filename);
-
-  try {
-    await fs.access(filepath);
-    // Cache for 30 days — filename has timestamp so new uploads = new URLs
-    res.set('Cache-Control', 'public, max-age=2592000, immutable');
-    res.sendFile(filepath);
-  } catch (error) {
-    res.status(404).json({ error: 'Avatar not found' });
-  }
+  // Redirect to CDN/MinIO
+  const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+  res.redirect(301, `${baseUrl}/avatars/${filename}`);
 });
 
 export default router;

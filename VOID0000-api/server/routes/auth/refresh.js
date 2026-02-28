@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getClientIP } from '../../utils/securityUtils.js';
 import { accessCookieOptions, refreshCookieOptions, clearCookieOptions } from '../../utils/cookieConfig.js';
 import { hashToken } from '../../utils/hashToken.js';
+import { sessionStore } from '../../middleware/sessionStore.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
@@ -202,6 +203,8 @@ router.post('/', async (req, res) => {
     );
 
     await client.query('COMMIT');
+
+    await sessionStore.touch(decoded.id, decoded.device_id);
 
     // 6. SET COOKIES
     res.cookie('accessToken', newAccessToken, accessCookieOptions());

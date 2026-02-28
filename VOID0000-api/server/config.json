@@ -1,0 +1,7 @@
+{
+  "cluster": {
+    "enabled": false,
+    "workers": 4,
+    "gatewayPort": 3002
+  }
+}

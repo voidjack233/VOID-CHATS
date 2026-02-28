@@ -27,18 +27,20 @@ public class VoidAdmin extends JFrame {
         {"voidapp-backend", "Backend API", "Node.js Express"},
         {"minio", "MinIO", "Object Storage"},
         {"cloudflared", "Cloudflared", "CF Tunnel"},
+        {"valkey-server", "Valkey", "Cache / Sessions"},
     };
 
     private final Map<String, ServicePanel> servicePanels = new LinkedHashMap<>();
     private StatsPanel statsPanel;
+    private ValkeyStatsPanel valkeyStatsPanel;
     private JLabel uptimeLabel;
     private ScheduledExecutorService scheduler;
 
     public VoidAdmin() {
         setTitle("VOID Admin Dashboard");
         setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setSize(900, 700);
-        setMinimumSize(new Dimension(750, 600));
+        setSize(1000, 800);
+        setMinimumSize(new Dimension(850, 700));
         setLocationRelativeTo(null);
         getContentPane().setBackground(BG_DARK);
         setLayout(new BorderLayout(0, 0));
@@ -52,7 +54,7 @@ public class VoidAdmin extends JFrame {
         content.setBorder(BorderFactory.createEmptyBorder(12, 16, 16, 16));
 
         // Services grid
-        JPanel servicesGrid = new JPanel(new GridLayout(2, 2, 12, 12));
+        JPanel servicesGrid = new JPanel(new GridLayout(2, 3, 12, 12));
         servicesGrid.setBackground(BG_DARK);
 
         for (String[] svc : SERVICES) {
@@ -60,6 +62,10 @@ public class VoidAdmin extends JFrame {
             servicePanels.put(svc[0], panel);
             servicesGrid.add(panel);
         }
+
+        // Valkey stats panel in the 6th slot
+        valkeyStatsPanel = new ValkeyStatsPanel();
+        servicesGrid.add(valkeyStatsPanel);
 
         content.add(servicesGrid, BorderLayout.CENTER);
 
@@ -352,6 +358,142 @@ public class VoidAdmin extends JFrame {
         }
     }
 
+    // ─── Valkey Stats Panel ─────────────────────────────────────────────
+
+    class ValkeyStatsPanel extends JPanel {
+        JLabel keysLabel, memoryLabel, hitsLabel, uptimeLabel2;
+
+        ValkeyStatsPanel() {
+            setBackground(BG_CARD);
+            setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(BORDER_COLOR, 1, true),
+                BorderFactory.createEmptyBorder(14, 16, 14, 16)
+            ));
+            setLayout(new BorderLayout(0, 8));
+
+            // Top
+            JPanel top = new JPanel(new BorderLayout());
+            top.setBackground(BG_CARD);
+
+            JPanel namePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            namePanel.setBackground(BG_CARD);
+
+            JLabel dot = new JLabel("📊");
+            dot.setFont(new Font("SansSerif", Font.PLAIN, 14));
+
+            JLabel nameLabel = new JLabel("Valkey Stats");
+            nameLabel.setFont(new Font("SansSerif", Font.BOLD, 15));
+            nameLabel.setForeground(TEXT_PRIMARY);
+
+            namePanel.add(dot);
+            namePanel.add(nameLabel);
+            top.add(namePanel, BorderLayout.WEST);
+            add(top, BorderLayout.NORTH);
+
+            // Center: stats
+            JPanel center = new JPanel();
+            center.setLayout(new BoxLayout(center, BoxLayout.Y_AXIS));
+            center.setBackground(BG_CARD);
+
+            keysLabel = createStatLabel("Keys: --");
+            memoryLabel = createStatLabel("Memory: --");
+            hitsLabel = createStatLabel("Hit rate: --");
+            uptimeLabel2 = createStatLabel("Uptime: --");
+
+            center.add(keysLabel);
+            center.add(Box.createVerticalStrut(4));
+            center.add(memoryLabel);
+            center.add(Box.createVerticalStrut(4));
+            center.add(hitsLabel);
+            center.add(Box.createVerticalStrut(4));
+            center.add(uptimeLabel2);
+            center.add(Box.createVerticalStrut(6));
+
+            // Flush button
+            JButton flushBtn = createStyledButton("🗑 Flush All", ACCENT_RED);
+            flushBtn.addActionListener(e -> {
+                int confirm = JOptionPane.showConfirmDialog(
+                    VoidAdmin.this,
+                    "Flush all Valkey data? This clears rate limits, sessions, and cache.",
+                    "Confirm Flush",
+                    JOptionPane.YES_NO_OPTION
+                );
+                if (confirm == JOptionPane.YES_OPTION) {
+                    exec("valkey-cli", "FLUSHALL");
+                    refreshValkeyStats();
+                }
+            });
+            JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+            btnPanel.setBackground(BG_CARD);
+            btnPanel.add(flushBtn);
+
+            center.add(btnPanel);
+            add(center, BorderLayout.CENTER);
+        }
+
+        JLabel createStatLabel(String text) {
+            JLabel label = new JLabel(text);
+            label.setFont(new Font("Monospaced", Font.PLAIN, 11));
+            label.setForeground(TEXT_SECONDARY);
+            label.setAlignmentX(LEFT_ALIGNMENT);
+            return label;
+        }
+
+        void update(String keys, String memory, String hitRate, String uptime) {
+            SwingUtilities.invokeLater(() -> {
+                keysLabel.setText("Keys: " + keys);
+                memoryLabel.setText("Memory: " + memory);
+                hitsLabel.setText("Hit rate: " + hitRate);
+                uptimeLabel2.setText("Uptime: " + uptime);
+            });
+        }
+    }
+
+    void refreshValkeyStats() {
+        try {
+            String keys = exec("valkey-cli", "DBSIZE");
+            keys = keys.replace("# Keyspace", "").replaceAll("[^0-9]", "").trim();
+            if (keys.isEmpty()) keys = "0";
+
+            String memRaw = exec("valkey-cli", "INFO", "memory");
+            String memory = "unknown";
+            for (String line : memRaw.split("\n")) {
+                if (line.startsWith("used_memory_human:")) {
+                    memory = line.split(":")[1].trim();
+                    break;
+                }
+            }
+
+            String statsRaw = exec("valkey-cli", "INFO", "stats");
+            String hitRate = "N/A";
+            long hits = 0, misses = 0;
+            for (String line : statsRaw.split("\n")) {
+                if (line.startsWith("keyspace_hits:")) hits = Long.parseLong(line.split(":")[1].trim());
+                if (line.startsWith("keyspace_misses:")) misses = Long.parseLong(line.split(":")[1].trim());
+            }
+            if (hits + misses > 0) {
+                hitRate = String.format("%.1f%% (%d/%d)", (hits * 100.0) / (hits + misses), hits, hits + misses);
+            }
+
+            String serverRaw = exec("valkey-cli", "INFO", "server");
+            String uptime = "unknown";
+            for (String line : serverRaw.split("\n")) {
+                if (line.startsWith("uptime_in_seconds:")) {
+                    long secs = Long.parseLong(line.split(":")[1].trim());
+                    long days = secs / 86400;
+                    long hours = (secs % 86400) / 3600;
+                    long mins = (secs % 3600) / 60;
+                    uptime = String.format("%dd %dh %dm", days, hours, mins);
+                    break;
+                }
+            }
+
+            valkeyStatsPanel.update(keys, memory, hitRate, uptime);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     // ─── Utility Methods ─────────────────────────────────────────────────
 
     static JButton createStyledButton(String text, Color color) {
@@ -472,6 +614,7 @@ public class VoidAdmin extends JFrame {
             refreshServiceStatus(svc[0]);
         }
         refreshSystemStats();
+        refreshValkeyStats();
     }
 
     // ─── Main ────────────────────────────────────────────────────────────
