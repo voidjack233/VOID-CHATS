@@ -86,21 +86,33 @@ export function UserProvider({ children }: { children: ReactNode }) {
   // Initial user fetch
   useEffect(() => {
     const init = async () => {
-      setLoading(true);
-      const freshUser = await fetchFullUser();
-
-      if (freshUser && freshUser.username) {
-        setUser(freshUser as User);
+      const stored = localStorage.getItem(USER_STORAGE_KEY);
+      
+      if (stored) {
+        // Already have cached user — skip loading state
+        // Validate in background without blocking UI
+        const freshUser = await fetchFullUser();
+        if (freshUser && freshUser.username) {
+          setUser(freshUser as User);
+        } else {
+          setUser(null);
+          Object.keys(localStorage).forEach((key) => {
+            if (key.startsWith('void_')) {
+              localStorage.removeItem(key);
+            }
+          });
+        }
       } else {
-        setUser(null);
-        Object.keys(localStorage).forEach((key) => {
-          if (key.startsWith('void_')) {
-            localStorage.removeItem(key);
-          }
-        });
+        // No cached user — show loading, try to authenticate
+        setLoading(true);
+        const freshUser = await fetchFullUser();
+        if (freshUser && freshUser.username) {
+          setUser(freshUser as User);
+        }
+        setLoading(false);
       }
-      setLoading(false);
     };
+
     init();
   }, []);
 

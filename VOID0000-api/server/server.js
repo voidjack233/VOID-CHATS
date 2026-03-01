@@ -31,7 +31,8 @@ const allowedOrigins = [
   FRONT_URL,
   'https://void0000.online',
   'https://www.void0000.online',
-  'http://localhost:5173'
+  'http://localhost:5173',
+  'http://localhost'
 ];
 
 // ================== MIDDLEWARE ==================
@@ -75,6 +76,7 @@ import profileAvatarRouter from './routes/user/profileAvatar.js';
 import friendRouter from './routes/friends/index.js';
 import userSearchRouter from './routes/user/userSearch.js';
 import { noCache } from './middleware/noCache.js';
+import conversationRouter from './routes/conversations/index.js';
 
 import {
   authDeviceLimiter,
@@ -167,6 +169,7 @@ app.use('/api/users/search', userSearchRouter);
 app.use('/api/users', authenticateUser, profileUpdateRouter, profileAvatarRouter);
 app.use('/api/users', profileReadRouter);
 app.use('/api/friends', friendRouter);
+app.use('/api/conversations', conversationRouter);
 
 // ================== CLEANUP ==================
 

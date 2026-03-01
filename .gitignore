@@ -1,4 +1,11 @@
 node_modules/
 .env
 minio-data/
+
+# MinIO data
+minio-data/
+
+# Java compiled files
+VoidCONF/*.class
+VoidCONF/*.jar
 VOID0000-www/.*/
