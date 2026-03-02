@@ -1,8 +1,10 @@
+// src/pages/Chats.tsx
 import { useState } from 'react';
 import { Settings, Users, Hash, MessageCircle, ArrowLeft, ShieldAlert } from 'lucide-react';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
 import { useUserProfile } from '../Services/hooks/editProfile/userProfile';
 import { useChatManager } from '../Services/hooks/Chats/useChatManager';
+import { useFriends } from '../Services/hooks/Friends/useFriends';
 import UserProfile from '../components/common/Profile/userProfile';
 import UseSetting from '../components/common/Setting/Setting';
 import FriendsModal from '../components/common/Friends/FriendsModal';
@@ -19,14 +21,15 @@ const ChatDashboard = () => {
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
   const myAvatarUrl = myProfile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user?.username}`;
 
+  // Friends from the shared FriendsProvider — single source of truth
+  const { friends } = useFriends();
+
   const [showProfile, setShowProfile] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showFriends, setShowFriends] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [chatFilter, setChatFilter] = useState<'dm' | 'group'>('dm');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(true);
-  
-  // NEW: State for refreshing the conversation list
   const [convRefresh, setConvRefresh] = useState(0);
 
   const {
@@ -38,14 +41,25 @@ const ChatDashboard = () => {
     newMessage,
     editingMessage,
     replyTo,
-    friends,
+    messageUpdate,
+    messageDelete,
     setEditingMessage,
     setReplyTo,
+    setMessageUpdate,
     handleSelectConversation,
     handleMessageSent,
     handleStartDM,
     handleBackToMe,
   } = useChatManager(user);
+
+  const handleEditComplete = (messageId: string, newContent: string) => {
+    setMessageUpdate({
+      message_id: messageId,
+      content: newContent,
+      is_edited: true,
+      edited_at: new Date().toISOString(),
+    });
+  };
 
   const getHeaderIcon = () => {
     if (!activeConversation) return null;
@@ -135,33 +149,19 @@ const ChatDashboard = () => {
             onCreateGroup={() => setShowCreateGroup(true)}
             filter={chatFilter}
             friends={friends}
-            refreshTrigger={convRefresh} // <-- NEW: Passed state down
+            refreshTrigger={convRefresh}
           />
         </div>
 
         {/* User Mini Profile */}
         <div className="h-[52px] bg-gray-900/90 flex items-center px-2 border-t border-gray-800 shrink-0">
-          <div 
-            className="flex items-center hover:bg-gray-800 p-1 rounded-md cursor-pointer flex-1 min-w-0" 
-            onClick={() => setShowProfile(true)}
-          >
+          <div className="flex items-center hover:bg-gray-800 p-1 rounded-md cursor-pointer flex-1 min-w-0" onClick={() => setShowProfile(true)}>
             <div className="w-8 h-8 rounded-full mr-2 relative shrink-0">
-              <img 
-                src={myAvatarUrl} 
-                alt="Avatar" 
-                className="w-full h-full object-cover rounded-full" 
-              />
+              <img src={myAvatarUrl} alt="Avatar" className="w-full h-full object-cover rounded-full" />
             </div>
-            
-            <div className="text-sm font-semibold truncate flex-1">
-              {user?.username || 'User'}
-            </div>
+            <div className="text-sm font-semibold truncate flex-1">{user?.username || 'User'}</div>
           </div>
-          
-          <button 
-            onClick={() => setShowSettings(true)} 
-            className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-md shrink-0 ml-1"
-          >
+          <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-md shrink-0 ml-1">
             <Settings className="w-5 h-5" />
           </button>
         </div>
@@ -212,14 +212,14 @@ const ChatDashboard = () => {
                   newMessage={newMessage}
                   userAvatar={myAvatarUrl}
                   gateway={gateway}
+                  messageUpdate={messageUpdate}
+                  messageDelete={messageDelete}
                 />
                 <MessageInput
                   conversation={activeConversation}
                   encryptionKey={encryptionKey}
                   keyVersion={keyVersion}
-                  // NEW: Wrap handleMessageSent to trigger refresh
                   onMessageSent={(...args) => {
-                    // @ts-ignore
                     handleMessageSent(...args);
                     setConvRefresh((n) => n + 1);
                   }}
@@ -227,6 +227,7 @@ const ChatDashboard = () => {
                   onCancelEdit={() => setEditingMessage(null)}
                   replyTo={replyTo}
                   onCancelReply={() => setReplyTo(null)}
+                  onEditComplete={handleEditComplete}
                 />
               </>
             )}
@@ -241,15 +242,13 @@ const ChatDashboard = () => {
                 <h1 className="text-lg font-bold">Friends</h1>
               </div>
             </div>
-            <FriendsView 
-              friends={friends} 
-              // NEW: Wrap handleStartDM to trigger refresh
+            <FriendsView
+              friends={friends}
               onStartDM={(...args) => {
-                // @ts-ignore
                 handleStartDM(...args);
                 setConvRefresh((n) => n + 1);
-              }} 
-              onShowFriendsModal={() => setShowFriends(true)} 
+              }}
+              onShowFriendsModal={() => setShowFriends(true)}
             />
           </div>
         )}

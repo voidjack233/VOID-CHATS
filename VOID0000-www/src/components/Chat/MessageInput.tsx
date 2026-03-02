@@ -1,6 +1,6 @@
 // src/components/Chat/MessageInput.tsx
 import { Send, Plus, X, Pencil } from 'lucide-react';
-import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput'; // Adjust path as needed
+import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 
 interface MessageInputProps {
@@ -12,6 +12,7 @@ interface MessageInputProps {
   onCancelEdit?: () => void;
   replyTo?: string | null;
   onCancelReply?: () => void;
+  onEditComplete?: (messageId: string, newContent: string) => void;
 }
 
 const MessageInput = (props: MessageInputProps) => {
@@ -23,14 +24,13 @@ const MessageInput = (props: MessageInputProps) => {
     getPlaceholder,
     handleSend,
     handleKeyDown,
-    handleCancelAction
+    handleCancelAction,
   } = useMessageInput(props);
 
   const { editingMessage, replyTo, encryptionKey } = props;
 
   return (
     <div className="p-4 shrink-0">
-      {/* Edit / Reply indicator */}
       {(editingMessage || replyTo) && (
         <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-gray-700/50 rounded-t-lg text-sm text-gray-400">
           {editingMessage ? (
@@ -42,14 +42,9 @@ const MessageInput = (props: MessageInputProps) => {
               </span>
             </>
           ) : (
-            <>
-              <span className="text-blue-400">Replying to message</span>
-            </>
+            <span className="text-blue-400">Replying to message</span>
           )}
-          <button
-            onClick={handleCancelAction}
-            className="text-gray-500 hover:text-gray-300"
-          >
+          <button onClick={handleCancelAction} className="text-gray-500 hover:text-gray-300">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -78,7 +73,6 @@ const MessageInput = (props: MessageInputProps) => {
         </button>
       </div>
 
-      {/* E2E indicator */}
       <div className="flex items-center justify-center mt-1.5">
         <span className="text-[10px] text-gray-600">Messages are end-to-end encrypted</span>
       </div>

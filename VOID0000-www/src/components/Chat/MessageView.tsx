@@ -18,9 +18,22 @@ interface MessageViewProps {
   newMessage?: Message | null;
   userAvatar?: string;
   gateway?: any;
+  messageUpdate?: { message_id: string; content: string; is_edited: boolean; edited_at: string } | null;
+  messageDelete?: { message_id: string } | null;
 }
 
-const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, newMessage, userAvatar, gateway }: MessageViewProps) => {
+const MessageView = ({
+  conversation,
+  encryptionKey,
+  members,
+  onReply,
+  onEdit,
+  newMessage,
+  userAvatar,
+  gateway,
+  messageUpdate,
+  messageDelete,
+}: MessageViewProps) => {
   const { user } = useUser();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [emojiPickerTarget, setEmojiPickerTarget] = useState<{
@@ -38,10 +51,15 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
     handleScroll,
     handleDelete,
     getReplyParent,
-  } = useMessageList(conversation.id, encryptionKey, newMessage);
+  } = useMessageList(conversation.id, encryptionKey, newMessage, messageUpdate, messageDelete);
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
-  const { getMessageReactions, handleToggleReaction, loadReactionsForMessages } = useReactions(conversation.id, gateway);
+
+  const {
+    getMessageReactions,
+    handleToggleReaction,
+    loadReactionsForMessages,
+  } = useReactions(conversation.id, gateway);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -51,19 +69,22 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
   }, [messages, loadReactionsForMessages]);
 
   const openEmojiPicker = useCallback((messageId: string, event: React.MouseEvent) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = (event.target as HTMLElement).getBoundingClientRect();
     setEmojiPickerTarget({
       messageId,
       position: { x: rect.left, y: rect.top },
     });
   }, []);
 
-  const handleEmojiSelect = useCallback((emoji: string) => {
-    if (emojiPickerTarget && user?.id) {
-      handleToggleReaction(emojiPickerTarget.messageId, emoji, user.id);
-    }
-    setEmojiPickerTarget(null);
-  }, [emojiPickerTarget, user?.id, handleToggleReaction]);
+  const handleEmojiSelect = useCallback(
+    (emoji: string) => {
+      if (emojiPickerTarget && user?.id) {
+        handleToggleReaction(emojiPickerTarget.messageId, emoji, user.id);
+      }
+      setEmojiPickerTarget(null);
+    },
+    [emojiPickerTarget, user?.id, handleToggleReaction]
+  );
 
   const getConversationIcon = () => {
     switch (conversation.type) {
@@ -73,25 +94,40 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
     }
   };
 
-  if (loading) return <div className="flex-1 flex items-center justify-center"><div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" /></div>;
-  if (!encryptionKey) return <div className="flex-1 flex items-center justify-center text-gray-500"><p>Setting up encryption...</p></div>;
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!encryptionKey) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-gray-500">
+        <p>Setting up encryption...</p>
+      </div>
+    );
+  }
 
   const rendered = [...messages].reverse();
 
   return (
-    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-1 relative">
-      
-      {/* Loading history spinner at the top */}
+    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-1">
       {loadingMore && (
-        <div className="flex justify-center py-4">
-          <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+        <div className="flex justify-center py-2">
+          <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
       {!hasMore && (
         <div className="mt-4 mb-6">
-          <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mb-4">{getConversationIcon()}</div>
-          <h1 className="text-2xl font-bold mb-1">{conversation.type === 'dm' ? conversation.dm_display_name || conversation.dm_username : conversation.name}</h1>
+          <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mb-4">
+            {getConversationIcon()}
+          </div>
+          <h1 className="text-2xl font-bold mb-1">
+            {conversation.type === 'dm' ? conversation.dm_display_name || conversation.dm_username : conversation.name}
+          </h1>
           <p className="text-gray-400 text-sm">This is the beginning of your conversation.</p>
         </div>
       )}
@@ -99,7 +135,9 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
       {rendered.map((msg, index) => {
         const prevMsg = index > 0 ? rendered[index - 1] : null;
         const timeDiff = prevMsg ? new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime() : 0;
-        const isConsecutive = !msg.reply_to && prevMsg && prevMsg.sender_id === msg.sender_id && timeDiff < 5 * 60 * 1000;
+        const isReply = !!msg.reply_to;
+        const isConsecutive = !isReply && prevMsg && prevMsg.sender_id === msg.sender_id && timeDiff < 5 * 60 * 1000;
+
         const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
         const msgReactions = getMessageReactions(msg.message_id);
 
@@ -112,7 +150,9 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
           >
             {isConsecutive ? (
               <div className="w-10 mr-3 flex-shrink-0 flex items-center justify-center opacity-0 group-hover:opacity-100">
-                <span className="text-[10px] text-gray-500 font-mono">{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <span className="text-[10px] text-gray-500 font-mono">
+                  {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
               </div>
             ) : (
               <div className="w-10 h-10 rounded-full overflow-hidden mr-3 flex-shrink-0 bg-gray-700 mt-0.5">
@@ -122,14 +162,24 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
 
             <div className="flex-1 min-w-0">
               {msg.reply_to && (
-                <div className="flex items-center gap-1.5 mb-1 text-xs text-gray-500 cursor-pointer">
+                <div className="flex items-center gap-1.5 mb-1 text-xs text-gray-500 cursor-pointer hover:text-gray-400 transition-colors">
                   <CornerUpRight className="w-3 h-3 text-gray-600 flex-shrink-0" />
                   {replyParent ? (
                     <>
                       <span className="font-semibold text-indigo-400/70">{getSenderName(replyParent.sender_id)}</span>
-                      <span className="truncate max-w-[300px]">{replyParent.is_deleted ? '[deleted]' : replyParent.content || '[encrypted]'}</span>
+                      <span className="truncate max-w-[300px] text-gray-500">
+                        {replyParent.is_deleted
+                          ? '[deleted]'
+                          : replyParent.content
+                            ? replyParent.content.length > 80
+                              ? replyParent.content.substring(0, 80) + '...'
+                              : replyParent.content
+                            : '[encrypted]'}
+                      </span>
                     </>
-                  ) : <span className="italic">Loading reply...</span>}
+                  ) : (
+                    <span className="text-gray-600 italic">Loading reply...</span>
+                  )}
                 </div>
               )}
 
@@ -141,7 +191,9 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
               )}
 
               <div className="flex items-baseline gap-2">
-                <p className={`text-sm ${msg.is_deleted ? 'text-gray-600 italic' : 'text-gray-300'}`}>{msg.content || '[encrypted]'}</p>
+                <p className={`text-sm ${msg.is_deleted ? 'text-gray-600 italic' : 'text-gray-300'}`}>
+                  {msg.content || '[encrypted]'}
+                </p>
                 {msg.is_edited && !msg.is_deleted && <span className="text-[10px] text-gray-500">(edited)</span>}
               </div>
 
@@ -150,25 +202,57 @@ const MessageView = ({ conversation, encryptionKey, members, onReply, onEdit, ne
                   reactions={msgReactions}
                   currentUserId={user?.id || ''}
                   onToggle={(emoji) => user?.id && handleToggleReaction(msg.message_id, emoji, user.id)}
-                  onAddReaction={(e) => openEmojiPicker(msg.message_id, e)}
+                  onAddReaction={() => {
+                    const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (el) {
+                      const rect = el.getBoundingClientRect();
+                      setEmojiPickerTarget({
+                        messageId: msg.message_id,
+                        position: { x: rect.left, y: rect.bottom + 8 },
+                      });
+                    }
+                  }}
                 />
               )}
             </div>
 
             {hoveredId === msg.message_id && !msg.is_deleted && (
-              <div className="absolute right-2 top-[-16px] flex items-center gap-0.5 bg-gray-800 border border-gray-700 rounded-md p-0.5 shadow-lg z-10">
-                <button onClick={(e) => openEmojiPicker(msg.message_id, e)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
-                  <Smile className="w-4 h-4" />
+              <div
+                data-msg-id={msg.message_id}
+                className="absolute right-2 top-1 flex items-center gap-0.5 bg-gray-800 border border-gray-700 rounded-md p-0.5 shadow-lg z-10"
+              >
+                <button
+                  onClick={(e) => openEmojiPicker(msg.message_id, e)}
+                  className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200"
+                  title="Add reaction"
+                >
+                  <Smile className="w-3.5 h-3.5" />
                 </button>
-                {onReply && <button onClick={() => onReply(msg.message_id)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200"><Reply className="w-4 h-4" /></button>}
-                {msg.sender_id === user?.id && onEdit && <button onClick={() => onEdit(msg)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200"><Pencil className="w-4 h-4" /></button>}
-                {msg.sender_id === user?.id && <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-red-400"><Trash2 className="w-4 h-4" /></button>}
+                {onReply && (
+                  <button onClick={() => onReply(msg.message_id)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
+                    <Reply className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {msg.sender_id === user?.id && onEdit && (
+                  <button onClick={() => onEdit(msg)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {msg.sender_id === user?.id && (
+                  <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-red-400">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             )}
           </div>
         );
       })}
-      
+
+      {messages.length === 0 && !loading && (
+        <p className="text-center text-gray-500 text-sm py-8">No messages yet. Say something!</p>
+      )}
+
       <div ref={bottomRef} />
 
       {emojiPickerTarget && (

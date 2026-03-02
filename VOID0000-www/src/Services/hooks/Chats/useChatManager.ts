@@ -1,3 +1,4 @@
+// src/Services/hooks/Chats/useChatManager.ts
 import { useState, useEffect, useCallback } from 'react';
 import { Conversation, Message, getEncryptionKey, getOrCreateDM } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
@@ -13,18 +14,22 @@ export const useChatManager = (user: any) => {
   const [newMessage, setNewMessage] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [replyTo, setReplyTo] = useState<string | null>(null);
-  const [friends, setFriends] = useState<any[]>([]);
 
-  // Friends Load (for @me view)
-  useEffect(() => {
-    if (!user?.id) return;
-    fetchWithAuth('/api/friends')
-      .then(res => res.json())
-      .then(data => data.success && setFriends(data.friends || []))
-      .catch(err => console.error('Friends load failed:', err));
-  }, [user?.id]);
+  // Message update/delete state
+  const [messageUpdate, setMessageUpdate] = useState<{
+    message_id: string;
+    content: string;
+    is_edited: boolean;
+    edited_at: string;
+  } | null>(null);
 
-  // Conversation Handshake (encryption + members)
+  const [messageDelete, setMessageDelete] = useState<{
+    message_id: string;
+  } | null>(null);
+
+  // NOTE: Friends removed from here — use useFriends() hook from FriendsProvider instead
+
+  // Conversation Handshake
   const setupConversation = useCallback(async () => {
     if (!activeConversation || !user?.id) return;
     setEncryptionError(null);
@@ -62,7 +67,7 @@ export const useChatManager = (user: any) => {
 
   useEffect(() => { setupConversation(); }, [setupConversation]);
 
-  // Real-time Message Decryption
+  // Real-time: New Messages
   useEffect(() => {
     if (!user?.id) return;
     const handleMessage = async (data: any) => {
@@ -81,6 +86,47 @@ export const useChatManager = (user: any) => {
     return () => gateway.off('MESSAGE_CREATE', handleMessage);
   }, [activeConversation?.id, encryptionKey, user?.id]);
 
+  // Real-time: Message Edits (from other users)
+  useEffect(() => {
+    if (!user?.id) return;
+    const handleUpdate = async (data: any) => {
+      if (data.conversation_id === activeConversation?.id && encryptionKey) {
+        try {
+          const content = data.encrypted_content
+            ? await decryptMessage(data.encrypted_content, data.iv, encryptionKey)
+            : '[encrypted]';
+          setMessageUpdate({
+            message_id: data.message_id,
+            content,
+            is_edited: true,
+            edited_at: data.edited_at,
+          });
+        } catch {
+          setMessageUpdate({
+            message_id: data.message_id,
+            content: '[Decryption Failed]',
+            is_edited: true,
+            edited_at: data.edited_at,
+          });
+        }
+      }
+    };
+    gateway.on('MESSAGE_UPDATE', handleUpdate);
+    return () => gateway.off('MESSAGE_UPDATE', handleUpdate);
+  }, [activeConversation?.id, encryptionKey, user?.id]);
+
+  // Real-time: Message Deletions (from other users)
+  useEffect(() => {
+    if (!user?.id) return;
+    const handleDeleteEvent = (data: any) => {
+      if (data.conversation_id === activeConversation?.id) {
+        setMessageDelete({ message_id: data.message_id });
+      }
+    };
+    gateway.on('MESSAGE_DELETE', handleDeleteEvent);
+    return () => gateway.off('MESSAGE_DELETE', handleDeleteEvent);
+  }, [activeConversation?.id, user?.id]);
+
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {
     setEncryptionError(null);
@@ -88,6 +134,8 @@ export const useChatManager = (user: any) => {
     setEditingMessage(null);
     setReplyTo(null);
     setNewMessage(null);
+    setMessageUpdate(null);
+    setMessageDelete(null);
   };
 
   const handleBackToMe = () => {
@@ -112,9 +160,11 @@ export const useChatManager = (user: any) => {
     newMessage,
     editingMessage,
     replyTo,
-    friends,
+    messageUpdate,
+    messageDelete,
     setEditingMessage,
     setReplyTo,
+    setMessageUpdate,
     handleSelectConversation,
     handleMessageSent: setNewMessage,
     handleBackToMe,

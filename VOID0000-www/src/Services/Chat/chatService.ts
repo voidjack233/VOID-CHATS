@@ -37,7 +37,7 @@ export interface Message {
   edited_at: string | null;
   is_deleted: boolean;
   created_at: string;
-  content?: string; // decrypted plaintext (client-side only)
+  content?: string;
 }
 
 export interface ConversationMember {
@@ -161,9 +161,6 @@ export async function updateMemberRole(
 
 // ============== Messages ==============
 
-/**
- * Send an encrypted message
- */
 export async function sendMessage(
   conversationId: string,
   plaintext: string,
@@ -186,13 +183,9 @@ export async function sendMessage(
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
 
-  // Return with decrypted content for local display
   return { ...data.message, content: plaintext };
 }
 
-/**
- * Get message history (decrypted)
- */
 export async function getMessages(
   conversationId: string,
   encryptionKey: CryptoKey,
@@ -207,15 +200,11 @@ export async function getMessages(
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
 
-  // Decrypt all messages client-side
   const decrypted = await decryptMessages(data.messages, encryptionKey);
 
   return { messages: decrypted as Message[], has_more: data.has_more };
 }
 
-/**
- * Edit a message
- */
 export async function editMessage(
   conversationId: string,
   messageId: string,
@@ -241,9 +230,6 @@ export async function editMessage(
   if (!data.success) throw new Error(data.error);
 }
 
-/**
- * Delete a message
- */
 export async function deleteMessage(
   conversationId: string,
   messageId: string
@@ -256,9 +242,6 @@ export async function deleteMessage(
   if (!data.success) throw new Error(data.error);
 }
 
-/**
- * Mark conversation as read
- */
 export async function markAsRead(
   conversationId: string,
   messageId: string
@@ -274,11 +257,11 @@ export async function markAsRead(
 // ============== Reactions ==============
 
 export interface ReactionMap {
-  [emoji: string]: string[]; // emoji -> array of user_ids
+  [emoji: string]: string[];
 }
 
 /**
- * Toggle a reaction on a message (add if not present, remove if present)
+ * Toggle a reaction on a message
  */
 export async function toggleReaction(
   conversationId: string,
@@ -295,14 +278,19 @@ export async function toggleReaction(
 }
 
 /**
- * Get all reactions for a message
+ * Batch fetch reactions for multiple messages in one API call
  */
-export async function getReactions(
+export async function getBatchReactions(
   conversationId: string,
-  messageId: string
-): Promise<ReactionMap> {
+  messageIds: string[]
+): Promise<Record<string, ReactionMap>> {
+  if (messageIds.length === 0) return {};
+
+  const params = new URLSearchParams();
+  params.set('message_ids', messageIds.join(','));
+
   const res = await fetchWithAuth(
-    `${API_PREFIX}/${conversationId}/messages/${messageId}/reactions`
+    `${API_PREFIX}/${conversationId}/reactions?${params.toString()}`
   );
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
@@ -356,42 +344,33 @@ export async function distributeGroupKey(
 
 // ============== High-Level Helpers ==============
 
-/**
- * Get the encryption key for a conversation
- * For DMs: derives shared secret from ECDH
- * For groups/channels: fetches distributed group key
- */
 export async function getEncryptionKey(
   userId: string,
   conversation: Conversation,
   peerUserId?: string
 ): Promise<{ key: CryptoKey; version: number }> {
   if (conversation.type === 'dm' && peerUserId) {
-    // DM: derive shared key from ECDH
     const peerKey = await getUserPublicKey(peerUserId);
     const sharedKey = await keyManager.getSharedSecret(userId, peerUserId, peerKey.public_key);
     return { key: sharedKey, version: 1 };
   }
 
-  // Group/Channel: use distributed group key
   const groupKeys = await getGroupKeys(conversation.id);
 
   if (groupKeys.length === 0) {
     throw new Error('No group key available — owner must distribute keys');
   }
 
-  const latest = groupKeys[0]!; // sorted DESC by key_version
+  const latest = groupKeys[0]!;
   const groupKey = await keyManager.getGroupKey(conversation.id, latest.key_version);
 
   if (groupKey) {
     return { key: groupKey, version: latest.key_version };
   }
 
-  // Need to decrypt the group key using our shared secret with the owner
   throw new Error('Group key decryption not yet implemented — needs owner shared secret');
 }
 
-// Backup encrypted private key to server
 export async function backupKeyToServer(data: {
   encrypted_private_key: string;
   iv: string;
@@ -406,7 +385,6 @@ export async function backupKeyToServer(data: {
   if (!res.ok) throw new Error('Failed to backup key');
 }
 
-// Fetch encrypted private key backup from server
 export async function fetchKeyBackup(): Promise<{
   encrypted_private_key: string;
   iv: string;
@@ -420,9 +398,6 @@ export async function fetchKeyBackup(): Promise<{
   return data.backup || null;
 }
 
-/**
- * Fetch a single message by ID (for reply previews of old messages)
- */
 export async function getMessageById(
   conversationId: string,
   messageId: string,
@@ -435,7 +410,6 @@ export async function getMessageById(
     const data = await res.json();
     if (!data.success || !data.message) return null;
 
-    // Decrypt the single message
     const [decrypted] = await decryptMessages([data.message], encryptionKey);
     return decrypted as Message;
   } catch (err) {

@@ -11,6 +11,7 @@ interface UseMessageInputProps {
   onCancelEdit?: () => void;
   replyTo?: string | null;
   onCancelReply?: () => void;
+  onEditComplete?: (messageId: string, newContent: string) => void;
 }
 
 export const useMessageInput = ({
@@ -22,12 +23,12 @@ export const useMessageInput = ({
   onCancelEdit,
   replyTo,
   onCancelReply,
+  onEditComplete,
 }: UseMessageInputProps) => {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input when editing starts
   useEffect(() => {
     if (editingMessage) {
       setText(editingMessage.content || '');
@@ -35,7 +36,6 @@ export const useMessageInput = ({
     }
   }, [editingMessage]);
 
-  // Focus on conversation change
   useEffect(() => {
     inputRef.current?.focus();
   }, [conversation.id]);
@@ -62,6 +62,7 @@ export const useMessageInput = ({
           encryptionKey,
           keyVersion
         );
+        onEditComplete?.(editingMessage.message_id, trimmed);
         onCancelEdit?.();
       } else {
         const msg = await sendMessage(conversation.id, trimmed, encryptionKey, {
@@ -76,7 +77,6 @@ export const useMessageInput = ({
       console.error('Send failed:', err);
     } finally {
       setSending(false);
-      // FIX: Re-focus the input after sending so user can keep typing
       setTimeout(() => inputRef.current?.focus(), 0);
     }
   };

@@ -2,21 +2,33 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getMessages, getMessageById, deleteMessage, Message } from '../../Chat/chatService';
 
+interface MessageUpdate {
+  message_id: string;
+  content: string;
+  is_edited: boolean;
+  edited_at: string;
+}
+
+interface MessageDelete {
+  message_id: string;
+}
+
 export const useMessageList = (
   conversationId: string,
   encryptionKey: CryptoKey | null,
-  newMessage?: Message | null
+  newMessage?: Message | null,
+  messageUpdate?: MessageUpdate | null,
+  messageDelete?: MessageDelete | null
 ) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
-  // Reply cache: stores parent messages not in the current message list
+  // Reply cache
   const [replyCache, setReplyCache] = useState<Record<string, Message>>({});
   const fetchingReplies = useRef<Set<string>>(new Set());
 
-  // Refs for scrolling
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -24,7 +36,6 @@ export const useMessageList = (
   useEffect(() => {
     if (!encryptionKey) return;
     loadMessages();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, encryptionKey]);
 
   // Clear reply cache on conversation change
@@ -40,6 +51,35 @@ export const useMessageList = (
       scrollToBottom();
     }
   }, [newMessage]);
+
+  // Handle message edits (from WebSocket or own edits)
+  useEffect(() => {
+    if (!messageUpdate) return;
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.message_id === messageUpdate.message_id
+          ? {
+              ...m,
+              content: messageUpdate.content,
+              is_edited: messageUpdate.is_edited,
+              edited_at: messageUpdate.edited_at,
+            }
+          : m
+      )
+    );
+  }, [messageUpdate]);
+
+  // Handle message deletions from other users (via WebSocket)
+  useEffect(() => {
+    if (!messageDelete) return;
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.message_id === messageDelete.message_id
+          ? { ...m, is_deleted: true, content: '[deleted]', encrypted_content: null }
+          : m
+      )
+    );
+  }, [messageDelete]);
 
   const loadMessages = async () => {
     if (!encryptionKey) return;
@@ -73,17 +113,14 @@ export const useMessageList = (
     }
   };
 
-  // Look up a reply parent: check messages array first, then cache, then fetch
+  // Reply parent lookup
   const getReplyParent = useCallback(
     (replyToId: string): Message | null => {
-      // 1. Check loaded messages
       const found = messages.find((m) => m.message_id === replyToId);
       if (found) return found;
 
-      // 2. Check cache
       if (replyCache[replyToId]) return replyCache[replyToId];
 
-      // 3. Fetch if not already fetching
       if (!fetchingReplies.current.has(replyToId) && encryptionKey) {
         fetchingReplies.current.add(replyToId);
         getMessageById(conversationId, replyToId, encryptionKey).then((msg) => {
@@ -94,7 +131,7 @@ export const useMessageList = (
         });
       }
 
-      return null; // Will re-render when cache updates
+      return null;
     },
     [messages, replyCache, conversationId, encryptionKey]
   );

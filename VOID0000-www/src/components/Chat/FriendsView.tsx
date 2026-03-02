@@ -2,14 +2,7 @@
 import { useState } from 'react';
 import { MessageCircle, Search, UserPlus } from 'lucide-react';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
-
-interface Friend {
-  id: string;
-  username: string;
-  display_name: string | null;
-  avatar_url: string;
-  status?: string;
-}
+import { Friend } from '../../Services/hooks/Friends/useFriends';
 
 interface FriendsViewProps {
   friends: Friend[];
@@ -22,7 +15,6 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'online' | 'all'>('online');
 
-  // Replace the old getPresence:
   const getPresence = (userId: string) => getPresenceData(userId).status;
 
   const getStatusColor = (status: string) => {
@@ -41,6 +33,10 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
     }
   };
 
+  const getAvatarUrl = (friend: Friend) => {
+    return friend.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${friend.username}`;
+  };
+
   const filtered = friends
     .filter((f) => {
       if (tab === 'online') {
@@ -55,7 +51,6 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
       return name.toLowerCase().includes(search.toLowerCase());
     })
     .sort((a, b) => {
-      // Online first, then idle, then offline
       const order: Record<string, number> = { online: 0, idle: 1, offline: 2 };
       const aStatus = getPresence(a.id);
       const bStatus = getPresence(b.id);
@@ -101,7 +96,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
           className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition-colors"
         >
           <UserPlus className="w-4 h-4" />
-          Add Friend
+          <span className="hidden sm:inline">Add Friend</span>
         </button>
       </div>
 
@@ -140,9 +135,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                 <p className="text-sm">No friends online right now</p>
               </>
             ) : (
-              <>
-                <p className="text-sm">No friends found</p>
-              </>
+              <p className="text-sm">No friends found</p>
             )}
           </div>
         ) : (
@@ -154,10 +147,9 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                   key={friend.id}
                   className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-700/40 group transition-colors"
                 >
-                  {/* Avatar with status */}
                   <div className="relative shrink-0">
                     <img
-                      src={friend.avatar_url}
+                      src={getAvatarUrl(friend)}
                       className={`w-10 h-10 rounded-full object-cover ${
                         presence === 'offline' ? 'opacity-50 grayscale' : ''
                       }`}
@@ -168,9 +160,8 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                     />
                   </div>
 
-                  {/* Name + status */}
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm truncate">
+                    <div className="font-medium text-sm truncate text-gray-100">
                       {friend.display_name || friend.username}
                     </div>
                     <div className="text-xs text-gray-500">
@@ -178,14 +169,14 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                     </div>
                   </div>
 
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {/* FIX: Removed 'opacity-0' and used responsive 'md' prefixes */}
+                  <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                     <button
                       onClick={() => onStartDM(friend.id)}
-                      className="p-2 hover:bg-gray-600 rounded-full text-gray-400 hover:text-white transition-colors"
-                      title="Message"
+                      className="p-2.5 md:p-2 bg-gray-700/50 md:bg-transparent hover:bg-gray-600 rounded-full text-gray-300 md:text-gray-400 hover:text-white transition-colors"
+                      aria-label="Message"
                     >
-                      <MessageCircle className="w-4 h-4" />
+                      <MessageCircle className="w-5 h-5 md:w-4 md:h-4" />
                     </button>
                   </div>
                 </div>
