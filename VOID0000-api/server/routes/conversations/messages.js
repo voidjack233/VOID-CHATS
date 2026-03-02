@@ -1,4 +1,3 @@
-// server/routes/conversations/messages.js
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { generateTimeUUID, cassandra } from '../../scylla.js';
@@ -48,7 +47,6 @@ router.post('/', async (req, res) => {
     const messageId = generateTimeUUID();
     const now = new Date();
 
-    // Insert into ScyllaDB
     await scylla.execute(
       `INSERT INTO messages (
         conversation_id, message_id, sender_id, encrypted_content, iv,
@@ -68,7 +66,6 @@ router.post('/', async (req, res) => {
       { prepare: true }
     );
 
-    // Update conversation timestamp
     await pool.query(
       'UPDATE conversations SET updated_at = NOW() WHERE id = $1',
       [conversationId]
@@ -88,7 +85,6 @@ router.post('/', async (req, res) => {
       created_at: now.toISOString(),
     };
 
-    // Broadcast to all members except sender
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
       if (memberId !== userId) {
@@ -121,7 +117,6 @@ router.get('/', async (req, res) => {
     let params;
 
     if (before) {
-      // Paginate: get messages before a specific message_id
       query = `SELECT * FROM messages
                WHERE conversation_id = ? AND message_id < ?
                ORDER BY message_id DESC
@@ -132,7 +127,6 @@ router.get('/', async (req, res) => {
         pageSize,
       ];
     } else {
-      // Get latest messages
       query = `SELECT * FROM messages
                WHERE conversation_id = ?
                ORDER BY message_id DESC
@@ -171,6 +165,53 @@ router.get('/', async (req, res) => {
   }
 });
 
+// === NEW FIX: GET single message by ID ===
+router.get('/:messageId', async (req, res) => {
+  const userId = req.user.id;
+  const { conversationId, messageId } = req.params;
+
+  try {
+    const member = await verifyMembership(conversationId, userId);
+    if (!member) {
+      return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    const result = await scylla.execute(
+      `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      [
+        cassandra.types.Uuid.fromString(conversationId),
+        cassandra.types.TimeUuid.fromString(messageId),
+      ],
+      { prepare: true }
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Message not found' });
+    }
+
+    const row = result.rows[0];
+    const message = {
+      conversation_id: row.conversation_id.toString(),
+      message_id: row.message_id.toString(),
+      sender_id: row.sender_id.toString(),
+      encrypted_content: row.is_deleted ? null : row.encrypted_content,
+      iv: row.is_deleted ? null : row.iv,
+      key_version: row.key_version,
+      message_type: row.message_type,
+      reply_to: row.reply_to?.toString() || null,
+      is_edited: row.is_edited,
+      edited_at: row.edited_at?.toISOString() || null,
+      is_deleted: row.is_deleted,
+      created_at: row.created_at?.toISOString(),
+    };
+
+    res.json({ success: true, message });
+  } catch (err) {
+    console.error('Single message fetch error:', err);
+    res.status(500).json({ error: 'Failed to fetch message' });
+  }
+});
+
 // PUT /api/conversations/:conversationId/messages/:messageId — edit message
 router.put('/:messageId', async (req, res) => {
   const userId = req.user.id;
@@ -187,7 +228,6 @@ router.put('/:messageId', async (req, res) => {
       return res.status(403).json({ error: 'Not a member' });
     }
 
-    // Verify sender owns the message
     const msgResult = await scylla.execute(
       `SELECT sender_id, is_deleted FROM messages
        WHERE conversation_id = ? AND message_id = ?`,
@@ -215,7 +255,6 @@ router.put('/:messageId', async (req, res) => {
     const now = new Date();
     const editId = generateTimeUUID();
 
-    // Store edit history (append-only)
     await scylla.execute(
       `INSERT INTO message_edits (
         conversation_id, message_id, edit_id, encrypted_content, iv, key_version, edited_at
@@ -232,7 +271,6 @@ router.put('/:messageId', async (req, res) => {
       { prepare: true }
     );
 
-    // Update main message
     await scylla.execute(
       `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
@@ -257,7 +295,6 @@ router.put('/:messageId', async (req, res) => {
       edited_at: now.toISOString(),
     };
 
-    // Broadcast edit to all members
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
       if (memberId !== userId) {
@@ -283,7 +320,6 @@ router.delete('/:messageId', async (req, res) => {
       return res.status(403).json({ error: 'Not a member' });
     }
 
-    // Verify ownership (or admin/owner can delete any)
     const msgResult = await scylla.execute(
       `SELECT sender_id FROM messages
        WHERE conversation_id = ? AND message_id = ?`,
@@ -305,7 +341,6 @@ router.delete('/:messageId', async (req, res) => {
       return res.status(403).json({ error: 'Cannot delete this message' });
     }
 
-    // Soft delete — clear content but keep the row
     await scylla.execute(
       `UPDATE messages SET is_deleted = true, encrypted_content = null, iv = null
        WHERE conversation_id = ? AND message_id = ?`,
@@ -322,7 +357,6 @@ router.delete('/:messageId', async (req, res) => {
       deleted_by: userId,
     };
 
-    // Broadcast deletion
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
       if (memberId !== userId) {
@@ -337,7 +371,7 @@ router.delete('/:messageId', async (req, res) => {
   }
 });
 
-// PUT /api/conversations/:conversationId/read — mark as read
+// Mark as read remains at the bottom
 router.put('/read', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;

@@ -5,6 +5,7 @@ import { authenticateUser } from '../../middleware/jwt.js';
 import dmRouter from './dm.js';
 import membersRouter from './members.js';
 import messagesRouter from './messages.js';
+import reactionsRouter from './reactions.js';
 import keysRouter from './keys.js';
 
 const router = Router();
@@ -13,6 +14,7 @@ const router = Router();
 router.use('/dm', authenticateUser, dmRouter);
 router.use('/:conversationId/members', authenticateUser, membersRouter);
 router.use('/:conversationId/messages', authenticateUser, messagesRouter);
+router.use('/:conversationId/messages/:messageId/reactions', authenticateUser, reactionsRouter);
 router.use('/keys', authenticateUser, keysRouter);
 
 // GET /api/conversations — list user's conversations

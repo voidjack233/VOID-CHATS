@@ -23,6 +23,8 @@ export const EVENTS = {
   MESSAGE_CREATE: 'MESSAGE_CREATE',
   TYPING_START: 'TYPING_START',
   TOKEN_EXPIRING: 'TOKEN_EXPIRING',
+  REACTION_ADD: 'REACTION_ADD',
+  REACTION_REMOVE: 'REACTION_REMOVE',
 };
 
 // Store connections: userId -> Set of WebSocket connections

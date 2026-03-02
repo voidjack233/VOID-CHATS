@@ -4,6 +4,58 @@ import { pool } from '../../db.js';
 
 const router = Router();
 
+// ==================== KEY BACKUP (must be before /:userId) ====================
+
+// POST /api/conversations/keys/backup — store encrypted private key backup
+router.post('/backup', async (req, res) => {
+  const userId = req.user.id;
+  const { encrypted_private_key, iv, salt, key_id } = req.body;
+
+  if (!encrypted_private_key || !iv || !salt || !key_id) {
+    return res.status(400).json({ error: 'encrypted_private_key, iv, salt, and key_id required' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO user_key_backups (user_id, encrypted_private_key, iv, salt, key_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id)
+       DO UPDATE SET encrypted_private_key = $2, iv = $3, salt = $4, key_id = $5, updated_at = NOW()`,
+      [userId, encrypted_private_key, iv, salt, key_id]
+    );
+
+    res.json({ success: true, message: 'Key backup stored' });
+  } catch (err) {
+    console.error('Key backup error:', err);
+    res.status(500).json({ error: 'Failed to store key backup' });
+  }
+});
+
+// GET /api/conversations/keys/backup — retrieve encrypted private key backup
+router.get('/backup', async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const result = await pool.query(
+      `SELECT encrypted_private_key, iv, salt, key_id, created_at
+       FROM user_key_backups
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No key backup found' });
+    }
+
+    res.json({ success: true, backup: result.rows[0] });
+  } catch (err) {
+    console.error('Key backup GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch key backup' });
+  }
+});
+
+// ==================== PUBLIC KEYS ====================
+
 // GET /api/conversations/keys/:userId — get user's active public key
 router.get('/:userId', async (req, res) => {
   const { userId } = req.params;
@@ -70,6 +122,8 @@ router.post('/', async (req, res) => {
   }
 });
 
+// ==================== GROUP KEYS ====================
+
 // GET /api/conversations/keys/group/:conversationId — get group keys for current user
 router.get('/group/:conversationId', async (req, res) => {
   const userId = req.user.id;
@@ -108,7 +162,6 @@ router.post('/group/:conversationId', async (req, res) => {
   const { conversationId } = req.params;
   const { distributions, key_version } = req.body;
 
-  // distributions: [{ user_id, encrypted_group_key }]
   if (!Array.isArray(distributions) || distributions.length === 0 || !key_version) {
     return res.status(400).json({ error: 'distributions array and key_version required' });
   }
