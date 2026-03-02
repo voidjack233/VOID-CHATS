@@ -1,5 +1,6 @@
 import { useState } from 'react'; 
-import { User, Settings, LogOut, Users } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { User, Settings, LogOut, Users, MessageCircle } from 'lucide-react';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
 import { useFriendRequests } from '../Services/hooks/Friends/useFriendRequests';
 import MenuComponent from '../components/common/Menu';
@@ -9,8 +10,8 @@ import FriendsModal from '../components/common/Friends/FriendsModal';
 
 const Dashboard = () => {
   const { loading, user } = useAuth();
-  // Get unreadCount to control the badge
   const { incoming, unreadCount } = useFriendRequests(); 
+  const navigate = useNavigate();
   
   const [showProfile, setShowProfile] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -41,16 +42,12 @@ const Dashboard = () => {
             
             <div className="flex items-center gap-2">
               <button
-                onClick={() => {
-                  setShowFriends(true);
-                  // 🛑 MOVED: markAsSeen() is removed from here
-                }}
+                onClick={() => setShowFriends(true)}
                 className="p-2 rounded-lg hover:bg-gray-700 transition-colors relative"
                 title="Friends"
               >
                 <Users className="w-5 h-5 text-gray-300" />
                 
-                {/* Red Dot: Only shows if you have requests older than last view */}
                 {incoming.length > 0 && unreadCount > 0 && (
                   <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] bg-red-500 rounded-full text-xs text-white flex items-center justify-center font-medium animate-pulse">
                     {unreadCount > 9 ? '9+' : unreadCount}
@@ -75,6 +72,24 @@ const Dashboard = () => {
           <p className="text-gray-300 max-w-2xl mx-auto">
             KASANE TETOOOO
           </p>
+        </div>
+
+        {/* Chat Button */}
+        <div className="mb-8">
+          <button
+            onClick={() => navigate('/chats')}
+            className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 p-6 rounded-xl border border-indigo-400/20 transition-all hover:shadow-xl hover:shadow-indigo-500/10 group"
+          >
+            <div className="flex items-center justify-center gap-4">
+              <div className="h-12 w-12 bg-white/10 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
+                <MessageCircle className="w-6 h-6" />
+              </div>
+              <div className="text-left">
+                <h3 className="text-lg font-semibold">Messages</h3>
+                <p className="text-indigo-200 text-sm">Chat with friends · End-to-end encrypted</p>
+              </div>
+            </div>
+          </button>
         </div>
 
         <div className="grid md:grid-cols-3 gap-6">

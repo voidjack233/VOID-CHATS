@@ -1,6 +1,9 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+// src/Services/Auth/UserContext.tsx
+import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { authService, fetchWithAuth } from './authServiceApi';
 import { gateway } from '../Gateway/gateway';
+import { keyManager } from '../Crypto/keyManager';
+import { uploadPublicKey, backupKeyToServer, fetchKeyBackup } from '../Chat/chatService';
 
 export interface User {
   id: string;
@@ -16,6 +19,10 @@ interface UserContextType {
   setUser: (user: User | null) => void;
   refreshUser: () => Promise<void>;
   logout: () => Promise<void>;
+  setLoginPassword: (password: string) => void;
+  needsRestorePassword: boolean;
+  submitRestorePassword: (password: string) => Promise<void>;
+  restoreError: string | null;
 }
 
 const UserContext = createContext<UserContextType | null>(null);
@@ -27,6 +34,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
     return stored ? JSON.parse(stored) : null;
   });
   const [loading, setLoading] = useState(!localStorage.getItem(USER_STORAGE_KEY));
+
+  const loginPasswordRef = useRef<string | null>(null);
+
+  // Only prompt needed: new device with backup but no password in memory
+  const [needsRestorePassword, setNeedsRestorePassword] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+
+  const setLoginPassword = (password: string) => {
+    loginPasswordRef.current = password;
+  };
 
   const setUser = (newUser: User | null) => {
     setUserState(newUser);
@@ -49,10 +66,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       const accountData = await accountResponse.json();
 
       if (accountData.success && accountData.account) {
-        return {
-          ...authData.user,
-          ...accountData.account,
-        };
+        return { ...authData.user, ...accountData.account };
       }
       return authData.user;
     } catch (err) {
@@ -64,9 +78,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const refreshUser = async () => {
     try {
       const freshUser = await fetchFullUser();
-      if (freshUser) {
-        setUser(freshUser as User);
-      }
+      if (freshUser) setUser(freshUser as User);
     } catch (err) {
       console.error('Failed to refresh user:', err);
     }
@@ -74,45 +86,61 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     gateway.disconnect();
+    loginPasswordRef.current = null;
+    setNeedsRestorePassword(false);
     await authService.logout();
     setUser(null);
     Object.keys(localStorage).forEach((key) => {
-      if (key.startsWith('void_')) {
-        localStorage.removeItem(key);
-      }
+      if (key.startsWith('void_')) localStorage.removeItem(key);
     });
+  };
+
+  // Restore prompt handler
+  const submitRestorePassword = async (password: string) => {
+    if (!user?.id) return;
+    setRestoreError(null);
+
+    try {
+      loginPasswordRef.current = password;
+      await keyManager.initializeKeys(user.id, password, {
+        uploadPublicKey: async (pubKey, keyId) => await uploadPublicKey(pubKey, keyId),
+        backupToServer: async (data) => await backupKeyToServer(data),
+        fetchBackup: async () => await fetchKeyBackup(),
+      });
+
+      console.log('🔑 Keys restored successfully');
+      setNeedsRestorePassword(false);
+      window.location.reload();
+    } catch (err: any) {
+      if (err.message === 'KEY_RESTORE_FAILED') {
+        setRestoreError('Wrong password. Please enter your login password.');
+      } else {
+        setRestoreError('Restore failed. Please try again.');
+      }
+    }
   };
 
   // Initial user fetch
   useEffect(() => {
     const init = async () => {
       const stored = localStorage.getItem(USER_STORAGE_KEY);
-      
       if (stored) {
-        // Already have cached user — skip loading state
-        // Validate in background without blocking UI
         const freshUser = await fetchFullUser();
         if (freshUser && freshUser.username) {
           setUser(freshUser as User);
         } else {
           setUser(null);
           Object.keys(localStorage).forEach((key) => {
-            if (key.startsWith('void_')) {
-              localStorage.removeItem(key);
-            }
+            if (key.startsWith('void_')) localStorage.removeItem(key);
           });
         }
       } else {
-        // No cached user — show loading, try to authenticate
         setLoading(true);
         const freshUser = await fetchFullUser();
-        if (freshUser && freshUser.username) {
-          setUser(freshUser as User);
-        }
+        if (freshUser && freshUser.username) setUser(freshUser as User);
         setLoading(false);
       }
     };
-
     init();
   }, []);
 
@@ -123,13 +151,38 @@ export function UserProvider({ children }: { children: ReactNode }) {
       return;
     }
     gateway.connect(user.id);
-    return () => {
-      gateway.disconnect();
-    };
+    return () => { gateway.disconnect(); };
+  }, [user?.id]);
+
+  // Initialize encryption keys — silent when password available
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const password = loginPasswordRef.current;
+
+    keyManager.initializeKeys(user.id, password, {
+      uploadPublicKey: async (pubKey, keyId) => await uploadPublicKey(pubKey, keyId),
+      backupToServer: async (data) => await backupKeyToServer(data),
+      fetchBackup: async () => await fetchKeyBackup(),
+    })
+      .then(() => {
+        console.log('🔑 Encryption keys ready');
+      })
+      .catch((err) => {
+  if (err.message === 'KEY_NEEDS_PASSWORD') {
+    console.warn('🔑 No keys and no password — forcing re-login');
+    logout();
+  } else {
+    console.warn('🔑 Key init failed:', err.message);
+  }
+});
   }, [user?.id]);
 
   return (
-    <UserContext.Provider value={{ user, loading, setUser, refreshUser, logout }}>
+    <UserContext.Provider value={{
+      user, loading, setUser, refreshUser, logout, setLoginPassword,
+      needsRestorePassword, submitRestorePassword, restoreError,
+    }}>
       {children}
     </UserContext.Provider>
   );
@@ -137,8 +190,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
 export function useUser() {
   const context = useContext(UserContext);
-  if (!context) {
-    throw new Error('useUser must be used within UserProvider');
-  }
+  if (!context) throw new Error('useUser must be used within UserProvider');
   return context;
 }

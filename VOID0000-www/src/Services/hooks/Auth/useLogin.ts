@@ -10,7 +10,7 @@ interface LoginForm {
 
 export function useLogin() {
   const navigate = useNavigate();
-  const { refreshUser } = useUser();
+  const { refreshUser, setLoginPassword } = useUser();
   const [formData, setFormData] = useState<LoginForm>({ identifier: '', password: '' });
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -90,8 +90,11 @@ export function useLogin() {
         throw new Error(result.message || 'Login failed');
       }
 
+      // Pass password for E2E key recovery before refreshing user
+      setLoginPassword(formData.password);
+
       await refreshUser();
-      navigate('/home');
+      navigate('/chats');
 
     } catch (err: any) {
       console.log('Login error:', err);
@@ -157,10 +160,13 @@ export function useLogin() {
         throw new Error(result.message || '2FA verification failed');
       }
 
+      // Pass password for E2E key recovery
+      setLoginPassword(formData.password);
+
       // Success! Clear 2FA state and finish login
       setTwoFactorData(null);
       await refreshUser();
-      navigate('/home');
+      navigate('/chats');
 
     } catch (err: any) {
       console.error('2FA verification error:', err);

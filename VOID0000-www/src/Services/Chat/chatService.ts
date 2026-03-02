@@ -17,6 +17,7 @@ export interface Conversation {
   updated_at: string;
   role: string;
   last_read_message_id: string | null;
+  dm_user_id?: string;
   dm_username: string | null;
   dm_display_name: string | null;
   dm_avatar_url: string | null;
@@ -270,6 +271,44 @@ export async function markAsRead(
   if (!data.success) throw new Error(data.error);
 }
 
+// ============== Reactions ==============
+
+export interface ReactionMap {
+  [emoji: string]: string[]; // emoji -> array of user_ids
+}
+
+/**
+ * Toggle a reaction on a message (add if not present, remove if present)
+ */
+export async function toggleReaction(
+  conversationId: string,
+  messageId: string,
+  emoji: string
+): Promise<{ action: 'add' | 'remove'; emoji: string; user_id: string }> {
+  const res = await fetchWithAuth(
+    `${API_PREFIX}/${conversationId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
+    { method: 'PUT' }
+  );
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data;
+}
+
+/**
+ * Get all reactions for a message
+ */
+export async function getReactions(
+  conversationId: string,
+  messageId: string
+): Promise<ReactionMap> {
+  const res = await fetchWithAuth(
+    `${API_PREFIX}/${conversationId}/messages/${messageId}/reactions`
+  );
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data.reactions;
+}
+
 // ============== Keys ==============
 
 export async function getUserPublicKey(
@@ -350,4 +389,57 @@ export async function getEncryptionKey(
 
   // Need to decrypt the group key using our shared secret with the owner
   throw new Error('Group key decryption not yet implemented — needs owner shared secret');
+}
+
+// Backup encrypted private key to server
+export async function backupKeyToServer(data: {
+  encrypted_private_key: string;
+  iv: string;
+  salt: string;
+  key_id: string;
+}): Promise<void> {
+  const res = await fetchWithAuth('/api/conversations/keys/backup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Failed to backup key');
+}
+
+// Fetch encrypted private key backup from server
+export async function fetchKeyBackup(): Promise<{
+  encrypted_private_key: string;
+  iv: string;
+  salt: string;
+  key_id: string;
+} | null> {
+  const res = await fetchWithAuth('/api/conversations/keys/backup');
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Failed to fetch key backup');
+  const data = await res.json();
+  return data.backup || null;
+}
+
+/**
+ * Fetch a single message by ID (for reply previews of old messages)
+ */
+export async function getMessageById(
+  conversationId: string,
+  messageId: string,
+  encryptionKey: CryptoKey
+): Promise<Message | null> {
+  try {
+    const res = await fetchWithAuth(
+      `${API_PREFIX}/${conversationId}/messages/${messageId}`
+    );
+    const data = await res.json();
+    if (!data.success || !data.message) return null;
+
+    // Decrypt the single message
+    const [decrypted] = await decryptMessages([data.message], encryptionKey);
+    return decrypted as Message;
+  } catch (err) {
+    console.error('Failed to fetch single message:', err);
+    return null;
+  }
 }

@@ -1,66 +1,29 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { X, Users, UserPlus, Loader2 } from 'lucide-react';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
-import { useFriends, Friend } from '../../../Services/hooks/Friends/useFriends';
 import { useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
-import { usePresence } from '../../../Services/hooks/Friends/usePresence';
-import FriendsList from './FriendsList';
 import IncomingRequests from './IncomingRequests';
 import AddFriendModal from './AddFriendModal';
-import FriendProfile from './FriendProfile';
 
 interface FriendsModalProps {
   onClose: () => void;
 }
 
-type Tab = 'friends' | 'requests';
-
 export default function FriendsModal({ onClose }: FriendsModalProps) {
   useScrollLock();
-  const [activeTab, setActiveTab] = useState<Tab>('friends');
   const [showAddFriend, setShowAddFriend] = useState(false);
-  const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
 
-  const { friends, loading: friendsLoading, removeFriend } = useFriends();
   const {
     incoming,
     loading: requestsLoading,
     acceptRequest,
     rejectRequest,
   } = useFriendRequests();
-  const { getPresence } = usePresence();
-
-  const loading = friendsLoading || requestsLoading;
-
-  // Group friends by presence status
-  const grouped = useMemo(() => {
-    const online: Friend[] = [];
-    const idle: Friend[] = [];
-    const offline: Friend[] = [];
-
-    friends.forEach(friend => {
-      const { status } = getPresence(friend.id);
-      if (status === 'online') online.push(friend);
-      else if (status === 'idle') idle.push(friend);
-      else offline.push(friend);
-    });
-
-    const sortByName = (a: Friend, b: Friend) =>
-      (a.display_name || a.username).toLowerCase().localeCompare(
-        (b.display_name || b.username).toLowerCase()
-      );
-
-    online.sort(sortByName);
-    idle.sort(sortByName);
-    offline.sort(sortByName);
-
-    return { online, idle, offline };
-  }, [friends, getPresence]);
 
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-        <div className="relative w-full max-w-lg mx-4 h-[600px] flex flex-col bg-gray-800 rounded-2xl shadow-2xl overflow-hidden border border-gray-700">
+        <div className="relative w-full max-w-lg mx-4 h-[500px] flex flex-col bg-gray-800 rounded-2xl shadow-2xl overflow-hidden border border-gray-700">
 
           {/* Header */}
           <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/50">
@@ -85,73 +48,44 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
             </div>
           </div>
 
-          {/* Tabs */}
-          <div className="flex p-2 gap-2 bg-gray-900/30">
-            {[
-              { id: 'friends', label: 'My Friends', count: friends.length },
-              { id: 'requests', label: 'Requests', count: incoming.length },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as Tab)}
-                className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 ${
-                  activeTab === tab.id
-                    ? 'bg-gray-700 text-white shadow-lg'
-                    : 'text-gray-400 hover:bg-gray-700/50 hover:text-gray-200'
-                }`}
-              >
-                {tab.label}
-                {tab.count > 0 && (
-                  <span className={`px-1.5 py-0.5 text-xs rounded-full ${
-                    activeTab === tab.id
-                      ? 'bg-blue-500/20 text-blue-400'
-                      : 'bg-gray-700 text-gray-400'
-                  }`}>
-                    {tab.count}
-                  </span>
-                )}
-              </button>
-            ))}
+          {/* Add Friend Button */}
+          <div className="p-3 border-b border-gray-700/50">
+            <button
+              onClick={() => setShowAddFriend(true)}
+              className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
+            >
+              <UserPlus className="w-4 h-4" />
+              Add Friend
+            </button>
           </div>
 
-          {/* Content */}
+          {/* Pending Requests */}
           <div className="flex-1 overflow-y-auto p-4">
-            {loading ? (
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+              Pending Requests {incoming.length > 0 && `(${incoming.length})`}
+            </h3>
+
+            {requestsLoading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-blue-400 animate-spin mb-4" />
                 <p className="text-gray-400">Loading...</p>
               </div>
+            ) : incoming.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+                <Users className="w-10 h-10 mb-3 opacity-50" />
+                <p className="text-sm">No pending requests</p>
+                <p className="text-xs mt-1">Friend requests will appear here</p>
+              </div>
             ) : (
-              <>
-                {activeTab === 'friends' && (
-                  <FriendsList
-                    grouped={grouped}
-                    onRemove={removeFriend}
-                    onSelect={(profileId) => {
-                      const friend = friends.find(f => f.profile_id === profileId);
-                      if (friend) setSelectedFriend(friend);
-                    }}
-                  />
-                )}
-                {activeTab === 'requests' && (
-                  <IncomingRequests
-                    requests={incoming}
-                    onAccept={acceptRequest}
-                    onReject={rejectRequest}
-                  />
-                )}
-              </>
+              <IncomingRequests
+                requests={incoming}
+                onAccept={acceptRequest}
+                onReject={rejectRequest}
+              />
             )}
           </div>
         </div>
       </div>
-
-      {selectedFriend && (
-        <FriendProfile
-          friend={selectedFriend}
-          onClose={() => setSelectedFriend(null)}
-        />
-      )}
 
       {showAddFriend && (
         <AddFriendModal onClose={() => setShowAddFriend(false)} />
