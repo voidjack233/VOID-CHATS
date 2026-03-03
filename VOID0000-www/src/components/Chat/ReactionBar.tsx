@@ -2,7 +2,7 @@
 import { ReactionMap } from '../../Services/Chat/chatService';
 
 interface ReactionBarProps {
-  reactions: ReactionMap;
+  reactions: ReactionMap | string[];
   currentUserId: string;
   onToggle: (emoji: string) => void;
   onAddReaction: (e: React.MouseEvent<HTMLButtonElement>) => void; // Updated to accept event

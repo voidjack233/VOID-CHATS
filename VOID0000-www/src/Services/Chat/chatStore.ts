@@ -1,0 +1,303 @@
+// src/Services/Storage/MessageStore.ts
+//
+// Local-first message store using IndexedDB.
+// All message reads come from here. Server is the sync source, not the read source.
+//
+// Schema:
+//   messages: { conversation_id, message_id, sender_id, content, message_type,
+//               reply_to, is_edited, edited_at, is_deleted, created_at, reactions }
+//   sync_cursors: { conversation_id, last_message_id, last_synced_at }
+//   conversations_meta: { conversation_id, encryption_key_hash, last_opened_at }
+
+const DB_NAME = 'void_messages';
+const DB_VERSION = 1;
+
+export interface LocalMessage {
+  conversation_id: string;
+  message_id: string;
+  sender_id: string;
+  content: string;
+  message_type: string;
+  reply_to: string | null;
+  is_edited: boolean;
+  edited_at: string | null;
+  is_deleted: boolean;
+  created_at: string;
+  reactions: Record<string, string[]>;
+}
+
+export interface SyncCursor {
+  conversation_id: string;
+  last_message_id: string | null;
+  last_synced_at: string;
+}
+
+class MessageStore {
+  private db: IDBDatabase | null = null;
+  private dbReady: Promise<IDBDatabase>;
+
+  constructor() {
+    this.dbReady = this.open();
+  }
+
+  // ============== Database Setup ==============
+
+  private open(): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+
+        if (!db.objectStoreNames.contains('messages')) {
+          const msgStore = db.createObjectStore('messages', {
+            keyPath: ['conversation_id', 'message_id'],
+          });
+          msgStore.createIndex('by_conversation', 'conversation_id', { unique: false });
+          msgStore.createIndex('by_conv_time', ['conversation_id', 'message_id'], { unique: true });
+        }
+
+        if (!db.objectStoreNames.contains('sync_cursors')) {
+          db.createObjectStore('sync_cursors', { keyPath: 'conversation_id' });
+        }
+
+        if (!db.objectStoreNames.contains('conversations_meta')) {
+          db.createObjectStore('conversations_meta', { keyPath: 'conversation_id' });
+        }
+      };
+
+      request.onsuccess = (event) => {
+        this.db = (event.target as IDBOpenDBRequest).result;
+        resolve(this.db);
+      };
+
+      request.onerror = () => {
+        console.error('Failed to open MessageStore IndexedDB');
+        reject(request.error);
+      };
+    });
+  }
+
+  private async getDb(): Promise<IDBDatabase> {
+    if (this.db) return this.db;
+    return this.dbReady;
+  }
+
+  // ============== Message Operations ==============
+
+  async putMessages(messages: LocalMessage[]): Promise<void> {
+    if (messages.length === 0) return;
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('messages', 'readwrite');
+      const store = tx.objectStore('messages');
+
+      for (const msg of messages) {
+        store.put(msg);
+      }
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async putMessage(message: LocalMessage): Promise<void> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('messages', 'readwrite');
+      const store = tx.objectStore('messages');
+      store.put(message);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getMessages(
+    conversationId: string,
+    options?: { before?: string; limit?: number }
+  ): Promise<{ messages: LocalMessage[]; has_more: boolean }> {
+    const db = await this.getDb();
+    const limit = options?.limit || 50;
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('messages', 'readonly');
+      const store = tx.objectStore('messages');
+      const index = store.index('by_conv_time');
+
+      const messages: LocalMessage[] = [];
+
+      const upper = options?.before
+        ? [conversationId, options.before]
+        : [conversationId, '\uffff'];
+      const lower = [conversationId, ''];
+
+      const range = IDBKeyRange.bound(lower, upper, false, !!options?.before);
+
+      const cursorReq = index.openCursor(range, 'prev');
+
+      cursorReq.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+
+        if (!cursor || messages.length >= limit) {
+          resolve({
+            messages,
+            has_more: !!cursor,
+          });
+          return;
+        }
+
+        messages.push(cursor.value as LocalMessage);
+        cursor.continue();
+      };
+
+      cursorReq.onerror = () => reject(cursorReq.error);
+    });
+  }
+
+  async getMessage(conversationId: string, messageId: string): Promise<LocalMessage | null> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('messages', 'readonly');
+      const store = tx.objectStore('messages');
+      const request = store.get([conversationId, messageId]);
+
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async updateMessage(
+    conversationId: string,
+    messageId: string,
+    updates: Partial<LocalMessage>
+  ): Promise<void> {
+    const existing = await this.getMessage(conversationId, messageId);
+    if (!existing) return;
+
+    const updated = { ...existing, ...updates };
+    await this.putMessage(updated);
+  }
+
+  async markDeleted(conversationId: string, messageId: string): Promise<void> {
+    await this.updateMessage(conversationId, messageId, {
+      is_deleted: true,
+      content: '[deleted]',
+    });
+  }
+
+  async updateReactions(
+    conversationId: string,
+    messageId: string,
+    reactions: Record<string, string[]>
+  ): Promise<void> {
+    await this.updateMessage(conversationId, messageId, { reactions });
+  }
+
+  async getMessageCount(conversationId: string): Promise<number> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('messages', 'readonly');
+      const store = tx.objectStore('messages');
+      const index = store.index('by_conversation');
+      const countReq = index.count(IDBKeyRange.only(conversationId));
+
+      countReq.onsuccess = () => resolve(countReq.result);
+      countReq.onerror = () => reject(countReq.error);
+    });
+  }
+
+  // ============== Sync Cursor Operations ==============
+
+  async getSyncCursor(conversationId: string): Promise<SyncCursor | null> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('sync_cursors', 'readonly');
+      const store = tx.objectStore('sync_cursors');
+      const request = store.get(conversationId);
+
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async setSyncCursor(conversationId: string, lastMessageId: string): Promise<void> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('sync_cursors', 'readwrite');
+      const store = tx.objectStore('sync_cursors');
+      store.put({
+        conversation_id: conversationId,
+        last_message_id: lastMessageId,
+        last_synced_at: new Date().toISOString(),
+      });
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // ============== Cache Invalidation ==============
+
+  async clearConversation(conversationId: string): Promise<void> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['messages', 'sync_cursors'], 'readwrite');
+      const msgStore = tx.objectStore('messages');
+      const cursorStore = tx.objectStore('sync_cursors');
+
+      const index = msgStore.index('by_conversation');
+      const range = IDBKeyRange.only(conversationId);
+      const cursorReq = index.openCursor(range);
+
+      cursorReq.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+
+      cursorStore.delete(conversationId);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async clearAll(): Promise<void> {
+    const db = await this.getDb();
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(['messages', 'sync_cursors', 'conversations_meta'], 'readwrite');
+      tx.objectStore('messages').clear();
+      tx.objectStore('sync_cursors').clear();
+      tx.objectStore('conversations_meta').clear();
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async destroy(): Promise<void> {
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
+
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(DB_NAME);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+}
+
+export const messageStore = new MessageStore();

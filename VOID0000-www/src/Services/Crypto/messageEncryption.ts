@@ -30,10 +30,6 @@ export async function encryptMessage(
 
 // ============== Decrypt ==============
 
-/**
- * Decrypt an encrypted message with AES-256-GCM
- * Returns the plaintext string
- */
 export async function decryptMessage(
   encrypted_content: string,
   iv: string,
@@ -51,10 +47,6 @@ export async function decryptMessage(
 
 // ============== Batch Operations ==============
 
-/**
- * Decrypt an array of messages
- * Returns messages with plaintext content added
- */
 export async function decryptMessages(
   messages: Array<{
     encrypted_content: string | null;
@@ -74,7 +66,8 @@ export async function decryptMessages(
         const content = await decryptMessage(msg.encrypted_content, msg.iv, key);
         return { ...msg, content };
       } catch (err) {
-        console.warn('Failed to decrypt message:', msg.message_id, err);
+        // Log locally for debugging, but return a placeholder so the UI doesn't crash
+        console.warn('Decryption failed for message:', msg.message_id);
         return { ...msg, content: '[unable to decrypt]' };
       }
     })
@@ -86,13 +79,8 @@ export async function decryptMessages(
 // ============== Utility ==============
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    // FIX: Add 'as number' to satisfy TypeScript's noUncheckedIndexedAccess rule
-    binary += String.fromCharCode(bytes[i] as number);
-  }
-  return btoa(binary);
+  // Optimization: Spread operator with String.fromCharCode is natively optimized in V8
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)));
 }
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {

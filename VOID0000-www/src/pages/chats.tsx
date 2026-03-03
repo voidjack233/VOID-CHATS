@@ -206,8 +206,9 @@ const ChatDashboard = () => {
                 <MessageView
                   conversation={activeConversation}
                   encryptionKey={encryptionKey}
+                  encryptionError={encryptionError}
                   members={members}
-                  onReply={(id) => setReplyTo(id)}
+                  onReply={(msg) => setReplyTo(msg)}
                   onEdit={(msg) => setEditingMessage(msg)}
                   newMessage={newMessage}
                   userAvatar={myAvatarUrl}

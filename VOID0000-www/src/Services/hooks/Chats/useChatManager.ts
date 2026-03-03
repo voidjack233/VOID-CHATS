@@ -1,5 +1,5 @@
 // src/Services/hooks/Chats/useChatManager.ts
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Conversation, Message, getEncryptionKey, getOrCreateDM } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
@@ -13,7 +13,7 @@ export const useChatManager = (user: any) => {
   const [encryptionError, setEncryptionError] = useState<string | null>(null);
   const [newMessage, setNewMessage] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
-  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const [replyTo, setReplyTo] = useState<Message | null>(null);
 
   // Message update/delete state
   const [messageUpdate, setMessageUpdate] = useState<{
@@ -27,51 +27,73 @@ export const useChatManager = (user: any) => {
     message_id: string;
   } | null>(null);
 
-  // NOTE: Friends removed from here — use useFriends() hook from FriendsProvider instead
-
-  // Conversation Handshake
-  const setupConversation = useCallback(async () => {
-    if (!activeConversation || !user?.id) return;
-    setEncryptionError(null);
-
-    try {
-      const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
-      const data = await res.json();
-      if (!data.success) throw new Error('Could not load members');
-
-      const memberMap: Record<string, any> = {};
-      data.conversation.members.forEach((m: any) => memberMap[m.user_id] = m);
-      setMembers(memberMap);
-
-      const peerId = activeConversation.type === 'dm'
-        ? data.conversation.members.find((m: any) => m.user_id !== user.id)?.user_id
-        : undefined;
-
-      const { key, version } = await getEncryptionKey(user.id, activeConversation, peerId);
-      setEncryptionKey(key);
-      setKeyVersion(version);
-    } catch (err: any) {
-      console.error('Handshake Error:', err);
-      setEncryptionKey(null);
-
-      const msg = err.message || '';
-      if (msg.includes('another device') || msg.includes('keys missing') || msg.includes('Identity keys')) {
-        setEncryptionError('Your encryption keys are not available on this device. Log in from your primary browser to access encrypted messages.');
-      } else if (msg.includes('No public key')) {
-        setEncryptionError('The other user needs to log in to initialize their encryption keys.');
-      } else {
-        setEncryptionError(msg || 'Key exchange failed');
-      }
-    }
-  }, [activeConversation, user?.id]);
-
-  useEffect(() => { setupConversation(); }, [setupConversation]);
-
-  // Real-time: New Messages
+  // Conversation Handshake with Race-Condition Protection
   useEffect(() => {
-    if (!user?.id) return;
-    const handleMessage = async (data: any) => {
-      if (data.conversation_id === activeConversation?.id && encryptionKey) {
+    let ignore = false; // <-- The Magic Flag
+
+    const setupConversation = async () => {
+      if (!activeConversation || !user?.id) return;
+      setEncryptionError(null);
+
+      try {
+        const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
+        const data = await res.json();
+
+        if (ignore) return; // Prevent state updates if user clicked another chat!
+
+        if (!data.success) throw new Error('Could not load members');
+
+        const memberMap: Record<string, any> = {};
+        data.conversation.members.forEach((m: any) => memberMap[m.user_id] = m);
+        setMembers(memberMap);
+
+        const peerId = activeConversation.type === 'dm'
+          ? data.conversation.members.find((m: any) => m.user_id !== user.id)?.user_id
+          : undefined;
+
+        const { key, version } = await getEncryptionKey(user.id, activeConversation, peerId);
+
+        if (ignore) return; // Final check before setting keys
+
+        setEncryptionKey(key);
+        setKeyVersion(version);
+      } catch (err: any) {
+        if (ignore) return;
+
+        console.error('Handshake Error:', err);
+        setEncryptionKey(null);
+
+        const msg = err.message || '';
+        if (msg.includes('another device') || msg.includes('keys missing') || msg.includes('Identity keys')) {
+          setEncryptionError('Your encryption keys are not available on this device. Log in from your primary browser to access encrypted messages.');
+        } else if (msg.includes('No public key')) {
+          setEncryptionError('The other user needs to log in to initialize their encryption keys.');
+        } else {
+          setEncryptionError(msg || 'Key exchange failed');
+        }
+      }
+    };
+
+    setupConversation();
+
+    return () => {
+      ignore = true; // Cleanup: tells running promises to abort state updates!
+    };
+  }, [activeConversation?.id, user?.id]);
+
+  // Buffer for messages that arrive before encryption key is ready
+  const pendingMessages = useRef<any[]>([]);
+
+  // Flush buffered messages once encryption key is available
+  useEffect(() => {
+    if (!encryptionKey || !activeConversation?.id || pendingMessages.current.length === 0) return;
+
+    const flush = async () => {
+      const toProcess = [...pendingMessages.current];
+      pendingMessages.current = [];
+
+      for (const data of toProcess) {
+        if (data.conversation_id !== activeConversation.id) continue;
         try {
           const content = data.encrypted_content
             ? await decryptMessage(data.encrypted_content, data.iv, encryptionKey)
@@ -82,11 +104,34 @@ export const useChatManager = (user: any) => {
         }
       }
     };
+
+    flush();
+  }, [encryptionKey, activeConversation?.id]);
+
+  // Real-time: New Messages
+  useEffect(() => {
+    if (!user?.id) return;
+    const handleMessage = async (data: any) => {
+      if (data.conversation_id === activeConversation?.id) {
+        if (encryptionKey) {
+          try {
+            const content = data.encrypted_content
+              ? await decryptMessage(data.encrypted_content, data.iv, encryptionKey)
+              : data.content;
+            setNewMessage({ ...data, content });
+          } catch {
+            setNewMessage({ ...data, content: '[Decryption Failed]' });
+          }
+        } else {
+          pendingMessages.current.push(data);
+        }
+      }
+    };
     gateway.on('MESSAGE_CREATE', handleMessage);
     return () => gateway.off('MESSAGE_CREATE', handleMessage);
   }, [activeConversation?.id, encryptionKey, user?.id]);
 
-  // Real-time: Message Edits (from other users)
+  // Real-time: Message Edits
   useEffect(() => {
     if (!user?.id) return;
     const handleUpdate = async (data: any) => {
@@ -115,7 +160,7 @@ export const useChatManager = (user: any) => {
     return () => gateway.off('MESSAGE_UPDATE', handleUpdate);
   }, [activeConversation?.id, encryptionKey, user?.id]);
 
-  // Real-time: Message Deletions (from other users)
+  // Real-time: Message Deletions
   useEffect(() => {
     if (!user?.id) return;
     const handleDeleteEvent = (data: any) => {
@@ -129,6 +174,9 @@ export const useChatManager = (user: any) => {
 
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {
+    if (activeConversation?.id === conv.id) return;
+
+    setEncryptionKey(null);
     setEncryptionError(null);
     setActiveConversation(conv);
     setEditingMessage(null);
@@ -136,6 +184,7 @@ export const useChatManager = (user: any) => {
     setNewMessage(null);
     setMessageUpdate(null);
     setMessageDelete(null);
+    pendingMessages.current = [];
   };
 
   const handleBackToMe = () => {

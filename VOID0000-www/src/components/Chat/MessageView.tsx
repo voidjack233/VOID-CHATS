@@ -1,5 +1,5 @@
 // src/components/Chat/MessageView.tsx
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
@@ -12,8 +12,9 @@ import ReactionBar from './ReactionBar';
 interface MessageViewProps {
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
+  encryptionError?: string | null; // <-- Added to catch the error state
   members: Record<string, ConversationMember>;
-  onReply?: (messageId: string) => void;
+  onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   newMessage?: Message | null;
   userAvatar?: string;
@@ -25,6 +26,7 @@ interface MessageViewProps {
 const MessageView = ({
   conversation,
   encryptionKey,
+  encryptionError, // <-- Destructured here
   members,
   onReply,
   onEdit,
@@ -41,6 +43,14 @@ const MessageView = ({
     position: { x: number; y: number };
   } | null>(null);
 
+  // Reactions hook — no separate API call, reads from message data
+  const {
+    getMessageReactions,
+    handleToggleReaction,
+    initReactionsFromMessages,
+  } = useReactions(conversation.id, gateway);
+
+  // Messages hook — passes initReactionsFromMessages as callback
   const {
     messages,
     loading,
@@ -51,22 +61,16 @@ const MessageView = ({
     handleScroll,
     handleDelete,
     getReplyParent,
-  } = useMessageList(conversation.id, encryptionKey, newMessage, messageUpdate, messageDelete);
+  } = useMessageList(
+    conversation.id,
+    encryptionKey,
+    newMessage,
+    messageUpdate,
+    messageDelete,
+    initReactionsFromMessages
+  );
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
-
-  const {
-    getMessageReactions,
-    handleToggleReaction,
-    loadReactionsForMessages,
-  } = useReactions(conversation.id, gateway);
-
-  useEffect(() => {
-    if (messages.length > 0) {
-      const ids = messages.map((m) => m.message_id);
-      loadReactionsForMessages(ids);
-    }
-  }, [messages, loadReactionsForMessages]);
 
   const openEmojiPicker = useCallback((messageId: string, event: React.MouseEvent) => {
     const rect = (event.target as HTMLElement).getBoundingClientRect();
@@ -98,6 +102,15 @@ const MessageView = ({
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // <-- Added Error Catch Block
+  if (encryptionError) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
+        <p>Encryption Error: {encryptionError}</p>
       </div>
     );
   }
@@ -229,7 +242,7 @@ const MessageView = ({
                   <Smile className="w-3.5 h-3.5" />
                 </button>
                 {onReply && (
-                  <button onClick={() => onReply(msg.message_id)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
+                  <button onClick={() => onReply(msg)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
                     <Reply className="w-3.5 h-3.5" />
                   </button>
                 )}

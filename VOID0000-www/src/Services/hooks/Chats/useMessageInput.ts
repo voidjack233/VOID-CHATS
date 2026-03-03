@@ -9,7 +9,7 @@ interface UseMessageInputProps {
   onMessageSent: (message: Message) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
-  replyTo?: string | null;
+  replyTo?: Message | null;
   onCancelReply?: () => void;
   onEditComplete?: (messageId: string, newContent: string) => void;
 }
@@ -40,6 +40,10 @@ export const useMessageInput = ({
     inputRef.current?.focus();
   }, [conversation.id]);
 
+  useEffect(() => {
+    if (replyTo) inputRef.current?.focus();
+  }, [replyTo]);
+
   const getPlaceholder = () => {
     if (!encryptionKey) return 'Setting up encryption...';
     if (conversation.type === 'dm') {
@@ -67,7 +71,7 @@ export const useMessageInput = ({
       } else {
         const msg = await sendMessage(conversation.id, trimmed, encryptionKey, {
           key_version: keyVersion,
-          reply_to: replyTo || undefined,
+          reply_to: replyTo?.message_id || undefined,
         });
         onMessageSent(msg);
         onCancelReply?.();
@@ -93,9 +97,11 @@ export const useMessageInput = ({
   };
 
   const handleCancelAction = () => {
-    if (editingMessage) onCancelEdit?.();
+    if (editingMessage) {
+      onCancelEdit?.();
+      setText('');
+    }
     if (replyTo) onCancelReply?.();
-    setText('');
   };
 
   return {

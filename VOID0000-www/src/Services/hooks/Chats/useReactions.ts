@@ -1,6 +1,6 @@
 // src/Services/hooks/Chats/useReactions.ts
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { toggleReaction, getBatchReactions, ReactionMap } from '../../Chat/chatService';
+import { toggleReaction, ReactionMap } from '../../Chat/chatService';
 
 interface ReactionEvent {
   conversation_id: string;
@@ -15,14 +15,12 @@ export const useReactions = (
   gateway: any
 ) => {
   const [reactions, setReactions] = useState<Record<string, ReactionMap>>({});
-  const loadedRef = useRef(false);
   const lastConvRef = useRef<string>('');
 
   // Reset on conversation change
   useEffect(() => {
     if (lastConvRef.current !== conversationId) {
       setReactions({});
-      loadedRef.current = false;
       lastConvRef.current = conversationId;
     }
   }, [conversationId]);
@@ -69,32 +67,27 @@ export const useReactions = (
     };
   }, [gateway, conversationId]);
 
-  // Batch load — ONE call for all visible messages
-  const loadReactionsForMessages = useCallback(
-    async (messageIds: string[]) => {
-      if (messageIds.length === 0 || loadedRef.current) return;
-      loadedRef.current = true;
-
-      try {
-        const batchResult = await getBatchReactions(conversationId, messageIds);
-        setReactions((prev) => {
-          const next: Record<string, ReactionMap> = { ...prev };
-          for (const [msgId, reactionMap] of Object.entries(batchResult)) {
-            next[msgId] = reactionMap as ReactionMap;
-          }
-          return next;
-        });
-      } catch (err) {
-        console.error('Failed to batch load reactions:', err);
-        loadedRef.current = false;
+  /**
+   * Initialize reactions from message data — called by useMessageList
+   * after messages are fetched. No separate API call needed.
+   */
+  const initReactionsFromMessages = useCallback(
+    (messages: Array<{ message_id: string; reactions?: ReactionMap }>) => {
+      const reactionsMap: Record<string, ReactionMap> = {};
+      for (const msg of messages) {
+        if (msg.reactions && Object.keys(msg.reactions).length > 0) {
+          reactionsMap[msg.message_id] = msg.reactions;
+        }
       }
+      setReactions((prev) => ({ ...prev, ...reactionsMap }));
     },
-    [conversationId]
+    []
   );
 
   // Toggle reaction (optimistic update)
   const handleToggleReaction = useCallback(
     async (messageId: string, emoji: string, userId: string) => {
+      // Optimistic update
       setReactions((prev) => {
         const msgReactions = { ...(prev[messageId] || {}) };
         const users = [...(msgReactions[emoji] || [])];
@@ -119,18 +112,6 @@ export const useReactions = (
         await toggleReaction(conversationId, messageId, emoji);
       } catch (err) {
         console.error('Failed to toggle reaction:', err);
-        try {
-          const batchResult = await getBatchReactions(conversationId, [messageId]);
-          setReactions((prev) => {
-            const next: Record<string, ReactionMap> = { ...prev };
-            for (const [msgId, reactionMap] of Object.entries(batchResult)) {
-              next[msgId] = reactionMap as ReactionMap;
-            }
-            return next;
-          });
-        } catch {
-          // Give up on revert
-        }
       }
     },
     [conversationId]
@@ -147,6 +128,6 @@ export const useReactions = (
     reactions,
     getMessageReactions,
     handleToggleReaction,
-    loadReactionsForMessages,
+    initReactionsFromMessages,
   };
 };

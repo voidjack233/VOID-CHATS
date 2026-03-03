@@ -1,5 +1,5 @@
 // src/components/Chat/MessageInput.tsx
-import { Send, Plus, X, Pencil } from 'lucide-react';
+import { Send, Plus, X, Pencil, CornerUpRight } from 'lucide-react';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 
@@ -10,7 +10,7 @@ interface MessageInputProps {
   onMessageSent: (message: Message) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
-  replyTo?: string | null;
+  replyTo?: Message | null;
   onCancelReply?: () => void;
   onEditComplete?: (messageId: string, newContent: string) => void;
 }
@@ -42,7 +42,15 @@ const MessageInput = (props: MessageInputProps) => {
               </span>
             </>
           ) : (
-            <span className="text-blue-400">Replying to message</span>
+            <>
+              <CornerUpRight className="w-3.5 h-3.5 text-blue-400" />
+              <span className="text-blue-400 font-medium shrink-0">Replying</span>
+              <span className="flex-1 truncate text-gray-400">
+                {replyTo?.is_deleted
+                  ? '[deleted]'
+                  : replyTo?.content?.substring(0, 60) || '[encrypted]'}
+              </span>
+            </>
           )}
           <button onClick={handleCancelAction} className="text-gray-500 hover:text-gray-300">
             <X className="w-4 h-4" />

@@ -38,6 +38,7 @@ export interface Message {
   is_deleted: boolean;
   created_at: string;
   content?: string;
+  reactions?: ReactionMap;
 }
 
 export interface ConversationMember {
@@ -202,7 +203,13 @@ export async function getMessages(
 
   const decrypted = await decryptMessages(data.messages, encryptionKey);
 
-  return { messages: decrypted as Message[], has_more: data.has_more };
+  // Preserve reactions from server response onto decrypted messages
+  const messagesWithReactions = decrypted.map((msg: any, i: number) => ({
+    ...msg,
+    reactions: data.messages[i]?.reactions || {},
+  }));
+
+  return { messages: messagesWithReactions as Message[], has_more: data.has_more };
 }
 
 export async function editMessage(
@@ -275,26 +282,6 @@ export async function toggleReaction(
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
   return data;
-}
-
-/**
- * Batch fetch reactions for multiple messages in one API call
- */
-export async function getBatchReactions(
-  conversationId: string,
-  messageIds: string[]
-): Promise<Record<string, ReactionMap>> {
-  if (messageIds.length === 0) return {};
-
-  const params = new URLSearchParams();
-  params.set('message_ids', messageIds.join(','));
-
-  const res = await fetchWithAuth(
-    `${API_PREFIX}/${conversationId}/reactions?${params.toString()}`
-  );
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error);
-  return data.reactions;
 }
 
 // ============== Keys ==============
