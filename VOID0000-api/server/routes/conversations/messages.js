@@ -1,3 +1,4 @@
+// server/routes/conversations/messages.js
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { generateTimeUUID, cassandra } from '../../scylla.js';
@@ -5,7 +6,6 @@ import { sendToUser, EVENTS } from '../../gateway/index.js';
 
 const router = Router({ mergeParams: true });
 
-// Verify user is a member of the conversation
 async function verifyMembership(conversationId, userId) {
   const result = await pool.query(
     `SELECT role FROM conversation_members
@@ -15,7 +15,6 @@ async function verifyMembership(conversationId, userId) {
   return result.rows[0] || null;
 }
 
-// Get all member user_ids for a conversation
 async function getConversationMembers(conversationId) {
   const result = await pool.query(
     `SELECT user_id FROM conversation_members WHERE conversation_id = $1`,
@@ -24,7 +23,41 @@ async function getConversationMembers(conversationId) {
   return result.rows.map((r) => r.user_id);
 }
 
-// POST /api/conversations/:conversationId/messages — send message
+/**
+ * Batch fetch reactions for multiple messages in one go.
+ * Returns: { messageId: { emoji: [userId, ...] } }
+ */
+async function batchFetchReactions(conversationId, messageIds) {
+  if (messageIds.length === 0) return {};
+
+  const convUuid = cassandra.types.Uuid.fromString(conversationId);
+
+  const results = await Promise.all(
+    messageIds.map((id) =>
+      scylla.execute(
+        `SELECT message_id, emoji, user_id FROM message_reactions
+         WHERE conversation_id = ? AND message_id = ?`,
+        [convUuid, cassandra.types.TimeUuid.fromString(id)],
+        { prepare: true }
+      ).catch(() => ({ rows: [] }))
+    )
+  );
+
+  const reactions = {};
+  for (const result of results) {
+    for (const row of result.rows) {
+      const msgId = row.message_id.toString();
+      const emoji = row.emoji;
+      const uid = row.user_id.toString();
+      if (!reactions[msgId]) reactions[msgId] = {};
+      if (!reactions[msgId][emoji]) reactions[msgId][emoji] = [];
+      reactions[msgId][emoji].push(uid);
+    }
+  }
+  return reactions;
+}
+
+// POST — send message
 router.post('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
@@ -36,13 +69,8 @@ router.post('/', async (req, res) => {
 
   try {
     const member = await verifyMembership(conversationId, userId);
-    if (!member) {
-      return res.status(403).json({ error: 'Not a member of this conversation' });
-    }
-
-    if (member.role === 'viewer') {
-      return res.status(403).json({ error: 'Viewers cannot send messages' });
-    }
+    if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
+    if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send messages' });
 
     const messageId = generateTimeUUID();
     const now = new Date();
@@ -56,40 +84,30 @@ router.post('/', async (req, res) => {
         cassandra.types.Uuid.fromString(conversationId),
         messageId,
         cassandra.types.Uuid.fromString(userId),
-        encrypted_content,
-        iv,
-        key_version || 1,
-        message_type || 'text',
+        encrypted_content, iv, key_version || 1, message_type || 'text',
         reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null,
         now,
       ],
       { prepare: true }
     );
 
-    await pool.query(
-      'UPDATE conversations SET updated_at = NOW() WHERE id = $1',
-      [conversationId]
-    );
+    await pool.query('UPDATE conversations SET updated_at = NOW() WHERE id = $1', [conversationId]);
 
     const message = {
       conversation_id: conversationId,
       message_id: messageId.toString(),
       sender_id: userId,
-      encrypted_content,
-      iv,
+      encrypted_content, iv,
       key_version: key_version || 1,
       message_type: message_type || 'text',
       reply_to: reply_to || null,
-      is_edited: false,
-      is_deleted: false,
+      is_edited: false, is_deleted: false,
       created_at: now.toISOString(),
     };
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) {
-        sendToUser(memberId, 'MESSAGE_CREATE', message);
-      }
+      if (memberId !== userId) sendToUser(memberId, 'MESSAGE_CREATE', message);
     });
 
     res.status(201).json({ success: true, message });
@@ -99,42 +117,25 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/conversations/:conversationId/messages — get message history
+// GET — message history WITH reactions bundled
 router.get('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
   const { before, limit } = req.query;
-
   const pageSize = Math.min(parseInt(limit) || 50, 100);
 
   try {
     const member = await verifyMembership(conversationId, userId);
-    if (!member) {
-      return res.status(403).json({ error: 'Not a member of this conversation' });
-    }
+    if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
 
-    let query;
-    let params;
+    let query, params;
 
     if (before) {
-      query = `SELECT * FROM messages
-               WHERE conversation_id = ? AND message_id < ?
-               ORDER BY message_id DESC
-               LIMIT ?`;
-      params = [
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(before),
-        pageSize,
-      ];
+      query = `SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?`;
+      params = [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(before), pageSize];
     } else {
-      query = `SELECT * FROM messages
-               WHERE conversation_id = ?
-               ORDER BY message_id DESC
-               LIMIT ?`;
-      params = [
-        cassandra.types.Uuid.fromString(conversationId),
-        pageSize,
-      ];
+      query = `SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_id DESC LIMIT ?`;
+      params = [cassandra.types.Uuid.fromString(conversationId), pageSize];
     }
 
     const result = await scylla.execute(query, params, { prepare: true });
@@ -154,9 +155,18 @@ router.get('/', async (req, res) => {
       created_at: row.created_at?.toISOString(),
     }));
 
+    // Batch fetch reactions for ALL messages in one go
+    const messageIds = messages.map((m) => m.message_id);
+    const reactions = await batchFetchReactions(conversationId, messageIds);
+
+    const messagesWithReactions = messages.map((m) => ({
+      ...m,
+      reactions: reactions[m.message_id] || {},
+    }));
+
     res.json({
       success: true,
-      messages,
+      messages: messagesWithReactions,
       has_more: messages.length === pageSize,
     });
   } catch (err) {
@@ -165,29 +175,22 @@ router.get('/', async (req, res) => {
   }
 });
 
-// === NEW FIX: GET single message by ID ===
+// GET single message by ID
 router.get('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId, messageId } = req.params;
 
   try {
     const member = await verifyMembership(conversationId, userId);
-    if (!member) {
-      return res.status(403).json({ error: 'Not a member of this conversation' });
-    }
+    if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
 
     const result = await scylla.execute(
       `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
-      [
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-      ],
+      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Message not found' });
-    }
+    if (result.rows.length === 0) return res.status(404).json({ success: false, error: 'Message not found' });
 
     const row = result.rows[0];
     const message = {
@@ -212,94 +215,58 @@ router.get('/:messageId', async (req, res) => {
   }
 });
 
-// PUT /api/conversations/:conversationId/messages/:messageId — edit message
+// PUT — edit message
 router.put('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId, messageId } = req.params;
   const { encrypted_content, iv, key_version } = req.body;
 
-  if (!encrypted_content || !iv) {
-    return res.status(400).json({ error: 'encrypted_content and iv are required' });
-  }
+  if (!encrypted_content || !iv) return res.status(400).json({ error: 'encrypted_content and iv are required' });
 
   try {
     const member = await verifyMembership(conversationId, userId);
-    if (!member) {
-      return res.status(403).json({ error: 'Not a member' });
-    }
+    if (!member) return res.status(403).json({ error: 'Not a member' });
 
     const msgResult = await scylla.execute(
-      `SELECT sender_id, is_deleted FROM messages
-       WHERE conversation_id = ? AND message_id = ?`,
-      [
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-      ],
+      `SELECT sender_id, is_deleted FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
-    if (msgResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
+    if (msgResult.rows.length === 0) return res.status(404).json({ error: 'Message not found' });
 
     const msg = msgResult.rows[0];
-
-    if (msg.sender_id.toString() !== userId) {
-      return res.status(403).json({ error: 'Can only edit your own messages' });
-    }
-
-    if (msg.is_deleted) {
-      return res.status(400).json({ error: 'Cannot edit a deleted message' });
-    }
+    if (msg.sender_id.toString() !== userId) return res.status(403).json({ error: 'Can only edit your own messages' });
+    if (msg.is_deleted) return res.status(400).json({ error: 'Cannot edit a deleted message' });
 
     const now = new Date();
     const editId = generateTimeUUID();
 
     await scylla.execute(
-      `INSERT INTO message_edits (
-        conversation_id, message_id, edit_id, encrypted_content, iv, key_version, edited_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-        editId,
-        encrypted_content,
-        iv,
-        key_version || 1,
-        now,
-      ],
+      `INSERT INTO message_edits (conversation_id, message_id, edit_id, encrypted_content, iv, key_version, edited_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId),
+       editId, encrypted_content, iv, key_version || 1, now],
       { prepare: true }
     );
 
     await scylla.execute(
       `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
-      [
-        encrypted_content,
-        iv,
-        key_version || 1,
-        now,
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-      ],
+      [encrypted_content, iv, key_version || 1, now,
+       cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
     const update = {
-      conversation_id: conversationId,
-      message_id: messageId,
-      encrypted_content,
-      iv,
-      key_version: key_version || 1,
-      is_edited: true,
-      edited_at: now.toISOString(),
+      conversation_id: conversationId, message_id: messageId,
+      encrypted_content, iv, key_version: key_version || 1,
+      is_edited: true, edited_at: now.toISOString(),
     };
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) {
-        sendToUser(memberId, 'MESSAGE_UPDATE', update);
-      }
+      if (memberId !== userId) sendToUser(memberId, 'MESSAGE_UPDATE', update);
     });
 
     res.json({ success: true, ...update });
@@ -309,59 +276,39 @@ router.put('/:messageId', async (req, res) => {
   }
 });
 
-// DELETE /api/conversations/:conversationId/messages/:messageId — delete message
+// DELETE — delete message
 router.delete('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId, messageId } = req.params;
 
   try {
     const member = await verifyMembership(conversationId, userId);
-    if (!member) {
-      return res.status(403).json({ error: 'Not a member' });
-    }
+    if (!member) return res.status(403).json({ error: 'Not a member' });
 
     const msgResult = await scylla.execute(
-      `SELECT sender_id FROM messages
-       WHERE conversation_id = ? AND message_id = ?`,
-      [
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-      ],
+      `SELECT sender_id FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
-    if (msgResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
+    if (msgResult.rows.length === 0) return res.status(404).json({ error: 'Message not found' });
 
     const isSender = msgResult.rows[0].sender_id.toString() === userId;
     const canDelete = isSender || ['owner', 'admin'].includes(member.role);
-
-    if (!canDelete) {
-      return res.status(403).json({ error: 'Cannot delete this message' });
-    }
+    if (!canDelete) return res.status(403).json({ error: 'Cannot delete this message' });
 
     await scylla.execute(
       `UPDATE messages SET is_deleted = true, encrypted_content = null, iv = null
        WHERE conversation_id = ? AND message_id = ?`,
-      [
-        cassandra.types.Uuid.fromString(conversationId),
-        cassandra.types.TimeUuid.fromString(messageId),
-      ],
+      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
-    const deletion = {
-      conversation_id: conversationId,
-      message_id: messageId,
-      deleted_by: userId,
-    };
+    const deletion = { conversation_id: conversationId, message_id: messageId, deleted_by: userId };
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) {
-        sendToUser(memberId, 'MESSAGE_DELETE', deletion);
-      }
+      if (memberId !== userId) sendToUser(memberId, 'MESSAGE_DELETE', deletion);
     });
 
     res.json({ success: true, message: 'Message deleted' });
@@ -371,7 +318,7 @@ router.delete('/:messageId', async (req, res) => {
   }
 });
 
-// Mark as read remains at the bottom
+// Mark as read
 router.put('/read', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
@@ -383,7 +330,6 @@ router.put('/read', async (req, res) => {
        WHERE conversation_id = $2 AND user_id = $3`,
       [message_id, conversationId, userId]
     );
-
     res.json({ success: true });
   } catch (err) {
     console.error('Read receipt error:', err);
