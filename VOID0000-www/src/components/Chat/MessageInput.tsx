@@ -69,7 +69,8 @@ const MessageInput = (props: MessageInputProps) => {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={getPlaceholder()}
-          disabled={!encryptionKey || sending}
+          // FIX: Only disable if there is no encryption key!
+          disabled={!encryptionKey}
           className="flex-1 bg-transparent border-none focus:outline-none text-gray-100 placeholder-gray-400 disabled:opacity-50"
         />
         <button

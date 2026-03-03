@@ -56,7 +56,10 @@ export const useMessageInput = ({
     const trimmed = text.trim();
     if (!trimmed || !encryptionKey || sending) return;
 
+    // FIX: Optimistic UI. Clear the box instantly so the user can keep typing!
+    setText('');
     setSending(true);
+
     try {
       if (editingMessage) {
         await editMessage(
@@ -76,12 +79,13 @@ export const useMessageInput = ({
         onMessageSent(msg);
         onCancelReply?.();
       }
-      setText('');
     } catch (err) {
       console.error('Send failed:', err);
+      // Optional safety net: If it fails, put their text back so they don't lose it
+      setText((prev) => prev ? prev : trimmed);
     } finally {
       setSending(false);
-      setTimeout(() => inputRef.current?.focus(), 0);
+      // No more setTimeout focus hacks needed!
     }
   };
 

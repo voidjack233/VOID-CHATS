@@ -12,7 +12,7 @@ import ReactionBar from './ReactionBar';
 interface MessageViewProps {
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
-  encryptionError?: string | null; // <-- Added to catch the error state
+  encryptionError?: string | null;
   members: Record<string, ConversationMember>;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
@@ -26,7 +26,7 @@ interface MessageViewProps {
 const MessageView = ({
   conversation,
   encryptionKey,
-  encryptionError, // <-- Destructured here
+  encryptionError,
   members,
   onReply,
   onEdit,
@@ -43,14 +43,12 @@ const MessageView = ({
     position: { x: number; y: number };
   } | null>(null);
 
-  // Reactions hook — no separate API call, reads from message data
   const {
     getMessageReactions,
     handleToggleReaction,
     initReactionsFromMessages,
   } = useReactions(conversation.id, gateway);
 
-  // Messages hook — passes initReactionsFromMessages as callback
   const {
     messages,
     loading,
@@ -106,7 +104,6 @@ const MessageView = ({
     );
   }
 
-  // <-- Added Error Catch Block
   if (encryptionError) {
     return (
       <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
@@ -126,7 +123,8 @@ const MessageView = ({
   const rendered = [...messages].reverse();
 
   return (
-    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 space-y-1">
+    // FIX 1: Removed `space-y-1` so the container stops forcing gaps between elements
+    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4">
       {loadingMore && (
         <div className="flex justify-center py-2">
           <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
@@ -159,7 +157,8 @@ const MessageView = ({
             key={msg.message_id}
             onMouseEnter={() => setHoveredId(msg.message_id)}
             onMouseLeave={() => setHoveredId(null)}
-            className={`flex hover:bg-gray-700/30 p-2 -mx-2 rounded-md transition-colors relative group ${isConsecutive ? 'mt-0' : 'mt-4'}`}
+            // FIX 2: Changed `p-2` to `py-0.5 px-2` to drastically tighten vertical spacing
+            className={`flex hover:bg-gray-700/30 py-0.5 px-2 -mx-2 rounded transition-colors relative group ${isConsecutive ? 'mt-0' : 'mt-4'}`}
           >
             {isConsecutive ? (
               <div className="w-10 mr-3 flex-shrink-0 flex items-center justify-center opacity-0 group-hover:opacity-100">
@@ -207,32 +206,34 @@ const MessageView = ({
                 <p className={`text-sm ${msg.is_deleted ? 'text-gray-600 italic' : 'text-gray-300'}`}>
                   {msg.content || '[encrypted]'}
                 </p>
-                {msg.is_edited && !msg.is_deleted && <span className="text-[10px] text-gray-500">(edited)</span>}
+                {msg.is_edited && !msg.is_deleted && <span className="text-[10px] text-gray-500 ml-1">(edited)</span>}
               </div>
 
-              {!msg.is_deleted && (
-                <ReactionBar
-                  reactions={msgReactions}
-                  currentUserId={user?.id || ''}
-                  onToggle={(emoji) => user?.id && handleToggleReaction(msg.message_id, emoji, user.id)}
-                  onAddReaction={() => {
-                    const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
-                    if (el) {
-                      const rect = el.getBoundingClientRect();
-                      setEmojiPickerTarget({
-                        messageId: msg.message_id,
-                        position: { x: rect.left, y: rect.bottom + 8 },
-                      });
-                    }
-                  }}
-                />
+              {!msg.is_deleted && Object.keys(msgReactions).length > 0 && (
+                <div className="mt-1">
+                  <ReactionBar
+                    reactions={msgReactions}
+                    currentUserId={user?.id || ''}
+                    onToggle={(emoji) => user?.id && handleToggleReaction(msg.message_id, emoji, user.id)}
+                    onAddReaction={() => {
+                      const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                      if (el) {
+                        const rect = el.getBoundingClientRect();
+                        setEmojiPickerTarget({
+                          messageId: msg.message_id,
+                          position: { x: rect.left, y: rect.bottom + 8 },
+                        });
+                      }
+                    }}
+                  />
+                </div>
               )}
             </div>
 
             {hoveredId === msg.message_id && !msg.is_deleted && (
               <div
                 data-msg-id={msg.message_id}
-                className="absolute right-2 top-1 flex items-center gap-0.5 bg-gray-800 border border-gray-700 rounded-md p-0.5 shadow-lg z-10"
+                className="absolute right-2 -top-3 flex items-center gap-0.5 bg-gray-800 border border-gray-700 rounded-md p-0.5 shadow-lg z-10"
               >
                 <button
                   onClick={(e) => openEmojiPicker(msg.message_id, e)}
