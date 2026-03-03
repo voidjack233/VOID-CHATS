@@ -27,19 +27,33 @@ export const useChatManager = (user: any) => {
     message_id: string;
   } | null>(null);
 
-  // Conversation Handshake with Race-Condition Protection
+  // FIX: The Handshake Cache! Stores members and keys in memory so we don't refetch them.
+  const handshakeCache = useRef<Record<string, { members: Record<string, any>; key: CryptoKey; version: number }>>({});
+
+  // Conversation Handshake with Cache & Race-Condition Protection
   useEffect(() => {
-    let ignore = false; // <-- The Magic Flag
+    let ignore = false;
 
     const setupConversation = async () => {
       if (!activeConversation || !user?.id) return;
       setEncryptionError(null);
 
+      // 1. Check if we already did the handshake for this chat in this session
+      // 1. Check if we already did the handshake for this chat in this session
+      const cached = handshakeCache.current[activeConversation.id];
+      if (cached) {
+        setMembers(cached.members);
+        setEncryptionKey(cached.key);
+        setKeyVersion(cached.version);
+        return; // Boom! Zero network requests.
+      }
+
+      // 2. If not cached, fetch from Express
       try {
         const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
         const data = await res.json();
 
-        if (ignore) return; // Prevent state updates if user clicked another chat!
+        if (ignore) return; 
 
         if (!data.success) throw new Error('Could not load members');
 
@@ -53,7 +67,16 @@ export const useChatManager = (user: any) => {
 
         const { key, version } = await getEncryptionKey(user.id, activeConversation, peerId);
 
-        if (ignore) return; // Final check before setting keys
+        if (ignore) return; 
+
+        // 3. Save to cache for the next time they click this chat!
+        if (key) {
+          handshakeCache.current[activeConversation.id] = {
+            members: memberMap,
+            key,
+            version
+          };
+        }
 
         setEncryptionKey(key);
         setKeyVersion(version);
@@ -77,7 +100,7 @@ export const useChatManager = (user: any) => {
     setupConversation();
 
     return () => {
-      ignore = true; // Cleanup: tells running promises to abort state updates!
+      ignore = true; 
     };
   }, [activeConversation?.id, user?.id]);
 
