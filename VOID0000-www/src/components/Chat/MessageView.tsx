@@ -1,11 +1,15 @@
 // src/components/Chat/MessageView.tsx
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
 import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
 import { useUser } from '../../Services/Auth/UserContext';
+import { useFriends, Friend } from '../../Services/hooks/Friends/useFriends';
+import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
+import FriendProfile from '../common/Friends/FriendProfile';
+import UserProfile from '../common/Profile/userProfile';
 import EmojiPicker from './EmojiPicker';
 import ReactionBar from './ReactionBar';
 
@@ -38,17 +42,17 @@ const MessageView = ({
 }: MessageViewProps) => {
   const { user } = useUser();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [emojiPickerTarget, setEmojiPickerTarget] = useState<{
-    messageId: string;
-    position: { x: number; y: number };
-  } | null>(null);
-
-  const {
-    getMessageReactions,
-    handleToggleReaction,
-    initReactionsFromMessages,
-  } = useReactions(conversation.id, gateway);
-
+  
+  // --- NEW CONTEXT MENU STATE ---
+  const [contextMenu, setContextMenu] = useState<{ msg: Message; x: number; y: number; } | null>(null);
+  
+  const [emojiPickerTarget, setEmojiPickerTarget] = useState<{ messageId: string; position: { x: number; y: number }; } | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
+  
+  const { friends } = useFriends();
+  const { profile: myProfile } = useUserProfile(user?.profile_id || '');
+  const { getMessageReactions, handleToggleReaction, initReactionsFromMessages } = useReactions(conversation.id, gateway);
   const {
     messages,
     loading,
@@ -70,6 +74,70 @@ const MessageView = ({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
 
+  // Close the menu if you click away or scroll
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    document.addEventListener('click', closeMenu);
+    document.addEventListener('scroll', closeMenu, true);
+    return () => {
+      document.removeEventListener('click', closeMenu);
+      document.removeEventListener('scroll', closeMenu, true);
+    };
+  }, []);
+
+  const handleContextMenu = (e: React.MouseEvent, msg: Message) => {
+    e.preventDefault(); // Prevents the browser's default context menu
+    
+    // Adjust slightly so the cursor doesn't instantly click the first item
+    let x = e.clientX;
+    let y = e.clientY;
+    
+    // Prevent menu from clipping off the right or bottom of the screen
+    if (window.innerWidth - x < 200) x -= 180;
+    if (window.innerHeight - y < 200) y -= 150;
+    
+    setContextMenu({ msg, x, y });
+  };
+
+  // --- SMART DISPLAY NAME ROUTER ---
+  const getSmartDisplayName = useCallback((senderId: string) => {
+    // 1. Is it me?
+    if (senderId === user?.id) {
+      return myProfile?.display_name || user?.username || 'You';
+    }
+    // 2. Is it a friend?
+    const friend = friends.find(f => f.id === senderId);
+    if (friend && friend.display_name) {
+      return friend.display_name;
+    }
+    // 3. Fallback to default
+    return getSenderName(senderId);
+  }, [user, myProfile, friends, getSenderName]);
+
+  // --- SMART PROFILE ROUTER ---
+  const handleProfileClick = useCallback((senderId: string) => {
+    // 1. Is it me? Open UserProfile
+    if (senderId === user?.id && user?.profile_id) {
+      setSelectedProfileId(user.profile_id);
+      return;
+    }
+    // 2. Is it a friend? Open FriendProfile!
+    const friend = friends.find(f => f.id === senderId);
+    if (friend) {
+      setSelectedFriend(friend);
+      return;
+    }
+    // 3. Is it a stranger? Open UserProfile
+    const member = members[senderId];
+    if (member && (member as any).profile_id) {
+      setSelectedProfileId((member as any).profile_id);
+      return;
+    }
+    // Last resort fallback
+    setSelectedProfileId(senderId);
+  }, [user, friends, members]);
+
+  // ----------------------------
   const openEmojiPicker = useCallback((messageId: string, event: React.MouseEvent) => {
     const rect = (event.target as HTMLElement).getBoundingClientRect();
     setEmojiPickerTarget({
@@ -90,9 +158,12 @@ const MessageView = ({
 
   const getConversationIcon = () => {
     switch (conversation.type) {
-      case 'dm': return <MessageCircle className="w-10 h-10 text-white" />;
-      case 'group': return <Users className="w-10 h-10 text-white" />;
-      default: return <Hash className="w-10 h-10 text-white" />;
+      case 'dm':
+        return <MessageCircle className="w-10 h-10 text-white" />;
+      case 'group':
+        return <Users className="w-10 h-10 text-white" />;
+      default:
+        return <Hash className="w-10 h-10 text-white" />;
     }
   };
 
@@ -123,7 +194,6 @@ const MessageView = ({
   const rendered = [...messages].reverse();
 
   return (
-    // FIX 1: Removed `space-y-1` so the container stops forcing gaps between elements
     <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4">
       {loadingMore && (
         <div className="flex justify-center py-2">
@@ -148,7 +218,6 @@ const MessageView = ({
         const timeDiff = prevMsg ? new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime() : 0;
         const isReply = !!msg.reply_to;
         const isConsecutive = !isReply && prevMsg && prevMsg.sender_id === msg.sender_id && timeDiff < 5 * 60 * 1000;
-
         const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
         const msgReactions = getMessageReactions(msg.message_id);
 
@@ -157,8 +226,10 @@ const MessageView = ({
             key={msg.message_id}
             onMouseEnter={() => setHoveredId(msg.message_id)}
             onMouseLeave={() => setHoveredId(null)}
-            // FIX 2: Changed `p-2` to `py-0.5 px-2` to drastically tighten vertical spacing
-            className={`flex hover:bg-gray-700/30 py-0.5 px-2 -mx-2 rounded transition-colors relative group ${isConsecutive ? 'mt-0' : 'mt-4'}`}
+            onContextMenu={(e) => handleContextMenu(e, msg)}
+            className={`flex hover:bg-gray-700/30 py-0.5 px-2 -mx-2 rounded transition-colors relative group ${
+              isConsecutive ? 'mt-0' : 'mt-4'
+            }`}
           >
             {isConsecutive ? (
               <div className="w-10 mr-3 flex-shrink-0 flex items-center justify-center opacity-0 group-hover:opacity-100">
@@ -167,7 +238,10 @@ const MessageView = ({
                 </span>
               </div>
             ) : (
-              <div className="w-10 h-10 rounded-full overflow-hidden mr-3 flex-shrink-0 bg-gray-700 mt-0.5">
+              <div
+                className="w-10 h-10 rounded-full overflow-hidden mr-3 flex-shrink-0 bg-gray-700 mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+                onClick={() => handleProfileClick(msg.sender_id)}
+              >
                 <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
               </div>
             )}
@@ -183,10 +257,10 @@ const MessageView = ({
                         {replyParent.is_deleted
                           ? '[deleted]'
                           : replyParent.content
-                            ? replyParent.content.length > 80
-                              ? replyParent.content.substring(0, 80) + '...'
-                              : replyParent.content
-                            : '[encrypted]'}
+                          ? replyParent.content.length > 80
+                            ? replyParent.content.substring(0, 80) + '...'
+                            : replyParent.content
+                          : '[encrypted]'}
                       </span>
                     </>
                   ) : (
@@ -197,7 +271,12 @@ const MessageView = ({
 
               {!isConsecutive && (
                 <div className="flex items-baseline gap-2 mb-0.5">
-                  <span className="font-semibold text-sm text-indigo-400">{getSenderName(msg.sender_id)}</span>
+                  <span
+                    className="font-semibold text-sm text-indigo-400 cursor-pointer hover:underline"
+                    onClick={() => handleProfileClick(msg.sender_id)}
+                  >
+                    {getSmartDisplayName(msg.sender_id)}
+                  </span>
                   <span className="text-xs text-gray-500">{formatTime(msg.created_at)}</span>
                 </div>
               )}
@@ -253,7 +332,10 @@ const MessageView = ({
                   </button>
                 )}
                 {msg.sender_id === user?.id && (
-                  <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-red-400">
+                  <button
+                    onClick={() => handleDelete(msg.message_id)}
+                    className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-red-400"
+                  >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
@@ -275,6 +357,86 @@ const MessageView = ({
           onClose={() => setEmojiPickerTarget(null)}
           position={emojiPickerTarget.position}
         />
+      )}
+
+      {/* --- CUSTOM RIGHT-CLICK CONTEXT MENU --- */}
+      {contextMenu && !contextMenu.msg.is_deleted && (
+        <div
+          className="fixed z-[70] w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1.5 overflow-hidden flex flex-col"
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+        >
+          <button
+            onClick={() => {
+              const el = document.querySelector(`[data-msg-id="${contextMenu.msg.message_id}"]`);
+              if (el) {
+                const rect = el.getBoundingClientRect();
+                setEmojiPickerTarget({
+                  messageId: contextMenu.msg.message_id,
+                  position: { x: rect.left, y: rect.bottom + 8 },
+                });
+              }
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-indigo-600 hover:text-white flex items-center gap-2 transition-colors"
+          >
+            <Smile className="w-4 h-4" />
+            Add Reaction
+          </button>
+
+          {onReply && (
+            <button
+              onClick={() => {
+                onReply(contextMenu.msg);
+                setContextMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-indigo-600 hover:text-white flex items-center gap-2 transition-colors"
+            >
+              <Reply className="w-4 h-4" />
+              Reply
+            </button>
+          )}
+
+          {/* ONLY SHOW EDIT AND DELETE IF IT IS YOUR MESSAGE */}
+          {contextMenu.msg.sender_id === user?.id && (
+            <>
+              <div className="h-px w-full bg-gray-700 my-1" />
+
+              {onEdit && (
+                <button
+                  onClick={() => {
+                    onEdit(contextMenu.msg);
+                    setContextMenu(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-indigo-600 hover:text-white flex items-center gap-2 transition-colors"
+                >
+                  <Pencil className="w-4 h-4" />
+                  Edit Message
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  handleDelete(contextMenu.msg.message_id);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white flex items-center gap-2 transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete Message
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* REGULAR USER PROFILE */}
+      {selectedProfileId && (
+        <UserProfile profileId={selectedProfileId} onClose={() => setSelectedProfileId(null)} />
+      )}
+
+      {/* FAST FRIEND PROFILE */}
+      {selectedFriend && (
+        <FriendProfile friend={selectedFriend} onClose={() => setSelectedFriend(null)} />
       )}
     </div>
   );

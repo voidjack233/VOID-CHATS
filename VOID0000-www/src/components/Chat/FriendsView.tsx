@@ -1,8 +1,10 @@
 // src/components/Chat/FriendsView.tsx
 import { useState } from 'react';
-import { MessageCircle, Search, UserPlus } from 'lucide-react';
+import { MessageCircle, Search, UserPlus, User } from 'lucide-react';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import { Friend } from '../../Services/hooks/Friends/useFriends';
+// FIX 1: Import the new FriendProfile (Adjust the path if yours is different!)
+import FriendProfile from '../common/Friends/FriendProfile'; 
 
 interface FriendsViewProps {
   friends: Friend[];
@@ -14,6 +16,9 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
   const { getPresence: getPresenceData } = usePresence();
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'online' | 'all'>('online');
+  
+  // FIX 2: State now holds the whole Friend object so we can pass it to the modal
+  const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
 
   const getPresence = (userId: string) => getPresenceData(userId).status;
 
@@ -72,9 +77,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
             <button
               onClick={() => setTab('online')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                tab === 'online'
-                  ? 'bg-gray-700 text-white'
-                  : 'text-gray-400 hover:text-gray-200'
+                tab === 'online' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'
               }`}
             >
               Online
@@ -82,9 +85,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
             <button
               onClick={() => setTab('all')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                tab === 'all'
-                  ? 'bg-gray-700 text-white'
-                  : 'text-gray-400 hover:text-gray-200'
+                tab === 'all' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'
               }`}
             >
               All
@@ -117,9 +118,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
       {/* Count */}
       <div className="px-6 pb-2">
         <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-          {tab === 'online'
-            ? `Online — ${onlineCount}`
-            : `All Friends — ${friends.length}`}
+          {tab === 'online' ? `Online — ${onlineCount}` : `All Friends — ${friends.length}`}
         </p>
       </div>
 
@@ -147,7 +146,11 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                   key={friend.id}
                   className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-700/40 group transition-colors"
                 >
-                  <div className="relative shrink-0">
+                  {/* FIX 3: Make Avatar Clickable */}
+                  <div 
+                    className="relative shrink-0 cursor-pointer"
+                    onClick={() => setSelectedFriend(friend)}
+                  >
                     <img
                       src={getAvatarUrl(friend)}
                       className={`w-10 h-10 rounded-full object-cover ${
@@ -155,13 +158,15 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                       }`}
                       alt=""
                     />
-                    <div
-                      className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-[2.5px] border-gray-800 ${getStatusColor(presence)}`}
-                    />
+                    <div className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-[2.5px] border-gray-800 ${getStatusColor(presence)}`} />
                   </div>
 
+                  {/* FIX 4: Make Name Clickable */}
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm truncate text-gray-100">
+                    <div 
+                      className="font-medium text-sm truncate text-gray-100 cursor-pointer hover:underline"
+                      onClick={() => setSelectedFriend(friend)}
+                    >
                       {friend.display_name || friend.username}
                     </div>
                     <div className="text-xs text-gray-500">
@@ -169,12 +174,20 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                     </div>
                   </div>
 
-                  {/* FIX: Removed 'opacity-0' and used responsive 'md' prefixes */}
                   <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                    {/* FIX 5: Profile Button */}
+                    <button
+                      onClick={() => setSelectedFriend(friend)}
+                      className="p-2.5 md:p-2 bg-gray-700/50 md:bg-transparent hover:bg-gray-600 rounded-full text-gray-300 md:text-gray-400 hover:text-white transition-colors"
+                      title="View Profile"
+                    >
+                      <User className="w-5 h-5 md:w-4 md:h-4" />
+                    </button>
+
                     <button
                       onClick={() => onStartDM(friend.id)}
                       className="p-2.5 md:p-2 bg-gray-700/50 md:bg-transparent hover:bg-gray-600 rounded-full text-gray-300 md:text-gray-400 hover:text-white transition-colors"
-                      aria-label="Message"
+                      title="Message"
                     >
                       <MessageCircle className="w-5 h-5 md:w-4 md:h-4" />
                     </button>
@@ -185,6 +198,14 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
           </div>
         )}
       </div>
+
+      {/* FIX 6: Render the FriendProfile Modal */}
+      {selectedFriend && (
+        <FriendProfile 
+          friend={selectedFriend} 
+          onClose={() => setSelectedFriend(null)} 
+        />
+      )}
     </div>
   );
 };

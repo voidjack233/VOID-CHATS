@@ -19,8 +19,13 @@ export const useMessageDisplay = (
     return `${date.toLocaleDateString()} ${time}`;
   }, []);
 
-  const getSenderName = useCallback((senderId: string) => {
-    if (senderId === user?.id) return user?.username || 'You';
+const getSenderName = useCallback((senderId: string) => {
+    // FIX: Prioritize the current user's display_name before falling back to username
+    if (senderId === user?.id) {
+      return user?.display_name || user?.username || 'You';
+    }
+    
+    // For other members, it was already doing it correctly!
     const member = members[senderId];
     return member?.display_name || member?.username || senderId.substring(0, 8);
   }, [user, members]);

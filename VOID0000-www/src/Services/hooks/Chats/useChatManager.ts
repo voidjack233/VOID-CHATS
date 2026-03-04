@@ -14,23 +14,13 @@ export const useChatManager = (user: any) => {
   const [newMessage, setNewMessage] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [messageUpdate, setMessageUpdate] = useState<{ message_id: string; content: string; is_edited: boolean; edited_at: string } | null>(null);
+  const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
 
-  // Message update/delete state
-  const [messageUpdate, setMessageUpdate] = useState<{
-    message_id: string;
-    content: string;
-    is_edited: boolean;
-    edited_at: string;
-  } | null>(null);
-
-  const [messageDelete, setMessageDelete] = useState<{
-    message_id: string;
-  } | null>(null);
-
-  // FIX: The Handshake Cache! Stores members and keys in memory so we don't refetch them.
   const handshakeCache = useRef<Record<string, { members: Record<string, any>; key: CryptoKey; version: number }>>({});
+  const pendingMessages = useRef<any[]>([]);
 
-  // Conversation Handshake with Cache & Race-Condition Protection
+  // 1. Handshake setup
   useEffect(() => {
     let ignore = false;
 
@@ -38,23 +28,19 @@ export const useChatManager = (user: any) => {
       if (!activeConversation || !user?.id) return;
       setEncryptionError(null);
 
-      // 1. Check if we already did the handshake for this chat in this session
-      // 1. Check if we already did the handshake for this chat in this session
       const cached = handshakeCache.current[activeConversation.id];
       if (cached) {
         setMembers(cached.members);
         setEncryptionKey(cached.key);
         setKeyVersion(cached.version);
-        return; // Boom! Zero network requests.
+        return; 
       }
 
-      // 2. If not cached, fetch from Express
       try {
         const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
         const data = await res.json();
 
         if (ignore) return; 
-
         if (!data.success) throw new Error('Could not load members');
 
         const memberMap: Record<string, any> = {};
@@ -69,45 +55,49 @@ export const useChatManager = (user: any) => {
 
         if (ignore) return; 
 
-        // 3. Save to cache for the next time they click this chat!
         if (key) {
-          handshakeCache.current[activeConversation.id] = {
-            members: memberMap,
-            key,
-            version
-          };
+          handshakeCache.current[activeConversation.id] = { members: memberMap, key, version };
         }
 
         setEncryptionKey(key);
         setKeyVersion(version);
       } catch (err: any) {
         if (ignore) return;
-
         console.error('Handshake Error:', err);
         setEncryptionKey(null);
-
-        const msg = err.message || '';
-        if (msg.includes('another device') || msg.includes('keys missing') || msg.includes('Identity keys')) {
-          setEncryptionError('Your encryption keys are not available on this device. Log in from your primary browser to access encrypted messages.');
-        } else if (msg.includes('No public key')) {
-          setEncryptionError('The other user needs to log in to initialize their encryption keys.');
-        } else {
-          setEncryptionError(msg || 'Key exchange failed');
-        }
+        setEncryptionError('Failed to load encryption keys for this chat.');
       }
     };
 
     setupConversation();
-
-    return () => {
-      ignore = true; 
-    };
+    return () => { ignore = true; };
   }, [activeConversation?.id, user?.id]);
 
-  // Buffer for messages that arrive before encryption key is ready
-  const pendingMessages = useRef<any[]>([]);
+  // --- THE AUTO-HEALER FUNCTION ---
+  // If decryption fails, it wipes the cache and forces a re-fetch
+  const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
+    try {
+      const content = data.encrypted_content
+        ? await decryptMessage(data.encrypted_content, data.iv, key)
+        : data.content;
+      
+      if (isUpdate) {
+        setMessageUpdate({ message_id: data.message_id, content, is_edited: true, edited_at: data.edited_at });
+      } else {
+        setNewMessage({ ...data, content });
+      }
+    } catch (err) {
+      console.warn('Decryption failed! Keys might be stale. Auto-refreshing...', err);
+      // Wipe the memory cache so the handshake runs fresh
+      delete handshakeCache.current[data.conversation_id];
+      // Setting key to null triggers the handshake useEffect again!
+      setEncryptionKey(null);
+      // Buffer the message to try again in a second
+      pendingMessages.current.push(data);
+    }
+  };
 
-  // Flush buffered messages once encryption key is available
+  // 2. Buffer Flush
   useEffect(() => {
     if (!encryptionKey || !activeConversation?.id || pendingMessages.current.length === 0) return;
 
@@ -117,34 +107,19 @@ export const useChatManager = (user: any) => {
 
       for (const data of toProcess) {
         if (data.conversation_id !== activeConversation.id) continue;
-        try {
-          const content = data.encrypted_content
-            ? await decryptMessage(data.encrypted_content, data.iv, encryptionKey)
-            : data.content;
-          setNewMessage({ ...data, content });
-        } catch {
-          setNewMessage({ ...data, content: '[Decryption Failed]' });
-        }
+        await attemptDecryption(data, encryptionKey);
       }
     };
-
     flush();
   }, [encryptionKey, activeConversation?.id]);
 
-  // Real-time: New Messages
+  // 3. New Messages
   useEffect(() => {
     if (!user?.id) return;
     const handleMessage = async (data: any) => {
       if (data.conversation_id === activeConversation?.id) {
         if (encryptionKey) {
-          try {
-            const content = data.encrypted_content
-              ? await decryptMessage(data.encrypted_content, data.iv, encryptionKey)
-              : data.content;
-            setNewMessage({ ...data, content });
-          } catch {
-            setNewMessage({ ...data, content: '[Decryption Failed]' });
-          }
+          await attemptDecryption(data, encryptionKey);
         } else {
           pendingMessages.current.push(data);
         }
@@ -154,36 +129,19 @@ export const useChatManager = (user: any) => {
     return () => gateway.off('MESSAGE_CREATE', handleMessage);
   }, [activeConversation?.id, encryptionKey, user?.id]);
 
-  // Real-time: Message Edits
+  // 4. Message Edits
   useEffect(() => {
     if (!user?.id) return;
     const handleUpdate = async (data: any) => {
       if (data.conversation_id === activeConversation?.id && encryptionKey) {
-        try {
-          const content = data.encrypted_content
-            ? await decryptMessage(data.encrypted_content, data.iv, encryptionKey)
-            : '[encrypted]';
-          setMessageUpdate({
-            message_id: data.message_id,
-            content,
-            is_edited: true,
-            edited_at: data.edited_at,
-          });
-        } catch {
-          setMessageUpdate({
-            message_id: data.message_id,
-            content: '[Decryption Failed]',
-            is_edited: true,
-            edited_at: data.edited_at,
-          });
-        }
+        await attemptDecryption(data, encryptionKey, true);
       }
     };
     gateway.on('MESSAGE_UPDATE', handleUpdate);
     return () => gateway.off('MESSAGE_UPDATE', handleUpdate);
   }, [activeConversation?.id, encryptionKey, user?.id]);
 
-  // Real-time: Message Deletions
+  // 5. Message Deletions
   useEffect(() => {
     if (!user?.id) return;
     const handleDeleteEvent = (data: any) => {
@@ -198,7 +156,6 @@ export const useChatManager = (user: any) => {
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {
     if (activeConversation?.id === conv.id) return;
-
     setEncryptionKey(null);
     setEncryptionError(null);
     setActiveConversation(conv);
@@ -224,22 +181,9 @@ export const useChatManager = (user: any) => {
   };
 
   return {
-    members,
-    activeConversation,
-    encryptionKey,
-    keyVersion,
-    encryptionError,
-    newMessage,
-    editingMessage,
-    replyTo,
-    messageUpdate,
-    messageDelete,
-    setEditingMessage,
-    setReplyTo,
-    setMessageUpdate,
-    handleSelectConversation,
-    handleMessageSent: setNewMessage,
-    handleBackToMe,
-    handleStartDM,
+    members, activeConversation, encryptionKey, keyVersion, encryptionError,
+    newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
+    setEditingMessage, setReplyTo, setMessageUpdate,
+    handleSelectConversation, handleMessageSent: setNewMessage, handleBackToMe, handleStartDM,
   };
 };

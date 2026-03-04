@@ -159,7 +159,7 @@ const ChatDashboard = () => {
             <div className="w-8 h-8 rounded-full mr-2 relative shrink-0">
               <img src={myAvatarUrl} alt="Avatar" className="w-full h-full object-cover rounded-full" />
             </div>
-            <div className="text-sm font-semibold truncate flex-1">{user?.username || 'User'}</div>
+            <div className="text-sm font-semibold truncate flex-1">{myProfile?.display_name || user?.username || 'User'}</div>
           </div>
           <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-md shrink-0 ml-1">
             <Settings className="w-5 h-5" />
