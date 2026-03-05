@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { MessageCircle, Search, UserPlus, User } from 'lucide-react';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import { Friend } from '../../Services/hooks/Friends/useFriends';
-// FIX 1: Import the new FriendProfile (Adjust the path if yours is different!)
 import FriendProfile from '../common/Friends/FriendProfile'; 
 
 interface FriendsViewProps {
@@ -16,8 +15,6 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
   const { getPresence: getPresenceData } = usePresence();
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'online' | 'all'>('online');
-  
-  // FIX 2: State now holds the whole Friend object so we can pass it to the modal
   const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
 
   const getPresence = (userId: string) => getPresenceData(userId).status;
@@ -68,16 +65,18 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
   }).length;
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-800">
+    <div className="flex-1 flex flex-col bg-void-bg-sec">
       {/* Header */}
-      <div className="h-16 border-b border-gray-700 flex items-center justify-between px-6 shrink-0">
+      <div className="h-16 border-b border-void-bg-hover flex items-center justify-between px-6 shrink-0">
         <div className="flex items-center gap-4">
-          <h1 className="text-lg font-bold">Friends</h1>
-          <div className="flex items-center gap-1 bg-gray-900 rounded-lg p-0.5">
+          <h1 className="text-lg font-bold text-void-text">Friends</h1>
+          <div className="flex items-center gap-1 bg-void-bg-main rounded-lg p-0.5">
             <button
               onClick={() => setTab('online')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                tab === 'online' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'
+                tab === 'online' 
+                  ? 'bg-void-bg-hover text-void-text' 
+                  : 'text-gray-400 hover:text-gray-200'
               }`}
             >
               Online
@@ -85,7 +84,9 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
             <button
               onClick={() => setTab('all')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                tab === 'all' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-gray-200'
+                tab === 'all' 
+                  ? 'bg-void-bg-hover text-void-text' 
+                  : 'text-gray-400 hover:text-gray-200'
               }`}
             >
               All
@@ -94,7 +95,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
         </div>
         <button
           onClick={onShowFriendsModal}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-void-accent hover:bg-void-accent-hover text-white text-sm rounded-lg transition-colors"
         >
           <UserPlus className="w-4 h-4" />
           <span className="hidden sm:inline">Add Friend</span>
@@ -103,14 +104,14 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
 
       {/* Search */}
       <div className="px-6 py-3">
-        <div className="flex items-center bg-gray-900 rounded-lg px-3 py-2">
+        <div className="flex items-center bg-void-bg-main rounded-lg px-3 py-2">
           <Search className="w-4 h-4 text-gray-500 mr-2" />
           <input
             type="text"
             placeholder="Search friends"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-transparent text-sm w-full focus:outline-none text-gray-200 placeholder-gray-500"
+            className="bg-transparent text-sm w-full focus:outline-none text-void-text placeholder-gray-500"
           />
         </div>
       </div>
@@ -128,7 +129,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
           <div className="flex flex-col items-center justify-center py-16 text-gray-500">
             {tab === 'online' ? (
               <>
-                <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mb-4">
+                <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center mb-4">
                   <div className="w-4 h-4 bg-gray-500 rounded-full" />
                 </div>
                 <p className="text-sm">No friends online right now</p>
@@ -144,9 +145,9 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
               return (
                 <div
                   key={friend.id}
-                  className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-gray-700/40 group transition-colors"
+                  className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-void-bg-hover/40 group transition-colors"
                 >
-                  {/* FIX 3: Make Avatar Clickable */}
+                  {/* Avatar Clickable */}
                   <div 
                     className="relative shrink-0 cursor-pointer"
                     onClick={() => setSelectedFriend(friend)}
@@ -158,13 +159,13 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                       }`}
                       alt=""
                     />
-                    <div className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-[2.5px] border-gray-800 ${getStatusColor(presence)}`} />
+                    <div className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-[2.5px] border-void-bg-sec ${getStatusColor(presence)}`} />
                   </div>
 
-                  {/* FIX 4: Make Name Clickable */}
+                  {/* Name Clickable */}
                   <div className="flex-1 min-w-0">
                     <div 
-                      className="font-medium text-sm truncate text-gray-100 cursor-pointer hover:underline"
+                      className="font-medium text-sm truncate text-void-text cursor-pointer hover:underline"
                       onClick={() => setSelectedFriend(friend)}
                     >
                       {friend.display_name || friend.username}
@@ -175,10 +176,10 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
                   </div>
 
                   <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    {/* FIX 5: Profile Button */}
+                    {/* Profile Button */}
                     <button
                       onClick={() => setSelectedFriend(friend)}
-                      className="p-2.5 md:p-2 bg-gray-700/50 md:bg-transparent hover:bg-gray-600 rounded-full text-gray-300 md:text-gray-400 hover:text-white transition-colors"
+                      className="p-2.5 md:p-2 bg-void-bg-hover/50 md:bg-transparent hover:bg-void-bg-hover rounded-full text-gray-400 hover:text-void-text transition-colors"
                       title="View Profile"
                     >
                       <User className="w-5 h-5 md:w-4 md:h-4" />
@@ -186,7 +187,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
 
                     <button
                       onClick={() => onStartDM(friend.id)}
-                      className="p-2.5 md:p-2 bg-gray-700/50 md:bg-transparent hover:bg-gray-600 rounded-full text-gray-300 md:text-gray-400 hover:text-white transition-colors"
+                      className="p-2.5 md:p-2 bg-void-bg-hover/50 md:bg-transparent hover:bg-void-bg-hover rounded-full text-gray-400 hover:text-void-text transition-colors"
                       title="Message"
                     >
                       <MessageCircle className="w-5 h-5 md:w-4 md:h-4" />
@@ -199,7 +200,7 @@ const FriendsView = ({ friends, onStartDM, onShowFriendsModal }: FriendsViewProp
         )}
       </div>
 
-      {/* FIX 6: Render the FriendProfile Modal */}
+      {/* FriendProfile Modal */}
       {selectedFriend && (
         <FriendProfile 
           friend={selectedFriend} 

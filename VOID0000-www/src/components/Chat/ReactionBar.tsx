@@ -2,21 +2,38 @@
 import { ReactionMap } from '../../Services/Chat/chatService';
 
 interface ReactionBarProps {
-  reactions: ReactionMap | string[];
+  reactions: ReactionMap | any; // Relaxed slightly to handle migrating data
   currentUserId: string;
   onToggle: (emoji: string) => void;
-  onAddReaction: (e: React.MouseEvent<HTMLButtonElement>) => void; // Updated to accept event
+  onAddReaction: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: ReactionBarProps) => {
+  // Safety check: if reactions is null, undefined, or somehow a string, bail out gracefully
+  if (!reactions || typeof reactions !== 'object') return null;
+
   const emojiEntries = Object.entries(reactions);
 
   if (emojiEntries.length === 0) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-1 mt-1">
-      {emojiEntries.map(([emoji, userIds]) => {
-        const hasReacted = userIds.includes(currentUserId);
+      {emojiEntries.map(([emoji, reactionData]) => {
+        let hasReacted = false;
+        let count = 0;
+
+        // BULLETPROOF CHECK: Handles old array data, new object data, and corrupted DB data
+        if (Array.isArray(reactionData)) {
+          hasReacted = reactionData.includes(currentUserId);
+          count = reactionData.length;
+        } else if (reactionData && typeof reactionData === 'object') {
+          hasReacted = !!(reactionData as any).me;
+          count = (reactionData as any).count || 0;
+        }
+
+        // Don't render empty emoji bubbles if data got wiped
+        if (count === 0) return null;
+
         return (
           <button
             key={emoji}
@@ -26,10 +43,10 @@ const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: Reac
                 ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300 hover:bg-indigo-500/30'
                 : 'bg-gray-700/50 border-gray-600/50 text-gray-400 hover:bg-gray-700 hover:border-gray-500'
             }`}
-            title={`${userIds.length} reaction${userIds.length > 1 ? 's' : ''}`}
+            title={`${count} reaction${count > 1 ? 's' : ''}`}
           >
             <span className="text-sm leading-none">{emoji}</span>
-            <span className="font-medium leading-none">{userIds.length}</span>
+            <span className="font-medium leading-none">{count}</span>
           </button>
         );
       })}

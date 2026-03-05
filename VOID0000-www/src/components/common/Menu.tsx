@@ -126,3 +126,5 @@ const MenuComponent: React.FC<MenuComponentProps> = ({ onProfileClick, onSetting
 };
 
 export default MenuComponent;
+
+// this component are no longer USE as time pass by ive already changed the homepage into chats making this menu tsx unusable

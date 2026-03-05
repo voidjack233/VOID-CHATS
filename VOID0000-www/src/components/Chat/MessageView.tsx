@@ -43,7 +43,7 @@ const MessageView = ({
   const { user } = useUser();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   
-  // --- NEW CONTEXT MENU STATE ---
+  // Context menu state
   const [contextMenu, setContextMenu] = useState<{ msg: Message; x: number; y: number; } | null>(null);
   
   const [emojiPickerTarget, setEmojiPickerTarget] = useState<{ messageId: string; position: { x: number; y: number }; } | null>(null);
@@ -86,58 +86,48 @@ const MessageView = ({
   }, []);
 
   const handleContextMenu = (e: React.MouseEvent, msg: Message) => {
-    e.preventDefault(); // Prevents the browser's default context menu
+    e.preventDefault();
     
-    // Adjust slightly so the cursor doesn't instantly click the first item
     let x = e.clientX;
     let y = e.clientY;
     
-    // Prevent menu from clipping off the right or bottom of the screen
     if (window.innerWidth - x < 200) x -= 180;
     if (window.innerHeight - y < 200) y -= 150;
     
     setContextMenu({ msg, x, y });
   };
 
-  // --- SMART DISPLAY NAME ROUTER ---
+  // Smart display name router
   const getSmartDisplayName = useCallback((senderId: string) => {
-    // 1. Is it me?
     if (senderId === user?.id) {
       return myProfile?.display_name || user?.username || 'You';
     }
-    // 2. Is it a friend?
     const friend = friends.find(f => f.id === senderId);
     if (friend && friend.display_name) {
       return friend.display_name;
     }
-    // 3. Fallback to default
     return getSenderName(senderId);
   }, [user, myProfile, friends, getSenderName]);
 
-  // --- SMART PROFILE ROUTER ---
+  // Smart profile router
   const handleProfileClick = useCallback((senderId: string) => {
-    // 1. Is it me? Open UserProfile
     if (senderId === user?.id && user?.profile_id) {
       setSelectedProfileId(user.profile_id);
       return;
     }
-    // 2. Is it a friend? Open FriendProfile!
     const friend = friends.find(f => f.id === senderId);
     if (friend) {
       setSelectedFriend(friend);
       return;
     }
-    // 3. Is it a stranger? Open UserProfile
     const member = members[senderId];
     if (member && (member as any).profile_id) {
       setSelectedProfileId((member as any).profile_id);
       return;
     }
-    // Last resort fallback
     setSelectedProfileId(senderId);
   }, [user, friends, members]);
 
-  // ----------------------------
   const openEmojiPicker = useCallback((messageId: string, event: React.MouseEvent) => {
     const rect = (event.target as HTMLElement).getBoundingClientRect();
     setEmojiPickerTarget({
@@ -159,18 +149,18 @@ const MessageView = ({
   const getConversationIcon = () => {
     switch (conversation.type) {
       case 'dm':
-        return <MessageCircle className="w-10 h-10 text-white" />;
+        return <MessageCircle className="w-10 h-10 text-void-text" />;
       case 'group':
-        return <Users className="w-10 h-10 text-white" />;
+        return <Users className="w-10 h-10 text-void-text" />;
       default:
-        return <Hash className="w-10 h-10 text-white" />;
+        return <Hash className="w-10 h-10 text-void-text" />;
     }
   };
 
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        <div className="w-6 h-6 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -197,16 +187,16 @@ const MessageView = ({
     <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4">
       {loadingMore && (
         <div className="flex justify-center py-2">
-          <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
       {!hasMore && (
         <div className="mt-4 mb-6">
-          <div className="w-16 h-16 bg-gray-700 rounded-full flex items-center justify-center mb-4">
+          <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center mb-4">
             {getConversationIcon()}
           </div>
-          <h1 className="text-2xl font-bold mb-1">
+          <h1 className="text-2xl font-bold mb-1 text-void-text">
             {conversation.type === 'dm' ? conversation.dm_display_name || conversation.dm_username : conversation.name}
           </h1>
           <p className="text-gray-400 text-sm">This is the beginning of your conversation.</p>
@@ -227,7 +217,7 @@ const MessageView = ({
             onMouseEnter={() => setHoveredId(msg.message_id)}
             onMouseLeave={() => setHoveredId(null)}
             onContextMenu={(e) => handleContextMenu(e, msg)}
-            className={`flex hover:bg-gray-700/30 py-0.5 px-2 -mx-2 rounded transition-colors relative group ${
+            className={`flex hover:bg-void-bg-hover/30 py-0.5 px-2 -mx-2 rounded transition-colors relative group ${
               isConsecutive ? 'mt-0' : 'mt-4'
             }`}
           >
@@ -239,7 +229,7 @@ const MessageView = ({
               </div>
             ) : (
               <div
-                className="w-10 h-10 rounded-full overflow-hidden mr-3 flex-shrink-0 bg-gray-700 mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
+                className="w-10 h-10 rounded-full overflow-hidden mr-3 flex-shrink-0 bg-void-bg-hover mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
                 onClick={() => handleProfileClick(msg.sender_id)}
               >
                 <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
@@ -252,7 +242,7 @@ const MessageView = ({
                   <CornerUpRight className="w-3 h-3 text-gray-600 flex-shrink-0" />
                   {replyParent ? (
                     <>
-                      <span className="font-semibold text-indigo-400/70">{getSenderName(replyParent.sender_id)}</span>
+                      <span className="font-semibold text-void-accent/70">{getSenderName(replyParent.sender_id)}</span>
                       <span className="truncate max-w-[300px] text-gray-500">
                         {replyParent.is_deleted
                           ? '[deleted]'
@@ -272,7 +262,7 @@ const MessageView = ({
               {!isConsecutive && (
                 <div className="flex items-baseline gap-2 mb-0.5">
                   <span
-                    className="font-semibold text-sm text-indigo-400 cursor-pointer hover:underline"
+                    className="font-semibold text-sm text-void-accent cursor-pointer hover:underline"
                     onClick={() => handleProfileClick(msg.sender_id)}
                   >
                     {getSmartDisplayName(msg.sender_id)}
@@ -282,7 +272,7 @@ const MessageView = ({
               )}
 
               <div className="flex items-baseline gap-2">
-                <p className={`text-sm ${msg.is_deleted ? 'text-gray-600 italic' : 'text-gray-300'}`}>
+                <p className={`text-sm ${msg.is_deleted ? 'text-gray-600 italic' : 'text-void-text'}`}>
                   {msg.content || '[encrypted]'}
                 </p>
                 {msg.is_edited && !msg.is_deleted && <span className="text-[10px] text-gray-500 ml-1">(edited)</span>}
@@ -312,29 +302,29 @@ const MessageView = ({
             {hoveredId === msg.message_id && !msg.is_deleted && (
               <div
                 data-msg-id={msg.message_id}
-                className="absolute right-2 -top-3 flex items-center gap-0.5 bg-gray-800 border border-gray-700 rounded-md p-0.5 shadow-lg z-10"
+                className="absolute right-2 -top-3 flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg z-10"
               >
                 <button
                   onClick={(e) => openEmojiPicker(msg.message_id, e)}
-                  className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200"
+                  className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-gray-200"
                   title="Add reaction"
                 >
                   <Smile className="w-3.5 h-3.5" />
                 </button>
                 {onReply && (
-                  <button onClick={() => onReply(msg)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
+                  <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-gray-200">
                     <Reply className="w-3.5 h-3.5" />
                   </button>
                 )}
                 {msg.sender_id === user?.id && onEdit && (
-                  <button onClick={() => onEdit(msg)} className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-gray-200">
+                  <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-gray-200">
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
                 )}
                 {msg.sender_id === user?.id && (
                   <button
                     onClick={() => handleDelete(msg.message_id)}
-                    className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-red-400"
+                    className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-red-400"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -359,10 +349,10 @@ const MessageView = ({
         />
       )}
 
-      {/* --- CUSTOM RIGHT-CLICK CONTEXT MENU --- */}
+      {/* Custom right-click context menu */}
       {contextMenu && !contextMenu.msg.is_deleted && (
         <div
-          className="fixed z-[70] w-48 bg-gray-900 border border-gray-700 rounded-lg shadow-2xl py-1.5 overflow-hidden flex flex-col"
+          className="fixed z-[70] w-48 bg-void-bg-main border border-void-bg-hover rounded-lg shadow-2xl py-1.5 overflow-hidden flex flex-col"
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
           <button
@@ -377,7 +367,7 @@ const MessageView = ({
               }
               setContextMenu(null);
             }}
-            className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-indigo-600 hover:text-white flex items-center gap-2 transition-colors"
+            className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
           >
             <Smile className="w-4 h-4" />
             Add Reaction
@@ -389,17 +379,17 @@ const MessageView = ({
                 onReply(contextMenu.msg);
                 setContextMenu(null);
               }}
-              className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-indigo-600 hover:text-white flex items-center gap-2 transition-colors"
+              className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
             >
               <Reply className="w-4 h-4" />
               Reply
             </button>
           )}
 
-          {/* ONLY SHOW EDIT AND DELETE IF IT IS YOUR MESSAGE */}
+          {/* Only show edit and delete if it's your message */}
           {contextMenu.msg.sender_id === user?.id && (
             <>
-              <div className="h-px w-full bg-gray-700 my-1" />
+              <div className="h-px w-full bg-void-bg-hover my-1" />
 
               {onEdit && (
                 <button
@@ -407,7 +397,7 @@ const MessageView = ({
                     onEdit(contextMenu.msg);
                     setContextMenu(null);
                   }}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-indigo-600 hover:text-white flex items-center gap-2 transition-colors"
+                  className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
                 >
                   <Pencil className="w-4 h-4" />
                   Edit Message
@@ -429,12 +419,12 @@ const MessageView = ({
         </div>
       )}
 
-      {/* REGULAR USER PROFILE */}
+      {/* Regular user profile */}
       {selectedProfileId && (
         <UserProfile profileId={selectedProfileId} onClose={() => setSelectedProfileId(null)} />
       )}
 
-      {/* FAST FRIEND PROFILE */}
+      {/* Fast friend profile */}
       {selectedFriend && (
         <FriendProfile friend={selectedFriend} onClose={() => setSelectedFriend(null)} />
       )}

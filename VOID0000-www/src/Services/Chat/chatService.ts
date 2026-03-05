@@ -329,6 +329,58 @@ export async function distributeGroupKey(
   if (!data.success) throw new Error(data.error);
 }
 
+// ============== Secure Group =============
+export async function createSecureGroup(
+  name: string,
+  memberIds: string[],
+  currentUserId: string
+): Promise<{ conversation: Conversation }> {
+  // 1. Create the basic group in Postgres
+  const { conversation } = await createConversation('group', name, memberIds);
+
+  // 2. Generate a brand new Room Key (AES-256-GCM)
+  const roomKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  // 3. Prepare to distribute it to everyone (including yourself!)
+  const allParticipants = [...new Set([...memberIds, currentUserId])];
+  const distributions = [];
+
+  for (const targetUserId of allParticipants) {
+    try {
+      const targetUserKeys = await getUserPublicKey(targetUserId);
+      const sharedSecret = await keyManager.getSharedSecret(
+        currentUserId, 
+        targetUserId, 
+        targetUserKeys.public_key
+      );
+
+      const { encrypted, iv } = await keyManager.encryptGroupKeyForUser(roomKey, sharedSecret);
+      const combinedKeyData = `${iv}.${encrypted}`;
+
+      distributions.push({
+        user_id: targetUserId,
+        encrypted_group_key: combinedKeyData
+      });
+    } catch (err) {
+      console.error(`Failed to generate key for user ${targetUserId}:`, err);
+    }
+  }
+
+  // 4. Send the locked boxes to the server
+  if (distributions.length > 0) {
+    await distributeGroupKey(conversation.id, distributions, 1);
+  }
+
+  // 5. Save your own copy to IndexedDB
+  await keyManager.storeGroupKey(conversation.id, 1, roomKey);
+
+  return { conversation };
+}
+
 // ============== High-Level Helpers ==============
 
 export async function getEncryptionKey(
@@ -336,26 +388,50 @@ export async function getEncryptionKey(
   conversation: Conversation,
   peerUserId?: string
 ): Promise<{ key: CryptoKey; version: number }> {
+  // --- 1-ON-1 DM LOGIC ---
   if (conversation.type === 'dm' && peerUserId) {
     const peerKey = await getUserPublicKey(peerUserId);
     const sharedKey = await keyManager.getSharedSecret(userId, peerUserId, peerKey.public_key);
     return { key: sharedKey, version: 1 };
   }
 
+  // --- GROUP CHAT LOGIC ---
   const groupKeys = await getGroupKeys(conversation.id);
-
   if (groupKeys.length === 0) {
-    throw new Error('No group key available — owner must distribute keys');
+    throw new Error('No group key available — wait for owner to distribute');
   }
 
   const latest = groupKeys[0]!;
-  const groupKey = await keyManager.getGroupKey(conversation.id, latest.key_version);
-
-  if (groupKey) {
-    return { key: groupKey, version: latest.key_version };
+  
+  // 1. Check if we already unlocked it and saved it to IndexedDB
+  const cachedGroupKey = await keyManager.getGroupKey(conversation.id, latest.key_version);
+  if (cachedGroupKey) {
+    return { key: cachedGroupKey, version: latest.key_version };
   }
 
-  throw new Error('Group key decryption not yet implemented — needs owner shared secret');
+  // 2. If not, we need to unlock it using the shared secret with the group owner
+  if (!conversation.owner_id) {
+    throw new Error('Cannot decrypt group key without knowing the owner');
+  }
+
+  // We need the owner's public key to recreate the shared secret lock
+  const ownerKeyData = await getUserPublicKey(conversation.owner_id);
+  const sharedSecret = await keyManager.getSharedSecret(userId, conversation.owner_id, ownerKeyData.public_key);
+
+  // Split our combined string back into IV and Encrypted Key
+  const [iv, encryptedBase64] = latest.encrypted_group_key.split('.');
+  
+  if (!iv || !encryptedBase64) {
+    throw new Error('Group key data is corrupted or missing IV');
+  }
+
+  // Unlock the Room Key
+  const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
+
+  // Save it to IndexedDB so we don't have to do this math again
+  await keyManager.storeGroupKey(conversation.id, latest.key_version, decryptedRoomKey);
+
+  return { key: decryptedRoomKey, version: latest.key_version };
 }
 
 export async function backupKeyToServer(data: {

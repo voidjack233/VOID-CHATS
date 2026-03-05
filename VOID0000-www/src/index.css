@@ -1,5 +1,93 @@
 @import "tailwindcss";
 
+/* Theme presets */
+:root[data-theme="void"] {
+  --bg-main: #111827;
+  --bg-sec: #1f2937;
+  --bg-hover: #374151;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --text-main: #f3f4f6;
+}
+
+:root[data-theme="ocean"] {
+  --bg-main: #0f172a;
+  --bg-sec: #1e293b;
+  --bg-hover: #334155;
+  --accent: #0ea5e9;
+  --accent-hover: #0284c7;
+  --text-main: #f8fafc;
+}
+
+:root[data-theme="forest"] {
+  --bg-main: #0c1f1c;
+  --bg-sec: #1a2e2a;
+  --bg-hover: #2d4a43;
+  --accent: #10b981;
+  --accent-hover: #059669;
+  --text-main: #ecfdf5;
+}
+
+:root[data-theme="sunset"] {
+  --bg-main: #1e1b2e;
+  --bg-sec: #2d2a44;
+  --bg-hover: #3f3b5c;
+  --accent: #f97316;
+  --accent-hover: #ea580c;
+  --text-main: #fff7ed;
+}
+
+:root[data-theme="midnight"] {
+  --bg-main: #030712;
+  --bg-sec: #111827;
+  --bg-hover: #1f2937;
+  --accent: #8b5cf6;
+  --accent-hover: #7c3aed;
+  --text-main: #f5f3ff;
+}
+
+/* Base theme variables */
+:root {
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  
+  --spacing-tight: 0.25rem;
+  --spacing-base: 0.5rem;
+  --spacing-loose: 0.75rem;
+  --spacing-wide: 1rem;
+  
+  --animation-speed: 200ms;
+  --animation-easing: cubic-bezier(0.4, 0, 0.2, 1);
+  
+  /* Scrollbar colors will be updated via JS */
+  --scrollbar-thumb: #2e3338;
+  --scrollbar-thumb-hover: #3e4347;
+}
+
+/* Theme variables mapping */
+@theme {
+  --color-void-bg-main: var(--bg-main);
+  --color-void-bg-sec: var(--bg-sec);
+  --color-void-bg-hover: var(--bg-hover);
+  
+  --color-void-accent: var(--accent);
+  --color-void-accent-hover: var(--accent-hover);
+  
+  --color-void-text: var(--text-main);
+  
+  /* Font size utilities */
+  --text-void-xs: var(--text-xs);
+  --text-void-sm: var(--text-sm);
+  --text-void-base: var(--text-base);
+  --text-void-lg: var(--text-lg);
+  --text-void-xl: var(--text-xl);
+  --text-void-2xl: var(--text-2xl);
+}
+
 /* Firefox */
 * {
   scrollbar-width: thin;

@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { X, Check } from 'lucide-react';
 import { fetchWithAuth } from '../../Services/Auth/authServiceApi';
-import { createConversation } from '../../Services/Chat/chatService';
+import { createSecureGroup } from '../../Services/Chat/chatService';
 
 interface Friend {
   id: string;
@@ -14,9 +14,10 @@ interface Friend {
 interface GroupCreateModalProps {
   onClose: () => void;
   onCreated: (conversationId: string) => void;
+  currentUserId: string; // <-- ADDED THIS to pass to the secure creator
 }
 
-const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
+const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModalProps) => {
   const [name, setName] = useState('');
   const [friends, setFriends] = useState<Friend[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -68,11 +69,17 @@ const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
     setError('');
 
     try {
-      const { conversation } = await createConversation('group', name.trim(), Array.from(selected));
+      // Use our new Master function that handles the DB and the Crypto!
+      const { conversation } = await createSecureGroup(
+        name.trim(), 
+        Array.from(selected), 
+        currentUserId
+      );
+      
       onCreated(conversation.id);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to create');
+      setError(err.message || 'Failed to create secure group');
     } finally {
       setCreating(false);
     }
@@ -83,7 +90,7 @@ const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
       <div className="bg-gray-800 rounded-xl w-full max-w-md mx-4 shadow-2xl border border-gray-700">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-bold text-white">Create Group</h2>
+          <h2 className="text-lg font-bold text-white">Create Secure Group</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
@@ -97,7 +104,7 @@ const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="My Group"
+              placeholder="My Secure Group"
               maxLength={100}
               className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-500"
             />
@@ -111,7 +118,7 @@ const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
             <div className="max-h-48 overflow-y-auto space-y-1 bg-gray-900/50 rounded-lg p-2">
               {loading ? (
                 <div className="flex justify-center py-4">
-                  <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
                 </div>
               ) : friends.length === 0 ? (
                 <p className="text-center text-gray-500 text-sm py-4">No friends yet</p>
@@ -159,7 +166,7 @@ const GroupCreateModal = ({ onClose, onCreated }: GroupCreateModalProps) => {
             disabled={creating}
             className="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-50"
           >
-            {creating ? 'Creating...' : 'Create Group'}
+            {creating ? 'Generating Keys...' : 'Create Group'}
           </button>
         </div>
       </div>

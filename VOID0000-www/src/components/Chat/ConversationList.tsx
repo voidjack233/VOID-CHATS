@@ -1,9 +1,10 @@
+// src/components/Chat/ConversationList.tsx
 import { useState, useEffect } from 'react';
 import { Hash as HashIcon, MessageCircle, Users, Plus, Search } from 'lucide-react';
 import { getConversations, Conversation } from '../../Services/Chat/chatService';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
-import { gateway } from '../../Services/Gateway/gateway'; // <-- NEW: Imported gateway
+import { gateway } from '../../Services/Gateway/gateway';
 
 interface ConversationListProps {
   activeId: string | null;
@@ -11,7 +12,7 @@ interface ConversationListProps {
   onCreateGroup: () => void;
   filter: 'dm' | 'group';
   friends: any[];
-  refreshTrigger?: number; // <-- NEW: Added refreshTrigger
+  refreshTrigger?: number;
 }
 
 const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, refreshTrigger }: ConversationListProps) => {
@@ -26,12 +27,12 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     loadConversations();
   }, []);
 
-  // NEW: Refresh list when refreshTrigger prop increments
+  // Refresh when trigger changes
   useEffect(() => {
     if (refreshTrigger) loadConversations();
   }, [refreshTrigger]);
 
-  // NEW: Refresh list when new messages arrive or conversations change via WebSockets
+  // Listen for WebSocket events
   useEffect(() => {
     const handleRefresh = () => {
       loadConversations();
@@ -108,15 +109,15 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         onClick={() => onSelect(conv)}
         className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
           isActive
-            ? 'bg-gray-700/60 text-white'
-            : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
+            ? 'bg-void-bg-hover text-void-text'
+            : 'text-gray-400 hover:bg-void-bg-hover/60 hover:text-gray-200'
         }`}
       >
         <div className="relative shrink-0">
           {avatar ? (
             <img src={avatar} className="w-8 h-8 rounded-full object-cover shrink-0" alt="" />
           ) : (
-            <div className="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center shrink-0">
+            <div className="w-8 h-8 rounded-full bg-void-bg-hover flex items-center justify-center shrink-0">
               {getIcon(conv.type)}
             </div>
           )}
@@ -132,7 +133,7 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         </div>
 
         <div className="flex-1 min-w-0 text-left">
-          <div className="text-sm font-medium truncate">{getDisplayName(conv)}</div>
+          <div className="text-sm font-medium truncate text-void-text">{getDisplayName(conv)}</div>
           {conv.type !== 'dm' && (
             <div className="text-xs text-gray-500">{conv.member_count} members</div>
           )}
@@ -144,7 +145,7 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center py-8">
-        <div className="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        <div className="w-5 h-5 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -152,14 +153,14 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
   return (
     <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col">
       <div className="px-1 mb-3 shrink-0">
-        <div className="flex items-center bg-gray-800 rounded-md px-2 py-1.5">
+        <div className="flex items-center bg-void-bg-hover/50 rounded-md px-2 py-1.5">
           <Search className="w-3.5 h-3.5 text-gray-500 mr-1.5" />
           <input
             type="text"
             placeholder={`Search ${filter === 'dm' ? 'DMs' : 'Groups'}...`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-transparent text-sm w-full focus:outline-none text-gray-200 placeholder-gray-500"
+            className="bg-transparent text-sm w-full focus:outline-none text-void-text placeholder-gray-500"
           />
         </div>
       </div>
@@ -172,7 +173,7 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         {filter === 'group' && (
           <button 
             onClick={onCreateGroup} 
-            className="text-gray-400 hover:text-gray-200 transition-colors p-1 hover:bg-gray-800 rounded-md"
+            className="text-gray-400 hover:text-gray-200 transition-colors p-1 hover:bg-void-bg-hover rounded-md"
             title="Create new group"
           >
             <Plus className="w-3.5 h-3.5" />

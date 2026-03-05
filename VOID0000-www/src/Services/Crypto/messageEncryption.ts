@@ -1,4 +1,5 @@
 // src/Services/Crypto/messageEncryption.ts
+import { cryptoWorker } from './cryptoWorkerManager';
 
 // ============== Encrypt ==============
 
@@ -35,14 +36,8 @@ export async function decryptMessage(
   iv: string,
   key: CryptoKey
 ): Promise<string> {
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: base64ToArrayBuffer(iv) },
-    key,
-    base64ToArrayBuffer(encrypted_content)
-  );
-
-  const decoder = new TextDecoder();
-  return decoder.decode(decrypted);
+  // Offloaded to the Web Worker to prevent UI freezing
+  return cryptoWorker.decryptAsync(encrypted_content, iv, key);
 }
 
 // ============== Batch Operations ==============
@@ -63,7 +58,8 @@ export async function decryptMessages(
       }
 
       try {
-        const content = await decryptMessage(msg.encrypted_content, msg.iv, key);
+        // Offloaded to the Web Worker
+        const content = await cryptoWorker.decryptAsync(msg.encrypted_content, msg.iv, key);
         return { ...msg, content };
       } catch (err) {
         // Log locally for debugging, but return a placeholder so the UI doesn't crash
@@ -81,13 +77,4 @@ export async function decryptMessages(
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   // Optimization: Spread operator with String.fromCharCode is natively optimized in V8
   return btoa(String.fromCharCode(...new Uint8Array(buffer)));
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
 }

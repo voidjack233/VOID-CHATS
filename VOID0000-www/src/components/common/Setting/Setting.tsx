@@ -1,15 +1,17 @@
-import { X, User, Shield, Info } from 'lucide-react';
+// src/components/common/Setting/Setting.tsx
+import { X, User, Shield, Info, Palette } from 'lucide-react';
 import { useState } from 'react';
 import ProfileTab from './ProfileTab';
 import AccountTab from './AccountTab';
 import AboutTab from './AboutTab';
+import AppearanceTab from './AppearanceTab';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 
 interface SettingsModalProps {
   onClose: () => void;
 }
 
-type SettingsTab = 'profile' | 'account' | 'about';
+type SettingsTab = 'profile' | 'account' | 'about' | 'appearance';
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   useScrollLock(); // Lock scroll when settings modal is open
@@ -18,6 +20,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   const menuItems = [
     { id: 'profile' as SettingsTab, label: 'Profile', icon: <User className="w-4 h-4" /> },
     { id: 'account' as SettingsTab, label: 'Account', icon: <Shield className="w-4 h-4" /> },
+    { id: 'appearance' as SettingsTab, label: 'Appearance', icon: <Palette className="w-4 h-4" /> },
     { id: 'about' as SettingsTab, label: 'About', icon: <Info className="w-4 h-4" /> },
   ];
 
@@ -27,6 +30,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         return <ProfileTab />;
       case 'account':
         return <AccountTab />;
+      case 'appearance':
+        return <AppearanceTab />;
       case 'about':
         return <AboutTab />;
       default:
@@ -35,13 +40,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900 md:flex md:items-center md:justify-center md:bg-black/20 md:backdrop-blur-sm">
-      <div className="h-full w-full md:h-[600px] md:max-h-[90vh] md:max-w-4xl md:mx-4 md:rounded-2xl md:shadow-2xl bg-gray-800 flex flex-col md:flex-row md:overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-void-bg-main/90 md:flex md:items-center md:justify-center md:bg-black/20 md:backdrop-blur-sm">
+      <div className="h-full w-full md:h-[600px] md:max-h-[90vh] md:max-w-4xl md:mx-4 md:rounded-2xl md:shadow-2xl bg-void-bg-sec flex flex-col md:flex-row md:overflow-hidden">
         
         {/* Desktop Sidebar */}
-        <div className="hidden md:flex md:w-64 bg-gray-900/50 border-r border-gray-700 flex-col flex-shrink-0">
-          <div className="p-6 border-b border-gray-700">
-            <h2 className="text-xl font-bold text-white">Settings</h2>
+        <div className="hidden md:flex md:w-64 bg-void-bg-main/50 border-r border-void-bg-hover flex-col flex-shrink-0">
+          <div className="p-6 border-b border-void-bg-hover">
+            <h2 className="text-xl font-bold text-void-text">Settings</h2>
             <p className="text-sm text-gray-400 mt-1">Manage your account</p>
           </div>
           
@@ -52,8 +57,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                 onClick={() => setActiveTab(item.id)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
                   activeTab === item.id
-                    ? 'bg-blue-500 text-white'
-                    : 'text-gray-300 hover:bg-gray-800/50 hover:text-white'
+                    ? 'bg-void-accent text-white'
+                    : 'text-gray-400 hover:bg-void-bg-hover hover:text-void-text'
                 }`}
               >
                 {item.icon}
@@ -62,33 +67,33 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             ))}
           </nav>
 
-          <div className="p-4 border-t border-gray-700">
+          <div className="p-4 border-t border-void-bg-hover">
             <p className="text-xs text-gray-500">Version 1.0.0</p>
           </div>
         </div>
 
         {/* Mobile Header - Sticky */}
-        <div className="md:hidden sticky top-0 z-10 bg-gray-800 border-b border-gray-700">
+        <div className="md:hidden sticky top-0 z-10 bg-void-bg-sec border-b border-void-bg-hover">
           <div className="p-4 flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white">Settings</h2>
+            <h2 className="text-xl font-bold text-void-text">Settings</h2>
             <button
               onClick={onClose}
-              className="p-2 rounded-full bg-gray-900/80 hover:bg-gray-900"
+              className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
-              <X className="w-5 h-5 text-gray-300" />
+              <X className="w-5 h-5 text-gray-400" />
             </button>
           </div>
 
           {/* Mobile Tab Navigation */}
-          <div className="flex border-t border-gray-700">
+          <div className="flex border-t border-void-bg-hover overflow-x-auto">
             {menuItems.map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium ${
+                className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium whitespace-nowrap ${
                   activeTab === item.id
-                    ? 'text-blue-400 border-b-2 border-blue-400'
-                    : 'text-gray-400 hover:text-white'
+                    ? 'text-void-accent border-b-2 border-void-accent'
+                    : 'text-gray-400 hover:text-void-text'
                 }`}
               >
                 {item.icon}
@@ -101,15 +106,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Desktop Header */}
-          <div className="hidden md:flex p-6 border-b border-gray-700 items-center justify-between flex-shrink-0">
-            <h3 className="text-lg font-semibold text-white">
+          <div className="hidden md:flex p-6 border-b border-void-bg-hover items-center justify-between flex-shrink-0">
+            <h3 className="text-lg font-semibold text-void-text">
               {menuItems.find(item => item.id === activeTab)?.label}
             </h3>
             <button
               onClick={onClose}
-              className="p-2 rounded-full bg-gray-900/80 hover:bg-gray-900"
+              className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
-              <X className="w-5 h-5 text-gray-300" />
+              <X className="w-5 h-5 text-gray-400" />
             </button>
           </div>
 

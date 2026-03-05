@@ -84,8 +84,8 @@ const ChatDashboard = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-        <div className="text-white text-lg font-medium">Verifying your session...</div>
+      <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
+        <div className="text-void-text text-lg font-medium">Verifying your session...</div>
       </div>
     );
   }
@@ -93,27 +93,28 @@ const ChatDashboard = () => {
   const isFriendsActive = !activeConversation;
 
   return (
-    <div className="flex h-screen bg-gray-900 text-gray-100 overflow-hidden font-sans">
+    <div className="flex h-screen bg-void-bg-main text-void-text overflow-hidden font-sans">
       {/* Modals */}
       {showProfile && user?.profile_id && (
         <UserProfile profileId={user.profile_id} onClose={() => setShowProfile(false)} />
       )}
       {showSettings && <UseSetting onClose={() => setShowSettings(false)} />}
       {showFriends && <FriendsModal onClose={() => setShowFriends(false)} />}
-      {showCreateGroup && (
+      {showCreateGroup && user?.id && (
         <GroupCreateModal
           onClose={() => setShowCreateGroup(false)}
           onCreated={() => setShowCreateGroup(false)}
+          currentUserId={user.id}
         />
       )}
 
       {/* Conversation Sidebar */}
-      <div className={`bg-gray-900 flex-col shrink-0 border-r border-gray-800 transition-all ${isMobileSidebarOpen ? 'flex' : 'hidden md:flex'} w-full md:w-72`}>
-        <div className="h-16 flex items-center px-4 font-bold text-base border-b border-gray-800 shrink-0">
+      <div className={`bg-void-bg-main flex-col shrink-0 border-r border-void-bg-sec transition-all ${isMobileSidebarOpen ? 'flex' : 'hidden md:flex'} w-full md:w-72`}>
+        <div className="h-16 flex items-center px-4 font-bold text-base border-b border-void-bg-sec shrink-0">
           <span className="bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Messages</span>
         </div>
 
-        <div className="px-3 pt-3 pb-2 shrink-0 border-b border-gray-800">
+        <div className="px-3 pt-3 pb-2 shrink-0 border-b border-void-bg-sec">
           <button
             onClick={() => {
               handleBackToMe();
@@ -121,8 +122,8 @@ const ChatDashboard = () => {
             }}
             className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border font-medium text-sm transition-all shadow-sm ${
               isFriendsActive
-                ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-400'
-                : 'bg-transparent border-transparent text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
+                ? 'bg-void-accent/20 border-void-accent/50 text-void-accent'
+                : 'bg-transparent border-transparent text-gray-400 hover:bg-void-bg-hover hover:text-gray-200'
             }`}
           >
             <Users className="w-4 h-4" />
@@ -131,10 +132,24 @@ const ChatDashboard = () => {
         </div>
 
         <div className="px-3 pt-3 pb-1 flex gap-1 shrink-0">
-          <button onClick={() => setChatFilter('dm')} className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${chatFilter === 'dm' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:bg-gray-800'}`}>
+          <button 
+            onClick={() => setChatFilter('dm')} 
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${
+              chatFilter === 'dm' 
+                ? 'bg-void-bg-hover text-void-text' 
+                : 'text-gray-400 hover:bg-void-bg-hover'
+            }`}
+          >
             <MessageCircle className="w-3.5 h-3.5" /> DMs
           </button>
-          <button onClick={() => setChatFilter('group')} className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${chatFilter === 'group' ? 'bg-gray-700 text-white' : 'text-gray-400 hover:bg-gray-800'}`}>
+          <button 
+            onClick={() => setChatFilter('group')} 
+            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${
+              chatFilter === 'group' 
+                ? 'bg-void-bg-hover text-void-text' 
+                : 'text-gray-400 hover:bg-void-bg-hover'
+            }`}
+          >
             <Hash className="w-3.5 h-3.5" /> Groups
           </button>
         </div>
@@ -154,26 +169,26 @@ const ChatDashboard = () => {
         </div>
 
         {/* User Mini Profile */}
-        <div className="h-[52px] bg-gray-900/90 flex items-center px-2 border-t border-gray-800 shrink-0">
-          <div className="flex items-center hover:bg-gray-800 p-1 rounded-md cursor-pointer flex-1 min-w-0" onClick={() => setShowProfile(true)}>
+        <div className="h-[52px] bg-void-bg-main/90 flex items-center px-2 border-t border-void-bg-sec shrink-0">
+          <div className="flex items-center hover:bg-void-bg-hover p-1 rounded-md cursor-pointer flex-1 min-w-0" onClick={() => setShowProfile(true)}>
             <div className="w-8 h-8 rounded-full mr-2 relative shrink-0">
               <img src={myAvatarUrl} alt="Avatar" className="w-full h-full object-cover rounded-full" />
             </div>
             <div className="text-sm font-semibold truncate flex-1">{myProfile?.display_name || user?.username || 'User'}</div>
           </div>
-          <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-gray-800 rounded-md shrink-0 ml-1">
+          <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-gray-200 hover:bg-void-bg-hover rounded-md shrink-0 ml-1">
             <Settings className="w-5 h-5" />
           </button>
         </div>
       </div>
 
       {/* Main Area */}
-      <div className={`flex-1 flex flex-col bg-gray-800 min-w-0 ${!isMobileSidebarOpen ? 'flex' : 'hidden md:flex'}`}>
+      <div className={`flex-1 flex flex-col bg-void-bg-sec min-w-0 ${!isMobileSidebarOpen ? 'flex' : 'hidden md:flex'}`}>
         {activeConversation ? (
           <>
-            <nav className="h-16 border-b border-gray-700 flex items-center justify-between px-4 shrink-0 shadow-sm">
+            <nav className="h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm">
               <div className="flex items-center min-w-0 flex-1">
-                <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded-md md:hidden shrink-0 transition-colors">
+                <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-gray-400 hover:text-white hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 {getHeaderIcon()}
@@ -182,7 +197,7 @@ const ChatDashboard = () => {
             </nav>
 
             {encryptionError ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-gray-800/50">
+              <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-void-bg-sec/50">
                 <ShieldAlert className="w-12 h-12 text-orange-400 mb-4 opacity-80" />
                 <p className="text-sm font-semibold text-gray-300 mb-2">{encryptionError}</p>
                 <p className="text-xs text-gray-500 mb-6 max-w-xs">
@@ -196,7 +211,7 @@ const ChatDashboard = () => {
                     handleBackToMe();
                     setTimeout(() => handleSelectConversation(current), 50);
                   }}
-                  className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg transition-all shadow-lg"
+                  className="px-6 py-2 bg-void-accent-hover hover:bg-void-accent text-white text-xs font-bold rounded-lg transition-all shadow-lg"
                 >
                   Retry Connection
                 </button>
@@ -234,10 +249,10 @@ const ChatDashboard = () => {
             )}
           </>
         ) : (
-          <div className="flex-1 flex flex-col min-h-0 bg-gray-800">
-            <div className="md:hidden h-16 border-b border-gray-700 flex items-center justify-between px-4 shrink-0 shadow-sm bg-gray-800">
+          <div className="flex-1 flex flex-col min-h-0 bg-void-bg-sec">
+            <div className="md:hidden h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm bg-void-bg-sec">
               <div className="flex items-center">
-                <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded-md shrink-0 transition-colors">
+                <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-gray-400 hover:text-white hover:bg-void-bg-hover rounded-md shrink-0 transition-colors">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <h1 className="text-lg font-bold">Friends</h1>
