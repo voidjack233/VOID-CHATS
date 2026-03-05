@@ -1,7 +1,4 @@
 // server/routes/conversations/batchReactions.js
-// Mount in conversations/index.js as:
-//   import batchReactionsRouter from './batchReactions.js';
-//   router.get('/:conversationId/reactions', authenticateUser, batchReactionsRouter);
 
 import { Router } from 'express';
 import { pool } from '../../db.js';

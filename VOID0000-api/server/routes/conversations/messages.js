@@ -24,36 +24,62 @@ async function getConversationMembers(conversationId) {
 }
 
 /**
- * Batch fetch reactions for multiple messages in one go.
- * Returns: { messageId: { emoji: [userId, ...] } }
+ * Fetches reactions and formats them for the UI:
+ * Returns: { messageId: { emoji: { count: Number, me: Boolean } } }
  */
-async function batchFetchReactions(conversationId, messageIds) {
-  if (messageIds.length === 0) return {};
+async function batchFetchReactions(conversationId, messageIds, currentUserId) {
+  if (!messageIds || messageIds.length === 0) return {};
 
   const convUuid = cassandra.types.Uuid.fromString(conversationId);
-
-  const results = await Promise.all(
-    messageIds.map((id) =>
-      scylla.execute(
-        `SELECT message_id, emoji, user_id FROM message_reactions
-         WHERE conversation_id = ? AND message_id = ?`,
-        [convUuid, cassandra.types.TimeUuid.fromString(id)],
-        { prepare: true }
-      ).catch(() => ({ rows: [] }))
-    )
-  );
-
   const reactions = {};
-  for (const result of results) {
-    for (const row of result.rows) {
-      const msgId = row.message_id.toString();
-      const emoji = row.emoji;
-      const uid = row.user_id.toString();
-      if (!reactions[msgId]) reactions[msgId] = {};
-      if (!reactions[msgId][emoji]) reactions[msgId][emoji] = [];
-      reactions[msgId][emoji].push(uid);
-    }
+
+  // Pre-populate the response object so messages with 0 reactions still get an empty object
+  messageIds.forEach((id) => {
+    reactions[id] = {};
+  });
+
+  // Chunking the array prevents the IN clause from becoming massively bloated
+  // if you ever increase your pagination limit.
+  const chunkSize = 50; 
+  const chunks = [];
+  for (let i = 0; i < messageIds.length; i += chunkSize) {
+    chunks.push(messageIds.slice(i, i + chunkSize));
   }
+
+  try {
+    for (const chunk of chunks) {
+      const msgUuids = chunk.map((id) => cassandra.types.TimeUuid.fromString(id));
+      // Fetch all reactions for this chunk of messages in a single network round trip
+      const result = await scylla.execute(
+        `SELECT message_id, emoji, user_id FROM message_reactions
+         WHERE conversation_id = ? AND message_id IN ?`,
+        [convUuid, msgUuids],
+        { prepare: true }
+      );
+
+      for (const row of result.rows) {
+        const msgId = row.message_id.toString();
+        const emoji = row.emoji;
+        const uid = row.user_id.toString();
+
+        if (!reactions[msgId][emoji]) {
+          reactions[msgId][emoji] = { count: 0, me: false };
+        }
+
+        // Increment the count in memory
+        reactions[msgId][emoji].count += 1;
+        // Check if the current user is the one who reacted
+        if (uid === currentUserId) {
+          reactions[msgId][emoji].me = true;
+        }
+      }
+    }
+  } catch (err) {
+    // Log the actual ScyllaDB error (e.g., read timeouts, schema issues)
+    console.error(`[ScyllaDB] Failed to batch fetch reactions for conversation ${conversationId}:`, err);
+    throw err; // Let the Express route catch this and return a proper 500 to the client
+  }
+
   return reactions;
 }
 
