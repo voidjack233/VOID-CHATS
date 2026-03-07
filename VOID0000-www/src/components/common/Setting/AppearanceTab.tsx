@@ -79,9 +79,9 @@ const AppearanceTab = () => {
   }
 
   const isDark = isDarkBackground(bgColor);
-  const isVoid = 
-    currentTheme === 'void' && 
-    accentColor === THEME_PRESETS.void.accent && 
+  const isVoid =
+    currentTheme === 'void' &&
+    accentColor === THEME_PRESETS.void.accent &&
     bgColor === THEME_PRESETS.void.bg &&
     textColor === THEME_PRESETS.void.text &&
     hoverColor === THEME_PRESETS.void.hover;
@@ -108,19 +108,21 @@ const AppearanceTab = () => {
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {themePresets.map((preset) => {
-            const isSelected = preset.colors[0] === bgColor && preset.colors[1] === accentColor;
+            const isSelected =
+              accentColor === THEME_PRESETS[preset.id].accent &&
+              bgColor === THEME_PRESETS[preset.id].bg &&
+              textColor === THEME_PRESETS[preset.id].text &&
+              hoverColor === THEME_PRESETS[preset.id].hover;
             const presetIsDark = isDarkBackground(preset.colors[0]);
             const isVoidPreset = preset.id === 'void';
-
             return (
               <button
                 key={preset.id}
                 onClick={() => setTheme(preset.id)}
-                className={`relative p-4 rounded-lg border-2 transition-all ${
-                  isSelected
+                className={`relative p-4 rounded-lg border-2 transition-all ${isSelected
                     ? 'border-void-accent bg-void-bg-hover'
                     : 'border-void-bg-sec hover:border-void-accent/50 bg-void-bg-main'
-                } ${isVoidPreset && !isSelected ? 'ring-1 ring-void-accent/30' : ''}`}
+                  }`}
               >
                 {isSelected && (
                   <div className="absolute top-2 right-2">
@@ -246,22 +248,27 @@ const AppearanceTab = () => {
             <button
               key={id}
               onClick={() => setDensity(id)}
-              className={`p-4 rounded-lg border-2 text-left transition-all ${
-                density === id
+              className={`p-4 rounded-lg border-2 text-left transition-all ${density === id
                   ? 'border-void-accent bg-void-bg-hover'
                   : 'border-void-bg-sec hover:border-void-accent/50 bg-void-bg-main'
-              }`}
+                }`}
             >
-              {density === id && (
-                <div className="float-right">
-                  <Check className="w-4 h-4 text-void-accent" />
-                </div>
-              )}
-              <p className="font-medium text-sm text-void-text">{label}</p>
-              <p className="text-xs text-void-text-muted mt-0.5">{desc}</p>
-              <div className="mt-3 flex flex-col" style={{ gap: id === 'compact' ? '4px' : '8px' }}>
-                {[70, 50, 85].map((w, i) => (
-                  <div key={i} className="h-1.5 rounded-full bg-void-accent/30" style={{ width: `${w}%` }} />
+              <div className="flex items-center justify-between mb-1">
+                <p className="font-medium text-sm text-void-text">{label}</p>
+                {density === id && <Check className="w-4 h-4 text-void-accent" />}
+              </div>
+              <p className="text-xs text-void-text-muted mb-3">{desc}</p>
+
+              {/* Mini chat preview */}
+              <div className="flex flex-col" style={{ gap: id === 'compact' ? '5px' : '10px' }}>
+                {(id === 'compact'
+                  ? [{ w: '65%' }, { w: '50%' }, { w: '75%' }, { w: '40%' }]
+                  : [{ w: '65%' }, { w: '50%' }, { w: '75%' }]
+                ).map(({ w }, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <div className="w-3 h-3 rounded-full bg-void-accent/40 flex-shrink-0" />
+                    <div className="h-2.5 rounded-full bg-void-accent/20" style={{ width: w }} />
+                  </div>
                 ))}
               </div>
             </button>
@@ -287,8 +294,8 @@ const AppearanceTab = () => {
               <div className="flex flex-col items-start w-full">
                 <span className="text-[10px] font-semibold px-1 ml-10 mb-1" style={{ color: accentColor }}>Alice</span>
                 <div className="flex items-end gap-2 w-full">
-                  <div 
-                    className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold" 
+                  <div
+                    className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
                     style={{ backgroundColor: `color-mix(in srgb, ${accentColor} 30%, ${bgColor})`, color: textColor }}
                   >
                     A
@@ -298,19 +305,19 @@ const AppearanceTab = () => {
                   </div>
                 </div>
               </div>
-              
+
               {/* You */}
               <div className="flex flex-col items-start w-full">
                 <span className="text-[10px] font-semibold px-1 ml-10 mb-1" style={{ color: accentColor }}>You</span>
                 <div className="flex items-end gap-2 w-full">
-                  <div 
-                    className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold shadow-sm" 
+                  <div
+                    className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold shadow-sm"
                     style={{ backgroundColor: accentColor, color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827' }}
                   >
                     Y
                   </div>
-                  <div 
-                    className="rounded-2xl rounded-bl-sm text-xs px-3 py-1.5 font-medium shadow-sm" 
+                  <div
+                    className="rounded-2xl rounded-bl-sm text-xs px-3 py-1.5 font-medium shadow-sm"
                     style={{ backgroundColor: accentColor, color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827' }}
                   >
                     Yes! The compact layout is perfect now 🎉
@@ -325,8 +332,8 @@ const AppearanceTab = () => {
               <div className="flex flex-col items-start w-full">
                 <span className="text-[10px] font-semibold px-1 ml-10 mb-1" style={{ color: accentColor }}>Alice</span>
                 <div className="flex items-end gap-2 w-full">
-                  <div 
-                    className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold" 
+                  <div
+                    className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
                     style={{ backgroundColor: `color-mix(in srgb, ${accentColor} 30%, ${bgColor})`, color: textColor }}
                   >
                     A
@@ -344,8 +351,8 @@ const AppearanceTab = () => {
                 {/* No name shown for your own messages in comfortable mode */}
                 <div className="flex items-end flex-row-reverse w-full">
                   <div className="flex flex-col items-end gap-1 w-full max-w-[80%]">
-                    <div 
-                      className="rounded-2xl rounded-br-sm text-sm font-medium px-4 py-2.5 shadow-sm" 
+                    <div
+                      className="rounded-2xl rounded-br-sm text-sm font-medium px-4 py-2.5 shadow-sm"
                       style={{ backgroundColor: accentColor, color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827' }}
                     >
                       Yes! Comfortable mode is super clean without avatars 🎉
@@ -386,11 +393,10 @@ const AppearanceTab = () => {
         <button
           onClick={handleSave}
           disabled={!hasChanges || isSaving}
-          className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm shadow-lg transition-all ${
-            hasChanges
+          className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm shadow-lg transition-all ${hasChanges
               ? 'bg-void-accent hover:bg-void-accent-hover text-white shadow-void-accent/25'
               : 'bg-void-bg-hover text-void-text-muted cursor-not-allowed'
-          }`}
+            }`}
         >
           <Save className="w-4 h-4" />
           {isSaving ? 'Saving...' : hasChanges ? 'Save Changes' : 'No Changes'}

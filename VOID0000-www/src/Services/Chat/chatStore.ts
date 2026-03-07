@@ -16,7 +16,7 @@ export interface LocalMessage {
   conversation_id: string;
   message_id: string;
   sender_id: string;
-  content: string;
+  content: string | null;
   message_type: string;
   reply_to: string | null;
   is_edited: boolean;

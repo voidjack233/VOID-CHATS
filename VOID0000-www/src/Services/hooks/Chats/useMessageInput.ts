@@ -167,7 +167,7 @@ export const useMessageInput = ({
         });
         onMessageSent(msg);
         onCancelReply?.();
-      } else {
+      } else if (uploadedUrls.length > 0) {
         // Image-only message
         const msg = await sendImageOnlyMessage(conversation.id, uploadedUrls, {
           key_version: keyVersion,

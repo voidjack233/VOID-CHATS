@@ -206,7 +206,7 @@ export async function sendImageOnlyMessage(
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
 
-  return data.message;
+  return { ...data.message, attachments };
 }
 
 export async function uploadAttachments(

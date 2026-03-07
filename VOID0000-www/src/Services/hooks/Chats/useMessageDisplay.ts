@@ -10,13 +10,7 @@ export const useMessageDisplay = (
   const { user } = useUser();
 
   const formatTime = useCallback((dateStr: string) => {
-    const date = new Date(dateStr);
-    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const diffDays = Math.floor((new Date().getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
-    
-    if (diffDays === 0) return `Today at ${time}`;
-    if (diffDays === 1) return `Yesterday at ${time}`;
-    return `${date.toLocaleDateString()} ${time}`;
+    return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }, []);
 
 const getSenderName = useCallback((senderId: string) => {

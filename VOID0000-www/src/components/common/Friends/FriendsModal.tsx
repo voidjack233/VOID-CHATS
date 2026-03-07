@@ -61,28 +61,23 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
 
           {/* Pending Requests */}
           <div className="flex-1 overflow-y-auto p-4">
-            <h3 className="text-xs font-semibold text-void-text-muted uppercase tracking-wide mb-3">
-              Pending Requests {incoming.length > 0 && `(${incoming.length})`}
-            </h3>
-
             {requestsLoading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-blue-400 animate-spin mb-4" />
                 <p className="text-void-text-muted">Loading...</p>
               </div>
-            ) : incoming.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-void-text-muted">
-                <Users className="w-10 h-10 mb-3 opacity-50" />
-                <p className="text-sm">No pending requests</p>
-                <p className="text-xs mt-1">Friend requests will appear here</p>
-              </div>
-            ) : (
-              <IncomingRequests
-                requests={incoming}
-                onAccept={acceptRequest}
-                onReject={rejectRequest}
-              />
-            )}
+            ) : incoming.length > 0 ? (
+              <>
+                <h3 className="text-xs font-semibold text-void-text-muted uppercase tracking-wide mb-3">
+                  Pending Requests ({incoming.length})
+                </h3>
+                <IncomingRequests
+                  requests={incoming}
+                  onAccept={acceptRequest}
+                  onReject={rejectRequest}
+                />
+              </>
+            ) : null}
           </div>
         </div>
       </div>

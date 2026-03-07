@@ -82,7 +82,7 @@ class MessageSync {
         conversation_id: msg.conversation_id,
         message_id: msg.message_id,
         sender_id: msg.sender_id,
-        content: msg.content || '[encrypted]',
+        content: msg.content ?? null,
         message_type: msg.message_type,
         reply_to: msg.reply_to,
         is_edited: msg.is_edited,

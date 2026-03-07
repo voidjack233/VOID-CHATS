@@ -30,7 +30,7 @@ function toUIMessage(local: LocalMessage): Message {
     edited_at: local.edited_at,
     is_deleted: local.is_deleted,
     created_at: local.created_at,
-    content: local.content,
+    content: local.content ?? undefined,
     reactions: local.reactions || {},
     attachments: local.attachments,
   };
@@ -151,7 +151,7 @@ export const useMessageList = (
       conversation_id: newMessage.conversation_id,
       message_id: newMessage.message_id,
       sender_id: newMessage.sender_id,
-      content: newMessage.content || '[encrypted]',
+      content: newMessage.content ?? null,
       message_type: newMessage.message_type,
       reply_to: newMessage.reply_to,
       is_edited: newMessage.is_edited,
@@ -223,7 +223,7 @@ export const useMessageList = (
 
         const localMsgs: LocalMessage[] = serverMsgs.map((msg) => ({
           ...msg,
-          content: msg.content || '[encrypted]',
+          content: msg.content ?? null,
           reactions: (msg as any).reactions || {},
         }));
 

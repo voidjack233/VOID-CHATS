@@ -1,7 +1,7 @@
 // src/components/Chat/MessageView.tsx
 
 import { useState, useCallback, useEffect } from 'react';
-import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile } from 'lucide-react';
+import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -38,8 +38,9 @@ const DENSITY: Record<Density, {
   },
 };
 
-/* Avatar width (w-8 = 32px) + gap-2 (8px) = 40px → pl-10 */
+/* Avatar width (w-8 = 32px) + gap-2 (8px) = 40px */
 const AVATAR_OFFSET = 'pl-10';
+const AVATAR_MARGIN = 'ml-10'; // used on flex row for consecutive messages
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -122,7 +123,7 @@ const MessageView = ({
 
   const getSmartDisplayName = useCallback((senderId: string) => {
     if (senderId === user?.id) {
-      return myProfile?.display_name || user?.username || 'You';
+      return myProfile?.display_name;
     }
     const friend = friends.find(f => f.id === senderId);
     if (friend && friend.display_name) {
@@ -193,6 +194,23 @@ const MessageView = ({
     </div>
   );
 
+  const getDateLabel = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const isSameDay = (a: Date, b: Date) =>
+      a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (isSameDay(date, today)) return 'Today';
+    if (isSameDay(date, yesterday)) return 'Yesterday';
+    return date.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  };
+
+  const isSameDay = (a: string, b: string) => {
+    const da = new Date(a), db = new Date(b);
+    return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+  };
+
   const rendered = [...messages].reverse();
 
   return (
@@ -217,6 +235,7 @@ const MessageView = ({
 
       {rendered.map((msg, index) => {
         const prevMsg = index > 0 ? rendered[index - 1] : null;
+        const showDateSeparator = !prevMsg || !isSameDay(msg.created_at, prevMsg.created_at);
         const timeDiff = prevMsg ? new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime() : 0;
         const isOwn = msg.sender_id === user?.id;
         const isReply = !!msg.reply_to;
@@ -227,9 +246,22 @@ const MessageView = ({
         const d = DENSITY[density];
         const isRightAligned = isOwn && density === 'comfortable';
         const showAvatar = density === 'compact' ? true : !isOwn;
-        const showAvatarImage = showAvatar && !isConsecutive;
+
+        // In compact mode, indent header/reply/bubble rows to align with avatar
+        // For consecutive messages, we apply the margin directly on the flex row instead
+        const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
 
         return (
+          <div key={msg.message_id + '-wrapper'}>
+            {showDateSeparator && (
+              <div className="flex items-center gap-3 my-4 px-2">
+                <div className="flex-1 h-px bg-void-bg-hover" />
+                <span className="text-xs text-void-text-muted font-medium shrink-0">
+                  {getDateLabel(msg.created_at)}
+                </span>
+                <div className="flex-1 h-px bg-void-bg-hover" />
+              </div>
+            )}
           <div
             key={msg.message_id}
             onMouseEnter={() => setHoveredId(msg.message_id)}
@@ -237,39 +269,74 @@ const MessageView = ({
             onContextMenu={(e) => handleContextMenu(e, msg)}
             className={`relative group px-2 ${isConsecutive ? d.consecutiveGap : d.groupGap}`}
           >
-            {/*
-              STRUCTURE (Google Chat style):
-              ┌─────────────────────────────────┐
-              │  [padded]  Sender Name           │  ← above, indented past avatar
-              │  [padded]  ↳ reply preview       │  ← above, indented past avatar
-              │  [avatar]  [bubble]              │  ← avatar directly beside bubble
-              │  [padded]  timestamp · reactions  │  ← below, indented past avatar
-              └─────────────────────────────────┘
-            */}
 
-            {/* Sender name — above the avatar+bubble row, indented to align with bubble */}
-            {!isConsecutive && (!isOwn || density === 'compact') && (
-              <div className={`${isRightAligned ? 'text-right' : showAvatar ? AVATAR_OFFSET : ''}`}>
-                <span
-                  className="text-xs font-semibold text-void-accent mb-0.5 px-1 cursor-pointer hover:underline inline-block"
-                  onClick={() => handleProfileClick(msg.sender_id)}
-                >
-                  {getSmartDisplayName(msg.sender_id)}
-                </span>
+            {/* Header row: Name + Time — only on first message of a group */}
+            {!isConsecutive && (
+              <div
+                className={`flex items-center gap-2 text-xs mb-0.5 px-1 ${
+                  isRightAligned ? 'justify-end' : leftIndent
+                }`}
+              >
+                {isRightAligned ? (
+                  <>
+                    <span className="text-void-text-muted">
+                      {formatTime(msg.created_at)}
+                    </span>
+                    <span
+                      className="font-semibold text-void-accent cursor-pointer hover:underline"
+                      onClick={() => handleProfileClick(msg.sender_id)}
+                    >
+                      {getSmartDisplayName(msg.sender_id)}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className="font-semibold text-void-accent cursor-pointer hover:underline"
+                      onClick={() => handleProfileClick(msg.sender_id)}
+                    >
+                      {getSmartDisplayName(msg.sender_id)}
+                    </span>
+                    <span className="text-void-text-muted">
+                      {formatTime(msg.created_at)}
+                    </span>
+                  </>
+                )}
               </div>
             )}
 
-            {/* Reply preview — above the avatar+bubble row, indented to align with bubble */}
+            {/* Reply preview — above the avatar+bubble row */}
             {msg.reply_to && (
-              <div className={`${isRightAligned ? 'text-right' : showAvatar ? AVATAR_OFFSET : ''} mb-0.5`}>
+              <div className={`mb-0.5 ${isRightAligned ? 'text-right' : leftIndent}`}>
                 <div className="inline-flex items-center gap-1.5 text-xs text-void-text-muted cursor-pointer hover:text-void-text transition-colors">
                   <CornerUpRight className="w-3 h-3 flex-shrink-0" />
                   {replyParent ? (
                     <>
-                      <span className="font-semibold text-void-accent/70">{getSenderName(replyParent.sender_id)}</span>
-                      <span className="truncate max-w-[220px]">
-                        {replyParent.is_deleted ? '[deleted]' : replyParent.content ? replyParent.content.substring(0, 60) + (replyParent.content.length > 60 ? '…' : '') : '[encrypted]'}
-                      </span>
+                      <span className="font-semibold text-void-accent/70">{getSmartDisplayName(replyParent.sender_id)}</span>
+                      {(() => {
+                        const hasRealContent = replyParent.content && replyParent.content !== '[encrypted]' && replyParent.content !== '[deleted]';
+                        if (replyParent.is_deleted) {
+                          return <span className="italic opacity-60">[deleted]</span>;
+                        }
+                        if (!hasRealContent && replyParent.attachments?.length) {
+                          return (
+                            <span className="flex items-center gap-1.5">
+                              <Image className="w-4 h-4 flex-shrink-0" />
+                              <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
+                                Click to see attachment
+                              </span>
+                            </span>
+                          );
+                        }
+                        if (hasRealContent) {
+                          return (
+                            <span className="truncate max-w-[220px]">
+                              {replyParent.content!.substring(0, 60) + (replyParent.content!.length > 60 ? '…' : '')}
+                            </span>
+                          );
+                        }
+                        return <span className="italic opacity-60">Message unavailable</span>;
+                      })()}
                     </>
                   ) : (
                     <span className="italic">Loading reply...</span>
@@ -278,19 +345,23 @@ const MessageView = ({
               </div>
             )}
 
-            {/* Avatar + Bubble row — avatar sits directly beside the bubble */}
-            <div className={`flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-start gap-2`}>
-              {showAvatar && (
-                showAvatarImage ? (
-                  <div
-                    className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity"
-                    onClick={() => handleProfileClick(msg.sender_id)}
-                  >
-                    <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
-                  </div>
-                ) : (
-                  <div className="w-8 h-8 flex-shrink-0" />
-                )
+            {/* Avatar + Bubble row */}
+            {/*
+              - Non-consecutive: avatar renders naturally, gap-2 handles spacing
+              - Consecutive: no avatar rendered, so we apply AVATAR_MARGIN (ml-10)
+                to the flex row itself to keep bubbles aligned with the group above
+            */}
+            <div className={`flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-center gap-2 ${
+              isConsecutive && !isRightAligned ? AVATAR_MARGIN : ''
+            }`}>
+              {/* Avatar — only on first message of a group */}
+              {!isConsecutive && showAvatar && (
+                <div
+                  className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity self-start"
+                  onClick={() => handleProfileClick(msg.sender_id)}
+                >
+                  <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
+                </div>
               )}
 
               <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}>
@@ -299,35 +370,36 @@ const MessageView = ({
                   <div className={`${d.bubblePadding} rounded-2xl text-sm italic text-void-text-muted bg-void-bg-hover/50`}>
                     [deleted]
                   </div>
-                ) : (
-                  <div className={`${d.bubblePadding} rounded-2xl text-sm break-words ${
-                    isRightAligned
-                      ? 'rounded-br-sm bg-void-accent text-white'
-                      : isOwn
+                ) : (() => {
+                  const hasRealContent = msg.content && msg.content !== '[encrypted]';
+                  if (!hasRealContent && msg.attachments?.length) return null;
+                  return (
+                    <div className={`${d.bubblePadding} rounded-2xl text-sm break-words ${
+                      isRightAligned
+                        ? 'rounded-br-sm bg-void-accent text-white'
+                        : isOwn
                           ? 'rounded-bl-sm bg-void-accent text-white'
                           : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                  }`}>
-                    {msg.content || (msg.attachments?.length ? null : '[encrypted]')}
-                    {msg.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
-                  </div>
-                )}
+                    }`}>
+                      {hasRealContent ? msg.content : <span className="italic opacity-50 text-xs">encrypted</span>}
+                      {msg.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
+                    </div>
+                  );
+                })()}
 
                 {/* Attachments */}
                 {!msg.is_deleted && msg.attachments && msg.attachments.length > 0 && (
-                  <div className={`mt-1 grid gap-1 ${msg.attachments.length === 1 ? 'grid-cols-1' : msg.attachments.length === 2 ? 'grid-cols-2' : 'grid-cols-3'} max-w-xs`}>
+                  <div className={`mt-1 grid gap-1 ${
+                    msg.attachments.length === 1 ? 'grid-cols-1' :
+                    msg.attachments.length === 2 ? 'grid-cols-2' :
+                    'grid-cols-3'
+                  } max-w-xs`}>
                     {msg.attachments.map((url, i) => (
                       <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block rounded-xl overflow-hidden bg-void-bg-hover">
                         <img src={url} alt="attachment" className="w-full object-cover max-h-56 hover:opacity-90 transition-opacity" loading="lazy" />
                       </a>
                     ))}
                   </div>
-                )}
-
-                {/* Timestamp */}
-                {(!isConsecutive || d.timestampAlways) && (
-                  <span className={`text-[10px] text-void-text-muted mt-0.5 px-1 ${d.timestampAlways ? '' : 'opacity-0 group-hover:opacity-100 transition-opacity'}`}>
-                    {formatTime(msg.created_at)}
-                  </span>
                 )}
 
                 {/* Reactions */}
@@ -341,41 +413,45 @@ const MessageView = ({
                         const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
                         if (el) {
                           const rect = el.getBoundingClientRect();
-                          setEmojiPickerTarget({ messageId: msg.message_id, position: { x: rect.left, y: rect.bottom + 8 } });
+                          setEmojiPickerTarget({
+                            messageId: msg.message_id,
+                            position: { x: rect.left, y: rect.bottom + 8 },
+                          });
                         }
                       }}
                     />
                   </div>
                 )}
               </div>
-            </div>
 
-            {/* Hover action bar */}
-            {hoveredId === msg.message_id && !msg.is_deleted && (
-              <div
-                data-msg-id={msg.message_id}
-                className={`absolute -top-3 ${isRightAligned ? 'left-2' : 'right-2'} flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg z-10`}
-              >
-                <button onClick={(e) => openEmojiPicker(msg.message_id, e)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text" title="React">
-                  <Smile className="w-3.5 h-3.5" />
-                </button>
-                {onReply && (
-                  <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
-                    <Reply className="w-3.5 h-3.5" />
+              {/* Hover action bar — inline, centered next to bubble */}
+              {hoveredId === msg.message_id && !msg.is_deleted && (
+                <div
+                  data-msg-id={msg.message_id}
+                  className="flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0"
+                >
+                  <button onClick={(e) => openEmojiPicker(msg.message_id, e)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text" title="React">
+                    <Smile className="w-3.5 h-3.5" />
                   </button>
-                )}
-                {isOwn && onEdit && (
-                  <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                )}
-                {isOwn && (
-                  <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            )}
+                  {onReply && (
+                    <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
+                      <Reply className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {isOwn && onEdit && (
+                    <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {isOwn && (
+                    <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
           </div>
         );
       })}

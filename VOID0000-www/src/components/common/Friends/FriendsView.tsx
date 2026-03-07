@@ -1,10 +1,12 @@
 // src/components/Chat/FriendsView.tsx
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { MessageCircle, Search, UserPlus, User } from 'lucide-react';
 import { usePresence } from '../../../Services/hooks/Friends/usePresence';
 import { Friend } from '../../../Services/hooks/Friends/useFriends';
-import FriendProfile from './FriendProfile'; 
-import AddFriend from './AddFriend'
+import { useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
+import FriendProfile from './FriendProfile';
+import AddFriend from './AddFriend';
+import IncomingRequests from './IncomingRequests';
 
 // Note: I removed onShowFriendsModal from the props since we don't need it to bubble up to Chats.tsx anymore!
 interface FriendsViewProps {
@@ -17,8 +19,18 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
   const [search, setSearch] = useState('');
   
   // Expanded tab state to include the add friend view!
-  const [tab, setTab] = useState<'online' | 'all' | 'add_friend'>('online');
+  const [tab, setTab] = useState<'online' | 'all' | 'pending' | 'add_friend'>('online');
+  const { incoming, outgoing, acceptRequest, rejectRequest, cancelRequest } = useFriendRequests();
   const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
+
+  const hasPending = incoming.length > 0 || outgoing.length > 0;
+
+  // Auto-switch off pending tab if all requests are cleared
+  useEffect(() => {
+    if (tab === 'pending' && !hasPending) {
+      setTab('online');
+    }
+  }, [hasPending, tab]);
 
   const getPresence = (userId: string) => getPresenceData(userId).status;
 
@@ -87,14 +99,34 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
             <button
               onClick={() => setTab('all')}
               className={`px-3 py-1 text-sm rounded-md transition-colors ${
-                tab === 'all' 
-                  ? 'bg-void-bg-hover text-void-text' 
+                tab === 'all'
+                  ? 'bg-void-bg-hover text-void-text'
                   : 'text-void-text-muted hover:text-void-text'
               }`}
             >
               All
             </button>
+            {hasPending && (
+              <button
+                onClick={() => setTab('pending')}
+                className={`relative px-3 py-1 text-sm rounded-md transition-colors ${
+                  tab === 'pending'
+                    ? 'bg-void-bg-hover text-void-text'
+                    : 'text-void-text-muted hover:text-void-text'
+                }`}
+              >
+                Pending
+                {incoming.length > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                    {incoming.length}
+                  </span>
+                )}
+              </button>
+            )}
           </div>
+
+          {/* Pending */}
+          
           <button
           onClick={() => setTab('add_friend')}
           className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
@@ -112,6 +144,59 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
       {/* The View Swapper */}
       {tab === 'add_friend' ? (
         <AddFriend />
+      ) : tab === 'pending' ? (
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          {incoming.length === 0 && outgoing.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-void-text-muted">
+              <p className="text-sm">No pending requests</p>
+            </div>
+          ) : (
+            <>
+              {incoming.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-void-text-muted uppercase tracking-wide mb-2">
+                    Incoming — {incoming.length}
+                  </p>
+                  <IncomingRequests
+                    requests={incoming}
+                    onAccept={acceptRequest}
+                    onReject={rejectRequest}
+                  />
+                </div>
+              )}
+              {outgoing.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-void-text-muted uppercase tracking-wide mb-2">
+                    Sent — {outgoing.length}
+                  </p>
+                  <div className="space-y-2">
+                    {outgoing.map((req) => (
+                      <div key={req.friendship_id} className="flex items-center justify-between p-3 bg-void-bg-hover/30 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={req.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${req.username}`}
+                            alt={req.display_name || req.username}
+                            className="w-10 h-10 rounded-full object-cover"
+                          />
+                          <div>
+                            <p className="text-void-text font-medium text-sm">{req.display_name || req.username}</p>
+                            <p className="text-void-text-muted text-xs">@{req.username} · Pending</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => cancelRequest(req.friendship_id)}
+                          className="px-3 py-1 text-xs text-red-400 border border-red-400/30 rounded-md hover:bg-red-400/10 transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       ) : (
         <>
           {/* Normal Friends View Content */}

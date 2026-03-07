@@ -14,8 +14,19 @@ export interface FriendRequest {
   avatar_url: string | null;
 }
 
+export interface OutgoingRequest {
+  friendship_id: number;
+  created_at: string;
+  id: string;
+  username: string;
+  profile_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+}
+
 interface FriendContextType {
   incoming: FriendRequest[];
+  outgoing: OutgoingRequest[];
   unreadCount: number;
   loading: boolean;
   acceptRequest: (id: number) => Promise<{ success: boolean }>;
@@ -31,6 +42,7 @@ const FriendContext = createContext<FriendContextType | null>(null);
 export function FriendProvider({ children }: { children: ReactNode }) {
   const { user } = useUser();
   const [incoming, setIncoming] = useState<FriendRequest[]>([]);
+  const [outgoing, setOutgoing] = useState<OutgoingRequest[]>([]);
   const [loading, setLoading] = useState(false);
   const hasFetched = useRef(false);
   
@@ -58,12 +70,14 @@ export function FriendProvider({ children }: { children: ReactNode }) {
     if (!user) return;
     try {
       setLoading(true);
-      const res = await fetch(`${API_URL}/api/friends/requests/incoming`, { credentials: 'include' });
-      const data = await res.json();
-      if (data.success) {
-        setIncoming(data.requests || []);
-        hasFetched.current = true;
-      }
+      const [inRes, outRes] = await Promise.all([
+        fetch(`${API_URL}/api/friends/requests/incoming`, { credentials: 'include' }),
+        fetch(`${API_URL}/api/friends/requests/outgoing`, { credentials: 'include' }),
+      ]);
+      const [inData, outData] = await Promise.all([inRes.json(), outRes.json()]);
+      if (inData.success) setIncoming(inData.requests || []);
+      if (outData.success) setOutgoing(outData.requests || []);
+      hasFetched.current = true;
     } catch (err) {
       console.error(err);
     } finally {
@@ -125,7 +139,7 @@ export function FriendProvider({ children }: { children: ReactNode }) {
   };
 
   const cancelRequest = async (friendshipId: number) => {
-     try {
+    try {
       const csrf = await ensureCSRFToken();
       const res = await fetch(`${API_URL}/api/friends/cancel/${friendshipId}`, {
         method: 'POST',
@@ -133,6 +147,7 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         credentials: 'include'
       });
       if (!res.ok) throw new Error('Failed to cancel request');
+      setOutgoing(prev => prev.filter(r => r.friendship_id !== friendshipId));
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -178,9 +193,10 @@ export function FriendProvider({ children }: { children: ReactNode }) {
       });
     };
 
-    // FRIEND_ACCEPT: Request was accepted — remove from incoming
+    // FRIEND_ACCEPT: Request was accepted — remove from incoming and outgoing
     const handleAccepted = (data: { friendship_id: number }) => {
       setIncoming(prev => prev.filter(r => r.friendship_id !== data.friendship_id));
+      setOutgoing(prev => prev.filter(r => r.friendship_id !== data.friendship_id));
     };
 
     // FRIEND_REMOVE: Unfriended — remove from incoming if pending
@@ -202,6 +218,7 @@ export function FriendProvider({ children }: { children: ReactNode }) {
   return (
     <FriendContext.Provider value={{
       incoming,
+      outgoing,
       unreadCount,
       loading,
       acceptRequest,

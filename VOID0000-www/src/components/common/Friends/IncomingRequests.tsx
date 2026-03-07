@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Check, X, User, UserPlus } from 'lucide-react';
+import { Check, X, User } from 'lucide-react';
 import { FriendRequest, useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
 
 interface IncomingRequestsProps {
@@ -16,15 +16,6 @@ export default function IncomingRequests({ requests, onAccept, onReject }: Incom
   useEffect(() => {
     markAsSeen();
   }, []); 
-
-  if (requests.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <UserPlus className="w-12 h-12 text-void-text-muted mx-auto mb-3" />
-        <p className="text-void-text-muted">No incoming requests</p>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-2">
