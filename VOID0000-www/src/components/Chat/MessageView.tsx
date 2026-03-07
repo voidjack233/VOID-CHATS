@@ -1,7 +1,7 @@
 // src/components/Chat/MessageView.tsx
 
 import { useState, useCallback, useEffect } from 'react';
-import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown } from 'lucide-react';
+import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -77,6 +77,18 @@ const MessageView = ({
   const [emojiPickerTarget, setEmojiPickerTarget] = useState<{ messageId: string; position: { x: number; y: number } } | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
+  const [imageViewer, setImageViewer] = useState<{ urls: string[]; index: number } | null>(null);
+
+  useEffect(() => {
+    if (!imageViewer) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setImageViewer(null);
+      if (e.key === 'ArrowLeft') setImageViewer(v => v && v.index > 0 ? { ...v, index: v.index - 1 } : v);
+      if (e.key === 'ArrowRight') setImageViewer(v => v && v.index < v.urls.length - 1 ? { ...v, index: v.index + 1 } : v);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [imageViewer]);
 
   const { friends } = useFriends();
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
@@ -371,9 +383,13 @@ const MessageView = ({
                     'grid-cols-3'
                   } max-w-xs`}>
                     {msg.attachments.map((url, i) => (
-                      <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block rounded-xl overflow-hidden bg-void-bg-hover">
-                        <img src={url} alt="attachment" className="w-full object-cover max-h-56 hover:opacity-90 transition-opacity" loading="lazy" />
-                      </a>
+                      <button
+                        key={i}
+                        onClick={() => setImageViewer({ urls: msg.attachments!, index: i })}
+                        className="block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square"
+                      >
+                        <img src={url} alt="attachment" className="w-full h-full object-cover hover:opacity-90 transition-opacity" loading="lazy" />
+                      </button>
                     ))}
                   </div>
                 )}
@@ -553,6 +569,74 @@ const MessageView = ({
       )}
       {selectedFriend && (
         <FriendProfile friend={selectedFriend} onClose={() => setSelectedFriend(null)} />
+      )}
+
+      {/* Image Viewer */}
+      {imageViewer && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/90 backdrop-blur-sm"
+          onClick={() => setImageViewer(null)}
+        >
+          {/* Toolbar */}
+          <div className="absolute top-4 right-4 flex items-center gap-2 z-10" onClick={(e) => e.stopPropagation()}>
+            <a
+              href={imageViewer.urls[imageViewer.index]}
+              download
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+              title="Download"
+            >
+              <Download className="w-5 h-5" />
+            </a>
+            <button
+              onClick={() => setImageViewer(null)}
+              className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors"
+              title="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Prev */}
+          {imageViewer.index > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setImageViewer(v => v ? { ...v, index: v.index - 1 } : v); }}
+              className="absolute left-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+            >
+              <ChevronLeft className="w-6 h-6" />
+            </button>
+          )}
+
+          {/* Image */}
+          <img
+            src={imageViewer.urls[imageViewer.index]}
+            alt="attachment"
+            className="max-h-[90vh] max-w-[90vw] object-contain rounded-lg shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+
+          {/* Next */}
+          {imageViewer.index < imageViewer.urls.length - 1 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setImageViewer(v => v ? { ...v, index: v.index + 1 } : v); }}
+              className="absolute right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+            >
+              <ChevronRight className="w-6 h-6" />
+            </button>
+          )}
+
+          {/* Dot indicators for multiple images */}
+          {imageViewer.urls.length > 1 && (
+            <div className="absolute bottom-4 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+              {imageViewer.urls.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setImageViewer(v => v ? { ...v, index: i } : v)}
+                  className={`w-2 h-2 rounded-full transition-all ${i === imageViewer.index ? 'bg-white scale-125' : 'bg-white/40 hover:bg-white/70'}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
