@@ -92,26 +92,16 @@ export const useMessageList = (
   }, [conversationId]);
 
   // ============== Scroll Helpers ==============
+  // With column-reverse, scrollTop=0 is at the bottom (newest messages).
+  // Scrolling up toward older messages makes scrollTop go negative.
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    // Use rAF to ensure DOM has been painted with new messages before scrolling
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        bottomRef.current?.scrollIntoView({ behavior });
-      });
-    });
-  }, []);
-
-  const preserveScrollPosition = useCallback((fn: () => void) => {
     const el = containerRef.current;
-    if (!el) { fn(); return; }
-    const oldHeight = el.scrollHeight;
-    const oldTop = el.scrollTop;
-    fn();
-    // After React renders, adjust scrollTop to compensate for prepended content
-    requestAnimationFrame(() => {
-      const newHeight = el.scrollHeight;
-      el.scrollTop = oldTop + (newHeight - oldHeight);
-    });
+    if (!el) return;
+    if (behavior === 'instant') {
+      el.scrollTop = 0;
+    } else {
+      el.scrollTo({ top: 0, behavior });
+    }
   }, []);
 
   // ============== Initial Load ==============
@@ -139,7 +129,7 @@ export const useMessageList = (
           setMessages(uiMessages);
           setHasOlder(cached.has_more);
           setLoading(false);
-          scrollToBottom('instant');
+          // column-reverse automatically shows bottom (newest) — no scrollToBottom needed
           onMessagesLoaded?.(uiMessages);
 
           setSyncing(true);
@@ -158,7 +148,6 @@ export const useMessageList = (
             });
             setHasOlder(fresh.has_more);
             onMessagesLoaded?.(freshUI);
-            scrollToBottom('instant');
           }
         } else {
           setSyncing(true);
@@ -172,7 +161,6 @@ export const useMessageList = (
           setMessages(freshUI);
           setHasOlder(fresh.has_more || syncResult.hasMore);
           setLoading(false);
-          scrollToBottom('instant');
           onMessagesLoaded?.(freshUI);
         }
       } catch (err) {
@@ -276,17 +264,15 @@ export const useMessageList = (
 
       const olderUI = result.messages.map(toUIMessage);
       if (olderUI.length > 0) {
-        preserveScrollPosition(() => {
-          setMessages((prev) => {
-            const merged = [...prev, ...olderUI];
-            const trimmed = trimMessages(merged, 'new');
-            // If we trimmed newest messages, we're no longer at present
-            if (trimmed.length < merged.length) {
-              setHasNewer(true);
-              setIsAtPresent(false);
-            }
-            return trimmed;
-          });
+        // column-reverse naturally preserves scroll position when appending older messages
+        setMessages((prev) => {
+          const merged = [...prev, ...olderUI];
+          const trimmed = trimMessages(merged, 'new');
+          if (trimmed.length < merged.length) {
+            setHasNewer(true);
+            setIsAtPresent(false);
+          }
+          return trimmed;
         });
         setHasOlder(result.has_more);
         onMessagesLoaded?.(olderUI);
@@ -296,7 +282,7 @@ export const useMessageList = (
     } finally {
       setLoadingOlder(false);
     }
-  }, [encryptionKey, loadingOlder, hasOlder, messages, conversationId, preserveScrollPosition, onMessagesLoaded]);
+  }, [encryptionKey, loadingOlder, hasOlder, messages, conversationId, onMessagesLoaded]);
 
   // ============== Load Newer (Scroll Down) ==============
   const loadNewer = useCallback(async () => {
@@ -367,7 +353,10 @@ export const useMessageList = (
       setHasOlder(fresh.has_more);
       setHasNewer(false);
       setIsAtPresent(true);
-      scrollToBottom('instant');
+      // column-reverse resets to bottom when messages change
+      requestAnimationFrame(() => {
+        if (containerRef.current) containerRef.current.scrollTop = 0;
+      });
       onMessagesLoaded?.(freshUI);
     } catch (err) {
       console.error('Failed to jump to present:', err);
@@ -434,21 +423,24 @@ export const useMessageList = (
   }, [messages, replyCache, conversationId, encryptionKey]);
 
   // ============== Scroll Handling ==============
+  // column-reverse: scrollTop=0 is at the bottom (newest), goes negative scrolling up
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    // Track if user is near the bottom (for auto-scroll on new messages)
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    isNearBottomRef.current = distanceFromBottom < 150;
+    // Near bottom = scrollTop close to 0
+    isNearBottomRef.current = Math.abs(el.scrollTop) < 150;
 
-    // Scroll up → load older
-    if (el.scrollTop < 200 && hasOlder && !loadingOlder) {
+    // Distance from visual top (oldest messages) in column-reverse
+    const distFromTop = el.scrollHeight + el.scrollTop - el.clientHeight;
+
+    // Scroll up → load older (near the visual top)
+    if (distFromTop < 200 && hasOlder && !loadingOlder) {
       loadOlder();
     }
 
-    // Scroll down → load newer (only if not at present)
-    if (!isAtPresent && distanceFromBottom < 200 && hasNewer && !loadingNewer) {
+    // Scroll down → load newer (near the visual bottom, only if not at present)
+    if (!isAtPresent && Math.abs(el.scrollTop) < 200 && hasNewer && !loadingNewer) {
       loadNewer();
     }
   }, [hasOlder, loadingOlder, hasNewer, loadingNewer, isAtPresent, loadOlder, loadNewer]);

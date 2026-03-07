@@ -1,5 +1,6 @@
 // src/components/Chat/MessageInput.tsx
-import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2 } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2, Image, FileText } from 'lucide-react';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 
@@ -37,6 +38,21 @@ const MessageInput = (props: MessageInputProps) => {
   const { editingMessage, replyTo, encryptionKey } = props;
   const hasAttachments = attachments.length > 0;
   const hasBanner = !!(editingMessage || replyTo);
+
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu when clicking outside
+  useEffect(() => {
+    if (!attachMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target as Node)) {
+        setAttachMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [attachMenuOpen]);
 
   return (
     <div className="p-4 shrink-0">
@@ -113,14 +129,42 @@ const MessageInput = (props: MessageInputProps) => {
           onChange={handleFileChange}
         />
 
-        <button
-          onClick={openFilePicker}
-          disabled={!encryptionKey || attachments.length >= 5}
-          className="text-void-text-muted hover:text-void-text mr-3 rounded-full p-1 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Attach image"
-        >
-          <Plus className="w-5 h-5" />
-        </button>
+        {/* Attach menu */}
+        <div ref={attachMenuRef} className="relative mr-3">
+          <button
+            onClick={() => setAttachMenuOpen((o) => !o)}
+            disabled={!encryptionKey || attachments.length >= 5}
+            className={`rounded-full p-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+              attachMenuOpen ? 'text-void-accent' : 'text-void-text-muted hover:text-void-text'
+            }`}
+            title="Attach"
+          >
+            <Plus className={`w-5 h-5 transition-transform duration-150 ${attachMenuOpen ? 'rotate-45' : ''}`} />
+          </button>
+
+          {attachMenuOpen && (
+            <div className="absolute bottom-full left-0 mb-2 w-44 bg-void-bg-main border border-void-bg-hover rounded-xl shadow-2xl py-1.5 z-50">
+              {/* Media */}
+              <button
+                onClick={() => { openFilePicker(); setAttachMenuOpen(false); }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-void-text hover:bg-void-bg-hover transition-colors"
+              >
+                <Image className="w-4 h-4 text-void-accent" />
+                Media
+              </button>
+              {/* Files — disabled */}
+              <button
+                disabled
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-void-text-muted opacity-40 cursor-not-allowed"
+                title="Coming soon"
+              >
+                <FileText className="w-4 h-4" />
+                Files
+                <span className="ml-auto text-[10px] bg-void-bg-hover px-1.5 py-0.5 rounded-full">Soon</span>
+              </button>
+            </div>
+          )}
+        </div>
 
         <input
           ref={inputRef}

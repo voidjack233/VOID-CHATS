@@ -140,91 +140,94 @@ export function useThemeProvider(): ThemeContextValue {
     currentTheme !== savedTheme ||
     density !== savedDensity;
 
-  useEffect(() => {
-    const loadPreferences = async () => {
-      try {
-        const localTheme = localStorage.getItem('void_theme') as Theme | null;
-        const localAccent = localStorage.getItem('void_accent');
-        const localBg = localStorage.getItem('void_bg');
-        const localText = localStorage.getItem('void_text');
-        const localHover = localStorage.getItem('void_hover');
+  const loadPreferences = useCallback(async () => {
+    try {
+      const localTheme = localStorage.getItem('void_theme') as Theme | null;
+      const localAccent = localStorage.getItem('void_accent');
+      const localBg = localStorage.getItem('void_bg');
+      const localText = localStorage.getItem('void_text');
+      const localHover = localStorage.getItem('void_hover');
 
-        if (localTheme && THEME_PRESETS[localTheme]) {
-          const preset = THEME_PRESETS[localTheme];
-          const accent = localAccent || preset.accent;
-          const bg = localBg || preset.bg;
-          const text = localText || preset.text;
-          const hover = localHover || preset.hover;
+      if (localTheme && THEME_PRESETS[localTheme]) {
+        const preset = THEME_PRESETS[localTheme];
+        const accent = localAccent || preset.accent;
+        const bg = localBg || preset.bg;
+        const text = localText || preset.text;
+        const hover = localHover || preset.hover;
 
-          setCurrentTheme(localTheme);
-          setAccentColor(accent);
-          setBgColor(bg);
-          setTextColor(text);
-          setHoverColor(hover);
+        setCurrentTheme(localTheme);
+        setAccentColor(accent);
+        setBgColor(bg);
+        setTextColor(text);
+        setHoverColor(hover);
 
-          setSavedTheme(localTheme);
-          setSavedAccent(accent);
-          setSavedBg(bg);
-          setSavedText(text);
-          setSavedHover(hover);
+        setSavedTheme(localTheme);
+        setSavedAccent(accent);
+        setSavedBg(bg);
+        setSavedText(text);
+        setSavedHover(hover);
 
-          const localDensity = localStorage.getItem('void_density');
-          if (localDensity === 'comfortable' || localDensity === 'compact') {
-            setDensityState(localDensity);
-            setSavedDensity(localDensity);
-          }
-
-          applyColorsToDOM(accent, bg, text, hover);
+        const localDensity = localStorage.getItem('void_density');
+        if (localDensity === 'comfortable' || localDensity === 'compact') {
+          setDensityState(localDensity);
+          setSavedDensity(localDensity);
         }
 
-        try {
-          const res = await fetchWithAuth('/api/users/preferences');
-          const data = await res.json();
-
-          if (data.success && data.preferences) {
-            const { accent_color, bg_color, text_color, hover_color, theme, density: serverDensityRaw } = data.preferences;
-            const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
-            const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
-            const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
-            const serverText = text_color || THEME_PRESETS[serverTheme].text;
-            const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
-            const serverDensity: Density = (serverDensityRaw === 'comfortable' || serverDensityRaw === 'compact') ? serverDensityRaw : 'compact';
-
-            setCurrentTheme(serverTheme);
-            setAccentColor(serverAccent);
-            setBgColor(serverBg);
-            setTextColor(serverText);
-            setHoverColor(serverHover);
-            setDensityState(serverDensity);
-
-            setSavedTheme(serverTheme);
-            setSavedAccent(serverAccent);
-            setSavedBg(serverBg);
-            setSavedText(serverText);
-            setSavedHover(serverHover);
-            setSavedDensity(serverDensity);
-
-            applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
-
-            localStorage.setItem('void_theme', serverTheme);
-            localStorage.setItem('void_accent', serverAccent);
-            localStorage.setItem('void_bg', serverBg);
-            localStorage.setItem('void_text', serverText);
-            localStorage.setItem('void_hover', serverHover);
-            localStorage.setItem('void_density', serverDensity);
-          }
-        } catch {
-          // Server down, rely on localStorage
-        }
-      } catch (err) {
-        console.error('Error loading preferences', err);
-      } finally {
-        setLoading(false);
+        applyColorsToDOM(accent, bg, text, hover);
       }
-    };
 
-    loadPreferences();
+      try {
+        const res = await fetchWithAuth('/api/users/preferences');
+        const data = await res.json();
+
+        if (data.success && data.preferences) {
+          const { accent_color, bg_color, text_color, hover_color, theme, density: serverDensityRaw } = data.preferences;
+          const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
+          const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
+          const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
+          const serverText = text_color || THEME_PRESETS[serverTheme].text;
+          const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
+          const serverDensity: Density = (serverDensityRaw === 'comfortable' || serverDensityRaw === 'compact') ? serverDensityRaw : 'compact';
+
+          setCurrentTheme(serverTheme);
+          setAccentColor(serverAccent);
+          setBgColor(serverBg);
+          setTextColor(serverText);
+          setHoverColor(serverHover);
+          setDensityState(serverDensity);
+
+          setSavedTheme(serverTheme);
+          setSavedAccent(serverAccent);
+          setSavedBg(serverBg);
+          setSavedText(serverText);
+          setSavedHover(serverHover);
+          setSavedDensity(serverDensity);
+
+          applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
+
+          localStorage.setItem('void_theme', serverTheme);
+          localStorage.setItem('void_accent', serverAccent);
+          localStorage.setItem('void_bg', serverBg);
+          localStorage.setItem('void_text', serverText);
+          localStorage.setItem('void_hover', serverHover);
+          localStorage.setItem('void_density', serverDensity);
+        }
+      } catch {
+        // Server down, rely on localStorage
+      }
+    } catch (err) {
+      console.error('Error loading preferences', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadPreferences();
+
+    window.addEventListener('user-login', loadPreferences);
+    return () => window.removeEventListener('user-login', loadPreferences);
+  }, [loadPreferences]);
 
   const setTheme = useCallback((newTheme: Theme) => {
     const safeTheme = THEME_PRESETS[newTheme] ? newTheme : DEFAULT_THEME;

@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { useTheme, Theme, THEME_PRESETS } from '../../../Services/hooks/Settings/useTheme';
 import { Check, Save, Moon, Sun, Sparkles, RotateCcw } from 'lucide-react';
+import { AppearanceTabSkeleton } from '../Skeleton';
 
 const themePresets = [
   { id: 'void' as Theme, name: 'Void', description: 'Dark and mysterious (default)', colors: ['#111827', '#6366f1'] },
@@ -70,13 +71,7 @@ const AppearanceTab = () => {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <div className="animate-pulse text-void-text-muted">Loading preferences...</div>
-      </div>
-    );
-  }
+  if (loading) return <AppearanceTabSkeleton />;
 
   const isDark = isDarkBackground(bgColor);
   const isVoid =
@@ -120,8 +115,8 @@ const AppearanceTab = () => {
                 key={preset.id}
                 onClick={() => setTheme(preset.id)}
                 className={`relative p-4 rounded-lg border-2 transition-all ${isSelected
-                    ? 'border-void-accent bg-void-bg-hover'
-                    : 'border-void-bg-sec hover:border-void-accent/50 bg-void-bg-main'
+                  ? 'border-void-accent bg-void-bg-hover'
+                  : 'border-void-bg-sec hover:border-void-accent/50 bg-void-bg-main'
                   }`}
               >
                 {isSelected && (
@@ -240,6 +235,7 @@ const AppearanceTab = () => {
           <span className="w-1 h-4 bg-void-accent rounded-full" />
           Chat Density
         </h3>
+
         <div className="grid grid-cols-2 gap-3">
           {([
             { id: 'compact', label: 'Compact', desc: 'More messages on screen' },
@@ -249,8 +245,8 @@ const AppearanceTab = () => {
               key={id}
               onClick={() => setDensity(id)}
               className={`p-4 rounded-lg border-2 text-left transition-all ${density === id
-                  ? 'border-void-accent bg-void-bg-hover'
-                  : 'border-void-bg-sec hover:border-void-accent/50 bg-void-bg-main'
+                ? 'border-void-accent bg-void-bg-hover'
+                : 'border-void-bg-sec hover:border-void-accent/50 bg-void-bg-main'
                 }`}
             >
               <div className="flex items-center justify-between mb-1">
@@ -259,17 +255,40 @@ const AppearanceTab = () => {
               </div>
               <p className="text-xs text-void-text-muted mb-3">{desc}</p>
 
-              {/* Mini chat preview */}
-              <div className="flex flex-col" style={{ gap: id === 'compact' ? '5px' : '10px' }}>
-                {(id === 'compact'
-                  ? [{ w: '65%' }, { w: '50%' }, { w: '75%' }, { w: '40%' }]
-                  : [{ w: '65%' }, { w: '50%' }, { w: '75%' }]
-                ).map(({ w }, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    <div className="w-3 h-3 rounded-full bg-void-accent/40 flex-shrink-0" />
-                    <div className="h-2.5 rounded-full bg-void-accent/20" style={{ width: w }} />
-                  </div>
-                ))}
+              {/* Mini chat preview (Ghost Elements) */}
+              <div className="flex flex-col w-full mt-2" style={{ gap: id === 'compact' ? '4px' : '8px' }}>
+                {id === 'compact' ? (
+                  /* COMPACT GHOST: All left aligned. Middle message is consecutive (no avatar space). */
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-void-accent/40 flex-shrink-0" />
+                      <div className="h-2.5 rounded-full bg-void-accent/20 w-[65%]" />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 flex-shrink-0" /> {/* Avatar offset for consecutive message */}
+                      <div className="h-2.5 rounded-full bg-void-accent/20 w-[45%]" />
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <div className="w-3 h-3 rounded-full bg-void-accent/40 flex-shrink-0" />
+                      <div className="h-2.5 rounded-full bg-void-accent/60 w-[55%]" /> {/* "You" message */}
+                    </div>
+                  </>
+                ) : (
+                  /* COMFORTABLE GHOST: Alternating left/right. Right side has no avatar. */
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-void-accent/40 flex-shrink-0" />
+                      <div className="h-2.5 rounded-full bg-void-accent/20 w-[65%]" />
+                    </div>
+                    <div className="flex items-center justify-end gap-1.5">
+                      <div className="h-2.5 rounded-full bg-void-accent/60 w-[55%]" /> {/* "You" message right aligned */}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-void-accent/40 flex-shrink-0" />
+                      <div className="h-2.5 rounded-full bg-void-accent/20 w-[40%]" />
+                    </div>
+                  </>
+                )}
               </div>
             </button>
           ))}
@@ -394,8 +413,8 @@ const AppearanceTab = () => {
           onClick={handleSave}
           disabled={!hasChanges || isSaving}
           className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-sm shadow-lg transition-all ${hasChanges
-              ? 'bg-void-accent hover:bg-void-accent-hover text-white shadow-void-accent/25'
-              : 'bg-void-bg-hover text-void-text-muted cursor-not-allowed'
+            ? 'bg-void-accent hover:bg-void-accent-hover text-white shadow-void-accent/25'
+            : 'bg-void-bg-hover text-void-text-muted cursor-not-allowed'
             }`}
         >
           <Save className="w-4 h-4" />

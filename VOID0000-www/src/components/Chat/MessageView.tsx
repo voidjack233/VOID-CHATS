@@ -14,6 +14,7 @@ import FriendProfile from '../common/Friends/FriendProfile';
 import UserProfile from '../common/Profile/userProfile';
 import EmojiPicker from './EmojiPicker';
 import ReactionBar from './ReactionBar';
+import { MessageViewSkeleton } from '../common/Skeleton';
 
 const DENSITY: Record<Density, {
   groupGap: string;
@@ -179,21 +180,11 @@ const MessageView = ({
     }
   };
 
-  if (loading) return (
-    <div className="flex-1 flex items-center justify-center">
-      <div className="w-6 h-6 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
-    </div>
-  );
+  if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
 
   if (encryptionError) return (
     <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
       <p>Encryption Error: {encryptionError}</p>
-    </div>
-  );
-
-  if (!encryptionKey) return (
-    <div className="flex-1 flex items-center justify-center text-void-text-muted">
-      <p>Setting up encryption...</p>
     </div>
   );
 
@@ -214,35 +205,26 @@ const MessageView = ({
     return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
   };
 
-  const rendered = [...messages].reverse();
-
   return (
-    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4">
-      {loadingOlder && (
+    <div ref={containerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto flex flex-col-reverse p-4">
+      {/* bottomRef first in DOM = bottom visually with column-reverse */}
+      <div ref={bottomRef} />
+
+      {loadingNewer && (
         <div className="flex justify-center py-2">
           <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
-      {!hasOlder && (
-        <div className="mt-4 mb-6">
-          <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center mb-4">
-            {getConversationIcon()}
-          </div>
-          <h1 className="text-2xl font-bold mb-1 text-void-text">
-            {conversation.type === 'dm' ? conversation.dm_display_name || conversation.dm_username : conversation.name}
-          </h1>
-          <p className="text-void-text-muted text-sm">This is the beginning of your conversation.</p>
-        </div>
-      )}
-
-      {rendered.map((msg, index) => {
-        const prevMsg = index > 0 ? rendered[index - 1] : null;
-        const showDateSeparator = !prevMsg || !isSameDay(msg.created_at, prevMsg.created_at);
-        const timeDiff = prevMsg ? new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime() : 0;
+      {messages.map((msg, index) => {
+        // With column-reverse: messages[0] = newest (bottom), messages[last] = oldest (top)
+        // The message visually above is messages[index+1] (older)
+        const olderMsg = index < messages.length - 1 ? messages[index + 1] : null;
+        const showDateSeparator = !olderMsg || !isSameDay(msg.created_at, olderMsg.created_at);
+        const timeDiff = olderMsg ? new Date(msg.created_at).getTime() - new Date(olderMsg.created_at).getTime() : 0;
         const isOwn = msg.sender_id === user?.id;
         const isReply = !!msg.reply_to;
-        const isConsecutive = !isReply && prevMsg && prevMsg.sender_id === msg.sender_id && timeDiff < 5 * 60 * 1000;
+        const isConsecutive = !isReply && olderMsg && olderMsg.sender_id === msg.sender_id && timeDiff < 5 * 60 * 1000 && !showDateSeparator;
         const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
         const msgReactions = getMessageReactions(msg.message_id);
 
@@ -256,15 +238,6 @@ const MessageView = ({
 
         return (
           <div key={msg.message_id + '-wrapper'}>
-            {showDateSeparator && (
-              <div className="flex items-center gap-3 my-4 px-2">
-                <div className="flex-1 h-px bg-void-bg-hover" />
-                <span className="text-xs text-void-text-muted font-medium shrink-0">
-                  {getDateLabel(msg.created_at)}
-                </span>
-                <div className="flex-1 h-px bg-void-bg-hover" />
-              </div>
-            )}
           <div
             key={msg.message_id}
             onMouseEnter={() => setHoveredId(msg.message_id)}
@@ -455,6 +428,16 @@ const MessageView = ({
               )}
             </div>
           </div>
+            {/* Date separator AFTER bubble = visually ABOVE in column-reverse */}
+            {showDateSeparator && (
+              <div className="flex items-center gap-3 my-4 px-2">
+                <div className="flex-1 h-px bg-void-bg-hover" />
+                <span className="text-xs text-void-text-muted font-medium shrink-0">
+                  {getDateLabel(msg.created_at)}
+                </span>
+                <div className="flex-1 h-px bg-void-bg-hover" />
+              </div>
+            )}
           </div>
         );
       })}
@@ -463,19 +446,30 @@ const MessageView = ({
         <p className="text-center text-void-text-muted text-sm py-8">No messages yet. Say something!</p>
       )}
 
-      {loadingNewer && (
+      {/* These appear at the visual top with column-reverse (last DOM children) */}
+      {loadingOlder && (
         <div className="flex justify-center py-2">
           <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
         </div>
       )}
 
-      <div ref={bottomRef} />
+      {!hasOlder && messages.length > 0 && (
+        <div className="mt-4 mb-6">
+          <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center mb-4">
+            {getConversationIcon()}
+          </div>
+          <h1 className="text-2xl font-bold mb-1 text-void-text">
+            {conversation.type === 'dm' ? conversation.dm_display_name || conversation.dm_username : conversation.name}
+          </h1>
+          <p className="text-void-text-muted text-sm">This is the beginning of your conversation.</p>
+        </div>
+      )}
 
-      {/* Jump to Present button */}
+      {/* Jump to Present button — fixed position so it's always visible */}
       {!isAtPresent && (
         <button
           onClick={jumpToPresent}
-          className="sticky bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-4 py-2 bg-void-accent hover:bg-void-accent-hover text-white text-xs font-bold rounded-full shadow-lg transition-all z-10"
+          className="fixed bottom-20 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-4 py-2 bg-void-accent hover:bg-void-accent-hover text-white text-xs font-bold rounded-full shadow-lg transition-all z-10"
         >
           <ArrowDown className="w-3.5 h-3.5" />
           Jump to Present

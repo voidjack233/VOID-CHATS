@@ -1,8 +1,9 @@
 // import { useState } from 'react';
-import { X, Users, UserPlus, Loader2 } from 'lucide-react';
+import { X, Users, UserPlus } from 'lucide-react';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 import { useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
 import IncomingRequests from './IncomingRequests';
+import { FriendRequestSkeleton } from '../Skeleton';
 // import AddFriendModal from './AddFriend'
 
 interface FriendsModalProps {
@@ -62,9 +63,8 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
           {/* Pending Requests */}
           <div className="flex-1 overflow-y-auto p-4">
             {requestsLoading ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <Loader2 className="w-8 h-8 text-blue-400 animate-spin mb-4" />
-                <p className="text-void-text-muted">Loading...</p>
+              <div className="space-y-3">
+                {[...Array(3)].map((_, i) => <FriendRequestSkeleton key={i} />)}
               </div>
             ) : incoming.length > 0 ? (
               <>

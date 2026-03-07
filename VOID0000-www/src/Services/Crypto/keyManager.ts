@@ -341,7 +341,7 @@ async function getSharedSecret(userId: string, peerId: string, peerPubKeyBase64:
   const cacheKey = `shared:${userId}:${peerId}`;
   const cached = await dbGet(cacheKey);
 
-  if (cached) {
+  if (cached && cached.peerPubKey === peerPubKeyBase64) {
     return crypto.subtle.importKey(
       'raw',
       base64ToArrayBuffer(cached.sharedKey),
@@ -363,6 +363,7 @@ async function getSharedSecret(userId: string, peerId: string, peerPubKeyBase64:
     id: cacheKey,
     sharedKey: arrayBufferToBase64(exportedShared),
     peerId,
+    peerPubKey: peerPubKeyBase64,
     createdAt: Date.now(),
   });
 
@@ -407,8 +408,58 @@ async function clearAllKeys(): Promise<void> {
   });
 }
 
+async function generateFreshKeys(
+  userId: string,
+  password: string,
+  callbacks: KeyCallbacks
+): Promise<{ publicKey: string; privateKey: CryptoKey }> {
+  const keyPair = await generateKeyPair();
+  const publicKeyBase64 = await exportKey(keyPair.publicKey, true);
+  const privateKeyBase64 = await exportKey(keyPair.privateKey, false);
+  const keyId = await generateKeyFingerprint(publicKeyBase64);
+
+  await dbPut({
+    id: `keypair:${userId}`,
+    publicKey: publicKeyBase64,
+    privateKey: privateKeyBase64,
+    keyId,
+    createdAt: Date.now(),
+  });
+
+  await callbacks.uploadPublicKey(publicKeyBase64, keyId);
+
+  const backupData = await encryptPrivateKeyWithPassword(privateKeyBase64, password);
+  await callbacks.backupToServer({
+    encrypted_private_key: backupData.encrypted,
+    iv: backupData.iv,
+    salt: backupData.salt,
+    key_id: keyId,
+  });
+
+  return { publicKey: publicKeyBase64, privateKey: keyPair.privateKey };
+}
+
+async function reEncryptBackup(
+  userId: string,
+  newPassword: string,
+  callbacks: KeyCallbacks
+): Promise<void> {
+  const stored = await dbGet(`keypair:${userId}`);
+  if (!stored) return;
+
+  const backupData = await encryptPrivateKeyWithPassword(stored.privateKey, newPassword);
+  await callbacks.backupToServer({
+    encrypted_private_key: backupData.encrypted,
+    iv: backupData.iv,
+    salt: backupData.salt,
+    key_id: stored.keyId,
+  });
+}
+
 export const keyManager = {
   initializeKeys,
+  generateFreshKeys,
+  reEncryptBackup,
   getSharedSecret,
   encryptGroupKeyForUser,
   decryptGroupKey,

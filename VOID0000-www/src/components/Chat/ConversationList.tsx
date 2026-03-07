@@ -5,6 +5,7 @@ import { getConversations, Conversation } from '../../Services/Chat/chatService'
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
 import { gateway } from '../../Services/Gateway/gateway';
+import { ConversationItemSkeleton } from '../common/Skeleton';
 
 interface ConversationListProps {
   activeId: string | null;
@@ -144,8 +145,8 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center py-8">
-        <div className="w-5 h-5 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
+      <div className="flex-1 py-2 px-2 space-y-0.5">
+        {[...Array(6)].map((_, i) => <ConversationItemSkeleton key={i} />)}
       </div>
     );
   }

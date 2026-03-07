@@ -1,6 +1,7 @@
 import { X, Monitor, Smartphone, Globe, Loader2, Shield } from 'lucide-react';
 import { useActiveSessions } from '../../../../Services/hooks/Settings/useActiveSessions';
 import { useState, useEffect } from 'react';
+import { SessionCardSkeleton } from '../../Skeleton';
 
 interface ActiveSessionsModalProps {
   onClose: () => void;
@@ -117,9 +118,8 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
           
           {/* Loading State */}
           {loading && (
-            <div className="flex flex-col items-center justify-center py-12">
-              <Loader2 className="w-10 h-10 text-blue-400 animate-spin mb-4" />
-              <p className="text-void-text-muted">Loading sessions...</p>
+            <div className="space-y-3">
+              {[...Array(3)].map((_, i) => <SessionCardSkeleton key={i} />)}
             </div>
           )}
           

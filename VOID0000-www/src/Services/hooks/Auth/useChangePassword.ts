@@ -1,10 +1,14 @@
 import { useState } from 'react';
 import { authService } from '../../Auth/authServiceApi';
+import { useUser } from '../../Auth/UserContext';
+import { keyManager } from '../../Crypto/keyManager';
+import { uploadPublicKey, backupKeyToServer, fetchKeyBackup } from '../../Chat/chatService';
 
 export function useChangePassword() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const { user, setLoginPassword } = useUser();
 
   const changePassword = async (currentPassword: string, newPassword: string) => {
     setIsLoading(true);
@@ -19,6 +23,18 @@ export function useChangePassword() {
         return false;
       }
 
+      // Re-encrypt the key backup with the new password so restores still work
+      if (user?.id) {
+        keyManager.reEncryptBackup(user.id, newPassword, {
+          uploadPublicKey: async (pubKey, keyId) => await uploadPublicKey(pubKey, keyId),
+          backupToServer: async (data) => await backupKeyToServer(data),
+          fetchBackup: async () => await fetchKeyBackup(),
+        }).catch((err) => {
+          console.warn('🔑 Backup re-encryption failed (non-critical):', err);
+        });
+      }
+
+      setLoginPassword(newPassword);
       setSuccess(true);
       return true;
     } catch (err) {

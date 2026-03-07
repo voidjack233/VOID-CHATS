@@ -10,7 +10,7 @@
 //   conversations_meta: { conversation_id, encryption_key_hash, last_opened_at }
 
 const DB_NAME = 'void_messages';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export interface LocalMessage {
   conversation_id: string;

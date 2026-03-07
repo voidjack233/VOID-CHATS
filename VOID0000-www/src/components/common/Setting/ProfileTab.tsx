@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Camera, Loader2, Save, CheckCircle } from 'lucide-react';
+import { ProfileFormSkeleton } from '../Skeleton';
 import { useUser } from '../../../Services/Auth/UserContext';
 import { useUserProfile } from '../../../Services/hooks/editProfile/userProfile';
 import { useAvatarUpload } from '../../../Services/hooks/editProfile/useAvatarUpload';
@@ -133,13 +134,7 @@ const ProfileTab = () => {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return <ProfileFormSkeleton />;
 
   if (!profile || !tempProfile) {
     return (

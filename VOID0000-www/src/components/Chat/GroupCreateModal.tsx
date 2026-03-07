@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { X, Check } from 'lucide-react';
 import { fetchWithAuth } from '../../Services/Auth/authServiceApi';
 import { createSecureGroup } from '../../Services/Chat/chatService';
+import { FriendSelectSkeleton } from '../common/Skeleton';
 
 interface Friend {
   id: string;
@@ -117,9 +118,7 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
             </label>
             <div className="max-h-48 overflow-y-auto space-y-1 bg-void-bg-main/50 rounded-lg p-2">
               {loading ? (
-                <div className="flex justify-center py-4">
-                  <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-                </div>
+                <FriendSelectSkeleton />
               ) : friends.length === 0 ? (
                 <p className="text-center text-void-text-muted text-sm py-4">No friends yet</p>
               ) : (

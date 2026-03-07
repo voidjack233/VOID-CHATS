@@ -26,7 +26,7 @@ self.onmessage = async function (e: MessageEvent) {
     const plaintext = decoder.decode(decrypted);
 
     self.postMessage({ id, success: true, plaintext });
-  } catch (err) {
-    self.postMessage({ id, success: false, error: 'Decryption failed' });
+  } catch (err: any) {
+    self.postMessage({ id, success: false, error: 'Decryption failed: ' + (err.message || err.toString()) });
   }
 };

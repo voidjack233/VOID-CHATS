@@ -20,9 +20,6 @@ interface UserContextType {
   refreshUser: () => Promise<void>;
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;
-  needsRestorePassword: boolean;
-  submitRestorePassword: (password: string) => Promise<void>;
-  restoreError: string | null;
 }
 
 const UserContext = createContext<UserContextType | null>(null);
@@ -37,18 +34,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const loginPasswordRef = useRef<string | null>(null);
 
-  // Only prompt needed: new device with backup but no password in memory
-  const [needsRestorePassword, setNeedsRestorePassword] = useState(false);
-  const [restoreError, setRestoreError] = useState<string | null>(null);
-
   const setLoginPassword = (password: string) => {
     loginPasswordRef.current = password;
   };
 
   const setUser = (newUser: User | null) => {
+    const previousUser = user;
     setUserState(newUser);
     if (newUser) {
       localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(newUser));
+      if (!previousUser || previousUser.id !== newUser.id) {
+        // Dispatch global login event so other providers (like ThemeProvider) can reset/re-fetch.
+        window.dispatchEvent(new Event('user-login'));
+      }
     } else {
       localStorage.removeItem(USER_STORAGE_KEY);
     }
@@ -87,37 +85,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     gateway.disconnect();
     loginPasswordRef.current = null;
-    setNeedsRestorePassword(false);
     await authService.logout();
     setUser(null);
     Object.keys(localStorage).forEach((key) => {
       if (key.startsWith('void_')) localStorage.removeItem(key);
     });
-  };
-
-  // Restore prompt handler
-  const submitRestorePassword = async (password: string) => {
-    if (!user?.id) return;
-    setRestoreError(null);
-
-    try {
-      loginPasswordRef.current = password;
-      await keyManager.initializeKeys(user.id, password, {
-        uploadPublicKey: async (pubKey, keyId) => await uploadPublicKey(pubKey, keyId),
-        backupToServer: async (data) => await backupKeyToServer(data),
-        fetchBackup: async () => await fetchKeyBackup(),
-      });
-
-      console.log('🔑 Keys restored successfully');
-      setNeedsRestorePassword(false);
-      window.location.reload();
-    } catch (err: any) {
-      if (err.message === 'KEY_RESTORE_FAILED') {
-        setRestoreError('Wrong password. Please enter your login password.');
-      } else {
-        setRestoreError('Restore failed. Please try again.');
-      }
-    }
   };
 
   // Initial user fetch
@@ -154,34 +126,50 @@ export function UserProvider({ children }: { children: ReactNode }) {
     return () => { gateway.disconnect(); };
   }, [user?.id]);
 
-  // Initialize encryption keys — silent when password available
+  // Initialize encryption keys
   useEffect(() => {
     if (!user?.id) return;
 
+    const userId = user.id;
     const password = loginPasswordRef.current;
 
-    keyManager.initializeKeys(user.id, password, {
-      uploadPublicKey: async (pubKey, keyId) => await uploadPublicKey(pubKey, keyId),
-      backupToServer: async (data) => await backupKeyToServer(data),
+    const callbacks = {
+      uploadPublicKey: async (pubKey: string, keyId: string) => await uploadPublicKey(pubKey, keyId),
+      backupToServer: async (data: any) => await backupKeyToServer(data),
       fetchBackup: async () => await fetchKeyBackup(),
-    })
+    };
+
+    keyManager.initializeKeys(userId, password, callbacks)
       .then(() => {
         console.log('🔑 Encryption keys ready');
       })
       .catch((err) => {
-  if (err.message === 'KEY_NEEDS_PASSWORD') {
-    console.warn('🔑 No keys and no password — forcing re-login');
-    logout();
-  } else {
-    console.warn('🔑 Key init failed:', err.message);
-  }
-});
+        if (err.message === 'KEY_NEEDS_PASSWORD') {
+          console.warn('🔑 No keys and no password — forcing re-login');
+          logout();
+        } else if (err.message === 'KEY_RESTORE_FAILED') {
+          // Backup exists but can't be decrypted — silently generate fresh keys if we have the password
+          if (password) {
+            console.warn('🔑 Backup restore failed — generating fresh keys silently');
+            keyManager.generateFreshKeys(userId, password, callbacks)
+              .then(() => {
+                console.log('🔑 Fresh keys generated');
+                window.location.reload();
+              })
+              .catch(() => logout());
+          } else {
+            // No password in memory, force re-login so we get it
+            logout();
+          }
+        } else {
+          console.warn('🔑 Key init failed:', err.message);
+        }
+      });
   }, [user?.id]);
 
   return (
     <UserContext.Provider value={{
       user, loading, setUser, refreshUser, logout, setLoginPassword,
-      needsRestorePassword, submitRestorePassword, restoreError,
     }}>
       {children}
     </UserContext.Provider>
