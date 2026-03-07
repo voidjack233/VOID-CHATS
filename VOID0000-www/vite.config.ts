@@ -14,14 +14,13 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       proxy: {
         '/api': {
-          target: env.VITE_API_URL,
+          target: 'http://localhost:3001',
           changeOrigin: true,
           secure: false,
         },
-        '/socket.io': {
-          target: env.VITE_API_URL,
+        '/gateway': {
+          target: 'ws://localhost:3001',
           changeOrigin: true,
-          secure: false,
           ws: true,
         },
       },

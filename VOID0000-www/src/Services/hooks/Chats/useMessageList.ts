@@ -1,9 +1,19 @@
 // src/Services/hooks/Chats/useMessageList.ts
+//
+// Discord-style message loading:
+//   - Fetch in batches of FETCH_SIZE (50)
+//   - Keep at most CACHE_LIMIT (200) messages in memory
+//   - Bidirectional scroll: older (up) + newer (down)
+//   - Preserve scroll position when prepending older messages
+//   - Track whether we're "at present" (viewing latest messages)
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { deleteMessage, getMessageById, Message } from '../../Chat/chatService';
+import { deleteMessage, getMessageById, getMessages, Message } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
+
+const FETCH_SIZE = 50;
+const CACHE_LIMIT = 200;
 
 interface MessageUpdate {
   message_id: string;
@@ -36,8 +46,18 @@ function toUIMessage(local: LocalMessage): Message {
   };
 }
 
-const sortMessages = (msgs: Message[]) => {
-  return [...msgs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+const sortMessages = (msgs: Message[]) =>
+  [...msgs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+// Deduplicate + sort + trim to CACHE_LIMIT from a specific end
+const trimMessages = (msgs: Message[], trimFrom: 'old' | 'new'): Message[] => {
+  const sorted = sortMessages(msgs);
+  if (sorted.length <= CACHE_LIMIT) return sorted;
+  // trimFrom 'old' = remove oldest (keep newest) — user scrolled down
+  // trimFrom 'new' = remove newest (keep oldest) — user scrolled up
+  return trimFrom === 'old'
+    ? sorted.slice(0, CACHE_LIMIT)
+    : sorted.slice(sorted.length - CACHE_LIMIT);
 };
 
 export const useMessageList = (
@@ -51,8 +71,11 @@ export const useMessageList = (
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadingNewer, setLoadingNewer] = useState(false);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [hasNewer, setHasNewer] = useState(false);
+  const [isAtPresent, setIsAtPresent] = useState(true);
 
   const [replyCache, setReplyCache] = useState<Record<string, Message>>({});
   const fetchingReplies = useRef<Set<string>>(new Set());
@@ -60,28 +83,47 @@ export const useMessageList = (
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Track if user is near bottom for auto-scroll on new messages
+  const isNearBottomRef = useRef(true);
+
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
   }, [conversationId]);
 
-  const mergeMessages = (freshUI: Message[]) => {
-    setMessages((prev) => {
-      const freshIds = new Set(freshUI.map((m) => m.message_id));
-      const extras = prev.filter((m) => !freshIds.has(m.message_id));
-      const merged = [...freshUI, ...extras];
-      return sortMessages(merged);
+  // ============== Scroll Helpers ==============
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    // Use rAF to ensure DOM has been painted with new messages before scrolling
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        bottomRef.current?.scrollIntoView({ behavior });
+      });
     });
-  };
+  }, []);
 
-  // ============== Initial Load with Race Protection ==============
+  const preserveScrollPosition = useCallback((fn: () => void) => {
+    const el = containerRef.current;
+    if (!el) { fn(); return; }
+    const oldHeight = el.scrollHeight;
+    const oldTop = el.scrollTop;
+    fn();
+    // After React renders, adjust scrollTop to compensate for prepended content
+    requestAnimationFrame(() => {
+      const newHeight = el.scrollHeight;
+      el.scrollTop = oldTop + (newHeight - oldHeight);
+    });
+  }, []);
+
+  // ============== Initial Load ==============
   useEffect(() => {
     if (!encryptionKey) return;
-    let ignore = false; // <-- The Magic Flag
+    let ignore = false;
 
-    const loadFromLocal = async () => {
+    const load = async () => {
       setMessages([]);
-      setHasMore(false);
+      setHasOlder(false);
+      setHasNewer(false);
+      setIsAtPresent(true);
       setLoading(true);
 
       try {
@@ -95,9 +137,9 @@ export const useMessageList = (
         if (cached.messages.length > 0) {
           const uiMessages = sortMessages(cached.messages.map(toUIMessage));
           setMessages(uiMessages);
-          setHasMore(cached.has_more);
+          setHasOlder(cached.has_more);
           setLoading(false);
-          scrollToBottom();
+          scrollToBottom('instant');
           onMessagesLoaded?.(uiMessages);
 
           setSyncing(true);
@@ -106,13 +148,17 @@ export const useMessageList = (
           setSyncing(false);
 
           if (syncResult.newMessages.length > 0) {
-            const fresh = await messageSync.readLocal(conversationId);
+            const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
             if (ignore) return;
             const freshUI = fresh.messages.map(toUIMessage);
-            mergeMessages(freshUI);
-            setHasMore(fresh.has_more);
+            setMessages((prev) => {
+              const ids = new Set(freshUI.map((m) => m.message_id));
+              const extras = prev.filter((m) => !ids.has(m.message_id));
+              return trimMessages([...freshUI, ...extras], 'old');
+            });
+            setHasOlder(fresh.has_more);
             onMessagesLoaded?.(freshUI);
-            scrollToBottom();
+            scrollToBottom('instant');
           }
         } else {
           setSyncing(true);
@@ -120,13 +166,13 @@ export const useMessageList = (
           if (ignore) return;
           setSyncing(false);
 
-          const fresh = await messageSync.readLocal(conversationId);
+          const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
           if (ignore) return;
           const freshUI = fresh.messages.map(toUIMessage);
-          mergeMessages(freshUI);
-          setHasMore(fresh.has_more || syncResult.hasMore);
+          setMessages(freshUI);
+          setHasOlder(fresh.has_more || syncResult.hasMore);
           setLoading(false);
-          scrollToBottom();
+          scrollToBottom('instant');
           onMessagesLoaded?.(freshUI);
         }
       } catch (err) {
@@ -137,11 +183,8 @@ export const useMessageList = (
       }
     };
 
-    loadFromLocal();
-
-    return () => {
-      ignore = true; // Cleanup on unmount or chat switch
-    };
+    load();
+    return () => { ignore = true; };
   }, [conversationId, encryptionKey]);
 
   // ============== Handle Incoming New Messages ==============
@@ -162,20 +205,20 @@ export const useMessageList = (
       attachments: newMessage.attachments,
     };
 
-    messageSync.storeIncomingMessage(localMsg).then(() => {
+    messageSync.storeIncomingMessage(localMsg).catch(console.error);
+
+    if (isAtPresent) {
+      // We're viewing latest — add message and auto-scroll
       setMessages((prev) => {
         if (prev.some((m) => m.message_id === newMessage.message_id)) return prev;
-        return sortMessages([newMessage, ...prev]);
+        return trimMessages([newMessage, ...prev], 'old');
       });
-      scrollToBottom();
-    }).catch(() => {
-      setMessages((prev) => {
-        if (prev.some((m) => m.message_id === newMessage.message_id)) return prev;
-        return sortMessages([newMessage, ...prev]);
-      });
-      scrollToBottom();
-    });
-  }, [newMessage]);
+      if (isNearBottomRef.current) {
+        scrollToBottom();
+      }
+    }
+    // If not at present (user scrolled far up), don't inject — they'll see it on jump-to-present
+  }, [newMessage, isAtPresent, scrollToBottom]);
 
   // ============== Handle Edits ==============
   useEffect(() => {
@@ -183,8 +226,8 @@ export const useMessageList = (
     messageSync.handleEdit(conversationId, messageUpdate.message_id, messageUpdate.content, messageUpdate.edited_at).catch(console.error);
     setMessages((prev) =>
       prev.map((m) => m.message_id === messageUpdate.message_id
-          ? { ...m, content: messageUpdate.content, is_edited: messageUpdate.is_edited, edited_at: messageUpdate.edited_at }
-          : m
+        ? { ...m, content: messageUpdate.content, is_edited: messageUpdate.is_edited, edited_at: messageUpdate.edited_at }
+        : m
       )
     );
   }, [messageUpdate]);
@@ -195,69 +238,163 @@ export const useMessageList = (
     messageSync.handleDelete(conversationId, messageDelete.message_id).catch(console.error);
     setMessages((prev) =>
       prev.map((m) => m.message_id === messageDelete.message_id
-          ? { ...m, is_deleted: true, content: '[deleted]', encrypted_content: null }
-          : m
+        ? { ...m, is_deleted: true, content: '[deleted]', encrypted_content: null }
+        : m
       )
     );
   }, [messageDelete]);
 
-  // ============== Load More (Scroll Up) ==============
-  const loadMore = async () => {
-    if (!encryptionKey || loadingMore || !hasMore || messages.length === 0) return;
-    setLoadingMore(true);
+  // ============== Load Older (Scroll Up) ==============
+  const loadOlder = useCallback(async () => {
+    if (!encryptionKey || loadingOlder || !hasOlder || messages.length === 0) return;
+    setLoadingOlder(true);
 
     try {
       const oldest = messages[messages.length - 1];
       if (!oldest) return;
 
-      const local = await messageSync.readLocal(conversationId, { before: oldest.message_id });
+      // Try local first
+      let result = await messageSync.readLocal(conversationId, {
+        before: oldest.message_id,
+        limit: FETCH_SIZE,
+      });
 
-      if (local.messages.length > 0) {
-        const olderUI = local.messages.map(toUIMessage);
-        setMessages((prev) => sortMessages([...prev, ...olderUI]));
-        setHasMore(local.has_more);
-        onMessagesLoaded?.(olderUI);
-      } else {
-        const { getMessages } = await import('../../Chat/chatService');
-        const { messages: serverMsgs, has_more } = await getMessages(conversationId, encryptionKey, { before: oldest.message_id });
-
-        const localMsgs: LocalMessage[] = serverMsgs.map((msg) => ({
+      if (result.messages.length === 0) {
+        // Fallback to server
+        const serverResult = await getMessages(conversationId, encryptionKey, {
+          before: oldest.message_id,
+          limit: FETCH_SIZE,
+        });
+        const localMsgs: LocalMessage[] = serverResult.messages.map((msg) => ({
           ...msg,
           content: msg.content ?? null,
           reactions: (msg as any).reactions || {},
         }));
-
         await messageStore.putMessages(localMsgs);
-        setMessages((prev) => sortMessages([...prev, ...serverMsgs]));
-        setHasMore(has_more);
-        onMessagesLoaded?.(serverMsgs);
+        result = { messages: localMsgs, has_more: serverResult.has_more };
+      }
+
+      const olderUI = result.messages.map(toUIMessage);
+      if (olderUI.length > 0) {
+        preserveScrollPosition(() => {
+          setMessages((prev) => {
+            const merged = [...prev, ...olderUI];
+            const trimmed = trimMessages(merged, 'new');
+            // If we trimmed newest messages, we're no longer at present
+            if (trimmed.length < merged.length) {
+              setHasNewer(true);
+              setIsAtPresent(false);
+            }
+            return trimmed;
+          });
+        });
+        setHasOlder(result.has_more);
+        onMessagesLoaded?.(olderUI);
       }
     } catch (err) {
-      console.error('Failed to load more:', err);
+      console.error('Failed to load older messages:', err);
     } finally {
-      setLoadingMore(false);
+      setLoadingOlder(false);
     }
-  };
+  }, [encryptionKey, loadingOlder, hasOlder, messages, conversationId, preserveScrollPosition, onMessagesLoaded]);
+
+  // ============== Load Newer (Scroll Down) ==============
+  const loadNewer = useCallback(async () => {
+    if (!encryptionKey || loadingNewer || !hasNewer || messages.length === 0) return;
+    setLoadingNewer(true);
+
+    try {
+      const newest = messages[0];
+      if (!newest) return;
+
+      // Try local first
+      let result = await messageSync.readLocal(conversationId, {
+        after: newest.message_id,
+        limit: FETCH_SIZE,
+      });
+
+      if (result.messages.length === 0) {
+        // Fallback to server
+        const serverResult = await getMessages(conversationId, encryptionKey, {
+          after: newest.message_id,
+          limit: FETCH_SIZE,
+        });
+        const localMsgs: LocalMessage[] = serverResult.messages.map((msg) => ({
+          ...msg,
+          content: msg.content ?? null,
+          reactions: (msg as any).reactions || {},
+        }));
+        await messageStore.putMessages(localMsgs);
+        result = { messages: localMsgs, has_more: serverResult.has_more };
+      }
+
+      const newerUI = result.messages.map(toUIMessage);
+      if (newerUI.length > 0) {
+        setMessages((prev) => {
+          const merged = [...newerUI, ...prev];
+          return trimMessages(merged, 'old');
+        });
+        // If we got fewer than FETCH_SIZE, we've reached the present
+        if (newerUI.length < FETCH_SIZE) {
+          setHasNewer(false);
+          setIsAtPresent(true);
+        } else {
+          setHasNewer(result.has_more);
+        }
+        onMessagesLoaded?.(newerUI);
+      } else {
+        setHasNewer(false);
+        setIsAtPresent(true);
+      }
+    } catch (err) {
+      console.error('Failed to load newer messages:', err);
+    } finally {
+      setLoadingNewer(false);
+    }
+  }, [encryptionKey, loadingNewer, hasNewer, messages, conversationId, onMessagesLoaded]);
+
+  // ============== Jump to Present ==============
+  const jumpToPresent = useCallback(async () => {
+    if (!encryptionKey) return;
+    setLoadingNewer(true);
+
+    try {
+      // Re-fetch latest batch from local (which includes any WS-delivered messages)
+      const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
+      const freshUI = fresh.messages.map(toUIMessage);
+
+      setMessages(freshUI);
+      setHasOlder(fresh.has_more);
+      setHasNewer(false);
+      setIsAtPresent(true);
+      scrollToBottom('instant');
+      onMessagesLoaded?.(freshUI);
+    } catch (err) {
+      console.error('Failed to jump to present:', err);
+    } finally {
+      setLoadingNewer(false);
+    }
+  }, [encryptionKey, conversationId, scrollToBottom, onMessagesLoaded]);
 
   // ============== Reply Parent Lookup ==============
   const getReplyParent = useCallback((replyToId: string): Message | null => {
-      const found = messages.find((m) => m.message_id === replyToId);
-      if (found) return found;
-      if (replyCache[replyToId]) return replyCache[replyToId];
-      return null;
-    }, [messages, replyCache]);
+    const found = messages.find((m) => m.message_id === replyToId);
+    if (found) return found;
+    if (replyCache[replyToId]) return replyCache[replyToId];
+    return null;
+  }, [messages, replyCache]);
 
-  // Fetch missing replies with Ignore Flag and Dummy Object
+  // Fetch missing replies
   useEffect(() => {
     if (!encryptionKey) return;
-    let ignore = false; // <-- Protection flag here too
+    let ignore = false;
 
     const missingReplies = messages
       .map((m) => m.reply_to)
-      .filter((id): id is string => 
-        !!id && 
-        !messages.find((m) => m.message_id === id) && 
-        !replyCache[id] && 
+      .filter((id): id is string =>
+        !!id &&
+        !messages.find((m) => m.message_id === id) &&
+        !replyCache[id] &&
         !fetchingReplies.current.has(id)
       );
 
@@ -275,11 +412,10 @@ export const useMessageList = (
             getMessageById(conversationId, replyToId, encryptionKey)
               .then((msg: any) => {
                 if (ignore) return;
-                const actualMsg = msg?.message || msg; 
-                // FIX: If server returns null, store a dummy object to stop the infinite fetch loop!
-                setReplyCache((prev) => ({ 
-                  ...prev, 
-                  [replyToId]: actualMsg || { message_id: replyToId, content: '[deleted or unavailable]', is_deleted: true } as any 
+                const actualMsg = msg?.message || msg;
+                setReplyCache((prev) => ({
+                  ...prev,
+                  [replyToId]: actualMsg || { message_id: replyToId, content: '[deleted or unavailable]', is_deleted: true } as any
                 }));
               })
               .catch(() => {
@@ -294,19 +430,28 @@ export const useMessageList = (
         });
     });
 
-    return () => {
-      ignore = true;
-    };
+    return () => { ignore = true; };
   }, [messages, replyCache, conversationId, encryptionKey]);
 
   // ============== Scroll Handling ==============
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    if (el.scrollTop < 100 && hasMore && !loadingMore) loadMore();
-  }, [hasMore, loadingMore]);
 
-  const scrollToBottom = () => setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    // Track if user is near the bottom (for auto-scroll on new messages)
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isNearBottomRef.current = distanceFromBottom < 150;
+
+    // Scroll up → load older
+    if (el.scrollTop < 200 && hasOlder && !loadingOlder) {
+      loadOlder();
+    }
+
+    // Scroll down → load newer (only if not at present)
+    if (!isAtPresent && distanceFromBottom < 200 && hasNewer && !loadingNewer) {
+      loadNewer();
+    }
+  }, [hasOlder, loadingOlder, hasNewer, loadingNewer, isAtPresent, loadOlder, loadNewer]);
 
   // ============== Delete (API + Local) ==============
   const handleDelete = async (messageId: string) => {
@@ -319,5 +464,21 @@ export const useMessageList = (
     }
   };
 
-  return { messages, loading, syncing, loadingMore, hasMore, bottomRef, containerRef, handleScroll, handleDelete, getReplyParent };
+  return {
+    messages,
+    loading,
+    syncing,
+    loadingOlder,
+    loadingNewer,
+    hasOlder,
+    hasNewer,
+    isAtPresent,
+    bottomRef,
+    containerRef,
+    handleScroll,
+    handleDelete,
+    getReplyParent,
+    jumpToPresent,
+    scrollToBottom,
+  };
 };

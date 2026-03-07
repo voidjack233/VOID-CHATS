@@ -237,6 +237,7 @@ const ChatDashboard = () => {
             ) : (
               <>
                 <MessageView
+                  key={activeConversation.id}
                   conversation={activeConversation}
                   encryptionKey={encryptionKey}
                   encryptionError={encryptionError}

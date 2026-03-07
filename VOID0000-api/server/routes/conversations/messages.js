@@ -172,7 +172,7 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
-  const { before, limit } = req.query;
+  const { before, after, limit } = req.query;
   const pageSize = Math.min(parseInt(limit) || 50, 100);
 
   try {
@@ -181,7 +181,11 @@ router.get('/', async (req, res) => {
 
     let query, params;
 
-    if (before) {
+    if (after) {
+      // Fetch newer messages (ascending), then reverse to keep newest-first order
+      query = `SELECT * FROM messages WHERE conversation_id = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`;
+      params = [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(after), pageSize];
+    } else if (before) {
       query = `SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?`;
       params = [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(before), pageSize];
     } else {
@@ -191,7 +195,7 @@ router.get('/', async (req, res) => {
 
     const result = await scylla.execute(query, params, { prepare: true });
 
-    const messages = result.rows.map((row) => ({
+    let messages = result.rows.map((row) => ({
       conversation_id: row.conversation_id.toString(),
       message_id: row.message_id.toString(),
       sender_id: row.sender_id.toString(),
@@ -206,6 +210,9 @@ router.get('/', async (req, res) => {
       is_deleted: row.is_deleted,
       created_at: row.created_at?.toISOString(),
     }));
+
+    // after query was ASC, reverse to keep consistent newest-first order
+    if (after) messages = messages.reverse();
 
     // Batch fetch reactions for ALL messages in one go
     const messageIds = messages.map((m) => m.message_id);

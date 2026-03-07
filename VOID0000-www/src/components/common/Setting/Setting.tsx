@@ -1,11 +1,12 @@
 // src/components/common/Setting/Setting.tsx
-import { X, User, Shield, Info, Palette } from 'lucide-react';
+import { X, User, Shield, Info, Palette, AlertTriangle } from 'lucide-react';
 import { useState } from 'react';
 import ProfileTab from './ProfileTab';
 import AccountTab from './AccountTab';
 import AboutTab from './AboutTab';
 import AppearanceTab from './AppearanceTab';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
+import { useTheme } from '../../../Services/hooks/Settings/useTheme';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -16,6 +17,22 @@ type SettingsTab = 'profile' | 'account' | 'about' | 'appearance';
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   useScrollLock(); // Lock scroll when settings modal is open
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
+  const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
+  const { hasChanges, revertChanges } = useTheme();
+
+  const handleClose = () => {
+    if (hasChanges) {
+      setShowUnsavedDialog(true);
+    } else {
+      onClose();
+    }
+  };
+
+  const handleDiscardAndClose = () => {
+    revertChanges();
+    setShowUnsavedDialog(false);
+    onClose();
+  };
 
   const menuItems = [
     { id: 'profile' as SettingsTab, label: 'Profile', icon: <User className="w-4 h-4" /> },
@@ -77,7 +94,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           <div className="p-4 flex items-center justify-between">
             <h2 className="text-xl font-bold text-void-text">Settings</h2>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
               <X className="w-5 h-5 text-void-text-muted" />
@@ -111,7 +128,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               {menuItems.find(item => item.id === activeTab)?.label}
             </h3>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
               <X className="w-5 h-5 text-void-text-muted" />
@@ -126,6 +143,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           </div>
         </div>
       </div>
+
+      {/* Unsaved Changes Dialog */}
+      {showUnsavedDialog && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center">
+          <div className="bg-void-bg-sec border border-void-bg-hover rounded-xl shadow-2xl p-6 max-w-sm mx-4">
+            <div className="flex items-center gap-3 mb-3">
+              <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0" />
+              <h3 className="text-lg font-semibold text-void-text">Unsaved Changes</h3>
+            </div>
+            <p className="text-sm text-void-text-muted mb-6">
+              You have unsaved changes. Are you sure you want to leave without saving?
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowUnsavedDialog(false)}
+                className="px-4 py-2 text-sm font-medium text-void-text bg-void-bg-hover hover:bg-void-bg-hover/80 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDiscardAndClose}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+              >
+                Discard Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

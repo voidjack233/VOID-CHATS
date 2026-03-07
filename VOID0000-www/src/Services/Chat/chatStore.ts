@@ -118,7 +118,7 @@ class MessageStore {
 
   async getMessages(
     conversationId: string,
-    options?: { before?: string; limit?: number }
+    options?: { before?: string; after?: string; limit?: number }
   ): Promise<{ messages: LocalMessage[]; has_more: boolean }> {
     const db = await this.getDb();
     const limit = options?.limit || 50;
@@ -130,31 +130,45 @@ class MessageStore {
 
       const messages: LocalMessage[] = [];
 
-      const upper = options?.before
-        ? [conversationId, options.before]
-        : [conversationId, '\uffff'];
-      const lower = [conversationId, ''];
+      if (options?.after) {
+        // Fetch NEWER messages: ascending from after cursor
+        const lower = [conversationId, options.after];
+        const upper = [conversationId, '\uffff'];
+        const range = IDBKeyRange.bound(lower, upper, true, false);
+        const cursorReq = index.openCursor(range, 'next');
 
-      const range = IDBKeyRange.bound(lower, upper, false, !!options?.before);
+        cursorReq.onsuccess = (event) => {
+          const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+          if (!cursor || messages.length >= limit) {
+            // Reverse to keep newest-first order consistent with 'before' queries
+            messages.reverse();
+            resolve({ messages, has_more: !!cursor });
+            return;
+          }
+          messages.push(cursor.value as LocalMessage);
+          cursor.continue();
+        };
+        cursorReq.onerror = () => reject(cursorReq.error);
+      } else {
+        // Fetch OLDER messages (or latest): descending
+        const upper = options?.before
+          ? [conversationId, options.before]
+          : [conversationId, '\uffff'];
+        const lower = [conversationId, ''];
+        const range = IDBKeyRange.bound(lower, upper, false, !!options?.before);
+        const cursorReq = index.openCursor(range, 'prev');
 
-      const cursorReq = index.openCursor(range, 'prev');
-
-      cursorReq.onsuccess = (event) => {
-        const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
-
-        if (!cursor || messages.length >= limit) {
-          resolve({
-            messages,
-            has_more: !!cursor,
-          });
-          return;
-        }
-
-        messages.push(cursor.value as LocalMessage);
-        cursor.continue();
-      };
-
-      cursorReq.onerror = () => reject(cursorReq.error);
+        cursorReq.onsuccess = (event) => {
+          const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+          if (!cursor || messages.length >= limit) {
+            resolve({ messages, has_more: !!cursor });
+            return;
+          }
+          messages.push(cursor.value as LocalMessage);
+          cursor.continue();
+        };
+        cursorReq.onerror = () => reject(cursorReq.error);
+      }
     });
   }
 

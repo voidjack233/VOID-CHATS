@@ -33,6 +33,7 @@ interface ThemeContextValue {
   setDensity: (d: Density) => void;
   savePreferences: () => Promise<void>;
   resetToDefaults: () => void;
+  revertChanges: () => void;
 }
 
 // Added text and hover to the presets so they switch perfectly!
@@ -119,7 +120,6 @@ export function useThemeProvider(): ThemeContextValue {
 
   const setDensity = useCallback((d: Density) => {
     setDensityState(d);
-    localStorage.setItem('void_density', d);
   }, []);
 
   const [savedTheme, setSavedTheme] = useState<Theme>(DEFAULT_THEME);
@@ -127,13 +127,18 @@ export function useThemeProvider(): ThemeContextValue {
   const [savedBg, setSavedBg] = useState(DEFAULT_BG);
   const [savedText, setSavedText] = useState(DEFAULT_TEXT);
   const [savedHover, setSavedHover] = useState(DEFAULT_HOVER);
+  const [savedDensity, setSavedDensity] = useState<Density>(() => {
+    const saved = localStorage.getItem('void_density');
+    return saved === 'comfortable' ? 'comfortable' : 'compact';
+  });
 
-  const hasChanges = 
-    accentColor !== savedAccent || 
-    bgColor !== savedBg || 
-    textColor !== savedText || 
-    hoverColor !== savedHover || 
-    currentTheme !== savedTheme;
+  const hasChanges =
+    accentColor !== savedAccent ||
+    bgColor !== savedBg ||
+    textColor !== savedText ||
+    hoverColor !== savedHover ||
+    currentTheme !== savedTheme ||
+    density !== savedDensity;
 
   useEffect(() => {
     const loadPreferences = async () => {
@@ -150,19 +155,25 @@ export function useThemeProvider(): ThemeContextValue {
           const bg = localBg || preset.bg;
           const text = localText || preset.text;
           const hover = localHover || preset.hover;
-          
+
           setCurrentTheme(localTheme);
           setAccentColor(accent);
           setBgColor(bg);
           setTextColor(text);
           setHoverColor(hover);
-          
+
           setSavedTheme(localTheme);
           setSavedAccent(accent);
           setSavedBg(bg);
           setSavedText(text);
           setSavedHover(hover);
-          
+
+          const localDensity = localStorage.getItem('void_density');
+          if (localDensity === 'comfortable' || localDensity === 'compact') {
+            setDensityState(localDensity);
+            setSavedDensity(localDensity);
+          }
+
           applyColorsToDOM(accent, bg, text, hover);
         }
 
@@ -171,25 +182,28 @@ export function useThemeProvider(): ThemeContextValue {
           const data = await res.json();
 
           if (data.success && data.preferences) {
-            const { accent_color, bg_color, text_color, hover_color, theme } = data.preferences;
+            const { accent_color, bg_color, text_color, hover_color, theme, density: serverDensityRaw } = data.preferences;
             const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
             const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
             const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
             const serverText = text_color || THEME_PRESETS[serverTheme].text;
             const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
+            const serverDensity: Density = (serverDensityRaw === 'comfortable' || serverDensityRaw === 'compact') ? serverDensityRaw : 'compact';
 
             setCurrentTheme(serverTheme);
             setAccentColor(serverAccent);
             setBgColor(serverBg);
             setTextColor(serverText);
             setHoverColor(serverHover);
-            
+            setDensityState(serverDensity);
+
             setSavedTheme(serverTheme);
             setSavedAccent(serverAccent);
             setSavedBg(serverBg);
             setSavedText(serverText);
             setSavedHover(serverHover);
-            
+            setSavedDensity(serverDensity);
+
             applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
 
             localStorage.setItem('void_theme', serverTheme);
@@ -197,6 +211,7 @@ export function useThemeProvider(): ThemeContextValue {
             localStorage.setItem('void_bg', serverBg);
             localStorage.setItem('void_text', serverText);
             localStorage.setItem('void_hover', serverHover);
+            localStorage.setItem('void_density', serverDensity);
           }
         } catch {
           // Server down, rely on localStorage
@@ -249,6 +264,7 @@ export function useThemeProvider(): ThemeContextValue {
         text_color: textColor,
         hover_color: hoverColor,
         theme: currentTheme,
+        density,
       }),
     });
 
@@ -257,13 +273,15 @@ export function useThemeProvider(): ThemeContextValue {
     setSavedBg(bgColor);
     setSavedText(textColor);
     setSavedHover(hoverColor);
-    
+    setSavedDensity(density);
+
     localStorage.setItem('void_theme', currentTheme);
     localStorage.setItem('void_accent', accentColor);
     localStorage.setItem('void_bg', bgColor);
     localStorage.setItem('void_text', textColor);
     localStorage.setItem('void_hover', hoverColor);
-  }, [accentColor, bgColor, textColor, hoverColor, currentTheme]);
+    localStorage.setItem('void_density', density);
+  }, [accentColor, bgColor, textColor, hoverColor, currentTheme, density]);
 
   const resetToDefaults = useCallback(() => {
     setCurrentTheme(DEFAULT_THEME);
@@ -271,8 +289,19 @@ export function useThemeProvider(): ThemeContextValue {
     setBgColor(DEFAULT_BG);
     setTextColor(DEFAULT_TEXT);
     setHoverColor(DEFAULT_HOVER);
+    setDensityState('compact');
     applyColorsToDOM(DEFAULT_ACCENT, DEFAULT_BG, DEFAULT_TEXT, DEFAULT_HOVER);
   }, []);
+
+  const revertChanges = useCallback(() => {
+    setCurrentTheme(savedTheme);
+    setAccentColor(savedAccent);
+    setBgColor(savedBg);
+    setTextColor(savedText);
+    setHoverColor(savedHover);
+    setDensityState(savedDensity);
+    applyColorsToDOM(savedAccent, savedBg, savedText, savedHover);
+  }, [savedTheme, savedAccent, savedBg, savedText, savedHover, savedDensity]);
 
   return {
     accentColor,
@@ -293,6 +322,7 @@ export function useThemeProvider(): ThemeContextValue {
     setDensity,
     savePreferences,
     resetToDefaults,
+    revertChanges,
   };
 }
 

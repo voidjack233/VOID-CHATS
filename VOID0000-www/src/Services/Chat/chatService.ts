@@ -226,10 +226,11 @@ export async function uploadAttachments(
 export async function getMessages(
   conversationId: string,
   encryptionKey: CryptoKey,
-  options?: { before?: string; limit?: number }
+  options?: { before?: string; after?: string; limit?: number }
 ): Promise<{ messages: Message[]; has_more: boolean }> {
   const params = new URLSearchParams();
   if (options?.before) params.set('before', options.before);
+  if (options?.after) params.set('after', options.after);
   if (options?.limit) params.set('limit', options.limit.toString());
 
   const url = `${API_PREFIX}/${conversationId}/messages${params.toString() ? '?' + params.toString() : ''}`;

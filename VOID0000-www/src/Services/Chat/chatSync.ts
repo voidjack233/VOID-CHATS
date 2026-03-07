@@ -109,7 +109,7 @@ class MessageSync {
 
   async readLocal(
     conversationId: string,
-    options?: { before?: string; limit?: number }
+    options?: { before?: string; after?: string; limit?: number }
   ): Promise<{ messages: LocalMessage[]; has_more: boolean }> {
     return messageStore.getMessages(conversationId, options);
   }

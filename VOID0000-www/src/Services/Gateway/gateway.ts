@@ -49,7 +49,7 @@ class Gateway {
     window.addEventListener('online', this.handleOnline);
 
     const wsUrl = import.meta.env.DEV
-      ? 'ws://localhost:3001'
+      ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway`
       : 'wss://api.void0000.online';
 
     try {
