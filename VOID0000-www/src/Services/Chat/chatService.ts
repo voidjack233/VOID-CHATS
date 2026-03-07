@@ -33,6 +33,7 @@ export interface Message {
   key_version: number;
   message_type: string;
   reply_to: string | null;
+  attachments?: string[];
   is_edited: boolean;
   edited_at: string | null;
   is_deleted: boolean;
@@ -166,7 +167,7 @@ export async function sendMessage(
   conversationId: string,
   plaintext: string,
   encryptionKey: CryptoKey,
-  options?: { reply_to?: string; key_version?: number }
+  options?: { reply_to?: string; key_version?: number; attachments?: string[] }
 ): Promise<Message> {
   const { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
 
@@ -178,6 +179,7 @@ export async function sendMessage(
       key_version: options?.key_version || 1,
       message_type: 'text',
       reply_to: options?.reply_to || null,
+      attachments: options?.attachments || [],
     }),
   });
 
@@ -185,6 +187,40 @@ export async function sendMessage(
   if (!data.success) throw new Error(data.error);
 
   return { ...data.message, content: plaintext };
+}
+
+export async function sendImageOnlyMessage(
+  conversationId: string,
+  attachments: string[],
+  options?: { reply_to?: string; key_version?: number }
+): Promise<Message> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      attachments,
+      key_version: options?.key_version || 1,
+      reply_to: options?.reply_to || null,
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+
+  return data.message;
+}
+
+export async function uploadAttachments(
+  conversationId: string,
+  files: Array<{ data: string }>
+): Promise<string[]> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify({ files }),
+  });
+
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Upload failed');
+  return data.urls as string[];
 }
 
 export async function getMessages(
@@ -264,7 +300,7 @@ export async function markAsRead(
 // ============== Reactions ==============
 
 export interface ReactionMap {
-  [emoji: string]: string[];
+  [emoji: string]: string[] | { count: number; me: boolean };
 }
 
 /**

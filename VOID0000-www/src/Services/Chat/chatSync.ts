@@ -90,6 +90,7 @@ class MessageSync {
         is_deleted: msg.is_deleted,
         created_at: msg.created_at,
         reactions: (msg as any).reactions || {},
+        attachments: msg.attachments,
       }));
 
       await messageStore.putMessages(localMsgs);

@@ -17,7 +17,7 @@ const sizes = {
 export default function PresenceDot({ status, size = 'sm' }: PresenceDotProps) {
   return (
     <span
-      className={`${colors[status]} ${sizes[size]} rounded-full inline-block ring-2 ring-gray-800`}
+      className={`${colors[status]} ${sizes[size]} rounded-full inline-block ring-2 ring-void-bg-secondary`}
       title={status.charAt(0).toUpperCase() + status.slice(1)}
     />
   );

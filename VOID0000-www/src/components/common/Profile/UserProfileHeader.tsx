@@ -37,7 +37,7 @@ const UserProfileHeader: React.FC<UserProfileHeaderProps & {
 
       {/* Avatar Section */}
       <div className="relative group flex-shrink-0">
-        <div className="w-[88px] h-[88px] rounded-full bg-gray-700 overflow-hidden ring-4 ring-gray-800 shadow-xl">
+        <div className="w-[88px] h-[88px] rounded-full bg-void-bg-hover overflow-hidden ring-4 ring-void-bg-secondary shadow-xl">
           <img
             src={avatarToShow}
             alt="Avatar"
@@ -70,7 +70,7 @@ const UserProfileHeader: React.FC<UserProfileHeaderProps & {
       <div className="flex-1 min-w-0 flex flex-col justify-center">
         {isEditing ? (
           <div className="w-full max-w-[200px]">
-            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-bold text-void-text-muted uppercase tracking-wider mb-1">
               Display Name
             </label>
             <input
@@ -79,16 +79,16 @@ const UserProfileHeader: React.FC<UserProfileHeaderProps & {
               onChange={(e) =>
                 setTempProfile?.({ ...tempProfile, display_name: e.target.value })
               }
-              className="w-full bg-gray-900 border border-gray-700 rounded-md px-2.5 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder-gray-600"
+              className="w-full bg-gray-900 border border-void-border rounded-md px-2.5 py-1.5 text-void-text text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder-gray-600"
               placeholder="Display Name"
             />
           </div>
         ) : (
           <div>
-            <h2 className="text-2xl font-bold text-white leading-tight truncate">
+            <h2 className="text-2xl font-bold text-void-text leading-tight truncate">
               {displayProfile.display_name || displayProfile.username}
             </h2>
-            <p className="text-sm text-gray-400 font-medium">@{displayProfile.username}</p>
+            <p className="text-sm text-void-text-muted font-medium">@{displayProfile.username}</p>
           </div>
         )}
 

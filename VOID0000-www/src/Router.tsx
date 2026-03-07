@@ -5,6 +5,7 @@ import { UserProvider } from './Services/Auth/UserContext';
 import { FriendProvider } from './Services/hooks/Friends/useFriendRequests';
 import { PresenceProvider } from './Services/hooks/Friends/usePresence';
 import { FriendsProvider } from './Services/hooks/Friends';
+import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTheme';
 
 // Import pages
 import Auth from './pages/Auth';
@@ -22,9 +23,15 @@ const ROUTE_CONFIG = {
   ]
 };
 
+function ThemeWrapper({ children }: { children: React.ReactNode }) {
+  const theme = useThemeProvider();
+  return <ThemeProvider value={theme}>{children}</ThemeProvider>;
+}
+
 export default function Router() {
   return (
     <ErrorBoundary>
+      <ThemeWrapper>
       <UserProvider>
         <FriendsProvider>
          <FriendProvider>
@@ -56,6 +63,7 @@ export default function Router() {
         </FriendProvider>
        </FriendsProvider> 
       </UserProvider>
+      </ThemeWrapper>
     </ErrorBoundary>
   );
 }

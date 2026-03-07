@@ -34,75 +34,75 @@ const AccountTab = () => {
       <div className="space-y-4 md:space-y-6 pb-6">
         {/* Account Information */}
         <div>
-          <h4 className="text-xs md:text-sm font-semibold text-gray-400 uppercase mb-3">
+          <h4 className="text-xs md:text-sm font-semibold text-void-text-muted uppercase mb-3">
             Account Information
           </h4>
           <div className="space-y-3">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Email Address</label>
-              <div className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm truncate">
+              <label className="block text-sm font-medium text-void-text mb-1">Email Address</label>
+              <div className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 text-void-text text-sm truncate">
                 {loading ? 'Loading...' : account?.email || 'Not available'}
               </div>
-              <p className="text-xs text-gray-500 mt-1">Email cannot be changed yet</p>
+              <p className="text-xs text-void-text-muted mt-1">Email cannot be changed yet</p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Username</label>
-              <div className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm">
+              <label className="block text-sm font-medium text-void-text mb-1">Username</label>
+              <div className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 text-void-text text-sm">
                 {loading ? 'Loading...' : account?.username || 'Not available'}
               </div>
-              <p className="text-xs text-gray-500 mt-1">Username cannot be changed</p>
+              <p className="text-xs text-void-text-muted mt-1">Username cannot be changed</p>
             </div>
           </div>
         </div>
 
         {/* Security */}
-        <div className="border-t border-gray-700 pt-4">
-          <h4 className="text-xs md:text-sm font-semibold text-gray-400 uppercase mb-3">Security</h4>
+        <div className="border-t border-void-border pt-4">
+          <h4 className="text-xs md:text-sm font-semibold text-void-text-muted uppercase mb-3">Security</h4>
           <div className="space-y-2">
             <button
               onClick={() => setShowChangePassword(true)}
-              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-gray-700 hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
+              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-void-border hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
             >
               <div className="flex items-center justify-between">
                 <div className="text-left">
-                  <p className="text-sm font-medium text-white">Change Password</p>
-                  <p className="text-xs text-gray-400 mt-0.5 hidden sm:block">Update your password</p>
+                  <p className="text-sm font-medium text-void-text">Change Password</p>
+                  <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">Update your password</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-gray-400 hidden sm:block" />
-                  <ChevronRight className="w-4 h-4 text-gray-400" />
+                  <Shield className="w-4 h-4 text-void-text-muted hidden sm:block" />
+                  <ChevronRight className="w-4 h-4 text-void-text-muted" />
                 </div>
               </div>
             </button>
 
             <button
               onClick={() => setShowTwoFactor(true)}
-              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-gray-700 hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
+              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-void-border hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
             >
               <div className="flex items-center justify-between">
                 <div className="text-left">
-                  <p className="text-sm font-medium text-white">Two-Factor Authentication</p>
-                  <p className="text-xs text-gray-400 mt-0.5 hidden sm:block">Manage your 2FA settings</p>
+                  <p className="text-sm font-medium text-void-text">Two-Factor Authentication</p>
+                  <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">Manage your 2FA settings</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-gray-400 hidden sm:block" />
-                  <ChevronRight className="w-4 h-4 text-gray-400" />
+                  <Shield className="w-4 h-4 text-void-text-muted hidden sm:block" />
+                  <ChevronRight className="w-4 h-4 text-void-text-muted" />
                 </div>
               </div>
             </button>
 
             <button
               onClick={() => setShowActiveSessions(true)}
-              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-gray-700 hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
+              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-void-border hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
             >
               <div className="flex items-center justify-between">
                 <div className="text-left">
-                  <p className="text-sm font-medium text-white">Active Sessions</p>
-                  <p className="text-xs text-gray-400 mt-0.5 hidden sm:block">Manage your devices</p>
+                  <p className="text-sm font-medium text-void-text">Active Sessions</p>
+                  <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">Manage your devices</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-gray-400 hidden sm:block" />
-                  <ChevronRight className="w-4 h-4 text-gray-400" />
+                  <Shield className="w-4 h-4 text-void-text-muted hidden sm:block" />
+                  <ChevronRight className="w-4 h-4 text-void-text-muted" />
                 </div>
               </div>
             </button>
@@ -110,11 +110,11 @@ const AccountTab = () => {
         </div>
 
         {/* Logout */}
-        <div className="border-t border-gray-700 pt-4">
+        <div className="border-t border-void-border pt-4">
           <button
             onClick={handleLogout}
             disabled={isLoggingOut}
-            className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-gray-700 hover:border-orange-500 rounded-lg transition-all active:scale-[0.98] disabled:opacity-50"
+            className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-void-border hover:border-orange-500 rounded-lg transition-all active:scale-[0.98] disabled:opacity-50"
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -123,7 +123,7 @@ const AccountTab = () => {
                   <p className="text-sm font-medium text-orange-400">
                     {isLoggingOut ? 'Logging out...' : 'Log Out'}
                   </p>
-                  <p className="text-xs text-gray-400 mt-0.5 hidden sm:block">Sign out of your account</p>
+                  <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">Sign out of your account</p>
                 </div>
               </div>
               {isLoggingOut ? (
@@ -136,7 +136,7 @@ const AccountTab = () => {
         </div>
 
         {/* Danger Zone */}
-        <div className="border-t border-gray-700 pt-4">
+        <div className="border-t border-void-border pt-4">
           <h4 className="text-xs md:text-sm font-semibold text-red-400 uppercase mb-3">Danger Zone</h4>
           <button className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-red-900/20 hover:bg-red-900/30 border border-red-800/50 hover:border-red-700 rounded-lg transition-all active:scale-[0.98]">
             <div className="flex items-center justify-between">

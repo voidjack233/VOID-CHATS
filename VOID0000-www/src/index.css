@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* Theme presets */
+/* Theme presets stay exactly the same */
 :root[data-theme="void"] {
   --bg-main: #111827;
   --bg-sec: #1f2937;
@@ -63,7 +63,6 @@
   --animation-speed: 200ms;
   --animation-easing: cubic-bezier(0.4, 0, 0.2, 1);
   
-  /* Scrollbar colors will be updated via JS */
   --scrollbar-thumb: #2e3338;
   --scrollbar-thumb-hover: #3e4347;
 }
@@ -78,6 +77,12 @@
   --color-void-accent-hover: var(--accent-hover);
   
   --color-void-text: var(--text-main);
+
+  /* Auto-generates muted text (e.g., timestamps) based on their chosen text color */
+  --color-void-text-muted: color-mix(in srgb, var(--text-main) 60%, transparent);
+  
+  /* Auto-generates borders that perfectly match their background and text */
+  --color-void-border: color-mix(in srgb, var(--text-main) 12%, var(--bg-main));
   
   /* Font size utilities */
   --text-void-xs: var(--text-xs);
@@ -88,36 +93,28 @@
   --text-void-2xl: var(--text-2xl);
 }
 
-/* Firefox */
+/* Scrollbar styles remain the same... */
 * {
   scrollbar-width: thin;
   scrollbar-color: #2e3338 transparent;
 }
-
-/* Chrome, Edge, Safari */
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
-
 *::-webkit-scrollbar-track {
   background: transparent;
 }
-
 *::-webkit-scrollbar-thumb {
   background: #2e3338;
   border-radius: 3px;
 }
-
 *::-webkit-scrollbar-thumb:hover {
   background: #3e4347;
 }
-
-/* Hide scrollbar until hover (optional) */
 *::-webkit-scrollbar-thumb {
   visibility: hidden;
 }
-
 *:hover::-webkit-scrollbar-thumb {
   visibility: visible;
 }

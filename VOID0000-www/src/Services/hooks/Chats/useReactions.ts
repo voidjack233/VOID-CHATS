@@ -1,6 +1,13 @@
 // src/Services/hooks/Chats/useReactions.ts
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { toggleReaction, ReactionMap } from '../../Chat/chatService';
+import { toggleReaction } from '../../Chat/chatService';
+
+export interface ReactionData {
+  count: number;
+  me: boolean;
+}
+
+export type ReactionMap = Record<string, ReactionData>;
 
 interface ReactionEvent {
   conversation_id: string;
@@ -12,7 +19,8 @@ interface ReactionEvent {
 
 export const useReactions = (
   conversationId: string,
-  gateway: any
+  gateway: any,
+  currentUserId?: string
 ) => {
   const [reactions, setReactions] = useState<Record<string, ReactionMap>>({});
   const lastConvRef = useRef<string>('');
@@ -33,11 +41,11 @@ export const useReactions = (
       if (data.conversation_id !== conversationId) return;
       setReactions((prev) => {
         const msgReactions = { ...(prev[data.message_id] || {}) };
-        const users = [...(msgReactions[data.emoji] || [])];
-        if (!users.includes(data.user_id)) {
-          users.push(data.user_id);
-        }
-        msgReactions[data.emoji] = users;
+        const existing = msgReactions[data.emoji] || { count: 0, me: false };
+        msgReactions[data.emoji] = {
+          count: existing.count + 1,
+          me: existing.me || data.user_id === currentUserId,
+        };
         return { ...prev, [data.message_id]: msgReactions };
       });
     };
@@ -46,13 +54,17 @@ export const useReactions = (
       if (data.conversation_id !== conversationId) return;
       setReactions((prev) => {
         const msgReactions = { ...(prev[data.message_id] || {}) };
-        const users = (msgReactions[data.emoji] || []).filter(
-          (id) => id !== data.user_id
-        );
-        if (users.length === 0) {
+        const existing = msgReactions[data.emoji];
+        if (!existing) return prev;
+
+        const newCount = existing.count - 1;
+        if (newCount <= 0) {
           delete msgReactions[data.emoji];
         } else {
-          msgReactions[data.emoji] = users;
+          msgReactions[data.emoji] = {
+            count: newCount,
+            me: data.user_id === currentUserId ? false : existing.me,
+          };
         }
         return { ...prev, [data.message_id]: msgReactions };
       });
@@ -65,44 +77,55 @@ export const useReactions = (
       gateway.off?.('REACTION_ADD', handleReactionAdd);
       gateway.off?.('REACTION_REMOVE', handleReactionRemove);
     };
-  }, [gateway, conversationId]);
+  }, [gateway, conversationId, currentUserId]);
 
   /**
-   * Initialize reactions from message data — called by useMessageList
-   * after messages are fetched. No separate API call needed.
+   * Initialize reactions from message data -- called by useMessageList
+   * after messages are fetched. Handles both old array format and new {count, me} format.
    */
   const initReactionsFromMessages = useCallback(
-    (messages: Array<{ message_id: string; reactions?: ReactionMap }>) => {
+    (messages: Array<{ message_id: string; reactions?: any }>) => {
       const reactionsMap: Record<string, ReactionMap> = {};
       for (const msg of messages) {
         if (msg.reactions && Object.keys(msg.reactions).length > 0) {
-          reactionsMap[msg.message_id] = msg.reactions;
+          const normalized: ReactionMap = {};
+          for (const [emoji, data] of Object.entries(msg.reactions)) {
+            if (Array.isArray(data)) {
+              // Legacy format: array of user IDs
+              normalized[emoji] = {
+                count: data.length,
+                me: currentUserId ? data.includes(currentUserId) : false,
+              };
+            } else if (data && typeof data === 'object') {
+              normalized[emoji] = data as ReactionData;
+            }
+          }
+          if (Object.keys(normalized).length > 0) {
+            reactionsMap[msg.message_id] = normalized;
+          }
         }
       }
       setReactions((prev) => ({ ...prev, ...reactionsMap }));
     },
-    []
+    [currentUserId]
   );
 
   // Toggle reaction (optimistic update)
   const handleToggleReaction = useCallback(
-    async (messageId: string, emoji: string, userId: string) => {
-      // Optimistic update
+    async (messageId: string, emoji: string) => {
       setReactions((prev) => {
         const msgReactions = { ...(prev[messageId] || {}) };
-        const users = [...(msgReactions[emoji] || [])];
-        const index = users.indexOf(userId);
+        const existing = msgReactions[emoji] || { count: 0, me: false };
 
-        if (index > -1) {
-          users.splice(index, 1);
-          if (users.length === 0) {
+        if (existing.me) {
+          const newCount = existing.count - 1;
+          if (newCount <= 0) {
             delete msgReactions[emoji];
           } else {
-            msgReactions[emoji] = users;
+            msgReactions[emoji] = { count: newCount, me: false };
           }
         } else {
-          users.push(userId);
-          msgReactions[emoji] = users;
+          msgReactions[emoji] = { count: existing.count + 1, me: true };
         }
 
         return { ...prev, [messageId]: msgReactions };

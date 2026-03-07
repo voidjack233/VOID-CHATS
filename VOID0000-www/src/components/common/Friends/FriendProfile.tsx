@@ -26,13 +26,13 @@ export default function FriendProfile({ friend, onClose, onRemoveFriend }: Frien
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-lg bg-gray-800 rounded-2xl shadow-2xl border border-gray-700/50 overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-lg bg-void-bg-secondary rounded-2xl shadow-2xl border border-void-border overflow-hidden flex flex-col max-h-[90vh]">
         
         {/* Close Button */}
         <div className="absolute top-4 right-4 z-20">
           <button
             onClick={onClose}
-            className="p-2 rounded-full bg-gray-800/50 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors focus:outline-none"
+            className="p-2 rounded-full bg-void-bg-secondary/50 hover:bg-void-bg-hover text-void-text-muted hover:text-void-text transition-colors focus:outline-none"
           >
             <X className="w-5 h-5" />
           </button>
@@ -70,7 +70,7 @@ export default function FriendProfile({ friend, onClose, onRemoveFriend }: Frien
 
         {/* Content Area */}
         <div className="px-8 pb-8 overflow-y-auto">
-          <div className="h-px w-full bg-gray-700 my-4" />
+          <div className="h-px w-full bg-void-border my-4" />
 
           <UserProfileFields
             displayProfile={displayProfile}

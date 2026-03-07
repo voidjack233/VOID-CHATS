@@ -103,28 +103,28 @@ const EmojiPicker = ({ onSelect, onClose, position }: EmojiPickerProps) => {
     <div 
       ref={pickerRef} 
       style={posStyle} 
-      className="w-[350px] bg-[#202124] border border-gray-700/60 rounded-xl shadow-[0_24px_48px_-12px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col transition-all duration-200 animate-in fade-in zoom-in-95"
+      className="w-[350px] bg-void-bg-main border border-void-border/60 rounded-xl shadow-[0_24px_48px_-12px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col transition-all duration-200 animate-in fade-in zoom-in-95"
     >
       {/* Search Header */}
-      <div className="p-4 border-b border-gray-700/50">
+      <div className="p-4 border-b border-void-border/50">
         <input
           autoFocus
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search emoji..."
-          className="w-full px-4 py-2 bg-gray-900/80 border border-transparent rounded-full text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
+          className="w-full px-4 py-2 bg-void-bg-sec/80 border border-transparent rounded-full text-sm text-void-text placeholder-void-text-muted focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
         />
       </div>
 
       {/* Categories Bar */}
       {!search && (
-        <div className="flex gap-1 px-3 py-2 bg-gray-900/30 border-b border-gray-700/50 overflow-x-auto scrollbar-hide">
+        <div className="flex gap-1 px-3 py-2 bg-void-bg-sec/30 border-b border-void-border/50 overflow-x-auto scrollbar-hide">
           {categoryKeys.map((key) => (
             <button 
               key={key} 
               onClick={() => setActiveCategory(key)} 
-              className={`p-2 rounded-lg text-lg transition-all ${activeCategory === key ? 'bg-indigo-500/20 ring-1 ring-indigo-500/50' : 'hover:bg-gray-700/50 grayscale hover:grayscale-0'}`}
+              className={`p-2 rounded-lg text-lg transition-all ${activeCategory === key ? 'bg-indigo-500/20 ring-1 ring-indigo-500/50' : 'hover:bg-void-bg-hover/50 grayscale hover:grayscale-0'}`}
               title={EMOJI_CATEGORIES[key].label}
             >
               {EMOJI_CATEGORIES[key].emojis[0]}
@@ -136,7 +136,7 @@ const EmojiPicker = ({ onSelect, onClose, position }: EmojiPickerProps) => {
       {/* Category Label */}
       {!search && (
         <div className="px-4 pt-3 pb-1">
-          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">
+          <span className="text-[11px] font-bold text-void-text-muted uppercase tracking-widest">
             {EMOJI_CATEGORIES[activeCategory].label}
           </span>
         </div>

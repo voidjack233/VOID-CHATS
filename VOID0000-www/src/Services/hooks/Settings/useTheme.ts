@@ -1,5 +1,5 @@
 // src/Services/hooks/Settings/useTheme.ts
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 
 export type Theme = 'void' | 'ocean' | 'forest' | 'sunset' | 'midnight';
@@ -7,143 +7,200 @@ export type Theme = 'void' | 'ocean' | 'forest' | 'sunset' | 'midnight';
 export interface ThemePreferences {
   accent_color: string;
   bg_color: string;
+  text_color: string;   // <-- Added
+  hover_color: string;  // <-- Added
   theme: Theme;
 }
 
-interface UseThemeReturn {
+export type Density = 'comfortable' | 'compact';
+
+interface ThemeContextValue {
   accentColor: string;
   bgColor: string;
   textColor: string;
+  hoverColor: string;
+  currentTheme: Theme;
+  density: Density;
   loading: boolean;
+  savedAccent: string;
+  savedBg: string;
+  savedText: string;
+  savedHover: string;
+  savedTheme: Theme;
+  hasChanges: boolean;
   setTheme: (theme: Theme) => void;
-  setCustomColors: (accent: string, bg: string) => void;
+  setCustomColors: (accent: string, bg: string, text: string, hover: string) => void;
+  setDensity: (d: Density) => void;
   savePreferences: () => Promise<void>;
   resetToDefaults: () => void;
 }
 
-// Theme preset colors - ALL DARK THEMES
-const THEME_PRESETS: Record<Theme, { accent: string; bg: string }> = {
-  void: { accent: '#6366f1', bg: '#111827' },
-  ocean: { accent: '#0ea5e9', bg: '#0f172a' },
-  forest: { accent: '#10b981', bg: '#0c1f1c' },
-  sunset: { accent: '#f97316', bg: '#1e1b2e' },
-  midnight: { accent: '#8b5cf6', bg: '#030712' },
+// Added text and hover to the presets so they switch perfectly!
+export const THEME_PRESETS: Record<Theme, { accent: string; bg: string; text: string; hover: string }> = {
+  void: { accent: '#6366f1', bg: '#111827', text: '#f3f4f6', hover: '#374151' },
+  ocean: { accent: '#0ea5e9', bg: '#0f172a', text: '#f8fafc', hover: '#334155' },
+  forest: { accent: '#10b981', bg: '#0c1f1c', text: '#ecfdf5', hover: '#2d4a43' },
+  sunset: { accent: '#f97316', bg: '#1e1b2e', text: '#fff7ed', hover: '#3f3b5c' },
+  midnight: { accent: '#8b5cf6', bg: '#030712', text: '#f5f3ff', hover: '#1f2937' },
 };
 
-// Default to VOID
 const DEFAULT_THEME: Theme = 'void';
 const DEFAULT_ACCENT = THEME_PRESETS.void.accent;
 const DEFAULT_BG = THEME_PRESETS.void.bg;
-const DEFAULT_TEXT = '#f3f4f6';
+const DEFAULT_TEXT = THEME_PRESETS.void.text;
+const DEFAULT_HOVER = THEME_PRESETS.void.hover;
 
-// Helper to adjust color brightness
-const adjustColor = (hex: string, percent: number): string => {
-  if (!hex) return DEFAULT_ACCENT;
-  
+export const adjustColor = (hex: string, percent: number): string => {
+  if (!hex) return '#1f2937';
   try {
     let cleanHex = hex.replace('#', '');
-    
     if (cleanHex.length === 3) {
       cleanHex = cleanHex.split('').map(c => c + c).join('');
     }
-    
     const r = parseInt(cleanHex.substring(0, 2), 16);
     const g = parseInt(cleanHex.substring(2, 4), 16);
     const b = parseInt(cleanHex.substring(4, 6), 16);
-    
-    const adjust = (color: number) => {
-      return Math.max(0, Math.min(255, color + percent));
-    };
-    
+    const adjust = (color: number) => Math.max(0, Math.min(255, color + percent));
     const toHex = (n: number) => {
       const hex = adjust(n).toString(16);
       return hex.length === 1 ? '0' + hex : hex;
     };
-    
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-  } catch (e) {
+  } catch {
     return hex;
   }
 };
 
-// Apply theme to DOM
-const applyColorsToDOM = (accent: string, bg: string) => {
+const applyColorsToDOM = (accent: string, bg: string, text: string, hover: string) => {
   const root = document.documentElement;
-  
+
   root.style.setProperty('--accent', accent);
   root.style.setProperty('--accent-hover', adjustColor(accent, -20));
   root.style.setProperty('--bg-main', bg);
-  root.style.setProperty('--bg-sec', adjustColor(bg, 15));
-  root.style.setProperty('--bg-hover', adjustColor(bg, 30));
-  root.style.setProperty('--text-main', DEFAULT_TEXT);
+  root.style.setProperty('--bg-hover', hover);
+  root.style.setProperty('--text-main', text);
+  
+  // Keep these auto-calculated so the user doesn't have to pick 8 different colors
+  root.style.setProperty('--bg-sec', adjustColor(bg, 10)); 
   root.style.setProperty('--scrollbar-thumb', adjustColor(bg, 40));
   root.style.setProperty('--scrollbar-thumb-hover', adjustColor(bg, 60));
-  
-  // Update data-theme attribute
+
   const matchingTheme = Object.entries(THEME_PRESETS).find(
-    ([_, colors]) => colors.accent === accent && colors.bg === bg
+    ([_, colors]) => colors.accent === accent && colors.bg === bg && colors.text === text && colors.hover === hover
   );
-  
+
   if (matchingTheme) {
     root.setAttribute('data-theme', matchingTheme[0]);
+  } else {
+    root.removeAttribute('data-theme');
   }
 };
 
-export const useTheme = (): UseThemeReturn => {
+// Apply defaults immediately
+applyColorsToDOM(DEFAULT_ACCENT, DEFAULT_BG, DEFAULT_TEXT, DEFAULT_HOVER);
+document.documentElement.setAttribute('data-theme', DEFAULT_THEME);
+
+const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+export const ThemeProvider = ThemeContext.Provider;
+
+export function useThemeProvider(): ThemeContextValue {
   const [loading, setLoading] = useState(true);
-  const [theme, setThemeState] = useState<Theme>(DEFAULT_THEME);
+  const [currentTheme, setCurrentTheme] = useState<Theme>(DEFAULT_THEME);
   const [accentColor, setAccentColor] = useState(DEFAULT_ACCENT);
   const [bgColor, setBgColor] = useState(DEFAULT_BG);
-  const textColor = DEFAULT_TEXT; // Remove setTextColor, just use constant
+  const [textColor, setTextColor] = useState(DEFAULT_TEXT);
+  const [hoverColor, setHoverColor] = useState(DEFAULT_HOVER);
 
-  // Apply VOID theme on mount (before any loading)
-useEffect(() => {
-  const root = document.documentElement;
-  root.setAttribute('data-theme', DEFAULT_THEME);
-  applyColorsToDOM(DEFAULT_ACCENT, DEFAULT_BG);
-}, []);
+  const [density, setDensityState] = useState<Density>(() => {
+    const saved = localStorage.getItem('void_density');
+    return saved === 'comfortable' ? 'comfortable' : 'compact';
+  });
 
-  // Then try to load saved preferences
+  const setDensity = useCallback((d: Density) => {
+    setDensityState(d);
+    localStorage.setItem('void_density', d);
+  }, []);
+
+  const [savedTheme, setSavedTheme] = useState<Theme>(DEFAULT_THEME);
+  const [savedAccent, setSavedAccent] = useState(DEFAULT_ACCENT);
+  const [savedBg, setSavedBg] = useState(DEFAULT_BG);
+  const [savedText, setSavedText] = useState(DEFAULT_TEXT);
+  const [savedHover, setSavedHover] = useState(DEFAULT_HOVER);
+
+  const hasChanges = 
+    accentColor !== savedAccent || 
+    bgColor !== savedBg || 
+    textColor !== savedText || 
+    hoverColor !== savedHover || 
+    currentTheme !== savedTheme;
+
   useEffect(() => {
     const loadPreferences = async () => {
       try {
-        // Check localStorage first
-        const savedTheme = localStorage.getItem('theme') as Theme | null;
-        
-        if (savedTheme && THEME_PRESETS[savedTheme]) {
-          // Use saved theme
-          const preset = THEME_PRESETS[savedTheme];
-          setThemeState(savedTheme);
-          setAccentColor(preset.accent);
-          setBgColor(preset.bg);
-          applyColorsToDOM(preset.accent, preset.bg);
+        const localTheme = localStorage.getItem('void_theme') as Theme | null;
+        const localAccent = localStorage.getItem('void_accent');
+        const localBg = localStorage.getItem('void_bg');
+        const localText = localStorage.getItem('void_text');
+        const localHover = localStorage.getItem('void_hover');
+
+        if (localTheme && THEME_PRESETS[localTheme]) {
+          const preset = THEME_PRESETS[localTheme];
+          const accent = localAccent || preset.accent;
+          const bg = localBg || preset.bg;
+          const text = localText || preset.text;
+          const hover = localHover || preset.hover;
+          
+          setCurrentTheme(localTheme);
+          setAccentColor(accent);
+          setBgColor(bg);
+          setTextColor(text);
+          setHoverColor(hover);
+          
+          setSavedTheme(localTheme);
+          setSavedAccent(accent);
+          setSavedBg(bg);
+          setSavedText(text);
+          setSavedHover(hover);
+          
+          applyColorsToDOM(accent, bg, text, hover);
         }
-        
-        // Try to load from server (if user is logged in)
+
         try {
           const res = await fetchWithAuth('/api/users/preferences');
           const data = await res.json();
-          
+
           if (data.success && data.preferences) {
-            const { accent_color, bg_color, theme: savedThemeFromServer } = data.preferences;
+            const { accent_color, bg_color, text_color, hover_color, theme } = data.preferences;
+            const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
+            const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
+            const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
+            const serverText = text_color || THEME_PRESETS[serverTheme].text;
+            const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
+
+            setCurrentTheme(serverTheme);
+            setAccentColor(serverAccent);
+            setBgColor(serverBg);
+            setTextColor(serverText);
+            setHoverColor(serverHover);
             
-            // Only use server data if it exists and is valid
-            if (accent_color && bg_color) {
-              setAccentColor(accent_color);
-              setBgColor(bg_color);
-              applyColorsToDOM(accent_color, bg_color);
-            }
+            setSavedTheme(serverTheme);
+            setSavedAccent(serverAccent);
+            setSavedBg(serverBg);
+            setSavedText(serverText);
+            setSavedHover(serverHover);
             
-            if (savedThemeFromServer && THEME_PRESETS[savedThemeFromServer as Theme]) {
-              setThemeState(savedThemeFromServer as Theme);
-              localStorage.setItem('theme', savedThemeFromServer);
-            }
+            applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
+
+            localStorage.setItem('void_theme', serverTheme);
+            localStorage.setItem('void_accent', serverAccent);
+            localStorage.setItem('void_bg', serverBg);
+            localStorage.setItem('void_text', serverText);
+            localStorage.setItem('void_hover', serverHover);
           }
-        } catch (err) {
-          // Silently fail - user might not be logged in
-          console.log('No server preferences yet (new user or not logged in)');
+        } catch {
+          // Server down, rely on localStorage
         }
-        
       } catch (err) {
         console.error('Error loading preferences', err);
       } finally {
@@ -154,61 +211,93 @@ useEffect(() => {
     loadPreferences();
   }, []);
 
-  const setTheme = (newTheme: Theme) => {
+  const setTheme = useCallback((newTheme: Theme) => {
     const safeTheme = THEME_PRESETS[newTheme] ? newTheme : DEFAULT_THEME;
     const preset = THEME_PRESETS[safeTheme];
-    
-    setThemeState(safeTheme);
+
+    setCurrentTheme(safeTheme);
     setAccentColor(preset.accent);
     setBgColor(preset.bg);
+    setTextColor(preset.text);
+    setHoverColor(preset.hover);
     
-    applyColorsToDOM(preset.accent, preset.bg);
-    localStorage.setItem('theme', safeTheme);
-  };
+    applyColorsToDOM(preset.accent, preset.bg, preset.text, preset.hover);
+  }, []);
 
-  const setCustomColors = (accent: string, bg: string) => {
-    setThemeState(DEFAULT_THEME);
+  const setCustomColors = useCallback((accent: string, bg: string, text: string, hover: string) => {
     setAccentColor(accent);
     setBgColor(bg);
+    setTextColor(text);
+    setHoverColor(hover);
     
-    applyColorsToDOM(accent, bg);
-  };
+    applyColorsToDOM(accent, bg, text, hover);
 
-  const savePreferences = async () => {
-    try {
-      await fetchWithAuth('/api/users/preferences', {
-        method: 'PUT',
-        body: JSON.stringify({
-          accent_color: accentColor,
-          bg_color: bgColor,
-          theme: theme,
-        }),
-      });
-      
-      localStorage.setItem('theme', theme);
-    } catch (err) {
-      console.error('Failed to save preferences', err);
-      throw err;
+    const match = Object.entries(THEME_PRESETS).find(
+      ([_, colors]) => colors.accent === accent && colors.bg === bg && colors.text === text && colors.hover === hover
+    );
+    if (match) {
+      setCurrentTheme(match[0] as Theme);
     }
-  };
+  }, []);
 
-  const resetToDefaults = () => {
-    setThemeState(DEFAULT_THEME);
+  const savePreferences = useCallback(async () => {
+    await fetchWithAuth('/api/users/preferences', {
+      method: 'PUT',
+      body: JSON.stringify({
+        accent_color: accentColor,
+        bg_color: bgColor,
+        text_color: textColor,
+        hover_color: hoverColor,
+        theme: currentTheme,
+      }),
+    });
+
+    setSavedTheme(currentTheme);
+    setSavedAccent(accentColor);
+    setSavedBg(bgColor);
+    setSavedText(textColor);
+    setSavedHover(hoverColor);
+    
+    localStorage.setItem('void_theme', currentTheme);
+    localStorage.setItem('void_accent', accentColor);
+    localStorage.setItem('void_bg', bgColor);
+    localStorage.setItem('void_text', textColor);
+    localStorage.setItem('void_hover', hoverColor);
+  }, [accentColor, bgColor, textColor, hoverColor, currentTheme]);
+
+  const resetToDefaults = useCallback(() => {
+    setCurrentTheme(DEFAULT_THEME);
     setAccentColor(DEFAULT_ACCENT);
     setBgColor(DEFAULT_BG);
-    
-    applyColorsToDOM(DEFAULT_ACCENT, DEFAULT_BG);
-    localStorage.setItem('theme', DEFAULT_THEME);
-  };
+    setTextColor(DEFAULT_TEXT);
+    setHoverColor(DEFAULT_HOVER);
+    applyColorsToDOM(DEFAULT_ACCENT, DEFAULT_BG, DEFAULT_TEXT, DEFAULT_HOVER);
+  }, []);
 
   return {
     accentColor,
     bgColor,
-    textColor, // This is now a constant, not state
+    textColor,
+    hoverColor,
+    currentTheme,
+    density,
     loading,
+    savedAccent,
+    savedBg,
+    savedText,
+    savedHover,
+    savedTheme,
+    hasChanges,
     setTheme,
     setCustomColors,
+    setDensity,
     savePreferences,
     resetToDefaults,
   };
-};
+}
+
+export function useTheme(): ThemeContextValue {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error('useTheme must be used within ThemeProvider');
+  return ctx;
+}

@@ -33,7 +33,8 @@ export function useLogin() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({ ...prev, [name]: value }));
+    const sanitized = value.replace(/ /g, '');
+    setFormData(prev => ({ ...prev, [name]: sanitized }));
     setErrorMessage('');
     setUnverifiedEmail(null);
   };

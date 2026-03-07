@@ -47,7 +47,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         <div className="hidden md:flex md:w-64 bg-void-bg-main/50 border-r border-void-bg-hover flex-col flex-shrink-0">
           <div className="p-6 border-b border-void-bg-hover">
             <h2 className="text-xl font-bold text-void-text">Settings</h2>
-            <p className="text-sm text-gray-400 mt-1">Manage your account</p>
+            <p className="text-sm text-void-text-muted mt-1">Manage your account</p>
           </div>
           
           <nav className="flex-1 p-4 space-y-1">
@@ -58,7 +58,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
                   activeTab === item.id
                     ? 'bg-void-accent text-white'
-                    : 'text-gray-400 hover:bg-void-bg-hover hover:text-void-text'
+                    : 'text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
                 }`}
               >
                 {item.icon}
@@ -68,7 +68,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           </nav>
 
           <div className="p-4 border-t border-void-bg-hover">
-            <p className="text-xs text-gray-500">Version 1.0.0</p>
+            <p className="text-xs text-void-text-muted">Version 1.0.0</p>
           </div>
         </div>
 
@@ -80,20 +80,20 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               onClick={onClose}
               className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
-              <X className="w-5 h-5 text-gray-400" />
+              <X className="w-5 h-5 text-void-text-muted" />
             </button>
           </div>
 
           {/* Mobile Tab Navigation */}
-          <div className="flex border-t border-void-bg-hover overflow-x-auto">
+          <div className="flex border-t border-void-bg-hover overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
             {menuItems.map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium whitespace-nowrap ${
+                className={`flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 text-sm font-medium whitespace-nowrap ${
                   activeTab === item.id
                     ? 'text-void-accent border-b-2 border-void-accent'
-                    : 'text-gray-400 hover:text-void-text'
+                    : 'text-void-text-muted hover:text-void-text'
                 }`}
               >
                 {item.icon}
@@ -104,7 +104,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         </div>
 
         {/* Main Content Area */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
           {/* Desktop Header */}
           <div className="hidden md:flex p-6 border-b border-void-bg-hover items-center justify-between flex-shrink-0">
             <h3 className="text-lg font-semibold text-void-text">
@@ -114,7 +114,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               onClick={onClose}
               className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
-              <X className="w-5 h-5 text-gray-400" />
+              <X className="w-5 h-5 text-void-text-muted" />
             </button>
           </div>
 

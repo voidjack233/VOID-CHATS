@@ -87,11 +87,11 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-gray-800 rounded-xl w-full max-w-md mx-4 shadow-2xl border border-gray-700">
+      <div className="bg-void-bg-sec rounded-xl w-full max-w-md mx-4 shadow-2xl border border-void-border">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-bold text-white">Create Secure Group</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+        <div className="flex items-center justify-between p-4 border-b border-void-border">
+          <h2 className="text-lg font-bold text-void-text">Create Secure Group</h2>
+          <button onClick={onClose} className="text-void-text-muted hover:text-void-text transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -99,29 +99,29 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
         <div className="p-4 space-y-4">
           {/* Name */}
           <div>
-            <label className="text-sm text-gray-400 mb-1 block">Group Name</label>
+            <label className="text-sm text-void-text-muted mb-1 block">Group Name</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="My Secure Group"
               maxLength={100}
-              className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-gray-500"
+              className="w-full bg-void-bg-hover text-void-text rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-void-text-muted"
             />
           </div>
 
           {/* Friend selection */}
           <div>
-            <label className="text-sm text-gray-400 mb-1 block">
+            <label className="text-sm text-void-text-muted mb-1 block">
               Add friends ({selected.size} selected)
             </label>
-            <div className="max-h-48 overflow-y-auto space-y-1 bg-gray-900/50 rounded-lg p-2">
+            <div className="max-h-48 overflow-y-auto space-y-1 bg-void-bg-main/50 rounded-lg p-2">
               {loading ? (
                 <div className="flex justify-center py-4">
                   <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
                 </div>
               ) : friends.length === 0 ? (
-                <p className="text-center text-gray-500 text-sm py-4">No friends yet</p>
+                <p className="text-center text-void-text-muted text-sm py-4">No friends yet</p>
               ) : (
                 friends.map((friend) => (
                   <button
@@ -130,7 +130,7 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
                     className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
                       selected.has(friend.id)
                         ? 'bg-indigo-500/20 text-white'
-                        : 'hover:bg-gray-800 text-gray-300'
+                        : 'hover:bg-void-bg-hover text-void-text'
                     }`}
                   >
                     <img
@@ -154,10 +154,10 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 p-4 border-t border-gray-700">
+        <div className="flex justify-end gap-2 p-4 border-t border-void-border">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors"
+            className="px-4 py-2 text-sm text-void-text-muted hover:text-void-text transition-colors"
           >
             Cancel
           </button>

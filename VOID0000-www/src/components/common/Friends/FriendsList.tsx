@@ -24,9 +24,9 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
   if (totalFriends === 0) {
     return (
       <div className="text-center py-12">
-        <Users className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-        <p className="text-gray-400">No friends yet</p>
-        <p className="text-gray-500 text-sm mt-1">Send a friend request to get started!</p>
+        <Users className="w-12 h-12 text-void-text-muted mx-auto mb-3" />
+        <p className="text-void-text-muted">No friends yet</p>
+        <p className="text-void-text-muted text-sm mt-1">Send a friend request to get started!</p>
       </div>
     );
   }
@@ -48,7 +48,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
     <div
       key={friend.friendship_id}
       onClick={() => onSelect(friend.profile_id)}
-      className={`flex items-center justify-between p-3 bg-gray-900/50 rounded-lg hover:bg-gray-700/50 transition-colors cursor-pointer group ${
+      className={`flex items-center justify-between p-3 bg-gray-900/50 rounded-lg hover:bg-void-bg-hover/50 transition-colors cursor-pointer group ${
         status === 'offline' ? 'opacity-50' : ''
       }`}
     >
@@ -61,8 +61,8 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
               className="w-10 h-10 rounded-full object-cover"
             />
           ) : (
-            <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
-              <User className="w-5 h-5 text-gray-400" />
+            <div className="w-10 h-10 rounded-full bg-void-bg-hover flex items-center justify-center">
+              <User className="w-5 h-5 text-void-text-muted" />
             </div>
           )}
           <span className="absolute -bottom-0.5 -right-0.5">
@@ -70,10 +70,10 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
           </span>
         </div>
         <div>
-          <p className="text-white font-medium">
+          <p className="text-void-text font-medium">
             {friend.display_name || friend.username}
           </p>
-          <p className="text-gray-500 text-sm">@{friend.username}</p>
+          <p className="text-void-text-muted text-sm">@{friend.username}</p>
         </div>
       </div>
 
@@ -84,7 +84,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
       ) : (
         <button
           onClick={(e) => handleRemoveClick(e, friend)}
-          className="p-2 text-gray-600 group-hover:text-gray-400 hover:!text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
+          className="p-2 text-void-text-muted group-hover:text-void-text-muted hover:!text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
           title="Remove friend"
         >
           <UserMinus className="w-4 h-4" />
@@ -107,7 +107,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
           <span className={`text-xs font-semibold uppercase tracking-wider ${colorClass}`}>
             {label}
           </span>
-          <span className="text-xs text-gray-600">{friends.length}</span>
+          <span className="text-xs text-void-text-muted">{friends.length}</span>
         </div>
         <div className="space-y-1.5">
           {friends.map(friend => renderFriendItem(friend, status))}
@@ -121,17 +121,17 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
       <div className="space-y-4">
         {renderSection('Online', grouped.online, 'online', 'text-green-400')}
         {renderSection('Idle', grouped.idle, 'idle', 'text-yellow-400')}
-        {renderSection('Offline', grouped.offline, 'offline', 'text-gray-500')}
+        {renderSection('Offline', grouped.offline, 'offline', 'text-void-text-muted')}
       </div>
 
       {/* Unfriend Confirmation Dialog */}
       {confirmFriend && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-gray-800 rounded-2xl shadow-2xl border border-gray-700 p-6 max-w-sm w-full mx-4">
-            <h3 className="text-white font-semibold text-lg mb-2">Remove Friend</h3>
-            <p className="text-gray-400 text-sm mb-6">
+          <div className="bg-void-bg-secondary rounded-2xl shadow-2xl border border-void-border p-6 max-w-sm w-full mx-4">
+            <h3 className="text-void-text font-semibold text-lg mb-2">Remove Friend</h3>
+            <p className="text-void-text-muted text-sm mb-6">
               Are you sure you want to unfriend{' '}
-              <span className="text-white font-medium">
+              <span className="text-void-text font-medium">
                 {confirmFriend.display_name || confirmFriend.username}
               </span>
               ? 
@@ -140,7 +140,7 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
               <button
                 onClick={() => setConfirmFriend(null)}
                 disabled={removing}
-                className="flex-1 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm font-medium transition-colors"
+                className="flex-1 py-2.5 rounded-lg bg-void-bg-hover hover:bg-void-bg-hover text-void-text text-sm font-medium transition-colors"
               >
                 Cancel
               </button>

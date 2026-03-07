@@ -32,6 +32,7 @@ function toUIMessage(local: LocalMessage): Message {
     created_at: local.created_at,
     content: local.content,
     reactions: local.reactions || {},
+    attachments: local.attachments,
   };
 }
 
@@ -79,6 +80,8 @@ export const useMessageList = (
     let ignore = false; // <-- The Magic Flag
 
     const loadFromLocal = async () => {
+      setMessages([]);
+      setHasMore(false);
       setLoading(true);
 
       try {
@@ -156,6 +159,7 @@ export const useMessageList = (
       is_deleted: newMessage.is_deleted,
       created_at: newMessage.created_at,
       reactions: {},
+      attachments: newMessage.attachments,
     };
 
     messageSync.storeIncomingMessage(localMsg).then(() => {

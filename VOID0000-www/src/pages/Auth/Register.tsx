@@ -28,7 +28,10 @@ export default function Register() {
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+    const { name, value } = e.target;
+    const noSpaceFields = ['email', 'username', 'password', 'confirmPassword'];
+    const sanitized = noSpaceFields.includes(name) ? value.replace(/ /g, '') : value;
+    setFormData({ ...formData, [name]: sanitized });
     setError('');
   };
 

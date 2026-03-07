@@ -50,13 +50,13 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
         {/* Header */}
-        <div className="p-6 border-b border-gray-700 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-white">Change Password</h3>
+        <div className="p-6 border-b border-void-border flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-void-text">Change Password</h3>
           <button
             onClick={handleClose}
-            className="p-2 rounded-full hover:bg-gray-700 transition-colors"
+            className="p-2 rounded-full hover:bg-void-bg-hover transition-colors"
           >
-            <X className="w-5 h-5 text-gray-400" />
+            <X className="w-5 h-5 text-void-text-muted" />
           </button>
         </div>
 
@@ -72,7 +72,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Current Password */}
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
+                <label className="block text-sm font-medium text-void-text mb-2">
                   Current Password
                 </label>
                 <div className="relative">
@@ -80,14 +80,14 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                     type={showCurrent ? 'text' : 'password'}
                     value={currentPassword}
                     onChange={(e) => setCurrentPassword(e.target.value)}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 pr-12 text-white focus:outline-none focus:border-blue-500 transition-colors"
+                    className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 pr-12 text-void-text focus:outline-none focus:border-blue-500 transition-colors"
                     required
                     disabled={isLoading}
                   />
                   <button
                     type="button"
                     onClick={() => setShowCurrent(!showCurrent)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-void-text-muted hover:text-void-text"
                   >
                     {showCurrent ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
@@ -96,7 +96,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
 
               {/* New Password */}
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
+                <label className="block text-sm font-medium text-void-text mb-2">
                   New Password
                 </label>
                 <div className="relative">
@@ -104,14 +104,14 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                     type={showNew ? 'text' : 'password'}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 pr-12 text-white focus:outline-none focus:border-blue-500 transition-colors"
+                    className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 pr-12 text-void-text focus:outline-none focus:border-blue-500 transition-colors"
                     required
                     disabled={isLoading}
                   />
                   <button
                     type="button"
                     onClick={() => setShowNew(!showNew)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-void-text-muted hover:text-void-text"
                   >
                     {showNew ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
@@ -120,7 +120,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
 
               {/* Confirm Password */}
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
+                <label className="block text-sm font-medium text-void-text mb-2">
                   Confirm New Password
                 </label>
                 <div className="relative">
@@ -128,14 +128,14 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                     type={showConfirm ? 'text' : 'password'}
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 pr-12 text-white focus:outline-none focus:border-blue-500 transition-colors"
+                    className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 pr-12 text-void-text focus:outline-none focus:border-blue-500 transition-colors"
                     required
                     disabled={isLoading}
                   />
                   <button
                     type="button"
                     onClick={() => setShowConfirm(!showConfirm)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-void-text-muted hover:text-void-text"
                   >
                     {showConfirm ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>

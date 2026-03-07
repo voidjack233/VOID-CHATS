@@ -48,7 +48,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           onChange={(e) => handleCodeChange(e.target.value, index)}
           onKeyDown={(e) => handleKeyDown(e, index)}
           ref={(el) => { inputs.current[index] = el; }}
-          className="w-12 h-12 text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          className="w-12 h-12 text-2xl text-center text-void-text bg-void-bg-hover/70 border border-void-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
           disabled={isLoading}
           autoFocus={index === 0}
         />
@@ -58,13 +58,13 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
 
   const renderStatus = () => (
     <div className="space-y-6">
-      <div className="flex items-center gap-4 bg-gray-900/50 p-4 rounded-xl border border-gray-700">
+      <div className="flex items-center gap-4 bg-gray-900/50 p-4 rounded-xl border border-void-border">
         <div className={`p-3 rounded-full ${hasAny2FA ? 'bg-emerald-900/30 text-emerald-400' : 'bg-yellow-900/30 text-yellow-400'}`}>
           {hasAny2FA ? <ShieldCheck className="w-6 h-6" /> : <ShieldAlert className="w-6 h-6" />}
         </div>
         <div>
-          <h4 className="text-white font-medium">2FA is {hasAny2FA ? 'Enabled' : 'Disabled'}</h4>
-          <p className="text-sm text-gray-400">
+          <h4 className="text-void-text font-medium">2FA is {hasAny2FA ? 'Enabled' : 'Disabled'}</h4>
+          <p className="text-sm text-void-text-muted">
             {hasAny2FA
               ? 'Your account is protected with an extra layer of security.'
               : 'Add an extra layer of security to your account.'}
@@ -73,14 +73,14 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
       </div>
 
       <div className="space-y-4">
-        <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Authentication Methods</h4>
+        <h4 className="text-xs font-semibold text-void-text-muted uppercase tracking-wider">Authentication Methods</h4>
 
-        <div className="flex items-center justify-between p-4 bg-gray-800 border border-gray-700 rounded-xl hover:border-gray-600 transition-colors">
+        <div className="flex items-center justify-between p-4 bg-gray-800 border border-void-border rounded-xl hover:border-void-border transition-colors">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-blue-900/20 text-blue-400 rounded-lg"><Smartphone className="w-5 h-5" /></div>
             <div>
-              <p className="text-sm font-medium text-white">Authenticator App</p>
-              <p className="text-xs text-gray-400">Use apps like Google Auth or Authy</p>
+              <p className="text-sm font-medium text-void-text">Authenticator App</p>
+              <p className="text-xs text-void-text-muted">Use apps like Google Auth or Authy</p>
             </div>
           </div>
           <button
@@ -92,12 +92,12 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           </button>
         </div>
 
-        <div className="flex items-center justify-between p-4 bg-gray-800 border border-gray-700 rounded-xl hover:border-gray-600 transition-colors">
+        <div className="flex items-center justify-between p-4 bg-gray-800 border border-void-border rounded-xl hover:border-void-border transition-colors">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-blue-900/20 text-blue-400 rounded-lg"><Mail className="w-5 h-5" /></div>
             <div>
-              <p className="text-sm font-medium text-white">Email Authentication</p>
-              <p className="text-xs text-gray-400">Receive verification codes via email</p>
+              <p className="text-sm font-medium text-void-text">Email Authentication</p>
+              <p className="text-xs text-void-text-muted">Receive verification codes via email</p>
             </div>
           </div>
           <button
@@ -111,13 +111,13 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
       </div>
 
       {hasAny2FA && (
-        <div className="pt-4 border-t border-gray-700">
-          <button className="w-full flex items-center justify-between p-4 bg-gray-900/50 hover:bg-gray-900 border border-gray-700 rounded-xl transition-colors">
+        <div className="pt-4 border-t border-void-border">
+          <button className="w-full flex items-center justify-between p-4 bg-gray-900/50 hover:bg-gray-900 border border-void-border rounded-xl transition-colors">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-yellow-900/20 text-yellow-400 rounded-lg"><KeyRound className="w-5 h-5" /></div>
               <div className="text-left">
-                <p className="text-sm font-medium text-white">Backup Codes</p>
-                <p className="text-xs text-gray-400">{status?.backupCodesRemaining || 0} codes remaining</p>
+                <p className="text-sm font-medium text-void-text">Backup Codes</p>
+                <p className="text-xs text-void-text-muted">{status?.backupCodesRemaining || 0} codes remaining</p>
               </div>
             </div>
           </button>
@@ -132,19 +132,19 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
         <div className="inline-flex p-4 rounded-full bg-blue-900/30 text-blue-400 mb-2">
           <Lock className="w-8 h-8" />
         </div>
-        <p className="text-sm text-gray-300">
+        <p className="text-sm text-void-text">
           Enter your password to set up {setupMethod === 'totp' ? 'Authenticator App' : 'Email Authentication'}.
         </p>
       </div>
 
       <div className="space-y-2">
-        <label className="block text-sm text-gray-300">Password</label>
+        <label className="block text-sm text-void-text">Password</label>
         <input
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Enter your password"
-          className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          className="w-full px-4 py-3 bg-gray-900/50 border border-void-border rounded-xl text-void-text placeholder-void-text-muted focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
           required
           autoFocus
         />
@@ -163,20 +163,20 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
   const renderSetupTOTP = () => (
     <form onSubmit={(e) => { e.preventDefault(); handleVerifySetup(); }} className="space-y-6">
       <div className="text-center space-y-4">
-        <p className="text-sm text-gray-300">1. Scan this QR code with your authenticator app.</p>
+        <p className="text-sm text-void-text">1. Scan this QR code with your authenticator app.</p>
         {qrCode && (
           <div className="flex justify-center bg-white p-4 rounded-xl w-fit mx-auto">
             <img src={qrCode} alt="2FA QR Code" className="w-40 h-40" />
           </div>
         )}
-        <div className="text-xs text-gray-400">
+        <div className="text-xs text-void-text-muted">
           <p>Or enter this code manually:</p>
-          <code className="block mt-1 p-2 bg-gray-900 rounded border border-gray-700 select-all text-blue-400 font-mono text-sm">{secret}</code>
+          <code className="block mt-1 p-2 bg-gray-900 rounded border border-void-border select-all text-blue-400 font-mono text-sm">{secret}</code>
         </div>
       </div>
 
-      <div className="space-y-4 pt-4 border-t border-gray-700">
-        <label className="block text-sm text-gray-300 text-center">2. Enter the 6-digit code from your app</label>
+      <div className="space-y-4 pt-4 border-t border-void-border">
+        <label className="block text-sm text-void-text text-center">2. Enter the 6-digit code from your app</label>
         {renderOTPInputs()}
       </div>
 
@@ -190,10 +190,10 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
     <form onSubmit={(e) => { e.preventDefault(); handleVerifySetup(); }} className="space-y-6">
       <div className="text-center space-y-2 mb-6">
         <div className="inline-flex p-4 rounded-full bg-blue-900/30 text-blue-400 mb-2"><Mail className="w-8 h-8" /></div>
-        <p className="text-sm text-gray-300">We've sent a 6-digit verification code to your email.</p>
+        <p className="text-sm text-void-text">We've sent a 6-digit verification code to your email.</p>
       </div>
       <div className="space-y-4">
-        <label className="block text-sm text-gray-300 text-center">Enter the code</label>
+        <label className="block text-sm text-void-text text-center">Enter the code</label>
         {renderOTPInputs()}
       </div>
       <button type="submit" disabled={isLoading || code.join('').length < 6} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50">
@@ -210,8 +210,8 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
         </p>
       </div>
       <div className="space-y-2">
-        <label className="block text-sm text-gray-300">Current Password</label>
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" className="w-full px-4 py-3 bg-gray-900/50 border border-gray-600 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500 transition-all" required autoFocus />
+        <label className="block text-sm text-void-text">Current Password</label>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" className="w-full px-4 py-3 bg-gray-900/50 border border-void-border rounded-xl text-void-text placeholder-void-text-muted focus:outline-none focus:ring-2 focus:ring-red-500 transition-all" required autoFocus />
       </div>
       <button type="submit" disabled={isLoading || !password} className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50">
         {isLoading ? 'Disabling...' : 'Confirm Disable'}
@@ -225,12 +225,12 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
         <h4 className="text-yellow-400 font-medium mb-1 flex items-center gap-2"><ShieldAlert className="w-4 h-4" /> Save these backup codes!</h4>
         <p className="text-sm text-yellow-200/70">Each code can only be used once. Keep them safe.</p>
       </div>
-      <div className="grid grid-cols-2 gap-3 p-4 bg-gray-900 rounded-xl border border-gray-700">
+      <div className="grid grid-cols-2 gap-3 p-4 bg-gray-900 rounded-xl border border-void-border">
         {backupCodes.map((backupCode, index) => (
           <code key={index} className="text-center font-mono text-blue-400 tracking-wider">{backupCode}</code>
         ))}
       </div>
-      <button onClick={copyBackupCodes} className="w-full flex items-center justify-center gap-2 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
+      <button onClick={copyBackupCodes} className="w-full flex items-center justify-center gap-2 py-3 bg-void-bg-hover hover:bg-void-bg-hover/80 text-void-text rounded-xl font-medium transition-colors">
         {copied ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
         {copied ? 'Copied to Clipboard' : 'Copy Codes'}
       </button>
@@ -242,15 +242,15 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-gray-800 border border-gray-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-gray-700 bg-gray-800/50 relative">
+      <div className="bg-gray-800 border border-void-border rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-void-border bg-gray-800/50 relative">
           {view !== 'status' && view !== 'backup-codes' && (
-            <button onClick={resetAndGoBack} className="absolute left-4 p-2 rounded-full hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">
+            <button onClick={resetAndGoBack} className="absolute left-4 p-2 rounded-full hover:bg-void-bg-hover text-void-text-muted hover:text-void-text transition-colors">
               <ArrowLeft className="w-5 h-5" />
             </button>
           )}
-          <h3 className="text-lg font-semibold text-white w-full text-center">{getTitle()}</h3>
-          <button onClick={onClose} className="absolute right-4 p-2 rounded-full hover:bg-gray-700 text-gray-400 hover:text-white transition-colors">
+          <h3 className="text-lg font-semibold text-void-text w-full text-center">{getTitle()}</h3>
+          <button onClick={onClose} className="absolute right-4 p-2 rounded-full hover:bg-void-bg-hover text-void-text-muted hover:text-void-text transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -260,7 +260,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           {success && view === 'status' && <div className="mb-6 p-4 bg-emerald-900/20 border border-emerald-800/50 rounded-lg text-emerald-400 text-sm">{success}</div>}
 
           {isLoading && view === 'status' ? (
-            <div className="text-center text-gray-400 py-8 animate-pulse">Loading settings...</div>
+            <div className="text-center text-void-text-muted py-8 animate-pulse">Loading settings...</div>
           ) : (
             <>
               {view === 'status' && renderStatus()}

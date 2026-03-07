@@ -96,19 +96,19 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
         
         {/* Header */}
         <div className={`${isMobile 
-          ? 'sticky top-0 z-10 bg-gray-800 border-b border-gray-700 px-4 py-3' 
-          : 'p-6 border-b border-gray-700'
+          ? 'sticky top-0 z-10 bg-gray-800 border-b border-void-border px-4 py-3' 
+          : 'p-6 border-b border-void-border'
         } flex items-center justify-between`}>
           <div className="flex items-center gap-3">
             <Shield className="w-5 h-5 text-blue-400" />
-            <h3 className="text-lg font-semibold text-white">Active Sessions</h3>
+            <h3 className="text-lg font-semibold text-void-text">Active Sessions</h3>
           </div>
           
           <button
             onClick={onClose}
-            className="p-2 rounded-full hover:bg-gray-700 transition-colors"
+            className="p-2 rounded-full hover:bg-void-bg-hover transition-colors"
           >
-            <X className="w-5 h-5 text-gray-400" />
+            <X className="w-5 h-5 text-void-text-muted" />
           </button>
         </div>
 
@@ -119,7 +119,7 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
           {loading && (
             <div className="flex flex-col items-center justify-center py-12">
               <Loader2 className="w-10 h-10 text-blue-400 animate-spin mb-4" />
-              <p className="text-gray-400">Loading sessions...</p>
+              <p className="text-void-text-muted">Loading sessions...</p>
             </div>
           )}
           
@@ -129,11 +129,11 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
               <div className="w-16 h-16 rounded-full bg-red-900/20 flex items-center justify-center mb-4">
                 <Shield className="w-8 h-8 text-red-400" />
               </div>
-              <h4 className="text-lg font-medium text-white mb-2">Connection Error</h4>
+              <h4 className="text-lg font-medium text-void-text mb-2">Connection Error</h4>
               <p className="text-red-400 text-sm text-center mb-6 max-w-xs">{error}</p>
               <button
                 onClick={onClose}
-                className="px-6 py-2.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-white text-sm font-medium transition-colors"
+                className="px-6 py-2.5 bg-void-bg-hover hover:bg-void-bg-hover/80 rounded-lg text-void-text text-sm font-medium transition-colors"
               >
                 Close
               </button>
@@ -147,7 +147,7 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
               {/* Current Session */}
               {currentSession && (
                 <div className="mb-6">
-                  <h4 className="text-sm text-gray-400 mb-3">Current session</h4>
+                  <h4 className="text-sm text-void-text-muted mb-3">Current session</h4>
                   <SessionCard 
                     session={currentSession} 
                     isCurrent={true}
@@ -160,7 +160,7 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
               {otherSessions.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-sm text-gray-400">
+                    <h4 className="text-sm text-void-text-muted">
                       Other sessions ({otherSessions.length})
                     </h4>
                     <button
@@ -192,16 +192,16 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
               {otherSessions.length === 0 && (
                 <div className="text-center py-8">
                   <div className="inline-block p-6 bg-gray-900/50 rounded-xl">
-                    <Shield className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-                    <p className="text-gray-400 mb-2">No other active sessions</p>
-                    <p className="text-xs text-gray-500">Only this device is logged in</p>
+                    <Shield className="w-12 h-12 text-void-text-muted mx-auto mb-3" />
+                    <p className="text-void-text-muted mb-2">No other active sessions</p>
+                    <p className="text-xs text-void-text-muted">Only this device is logged in</p>
                   </div>
                 </div>
               )}
 
               {/* Footer info */}
               <div className={`${isMobile ? 'pt-6 pb-8' : 'pt-4'}`}>
-                <p className="text-xs text-gray-500 text-center">
+                <p className="text-xs text-void-text-muted text-center">
                   Sessions expire after 7 days of inactivity
                 </p>
               </div>
@@ -236,16 +236,16 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
     <div className={`p-4 rounded-xl border ${
       isCurrent 
         ? 'bg-green-900/20 border-green-700/50' 
-        : 'bg-gray-900 border-gray-700'
+        : 'bg-gray-900 border-void-border'
     }`}>
       <div className="flex items-start gap-3">
         <div className={`p-2 rounded-lg ${isCurrent ? 'bg-green-900/30' : 'bg-gray-800'}`}>
-          <DeviceIcon className={`w-5 h-5 ${isCurrent ? 'text-green-400' : 'text-gray-400'}`} />
+          <DeviceIcon className={`w-5 h-5 ${isCurrent ? 'text-green-400' : 'text-void-text-muted'}`} />
         </div>
         
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <p className="text-sm font-medium text-white">
+            <p className="text-sm font-medium text-void-text">
               {isMobile ? device.browser : `${device.browser} on ${device.os}`}
             </p>
             {isCurrent && (
@@ -255,10 +255,10 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
             )}
           </div>
           
-          <div className="flex items-center gap-2 mt-1 text-xs text-gray-400">
+          <div className="flex items-center gap-2 mt-1 text-xs text-void-text-muted">
             <Globe className="w-3 h-3 flex-shrink-0" />
             <span className="truncate">{session.ip_address || 'Unknown IP'}</span>
-            <span className="text-gray-600">•</span>
+            <span className="text-void-text-muted">•</span>
             <span className="flex-shrink-0">{formatDate(session.created_at, isMobile)}</span>
           </div>
         </div>

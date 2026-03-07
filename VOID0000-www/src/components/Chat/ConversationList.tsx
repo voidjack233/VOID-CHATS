@@ -110,7 +110,7 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
           isActive
             ? 'bg-void-bg-hover text-void-text'
-            : 'text-gray-400 hover:bg-void-bg-hover/60 hover:text-gray-200'
+            : 'text-void-text-muted hover:bg-void-bg-hover/60 hover:text-void-text'
         }`}
       >
         <div className="relative shrink-0">
@@ -135,7 +135,7 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         <div className="flex-1 min-w-0 text-left">
           <div className="text-sm font-medium truncate text-void-text">{getDisplayName(conv)}</div>
           {conv.type !== 'dm' && (
-            <div className="text-xs text-gray-500">{conv.member_count} members</div>
+            <div className="text-xs text-void-text-muted">{conv.member_count} members</div>
           )}
         </div>
       </button>
@@ -154,26 +154,26 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col">
       <div className="px-1 mb-3 shrink-0">
         <div className="flex items-center bg-void-bg-hover/50 rounded-md px-2 py-1.5">
-          <Search className="w-3.5 h-3.5 text-gray-500 mr-1.5" />
+          <Search className="w-3.5 h-3.5 text-void-text-muted mr-1.5" />
           <input
             type="text"
             placeholder={`Search ${filter === 'dm' ? 'DMs' : 'Groups'}...`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-transparent text-sm w-full focus:outline-none text-void-text placeholder-gray-500"
+            className="bg-transparent text-sm w-full focus:outline-none text-void-text placeholder-void-text-muted"
           />
         </div>
       </div>
 
       <div className="flex items-center justify-between px-3 mb-2 shrink-0">
-        <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+        <p className="text-xs font-bold text-void-text-muted uppercase tracking-wider">
           {filter === 'dm' ? 'Direct Messages' : 'Your Groups'}
         </p>
         
         {filter === 'group' && (
           <button 
             onClick={onCreateGroup} 
-            className="text-gray-400 hover:text-gray-200 transition-colors p-1 hover:bg-void-bg-hover rounded-md"
+            className="text-void-text-muted hover:text-void-text transition-colors p-1 hover:bg-void-bg-hover rounded-md"
             title="Create new group"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -184,7 +184,7 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
       <div className="space-y-0.5 flex-1">
         {searchFiltered.length === 0 ? (
           <div className="text-center px-4 py-8">
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-void-text-muted">
               {search.trim() 
                 ? 'No results found' 
                 : `No ${filter === 'dm' ? 'DMs' : 'groups'} yet.`}

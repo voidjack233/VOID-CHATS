@@ -14,7 +14,7 @@ const UserProfileFields: React.FC<UserProfileFieldsProps> = ({
     <>
       {/* Bio */}
       <div className="mb-2">
-        <label className="block text-[11px] font-semibold text-gray-400 uppercase tracking-wide mb-1.5">
+        <label className="block text-[11px] font-semibold text-void-text-muted uppercase tracking-wide mb-1.5">
           About Me
         </label>
         {isEditing ? (
@@ -24,15 +24,15 @@ const UserProfileFields: React.FC<UserProfileFieldsProps> = ({
               onChange={handleBioChange}
               maxLength={200}
               placeholder="Tell us about yourself..."
-              className={`w-full bg-gray-900 border rounded-lg px-3 py-2 text-white text-sm resize-none focus:outline-none transition-colors ${
+              className={`w-full bg-gray-900 border rounded-lg px-3 py-2 text-void-text text-sm resize-none focus:outline-none transition-colors ${
                 bioError
                   ? 'border-red-500 focus:border-red-500'
-                  : 'border-gray-700 focus:border-blue-500'
+                  : 'border-void-border focus:border-blue-500'
               }`}
               rows={3}
             />
             <div className="flex justify-between mt-1">
-              <span className={`text-[11px] ${bioError ? 'text-red-400' : 'text-gray-500'}`}>
+              <span className={`text-[11px] ${bioError ? 'text-red-400' : 'text-void-text-muted'}`}>
                 {displayProfile.bio?.length || 0}/200
               </span>
               {bioError && (
@@ -41,9 +41,9 @@ const UserProfileFields: React.FC<UserProfileFieldsProps> = ({
             </div>
           </div>
         ) : (
-          <p className="text-sm text-gray-300 leading-relaxed">
+          <p className="text-sm text-void-text leading-relaxed">
             {displayProfile.bio || (
-              <span className="text-gray-500 italic">No bio yet</span>
+              <span className="text-void-text-muted italic">No bio yet</span>
             )}
           </p>
         )}

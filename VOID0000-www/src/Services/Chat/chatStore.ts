@@ -24,6 +24,7 @@ export interface LocalMessage {
   is_deleted: boolean;
   created_at: string;
   reactions: Record<string, string[]>;
+  attachments?: string[];
 }
 
 export interface SyncCursor {

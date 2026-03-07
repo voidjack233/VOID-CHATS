@@ -1,9 +1,9 @@
-import { useState } from 'react';
+// import { useState } from 'react';
 import { X, Users, UserPlus, Loader2 } from 'lucide-react';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 import { useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
 import IncomingRequests from './IncomingRequests';
-import AddFriendModal from './AddFriendModal';
+// import AddFriendModal from './AddFriend'
 
 interface FriendsModalProps {
   onClose: () => void;
@@ -11,7 +11,7 @@ interface FriendsModalProps {
 
 export default function FriendsModal({ onClose }: FriendsModalProps) {
   useScrollLock();
-  const [showAddFriend, setShowAddFriend] = useState(false);
+  // const [showAddFriend, setShowAddFriend] = useState(false);
 
   const {
     incoming,
@@ -23,17 +23,17 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-        <div className="relative w-full max-w-lg mx-4 h-[500px] flex flex-col bg-gray-800 rounded-2xl shadow-2xl overflow-hidden border border-gray-700">
+        <div className="relative w-full max-w-lg mx-4 h-[500px] flex flex-col bg-void-bg-secondary rounded-2xl shadow-2xl overflow-hidden border border-void-border">
 
           {/* Header */}
-          <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/50">
-            <h2 className="text-xl font-bold text-white flex items-center gap-2">
+          <div className="p-4 border-b border-void-border flex justify-between items-center bg-void-bg-secondary/50">
+            <h2 className="text-xl font-bold text-void-text flex items-center gap-2">
               <Users className="w-5 h-5 text-blue-400" />
               Friends
             </h2>
             <div className="flex gap-2">
               <button
-                onClick={() => setShowAddFriend(true)}
+                // onClick={() => setShowAddFriend(true)}
                 className="p-2 text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors"
                 title="Add Friend"
               >
@@ -41,7 +41,7 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
               </button>
               <button
                 onClick={onClose}
-                className="p-2 text-gray-400 hover:bg-gray-700 rounded-lg transition-colors"
+                className="p-2 text-void-text-muted hover:bg-void-bg-hover rounded-lg transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -49,9 +49,9 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
           </div>
 
           {/* Add Friend Button */}
-          <div className="p-3 border-b border-gray-700/50">
+          <div className="p-3 border-b border-void-border/50">
             <button
-              onClick={() => setShowAddFriend(true)}
+              // onClick={() => setShowAddFriend(true)}
               className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition-colors flex items-center justify-center gap-2"
             >
               <UserPlus className="w-4 h-4" />
@@ -61,17 +61,17 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
 
           {/* Pending Requests */}
           <div className="flex-1 overflow-y-auto p-4">
-            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
+            <h3 className="text-xs font-semibold text-void-text-muted uppercase tracking-wide mb-3">
               Pending Requests {incoming.length > 0 && `(${incoming.length})`}
             </h3>
 
             {requestsLoading ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Loader2 className="w-8 h-8 text-blue-400 animate-spin mb-4" />
-                <p className="text-gray-400">Loading...</p>
+                <p className="text-void-text-muted">Loading...</p>
               </div>
             ) : incoming.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+              <div className="flex flex-col items-center justify-center py-12 text-void-text-muted">
                 <Users className="w-10 h-10 mb-3 opacity-50" />
                 <p className="text-sm">No pending requests</p>
                 <p className="text-xs mt-1">Friend requests will appear here</p>
@@ -87,9 +87,9 @@ export default function FriendsModal({ onClose }: FriendsModalProps) {
         </div>
       </div>
 
-      {showAddFriend && (
+      {/* {showAddFriend && (
         <AddFriendModal onClose={() => setShowAddFriend(false)} />
-      )}
+      )} */}
     </>
   );
 }

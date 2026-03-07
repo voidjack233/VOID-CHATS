@@ -1,4 +1,5 @@
 // src/components/Chat/MessageView.tsx
+
 import { useState, useCallback, useEffect } from 'react';
 import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
@@ -8,10 +9,37 @@ import { Message, Conversation, ConversationMember } from '../../Services/Chat/c
 import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends, Friend } from '../../Services/hooks/Friends/useFriends';
 import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
+import { useTheme, Density } from '../../Services/hooks/Settings/useTheme';
 import FriendProfile from '../common/Friends/FriendProfile';
 import UserProfile from '../common/Profile/userProfile';
 import EmojiPicker from './EmojiPicker';
 import ReactionBar from './ReactionBar';
+
+const DENSITY: Record<Density, {
+  groupGap: string;
+  consecutiveGap: string;
+  bubblePadding: string;
+  maxWidth: string;
+  timestampAlways: boolean;
+}> = {
+  compact: {
+    groupGap: 'mt-3',
+    consecutiveGap: 'mt-0.5',
+    bubblePadding: 'px-3 py-1.5',
+    maxWidth: 'max-w-[85%]',
+    timestampAlways: false,
+  },
+  comfortable: {
+    groupGap: 'mt-5',
+    consecutiveGap: 'mt-1.5',
+    bubblePadding: 'px-4 py-2.5',
+    maxWidth: 'max-w-[70%]',
+    timestampAlways: true,
+  },
+};
+
+/* Avatar width (w-8 = 32px) + gap-2 (8px) = 40px → pl-10 */
+const AVATAR_OFFSET = 'pl-10';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -41,18 +69,17 @@ const MessageView = ({
   messageDelete,
 }: MessageViewProps) => {
   const { user } = useUser();
+  const { density } = useTheme();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  
-  // Context menu state
-  const [contextMenu, setContextMenu] = useState<{ msg: Message; x: number; y: number; } | null>(null);
-  
-  const [emojiPickerTarget, setEmojiPickerTarget] = useState<{ messageId: string; position: { x: number; y: number }; } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ msg: Message; x: number; y: number } | null>(null);
+  const [emojiPickerTarget, setEmojiPickerTarget] = useState<{ messageId: string; position: { x: number; y: number } } | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
-  
+
   const { friends } = useFriends();
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
-  const { getMessageReactions, handleToggleReaction, initReactionsFromMessages } = useReactions(conversation.id, gateway);
+  const { getMessageReactions, handleToggleReaction, initReactionsFromMessages } = useReactions(conversation.id, gateway, user?.id);
+
   const {
     messages,
     loading,
@@ -74,7 +101,6 @@ const MessageView = ({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
 
-  // Close the menu if you click away or scroll
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
     document.addEventListener('click', closeMenu);
@@ -87,17 +113,13 @@ const MessageView = ({
 
   const handleContextMenu = (e: React.MouseEvent, msg: Message) => {
     e.preventDefault();
-    
     let x = e.clientX;
     let y = e.clientY;
-    
     if (window.innerWidth - x < 200) x -= 180;
     if (window.innerHeight - y < 200) y -= 150;
-    
     setContextMenu({ msg, x, y });
   };
 
-  // Smart display name router
   const getSmartDisplayName = useCallback((senderId: string) => {
     if (senderId === user?.id) {
       return myProfile?.display_name || user?.username || 'You';
@@ -109,7 +131,6 @@ const MessageView = ({
     return getSenderName(senderId);
   }, [user, myProfile, friends, getSenderName]);
 
-  // Smart profile router
   const handleProfileClick = useCallback((senderId: string) => {
     if (senderId === user?.id && user?.profile_id) {
       setSelectedProfileId(user.profile_id);
@@ -139,7 +160,7 @@ const MessageView = ({
   const handleEmojiSelect = useCallback(
     (emoji: string) => {
       if (emojiPickerTarget && user?.id) {
-        handleToggleReaction(emojiPickerTarget.messageId, emoji, user.id);
+        handleToggleReaction(emojiPickerTarget.messageId, emoji);
       }
       setEmojiPickerTarget(null);
     },
@@ -148,38 +169,29 @@ const MessageView = ({
 
   const getConversationIcon = () => {
     switch (conversation.type) {
-      case 'dm':
-        return <MessageCircle className="w-10 h-10 text-void-text" />;
-      case 'group':
-        return <Users className="w-10 h-10 text-void-text" />;
-      default:
-        return <Hash className="w-10 h-10 text-void-text" />;
+      case 'dm': return <MessageCircle className="w-10 h-10 text-void-text" />;
+      case 'group': return <Users className="w-10 h-10 text-void-text" />;
+      default: return <Hash className="w-10 h-10 text-void-text" />;
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return (
+    <div className="flex-1 flex items-center justify-center">
+      <div className="w-6 h-6 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
 
-  if (encryptionError) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
-        <p>Encryption Error: {encryptionError}</p>
-      </div>
-    );
-  }
+  if (encryptionError) return (
+    <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
+      <p>Encryption Error: {encryptionError}</p>
+    </div>
+  );
 
-  if (!encryptionKey) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-gray-500">
-        <p>Setting up encryption...</p>
-      </div>
-    );
-  }
+  if (!encryptionKey) return (
+    <div className="flex-1 flex items-center justify-center text-void-text-muted">
+      <p>Setting up encryption...</p>
+    </div>
+  );
 
   const rendered = [...messages].reverse();
 
@@ -199,17 +211,23 @@ const MessageView = ({
           <h1 className="text-2xl font-bold mb-1 text-void-text">
             {conversation.type === 'dm' ? conversation.dm_display_name || conversation.dm_username : conversation.name}
           </h1>
-          <p className="text-gray-400 text-sm">This is the beginning of your conversation.</p>
+          <p className="text-void-text-muted text-sm">This is the beginning of your conversation.</p>
         </div>
       )}
 
       {rendered.map((msg, index) => {
         const prevMsg = index > 0 ? rendered[index - 1] : null;
         const timeDiff = prevMsg ? new Date(msg.created_at).getTime() - new Date(prevMsg.created_at).getTime() : 0;
+        const isOwn = msg.sender_id === user?.id;
         const isReply = !!msg.reply_to;
         const isConsecutive = !isReply && prevMsg && prevMsg.sender_id === msg.sender_id && timeDiff < 5 * 60 * 1000;
         const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
         const msgReactions = getMessageReactions(msg.message_id);
+
+        const d = DENSITY[density];
+        const isRightAligned = isOwn && density === 'comfortable';
+        const showAvatar = density === 'compact' ? true : !isOwn;
+        const showAvatarImage = showAvatar && !isConsecutive;
 
         return (
           <div
@@ -217,115 +235,142 @@ const MessageView = ({
             onMouseEnter={() => setHoveredId(msg.message_id)}
             onMouseLeave={() => setHoveredId(null)}
             onContextMenu={(e) => handleContextMenu(e, msg)}
-            className={`flex hover:bg-void-bg-hover/30 py-0.5 px-2 -mx-2 rounded transition-colors relative group ${
-              isConsecutive ? 'mt-0' : 'mt-4'
-            }`}
+            className={`relative group px-2 ${isConsecutive ? d.consecutiveGap : d.groupGap}`}
           >
-            {isConsecutive ? (
-              <div className="w-10 mr-3 flex-shrink-0 flex items-center justify-center opacity-0 group-hover:opacity-100">
-                <span className="text-[10px] text-gray-500 font-mono">
-                  {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {/*
+              STRUCTURE (Google Chat style):
+              ┌─────────────────────────────────┐
+              │  [padded]  Sender Name           │  ← above, indented past avatar
+              │  [padded]  ↳ reply preview       │  ← above, indented past avatar
+              │  [avatar]  [bubble]              │  ← avatar directly beside bubble
+              │  [padded]  timestamp · reactions  │  ← below, indented past avatar
+              └─────────────────────────────────┘
+            */}
+
+            {/* Sender name — above the avatar+bubble row, indented to align with bubble */}
+            {!isConsecutive && (!isOwn || density === 'compact') && (
+              <div className={`${isRightAligned ? 'text-right' : showAvatar ? AVATAR_OFFSET : ''}`}>
+                <span
+                  className="text-xs font-semibold text-void-accent mb-0.5 px-1 cursor-pointer hover:underline inline-block"
+                  onClick={() => handleProfileClick(msg.sender_id)}
+                >
+                  {getSmartDisplayName(msg.sender_id)}
                 </span>
-              </div>
-            ) : (
-              <div
-                className="w-10 h-10 rounded-full overflow-hidden mr-3 flex-shrink-0 bg-void-bg-hover mt-0.5 cursor-pointer hover:opacity-80 transition-opacity"
-                onClick={() => handleProfileClick(msg.sender_id)}
-              >
-                <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
               </div>
             )}
 
-            <div className="flex-1 min-w-0">
-              {msg.reply_to && (
-                <div className="flex items-center gap-1.5 mb-1 text-xs text-gray-500 cursor-pointer hover:text-gray-400 transition-colors">
-                  <CornerUpRight className="w-3 h-3 text-gray-600 flex-shrink-0" />
+            {/* Reply preview — above the avatar+bubble row, indented to align with bubble */}
+            {msg.reply_to && (
+              <div className={`${isRightAligned ? 'text-right' : showAvatar ? AVATAR_OFFSET : ''} mb-0.5`}>
+                <div className="inline-flex items-center gap-1.5 text-xs text-void-text-muted cursor-pointer hover:text-void-text transition-colors">
+                  <CornerUpRight className="w-3 h-3 flex-shrink-0" />
                   {replyParent ? (
                     <>
                       <span className="font-semibold text-void-accent/70">{getSenderName(replyParent.sender_id)}</span>
-                      <span className="truncate max-w-[300px] text-gray-500">
-                        {replyParent.is_deleted
-                          ? '[deleted]'
-                          : replyParent.content
-                          ? replyParent.content.length > 80
-                            ? replyParent.content.substring(0, 80) + '...'
-                            : replyParent.content
-                          : '[encrypted]'}
+                      <span className="truncate max-w-[220px]">
+                        {replyParent.is_deleted ? '[deleted]' : replyParent.content ? replyParent.content.substring(0, 60) + (replyParent.content.length > 60 ? '…' : '') : '[encrypted]'}
                       </span>
                     </>
                   ) : (
-                    <span className="text-gray-600 italic">Loading reply...</span>
+                    <span className="italic">Loading reply...</span>
                   )}
                 </div>
-              )}
+              </div>
+            )}
 
-              {!isConsecutive && (
-                <div className="flex items-baseline gap-2 mb-0.5">
-                  <span
-                    className="font-semibold text-sm text-void-accent cursor-pointer hover:underline"
+            {/* Avatar + Bubble row — avatar sits directly beside the bubble */}
+            <div className={`flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-start gap-2`}>
+              {showAvatar && (
+                showAvatarImage ? (
+                  <div
+                    className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity"
                     onClick={() => handleProfileClick(msg.sender_id)}
                   >
-                    {getSmartDisplayName(msg.sender_id)}
+                    <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 flex-shrink-0" />
+                )
+              )}
+
+              <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}>
+                {/* Message bubble */}
+                {msg.is_deleted ? (
+                  <div className={`${d.bubblePadding} rounded-2xl text-sm italic text-void-text-muted bg-void-bg-hover/50`}>
+                    [deleted]
+                  </div>
+                ) : (
+                  <div className={`${d.bubblePadding} rounded-2xl text-sm break-words ${
+                    isRightAligned
+                      ? 'rounded-br-sm bg-void-accent text-white'
+                      : isOwn
+                          ? 'rounded-bl-sm bg-void-accent text-white'
+                          : 'rounded-bl-sm bg-void-bg-hover text-void-text'
+                  }`}>
+                    {msg.content || (msg.attachments?.length ? null : '[encrypted]')}
+                    {msg.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
+                  </div>
+                )}
+
+                {/* Attachments */}
+                {!msg.is_deleted && msg.attachments && msg.attachments.length > 0 && (
+                  <div className={`mt-1 grid gap-1 ${msg.attachments.length === 1 ? 'grid-cols-1' : msg.attachments.length === 2 ? 'grid-cols-2' : 'grid-cols-3'} max-w-xs`}>
+                    {msg.attachments.map((url, i) => (
+                      <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block rounded-xl overflow-hidden bg-void-bg-hover">
+                        <img src={url} alt="attachment" className="w-full object-cover max-h-56 hover:opacity-90 transition-opacity" loading="lazy" />
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {/* Timestamp */}
+                {(!isConsecutive || d.timestampAlways) && (
+                  <span className={`text-[10px] text-void-text-muted mt-0.5 px-1 ${d.timestampAlways ? '' : 'opacity-0 group-hover:opacity-100 transition-opacity'}`}>
+                    {formatTime(msg.created_at)}
                   </span>
-                  <span className="text-xs text-gray-500">{formatTime(msg.created_at)}</span>
-                </div>
-              )}
+                )}
 
-              <div className="flex items-baseline gap-2">
-                <p className={`text-sm ${msg.is_deleted ? 'text-gray-600 italic' : 'text-void-text'}`}>
-                  {msg.content || '[encrypted]'}
-                </p>
-                {msg.is_edited && !msg.is_deleted && <span className="text-[10px] text-gray-500 ml-1">(edited)</span>}
+                {/* Reactions */}
+                {!msg.is_deleted && Object.keys(msgReactions).length > 0 && (
+                  <div className="mt-1">
+                    <ReactionBar
+                      reactions={msgReactions}
+                      currentUserId={user?.id || ''}
+                      onToggle={(emoji) => handleToggleReaction(msg.message_id, emoji)}
+                      onAddReaction={() => {
+                        const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                        if (el) {
+                          const rect = el.getBoundingClientRect();
+                          setEmojiPickerTarget({ messageId: msg.message_id, position: { x: rect.left, y: rect.bottom + 8 } });
+                        }
+                      }}
+                    />
+                  </div>
+                )}
               </div>
-
-              {!msg.is_deleted && Object.keys(msgReactions).length > 0 && (
-                <div className="mt-1">
-                  <ReactionBar
-                    reactions={msgReactions}
-                    currentUserId={user?.id || ''}
-                    onToggle={(emoji) => user?.id && handleToggleReaction(msg.message_id, emoji, user.id)}
-                    onAddReaction={() => {
-                      const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
-                      if (el) {
-                        const rect = el.getBoundingClientRect();
-                        setEmojiPickerTarget({
-                          messageId: msg.message_id,
-                          position: { x: rect.left, y: rect.bottom + 8 },
-                        });
-                      }
-                    }}
-                  />
-                </div>
-              )}
             </div>
 
+            {/* Hover action bar */}
             {hoveredId === msg.message_id && !msg.is_deleted && (
               <div
                 data-msg-id={msg.message_id}
-                className="absolute right-2 -top-3 flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg z-10"
+                className={`absolute -top-3 ${isRightAligned ? 'left-2' : 'right-2'} flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg z-10`}
               >
-                <button
-                  onClick={(e) => openEmojiPicker(msg.message_id, e)}
-                  className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-gray-200"
-                  title="Add reaction"
-                >
+                <button onClick={(e) => openEmojiPicker(msg.message_id, e)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text" title="React">
                   <Smile className="w-3.5 h-3.5" />
                 </button>
                 {onReply && (
-                  <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-gray-200">
+                  <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
                     <Reply className="w-3.5 h-3.5" />
                   </button>
                 )}
-                {msg.sender_id === user?.id && onEdit && (
-                  <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-gray-200">
+                {isOwn && onEdit && (
+                  <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
                 )}
-                {msg.sender_id === user?.id && (
-                  <button
-                    onClick={() => handleDelete(msg.message_id)}
-                    className="p-1 hover:bg-void-bg-hover rounded text-gray-400 hover:text-red-400"
-                  >
+                {isOwn && (
+                  <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
@@ -336,7 +381,7 @@ const MessageView = ({
       })}
 
       {messages.length === 0 && !loading && (
-        <p className="text-center text-gray-500 text-sm py-8">No messages yet. Say something!</p>
+        <p className="text-center text-void-text-muted text-sm py-8">No messages yet. Say something!</p>
       )}
 
       <div ref={bottomRef} />
@@ -349,7 +394,6 @@ const MessageView = ({
         />
       )}
 
-      {/* Custom right-click context menu */}
       {contextMenu && !contextMenu.msg.is_deleted && (
         <div
           className="fixed z-[70] w-48 bg-void-bg-main border border-void-bg-hover rounded-lg shadow-2xl py-1.5 overflow-hidden flex flex-col"
@@ -367,43 +411,38 @@ const MessageView = ({
               }
               setContextMenu(null);
             }}
-            className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+            className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
           >
             <Smile className="w-4 h-4" />
             Add Reaction
           </button>
-
           {onReply && (
             <button
               onClick={() => {
                 onReply(contextMenu.msg);
                 setContextMenu(null);
               }}
-              className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+              className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
             >
               <Reply className="w-4 h-4" />
               Reply
             </button>
           )}
-
-          {/* Only show edit and delete if it's your message */}
           {contextMenu.msg.sender_id === user?.id && (
             <>
               <div className="h-px w-full bg-void-bg-hover my-1" />
-
               {onEdit && (
                 <button
                   onClick={() => {
                     onEdit(contextMenu.msg);
                     setContextMenu(null);
                   }}
-                  className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+                  className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
                 >
                   <Pencil className="w-4 h-4" />
                   Edit Message
                 </button>
               )}
-
               <button
                 onClick={() => {
                   handleDelete(contextMenu.msg.message_id);
@@ -419,12 +458,9 @@ const MessageView = ({
         </div>
       )}
 
-      {/* Regular user profile */}
       {selectedProfileId && (
         <UserProfile profileId={selectedProfileId} onClose={() => setSelectedProfileId(null)} />
       )}
-
-      {/* Fast friend profile */}
       {selectedFriend && (
         <FriendProfile friend={selectedFriend} onClose={() => setSelectedFriend(null)} />
       )}

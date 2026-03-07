@@ -1,4 +1,4 @@
-import { useEffect } from 'react'; // 👈 Import useEffect
+import { useEffect } from 'react';
 import { Check, X, User, UserPlus } from 'lucide-react';
 import { FriendRequest, useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
 
@@ -20,8 +20,8 @@ export default function IncomingRequests({ requests, onAccept, onReject }: Incom
   if (requests.length === 0) {
     return (
       <div className="text-center py-12">
-        <UserPlus className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-        <p className="text-gray-400">No incoming requests</p>
+        <UserPlus className="w-12 h-12 text-void-text-muted mx-auto mb-3" />
+        <p className="text-void-text-muted">No incoming requests</p>
       </div>
     );
   }
@@ -41,15 +41,15 @@ export default function IncomingRequests({ requests, onAccept, onReject }: Incom
                 className="w-10 h-10 rounded-full object-cover"
               />
             ) : (
-              <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
-                <User className="w-5 h-5 text-gray-400" />
+              <div className="w-10 h-10 rounded-full bg-void-bg-hover flex items-center justify-center">
+                <User className="w-5 h-5 text-void-text-muted" />
               </div>
             )}
             <div>
-              <p className="text-white font-medium">
+              <p className="text-void-text font-medium">
                 {request.display_name || request.username}
               </p>
-              <p className="text-gray-500 text-sm">@{request.username}</p>
+              <p className="text-void-text-muted text-sm">@{request.username}</p>
             </div>
           </div>
 

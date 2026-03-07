@@ -1,15 +1,14 @@
 // src/components/Chat/ReactionBar.tsx
-import { ReactionMap } from '../../Services/Chat/chatService';
+import type { ReactionMap } from '../../Services/hooks/Chats/useReactions';
 
 interface ReactionBarProps {
-  reactions: ReactionMap | any; // Relaxed slightly to handle migrating data
+  reactions: ReactionMap;
   currentUserId: string;
   onToggle: (emoji: string) => void;
   onAddReaction: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: ReactionBarProps) => {
-  // Safety check: if reactions is null, undefined, or somehow a string, bail out gracefully
   if (!reactions || typeof reactions !== 'object') return null;
 
   const emojiEntries = Object.entries(reactions);
@@ -22,16 +21,15 @@ const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: Reac
         let hasReacted = false;
         let count = 0;
 
-        // BULLETPROOF CHECK: Handles old array data, new object data, and corrupted DB data
         if (Array.isArray(reactionData)) {
+          // Legacy format from IndexedDB cache
           hasReacted = reactionData.includes(currentUserId);
           count = reactionData.length;
         } else if (reactionData && typeof reactionData === 'object') {
-          hasReacted = !!(reactionData as any).me;
-          count = (reactionData as any).count || 0;
+          hasReacted = !!reactionData.me;
+          count = reactionData.count || 0;
         }
 
-        // Don't render empty emoji bubbles if data got wiped
         if (count === 0) return null;
 
         return (
@@ -41,7 +39,7 @@ const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: Reac
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-xs transition-all border ${
               hasReacted
                 ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300 hover:bg-indigo-500/30'
-                : 'bg-gray-700/50 border-gray-600/50 text-gray-400 hover:bg-gray-700 hover:border-gray-500'
+                : 'bg-void-bg-hover/50 border-void-border/50 text-void-text-muted hover:bg-void-bg-hover hover:border-void-border'
             }`}
             title={`${count} reaction${count > 1 ? 's' : ''}`}
           >
@@ -53,7 +51,7 @@ const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: Reac
 
       <button
         onClick={(e) => onAddReaction(e)}
-        className="inline-flex items-center justify-center w-6 h-6 rounded-md text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/50 border border-transparent hover:border-gray-600/50 transition-all"
+        className="inline-flex items-center justify-center w-6 h-6 rounded-md text-xs text-void-text-muted hover:text-void-text hover:bg-void-bg-hover/50 border border-transparent hover:border-void-border/50 transition-all"
         title="Add reaction"
       >
         +

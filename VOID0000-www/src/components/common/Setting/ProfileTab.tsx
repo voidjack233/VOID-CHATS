@@ -143,7 +143,7 @@ const ProfileTab = () => {
 
   if (!profile || !tempProfile) {
     return (
-      <div className="text-center py-12 text-gray-400">
+      <div className="text-center py-12 text-void-text-muted">
         Unable to load profile
       </div>
     );
@@ -161,13 +161,13 @@ const ProfileTab = () => {
 
       {/* Avatar */}
       <div>
-        <h4 className="text-xs md:text-sm font-semibold text-gray-400 uppercase mb-3">
+        <h4 className="text-xs md:text-sm font-semibold text-void-text-muted uppercase mb-3">
           Profile Photo
         </h4>
 
         <div className="flex items-center gap-4">
           <div className="relative group">
-            <div className="w-20 h-20 rounded-full bg-gray-700 overflow-hidden ring-2 ring-gray-700">
+            <div className="w-20 h-20 rounded-full bg-void-bg-hover overflow-hidden ring-2 ring-void-border">
               <img
                 src={avatarToShow}
                 alt="Avatar"
@@ -196,11 +196,11 @@ const ProfileTab = () => {
           <div>
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="px-3 py-1.5 bg-gray-900 hover:bg-gray-900/70 border border-gray-700 hover:border-blue-500 rounded-lg text-sm text-white transition-all"
+              className="px-3 py-1.5 bg-gray-900 hover:bg-gray-900/70 border border-void-border hover:border-blue-500 rounded-lg text-sm text-void-text transition-all"
             >
               Upload Photo
             </button>
-            <p className="text-xs text-gray-500 mt-1">JPG, PNG, GIF or WebP. Max 5MB.</p>
+            <p className="text-xs text-void-text-muted mt-1">JPG, PNG, GIF or WebP. Max 5MB.</p>
           </div>
 
           <input
@@ -218,8 +218,8 @@ const ProfileTab = () => {
       </div>
 
       {/* Display Name */}
-      <div className="border-t border-gray-700 pt-4">
-        <h4 className="text-xs md:text-sm font-semibold text-gray-400 uppercase mb-3">
+      <div className="border-t border-void-border pt-4">
+        <h4 className="text-xs md:text-sm font-semibold text-void-text-muted uppercase mb-3">
           Display Name
         </h4>
 
@@ -230,18 +230,18 @@ const ProfileTab = () => {
             onChange={(e) =>
               setTempProfile({ ...tempProfile, display_name: e.target.value })
             }
-            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors"
+            className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 text-void-text text-sm focus:outline-none focus:border-blue-500 transition-colors"
             placeholder="Enter a display name"
           />
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-void-text-muted mt-1">
             This is how others will see you. Your username stays @{profile.username}
           </p>
         </div>
       </div>
 
       {/* Bio */}
-      <div className="border-t border-gray-700 pt-4">
-        <h4 className="text-xs md:text-sm font-semibold text-gray-400 uppercase mb-3">
+      <div className="border-t border-void-border pt-4">
+        <h4 className="text-xs md:text-sm font-semibold text-void-text-muted uppercase mb-3">
           About Me
         </h4>
 
@@ -251,15 +251,15 @@ const ProfileTab = () => {
             onChange={handleBioChange}
             maxLength={200}
             placeholder="Tell us about yourself..."
-            className={`w-full bg-gray-900 border rounded-lg px-4 py-3 text-white text-sm resize-none focus:outline-none transition-colors ${
+            className={`w-full bg-gray-900 border rounded-lg px-4 py-3 text-void-text text-sm resize-none focus:outline-none transition-colors ${
               bioError
                 ? 'border-red-500 focus:border-red-500'
-                : 'border-gray-700 focus:border-blue-500'
+                : 'border-void-border focus:border-blue-500'
             }`}
             rows={3}
           />
           <div className="flex justify-between mt-1">
-            <span className={`text-xs ${bioError ? 'text-red-400' : 'text-gray-500'}`}>
+            <span className={`text-xs ${bioError ? 'text-red-400' : 'text-void-text-muted'}`}>
               {tempProfile.bio?.length || 0}/200
             </span>
             {bioError && <span className="text-xs text-red-400">{bioError}</span>}
@@ -275,13 +275,13 @@ const ProfileTab = () => {
       )}
 
       {/* Save Button */}
-      <div className="border-t border-gray-700 pt-4">
+      <div className="border-t border-void-border pt-4">
         <button
           onClick={handleSave}
           disabled={!canSave}
           className={`px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${
             !canSave
-              ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
+              ? 'bg-void-bg-hover text-void-text-muted cursor-not-allowed'
               : 'bg-blue-500 hover:bg-blue-600 text-white active:scale-[0.98]'
           }`}
         >

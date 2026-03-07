@@ -5,6 +5,8 @@ const OP = {
   HEARTBEAT: 1,
   IDENTIFY: 2,
   HEARTBEAT_ACK: 3,
+  RESUME: 6,
+  RESUMED: 7,
   HELLO: 10,
 };
 
@@ -19,15 +21,19 @@ class Gateway {
   private userId: string | null = null;
   private isDisconnecting = false;
   private isRefreshing = false;
-  private isConnecting = false; // Prevents parallel connect attempts
+  private isConnecting = false;
   private lastRefreshTime = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private waitingForAck = false; // Heartbeat ACK tracking
+  private waitingForAck = false;
+
+  // Session resume state
+  private sessionId: string | null = null;
+  private lastSequence = 0;
+  private canResume = false;
 
   connect(userId: string) {
-    // Connection lock: prevent multiple simultaneous connect attempts
     if (this.isConnecting) {
-      console.log('⏳ Connection attempt already in progress, skipping');
+      console.log('Connection attempt already in progress, skipping');
       return;
     }
 
@@ -40,7 +46,6 @@ class Gateway {
     this.isDisconnecting = false;
     this.isConnecting = true;
 
-    // Listen for network recovery — skip countdown and reconnect immediately
     window.addEventListener('online', this.handleOnline);
 
     const wsUrl = import.meta.env.DEV
@@ -50,14 +55,14 @@ class Gateway {
     try {
       this.ws = new WebSocket(wsUrl);
     } catch (err) {
-      console.error('🔌 Failed to create WebSocket:', err);
+      console.error('Failed to create WebSocket:', err);
       this.isConnecting = false;
       this.scheduleReconnect();
       return;
     }
 
     this.ws.onopen = () => {
-      console.log('🔌 Gateway connected');
+      console.log('Gateway connected');
       this.isConnecting = false;
       this.reconnectAttempts = 0;
     };
@@ -75,51 +80,82 @@ class Gateway {
 
       if (this.isDisconnecting) return;
 
-      // Auth failed — try refresh instead of giving up
+      // Auth failed — try refresh
       if (event.code === 4001 || event.code === 4003) {
-        console.log('🔌 Gateway auth failed, attempting refresh...');
+        console.log('Gateway auth failed, attempting refresh...');
         this.cleanup();
         this.handleAuthFailure();
         return;
       }
 
-      // Session replaced by newer connection on same device — don't reconnect
+      // Session replaced — don't reconnect
       if (event.code === 4009) {
-        console.log('🔌 Session replaced by newer connection');
+        console.log('Session replaced by newer connection');
+        this.invalidateSession();
         return;
       }
 
-      console.log('🔌 Gateway closed:', event.code);
+      // Mark session as resumable (normal disconnect, not auth failure)
+      if (this.sessionId && this.lastSequence > 0) {
+        this.canResume = true;
+      }
+
+      console.log('Gateway closed:', event.code);
       this.cleanup();
       this.scheduleReconnect();
     };
 
-    // Don't reconnect from onerror — onclose always fires after onerror
-    // Handling both causes duplicate reconnect attempts
     this.ws.onerror = (error) => {
-      console.error('🔌 Gateway error:', error);
+      console.error('Gateway error:', error);
     };
   }
 
   private handleMessage(message: any) {
-    const { op, t, d } = message;
+    const { op, t, s, d } = message;
+
+    // Track sequence number from every EVENT
+    if (op === OP.EVENT && typeof s === 'number') {
+      this.lastSequence = s;
+    }
 
     switch (op) {
       case OP.HELLO:
         this.heartbeatInterval = d.heartbeat_interval;
         this.startHeartbeat();
-        this.identify();
+
+        // Try resume if we have a valid session, otherwise identify fresh
+        if (this.canResume && this.sessionId) {
+          this.resume();
+        } else {
+          this.identify();
+        }
         break;
 
       case OP.HEARTBEAT_ACK:
         this.waitingForAck = false;
         break;
 
+      case OP.RESUMED:
+        console.log(`Session resumed, ${d.replayed} events replayed`);
+        this.canResume = false;
+        break;
+
       case OP.EVENT:
-        if (t === 'TOKEN_EXPIRING') {
+        if (t === 'READY') {
+          // Store session_id from READY for future resume
+          if (d.session_id) {
+            this.sessionId = d.session_id;
+            this.canResume = false;
+          }
+          this.emit(t, d);
+        } else if (t === 'TOKEN_EXPIRING') {
           this.handleTokenExpiring(d);
         } else if (t === 'SHUTDOWN') {
-          console.log(`🔄 Server shutting down, reconnecting in ${d.in / 1000}s...`);
+          console.log(`Server shutting down, reconnecting in ${d.in / 1000}s...`);
+          // Mark resumable before cleanup
+          if (this.sessionId && this.lastSequence > 0) {
+            this.canResume = true;
+          }
           this.cleanup();
           if (this.ws) {
             this.ws.onclose = null;
@@ -142,30 +178,30 @@ class Gateway {
   private async handleTokenExpiring(data: { expires_in: number }) {
     const now = Date.now();
     if (now - this.lastRefreshTime < 60000) {
-      console.log('🔄 Skipping refresh - cooldown active');
+      console.log('Skipping refresh - cooldown active');
       return;
     }
 
     if (this.isRefreshing) {
-      console.log('🔄 Skipping refresh - already in progress');
+      console.log('Skipping refresh - already in progress');
       return;
     }
 
     this.isRefreshing = true;
     this.lastRefreshTime = now;
-    console.log(`🔄 Token expiring in ${data.expires_in}s, refreshing...`);
+    console.log(`Token expiring in ${data.expires_in}s, refreshing...`);
 
     try {
       const success = await authService.refreshToken();
 
       if (success) {
-        console.log('✅ Token refreshed successfully');
+        console.log('Token refreshed successfully');
         this.reconnectWithNewToken();
       } else {
-        console.error('❌ Token refresh failed');
+        console.error('Token refresh failed');
       }
     } catch (err) {
-      console.error('❌ Token refresh error:', err);
+      console.error('Token refresh error:', err);
     } finally {
       this.isRefreshing = false;
     }
@@ -175,13 +211,16 @@ class Gateway {
     if (this.isRefreshing) return;
     this.isRefreshing = true;
 
+    // Auth failure means session is invalid
+    this.invalidateSession();
+
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        console.log(`🔄 Auth recovery attempt ${attempt}/3...`);
+        console.log(`Auth recovery attempt ${attempt}/3...`);
         const success = await authService.refreshToken();
 
         if (success) {
-          console.log('✅ Token refreshed after WS auth failure, reconnecting...');
+          console.log('Token refreshed after WS auth failure, reconnecting...');
           this.isRefreshing = false;
           this.reconnectAttempts = 0;
           this.reconnectWithNewToken();
@@ -192,7 +231,7 @@ class Gateway {
       }
     }
 
-    console.log('🔌 Auth recovery failed, falling back to reconnect loop...');
+    console.log('Auth recovery failed, falling back to reconnect loop...');
     this.isRefreshing = false;
     this.scheduleReconnect();
   }
@@ -217,10 +256,30 @@ class Gateway {
 
   private identify() {
     if (!this.userId) return;
+    this.lastSequence = 0;
+    this.sessionId = null;
+    this.canResume = false;
     this.send({
       op: OP.IDENTIFY,
       d: { user_id: this.userId },
     });
+  }
+
+  private resume() {
+    console.log(`Resuming session ${this.sessionId} from seq ${this.lastSequence}`);
+    this.send({
+      op: OP.RESUME,
+      d: {
+        session_id: this.sessionId,
+        last_sequence: this.lastSequence,
+      },
+    });
+  }
+
+  private invalidateSession() {
+    this.sessionId = null;
+    this.lastSequence = 0;
+    this.canResume = false;
   }
 
   private startHeartbeat() {
@@ -230,8 +289,7 @@ class Gateway {
 
     this.heartbeatTimer = setInterval(() => {
       if (this.waitingForAck) {
-        // Never got ACK back from last heartbeat — connection is dead
-        console.log('💀 Missed heartbeat ACK, connection is zombie — reconnecting');
+        console.log('Missed heartbeat ACK, connection is zombie -- reconnecting');
         this.ws?.close();
         return;
       }
@@ -247,7 +305,6 @@ class Gateway {
     }
   }
 
-  // Public send — used by idle detector for STATUS_UPDATE
   sendRaw(data: any) {
     this.send(data);
   }
@@ -264,20 +321,13 @@ class Gateway {
 
     this.reconnectAttempts++;
 
-    // Exponential backoff: 2s, 4s, 8s, 16s, 30s, then 30s forever
-    // isConnecting lock ensures only one attempt runs at a time
     const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-
-    // Wider jitter at higher attempts to prevent thundering herd
-    // Early attempts: 0-1s jitter (reconnect fast)
-    // After cap: 0-15s jitter (spread out 10k+ clients over 45s window)
     const maxJitter = baseDelay >= 30000 ? 15000 : 1000;
     const jitter = Math.random() * maxJitter;
     const delay = baseDelay + jitter;
 
-    console.log(`🔌 Reconnecting in ${Math.round(delay / 1000)}s... (attempt ${this.reconnectAttempts})`);
+    console.log(`Reconnecting in ${Math.round(delay / 1000)}s... (attempt ${this.reconnectAttempts})`);
 
-    // Clear any existing reconnect timer to prevent stacking
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
@@ -291,21 +341,18 @@ class Gateway {
     }, delay);
   }
 
-  // Reset reconnect counter when app regains focus
   resetReconnect() {
     if (this.ws?.readyState === WebSocket.OPEN) return;
     if (this.isConnecting) return;
     if (!this.userId) return;
     if (this.isDisconnecting) return;
 
-    // If we're already retrying (timer pending), let it continue
-    // Only interrupt if we've been idle (no pending timer = hit max retries)
     if (this.reconnectTimer) {
-      console.log('🔌 App focused, reconnect already scheduled');
+      console.log('App focused, reconnect already scheduled');
       return;
     }
 
-    console.log('🔌 App focused, reconnecting immediately...');
+    console.log('App focused, reconnecting immediately...');
     this.reconnectAttempts = 0;
     this.ws = null;
     this.connect(this.userId);
@@ -341,7 +388,7 @@ class Gateway {
     if (this.isDisconnecting) return;
     if (!this.userId) return;
 
-    console.log('🌐 Network back, reconnecting immediately...');
+    console.log('Network back, reconnecting immediately...');
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -356,6 +403,7 @@ class Gateway {
   disconnect() {
     this.isDisconnecting = true;
     this.cleanup();
+    this.invalidateSession();
     window.removeEventListener('online', this.handleOnline);
 
     if (this.reconnectTimer) {
