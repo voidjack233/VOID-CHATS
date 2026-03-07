@@ -35,31 +35,43 @@ router.get('/', async (req, res) => {
     }
 
     const convUuid = cassandra.types.Uuid.fromString(conversationId);
+    const userUuid = cassandra.types.Uuid.fromString(userId);
+    const msgUuids = ids.map((id) => cassandra.types.TimeUuid.fromString(id));
 
-    // Query all reactions for these messages in parallel
-    const results = await Promise.all(
-      ids.map((id) =>
-        scylla.execute(
-          `SELECT message_id, emoji, user_id FROM message_reactions
-           WHERE conversation_id = ? AND message_id = ?`,
-          [convUuid, cassandra.types.TimeUuid.fromString(id)],
-          { prepare: true }
-        ).catch(() => ({ rows: [] }))
-      )
-    );
+    // Counts from counter table + current user's own reactions in parallel
+    const [countsResult, meResult] = await Promise.all([
+      scylla.execute(
+        `SELECT message_id, emoji, count FROM reaction_counts
+         WHERE conversation_id = ? AND message_id IN ?`,
+        [convUuid, msgUuids],
+        { prepare: true }
+      ).catch(() => ({ rows: [] })),
+      scylla.execute(
+        `SELECT message_id, emoji FROM user_reactions
+         WHERE conversation_id = ? AND user_id = ? AND message_id IN ?`,
+        [convUuid, userUuid, msgUuids],
+        { prepare: true }
+      ).catch(() => ({ rows: [] })),
+    ]);
 
-    // Build response: { messageId: { emoji: [userId, ...] } }
+    const meSet = new Set();
+    for (const row of meResult.rows) {
+      meSet.add(`${row.message_id.toString()}:${row.emoji}`);
+    }
+
     const reactions = {};
-    for (const result of results) {
-      for (const row of result.rows) {
-        const msgId = row.message_id.toString();
-        const emoji = row.emoji;
-        const uid = row.user_id.toString();
+    for (const row of countsResult.rows) {
+      const msgId = row.message_id.toString();
+      const emoji = row.emoji;
+      const count = row.count.toNumber ? row.count.toNumber() : Number(row.count);
 
-        if (!reactions[msgId]) reactions[msgId] = {};
-        if (!reactions[msgId][emoji]) reactions[msgId][emoji] = [];
-        reactions[msgId][emoji].push(uid);
-      }
+      if (count <= 0) continue;
+
+      if (!reactions[msgId]) reactions[msgId] = {};
+      reactions[msgId][emoji] = {
+        count,
+        me: meSet.has(`${msgId}:${emoji}`),
+      };
     }
 
     res.json({ success: true, reactions });

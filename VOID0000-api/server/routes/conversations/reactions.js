@@ -53,20 +53,48 @@ router.put('/:emoji', async (req, res) => {
     let action;
 
     if (existing.rows.length > 0) {
-      await scylla.execute(
-        `DELETE FROM message_reactions
-         WHERE conversation_id = ? AND message_id = ? AND emoji = ? AND user_id = ?`,
-        [convUuid, msgUuid, emoji, userUuid],
-        { prepare: true }
-      );
+      await Promise.all([
+        scylla.execute(
+          `DELETE FROM message_reactions
+           WHERE conversation_id = ? AND message_id = ? AND emoji = ? AND user_id = ?`,
+          [convUuid, msgUuid, emoji, userUuid],
+          { prepare: true }
+        ),
+        scylla.execute(
+          `UPDATE reaction_counts SET count = count - 1
+           WHERE conversation_id = ? AND message_id = ? AND emoji = ?`,
+          [convUuid, msgUuid, emoji],
+          { prepare: true }
+        ),
+        scylla.execute(
+          `DELETE FROM user_reactions
+           WHERE conversation_id = ? AND user_id = ? AND message_id = ? AND emoji = ?`,
+          [convUuid, userUuid, msgUuid, emoji],
+          { prepare: true }
+        ),
+      ]);
       action = 'remove';
     } else {
-      await scylla.execute(
-        `INSERT INTO message_reactions (conversation_id, message_id, emoji, user_id, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
-        [convUuid, msgUuid, emoji, userUuid, new Date()],
-        { prepare: true }
-      );
+      await Promise.all([
+        scylla.execute(
+          `INSERT INTO message_reactions (conversation_id, message_id, emoji, user_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          [convUuid, msgUuid, emoji, userUuid, new Date()],
+          { prepare: true }
+        ),
+        scylla.execute(
+          `UPDATE reaction_counts SET count = count + 1
+           WHERE conversation_id = ? AND message_id = ? AND emoji = ?`,
+          [convUuid, msgUuid, emoji],
+          { prepare: true }
+        ),
+        scylla.execute(
+          `INSERT INTO user_reactions (conversation_id, user_id, message_id, emoji)
+           VALUES (?, ?, ?, ?)`,
+          [convUuid, userUuid, msgUuid, emoji],
+          { prepare: true }
+        ),
+      ]);
       action = 'add';
     }
 
@@ -80,7 +108,9 @@ router.put('/:emoji', async (req, res) => {
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      sendToUser(memberId, action === 'add' ? 'REACTION_ADD' : 'REACTION_REMOVE', payload);
+      if (memberId !== userId) {
+        sendToUser(memberId, action === 'add' ? 'REACTION_ADD' : 'REACTION_REMOVE', payload);
+      }
     });
 
     res.json({ success: true, ...payload });

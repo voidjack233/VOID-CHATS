@@ -24,23 +24,21 @@ async function getConversationMembers(conversationId) {
 }
 
 /**
- * Fetches reactions and formats them for the UI:
+ * Fetches reaction counts from the counter table + checks current user's reactions.
  * Returns: { messageId: { emoji: { count: Number, me: Boolean } } }
  */
 async function batchFetchReactions(conversationId, messageIds, currentUserId) {
   if (!messageIds || messageIds.length === 0) return {};
 
   const convUuid = cassandra.types.Uuid.fromString(conversationId);
+  const userUuid = currentUserId ? cassandra.types.Uuid.fromString(currentUserId) : null;
   const reactions = {};
 
-  // Pre-populate the response object so messages with 0 reactions still get an empty object
   messageIds.forEach((id) => {
     reactions[id] = {};
   });
 
-  // Chunking the array prevents the IN clause from becoming massively bloated
-  // if you ever increase your pagination limit.
-  const chunkSize = 50; 
+  const chunkSize = 50;
   const chunks = [];
   for (let i = 0; i < messageIds.length; i += chunkSize) {
     chunks.push(messageIds.slice(i, i + chunkSize));
@@ -49,35 +47,46 @@ async function batchFetchReactions(conversationId, messageIds, currentUserId) {
   try {
     for (const chunk of chunks) {
       const msgUuids = chunk.map((id) => cassandra.types.TimeUuid.fromString(id));
-      // Fetch all reactions for this chunk of messages in a single network round trip
-      const result = await scylla.execute(
-        `SELECT message_id, emoji, user_id FROM message_reactions
-         WHERE conversation_id = ? AND message_id IN ?`,
-        [convUuid, msgUuids],
-        { prepare: true }
-      );
 
-      for (const row of result.rows) {
+      // Two parallel queries: counts from counter table + current user's own reactions
+      const [countsResult, meResult] = await Promise.all([
+        scylla.execute(
+          `SELECT message_id, emoji, count FROM reaction_counts
+           WHERE conversation_id = ? AND message_id IN ?`,
+          [convUuid, msgUuids],
+          { prepare: true }
+        ),
+        userUuid
+          ? scylla.execute(
+              `SELECT message_id, emoji FROM user_reactions
+               WHERE conversation_id = ? AND user_id = ? AND message_id IN ?`,
+              [convUuid, userUuid, msgUuids],
+              { prepare: true }
+            )
+          : { rows: [] },
+      ]);
+
+      const meSet = new Set();
+      for (const row of meResult.rows) {
+        meSet.add(`${row.message_id.toString()}:${row.emoji}`);
+      }
+
+      for (const row of countsResult.rows) {
         const msgId = row.message_id.toString();
         const emoji = row.emoji;
-        const uid = row.user_id.toString();
+        const count = row.count.toNumber ? row.count.toNumber() : Number(row.count);
 
-        if (!reactions[msgId][emoji]) {
-          reactions[msgId][emoji] = { count: 0, me: false };
-        }
+        if (count <= 0) continue;
 
-        // Increment the count in memory
-        reactions[msgId][emoji].count += 1;
-        // Check if the current user is the one who reacted
-        if (uid === currentUserId) {
-          reactions[msgId][emoji].me = true;
-        }
+        reactions[msgId][emoji] = {
+          count,
+          me: meSet.has(`${msgId}:${emoji}`),
+        };
       }
     }
   } catch (err) {
-    // Log the actual ScyllaDB error (e.g., read timeouts, schema issues)
     console.error(`[ScyllaDB] Failed to batch fetch reactions for conversation ${conversationId}:`, err);
-    throw err; // Let the Express route catch this and return a proper 500 to the client
+    throw err;
   }
 
   return reactions;
@@ -87,10 +96,21 @@ async function batchFetchReactions(conversationId, messageIds, currentUserId) {
 router.post('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
-  const { encrypted_content, iv, key_version, message_type, reply_to } = req.body;
+  const { encrypted_content, iv, key_version, message_type, reply_to, attachments } = req.body;
 
-  if (!encrypted_content || !iv) {
-    return res.status(400).json({ error: 'encrypted_content and iv are required' });
+  // Allow image-only messages (no text) if attachments are present
+  if (!encrypted_content && !iv && (!attachments || attachments.length === 0)) {
+    return res.status(400).json({ error: 'encrypted_content/iv or attachments required' });
+  }
+  if ((encrypted_content || iv) && (!encrypted_content || !iv)) {
+    return res.status(400).json({ error: 'encrypted_content and iv must both be present' });
+  }
+
+  // Validate attachments list
+  if (attachments !== undefined) {
+    if (!Array.isArray(attachments) || attachments.length > 5) {
+      return res.status(400).json({ error: 'attachments must be an array of up to 5 URLs' });
+    }
   }
 
   try {
@@ -101,17 +121,20 @@ router.post('/', async (req, res) => {
     const messageId = generateTimeUUID();
     const now = new Date();
 
+    const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
+
     await scylla.execute(
       `INSERT INTO messages (
         conversation_id, message_id, sender_id, encrypted_content, iv,
-        key_version, message_type, reply_to, is_edited, is_deleted, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
+        key_version, message_type, reply_to, attachments, is_edited, is_deleted, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
       [
         cassandra.types.Uuid.fromString(conversationId),
         messageId,
         cassandra.types.Uuid.fromString(userId),
-        encrypted_content, iv, key_version || 1, message_type || 'text',
+        encrypted_content || null, iv || null, key_version || 1, message_type || 'text',
         reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null,
+        attachList,
         now,
       ],
       { prepare: true }
@@ -123,10 +146,12 @@ router.post('/', async (req, res) => {
       conversation_id: conversationId,
       message_id: messageId.toString(),
       sender_id: userId,
-      encrypted_content, iv,
+      encrypted_content: encrypted_content || null,
+      iv: iv || null,
       key_version: key_version || 1,
       message_type: message_type || 'text',
       reply_to: reply_to || null,
+      attachments: attachList || [],
       is_edited: false, is_deleted: false,
       created_at: now.toISOString(),
     };
@@ -175,6 +200,7 @@ router.get('/', async (req, res) => {
       key_version: row.key_version,
       message_type: row.message_type,
       reply_to: row.reply_to?.toString() || null,
+      attachments: row.is_deleted ? [] : (row.attachments || []),
       is_edited: row.is_edited,
       edited_at: row.edited_at?.toISOString() || null,
       is_deleted: row.is_deleted,
@@ -183,7 +209,7 @@ router.get('/', async (req, res) => {
 
     // Batch fetch reactions for ALL messages in one go
     const messageIds = messages.map((m) => m.message_id);
-    const reactions = await batchFetchReactions(conversationId, messageIds);
+    const reactions = await batchFetchReactions(conversationId, messageIds, userId);
 
     const messagesWithReactions = messages.map((m) => ({
       ...m,

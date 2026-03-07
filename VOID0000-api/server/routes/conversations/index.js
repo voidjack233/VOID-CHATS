@@ -8,6 +8,7 @@ import messagesRouter from './messages.js';
 import reactionsRouter from './reactions.js';
 import batchReactionsRouter from './batchReactions.js';
 import keysRouter from './keys.js';
+import attachmentsRouter from './attachments.js';
 
 const router = Router();
 
@@ -17,6 +18,7 @@ router.use('/:conversationId/members', authenticateUser, membersRouter);
 router.use('/:conversationId/messages', authenticateUser, messagesRouter);
 router.use('/:conversationId/messages/:messageId/reactions', authenticateUser, reactionsRouter);
 router.use('/:conversationId/reactions', authenticateUser, batchReactionsRouter);
+router.use('/:conversationId/attachments', authenticateUser, attachmentsRouter);
 router.use('/keys', authenticateUser, keysRouter);
 
 // GET /api/conversations — list user's conversations

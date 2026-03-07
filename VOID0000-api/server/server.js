@@ -75,6 +75,7 @@ import profileUpdateRouter from './routes/user/profileUpdate.js';
 import profileAvatarRouter from './routes/user/profileAvatar.js';
 import friendRouter from './routes/friends/index.js';
 import userSearchRouter from './routes/user/userSearch.js';
+import preferencesRouter from './routes/user/preferences.js';
 import { noCache } from './middleware/noCache.js';
 import conversationRouter from './routes/conversations/index.js';
 
@@ -166,7 +167,7 @@ app.use('/api/me', noCache, meRouter);
 app.use('/api/users/account', accountReadRouter);
 app.use('/api/users/sessions', sessionsRouter);
 app.use('/api/users/search', userSearchRouter);
-app.use('/api/users', authenticateUser, profileUpdateRouter, profileAvatarRouter);
+app.use('/api/users', authenticateUser, preferencesRouter, profileUpdateRouter, profileAvatarRouter);
 app.use('/api/users', profileReadRouter);
 app.use('/api/friends', friendRouter);
 app.use('/api/conversations', conversationRouter);
