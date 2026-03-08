@@ -6,6 +6,7 @@ export interface PendingAttachment {
   id: string;
   preview: string; // data URL for local preview
   url: string | null; // CDN URL after upload
+  blurhash?: string;
   uploading: boolean;
   error?: string;
 }
@@ -67,9 +68,9 @@ export const useMessageInput = ({
           prev.map((a) => (a.id === id ? { ...a, preview: data, uploading: true } : a))
         );
         try {
-          const [url] = await uploadAttachments(conversation.id, [{ data }]);
+          const { urls: [url], blurhashes: [blurhash] } = await uploadAttachments(conversation.id, [{ data }]);
           setAttachments((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, url: url ?? null, uploading: false } : a))
+            prev.map((a) => (a.id === id ? { ...a, url: url ?? null, blurhash: blurhash || undefined, uploading: false } : a))
           );
         } catch {
           setAttachments((prev) =>
@@ -142,7 +143,12 @@ export const useMessageInput = ({
     if (!canSend) return;
 
     const trimmed = text.trim();
-    const uploadedUrls = attachments.filter((a) => a.url).map((a) => a.url!);
+    const uploadedUrls = attachments
+      .filter((a) => a.url)
+      .map((a) => a.blurhash
+        ? JSON.stringify({ url: a.url!, blurhash: a.blurhash })
+        : a.url!
+      );
 
     setText('');
     setAttachments([]);

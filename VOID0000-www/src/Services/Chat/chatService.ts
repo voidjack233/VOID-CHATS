@@ -24,6 +24,24 @@ export interface Conversation {
   member_count: number;
 }
 
+export interface Attachment {
+  url: string;
+  blurhash?: string;
+}
+
+/** Parse a raw attachment string (plain URL or JSON `{url,blurhash}`) */
+export function parseAttachment(raw: string): Attachment {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.url === 'string') return parsed as Attachment;
+  } catch {}
+  return { url: raw };
+}
+
+export function parseAttachments(raws?: string[]): Attachment[] {
+  return (raws || []).map(parseAttachment);
+}
+
 export interface Message {
   conversation_id: string;
   message_id: string;
@@ -212,7 +230,7 @@ export async function sendImageOnlyMessage(
 export async function uploadAttachments(
   conversationId: string,
   files: Array<{ data: string }>
-): Promise<string[]> {
+): Promise<{ urls: string[]; blurhashes: string[] }> {
   const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/attachments`, {
     method: 'POST',
     body: JSON.stringify({ files }),
@@ -220,7 +238,10 @@ export async function uploadAttachments(
 
   const data = await res.json();
   if (!data.success) throw new Error(data.error || 'Upload failed');
-  return data.urls as string[];
+  return {
+    urls: data.urls as string[],
+    blurhashes: (data.blurhashes || data.urls.map(() => '')) as string[],
+  };
 }
 
 export async function getMessages(

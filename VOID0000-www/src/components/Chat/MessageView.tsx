@@ -7,7 +7,7 @@ import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
-import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
+import { Message, Conversation, ConversationMember, parseAttachments } from '../../Services/Chat/chatService';
 import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends, Friend } from '../../Services/hooks/Friends/useFriends';
 import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
@@ -16,6 +16,7 @@ import FriendProfile from '../common/Friends/FriendProfile';
 import UserProfile from '../common/Profile/userProfile';
 import EmojiPicker from './EmojiPicker';
 import ReactionBar from './ReactionBar';
+import BlurImage from '../common/BlurImage';
 import { MessageViewSkeleton } from '../common/Skeleton';
 
 const DENSITY: Record<Density, {
@@ -436,23 +437,32 @@ const MessageView = ({
               })()}
 
               {/* Attachments */}
-              {!msg.is_deleted && msg.attachments && msg.attachments.length > 0 && (
-                <div className={`mt-1 grid gap-1 ${
-                  msg.attachments.length === 1 ? 'grid-cols-1' :
-                  msg.attachments.length === 2 ? 'grid-cols-2' :
-                  'grid-cols-3'
-                } max-w-xs`}>
-                  {msg.attachments.map((url, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setImageViewer({ urls: msg.attachments!, index: i })}
-                      className="block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square"
-                    >
-                      <img src={url} alt="attachment" className="w-full h-full object-cover hover:opacity-90 transition-opacity" loading="lazy" />
-                    </button>
-                  ))}
-                </div>
-              )}
+              {!msg.is_deleted && msg.attachments && msg.attachments.length > 0 && (() => {
+                const parsed = parseAttachments(msg.attachments);
+                const rawUrls = parsed.map(a => a.url);
+                return (
+                  <div className={`mt-1 grid gap-1 ${
+                    parsed.length === 1 ? 'grid-cols-1' :
+                    parsed.length === 2 ? 'grid-cols-2' :
+                    'grid-cols-3'
+                  } max-w-xs`}>
+                    {parsed.map((attachment, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setImageViewer({ urls: rawUrls, index: i })}
+                        className="block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square"
+                      >
+                        <BlurImage
+                          src={attachment.url}
+                          blurhash={attachment.blurhash}
+                          alt="attachment"
+                          className="w-full h-full object-cover hover:opacity-90"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* Reactions */}
               {!msg.is_deleted && Object.keys(msgReactions).length > 0 && (
