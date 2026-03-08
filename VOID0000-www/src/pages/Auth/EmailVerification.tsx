@@ -113,12 +113,13 @@ export default function EmailVerification() {
     <AuthContainer>
       <div className="text-center">
         <h2 className="text-3xl font-bold text-white mb-4">Enter Verification Code</h2>
-        <p className="text-gray-400 mb-6">
+        <p className="text-gray-400 mb-6 text-sm sm:text-base">
           Enter the 6-digit code sent to your email
-          {userEmail && <span className="text-blue-400 block mt-1">{userEmail}</span>}
+          {userEmail && <span className="text-blue-400 block mt-1 break-all">{userEmail}</span>}
         </p>
 
-        <div className="flex justify-center gap-2 mb-6">
+        {/* RESPONSIVE FIX APPLIED HERE */}
+        <div className="flex justify-center gap-1.5 sm:gap-2 mb-6 max-w-[320px] mx-auto">
           {code.map((digit, index) => (
             <input
               key={index}
@@ -130,7 +131,7 @@ export default function EmailVerification() {
               ref={(el) => {
                 inputs.current[index] = el;
               }}
-              className="w-12 h-12 text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex-1 w-full max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading}
               aria-label={`Verification code digit ${index + 1}`}
             />
@@ -138,7 +139,7 @@ export default function EmailVerification() {
         </div>
 
         {error && (
-          <p className="text-red-500 mb-4" role="alert">{error}</p>
+          <p className="text-red-500 mb-4 text-sm sm:text-base" role="alert">{error}</p>
         )}
 
         <button
@@ -153,7 +154,7 @@ export default function EmailVerification() {
           <button
             onClick={handleResendCode}
             disabled={sendingCode || cooldown !== null}
-            className="hover:text-gray-200 disabled:opacity-50"
+            className="hover:text-gray-200 disabled:opacity-50 transition-colors"
           >
             {cooldown !== null
               ? `Resend in ${cooldown}s`
@@ -162,7 +163,7 @@ export default function EmailVerification() {
                 : 'Resend Code'}
           </button>
           <span className="text-gray-600">|</span>
-          <button onClick={goToLogin} className="hover:text-gray-200" disabled={loading}>
+          <button onClick={goToLogin} className="hover:text-gray-200 transition-colors" disabled={loading}>
             Back to Login
           </button>
         </div>
