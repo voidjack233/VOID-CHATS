@@ -6,6 +6,7 @@
 
 import { Router } from 'express';
 import sharp from 'sharp';
+import { encode } from 'blurhash';
 import { pool } from '../../db.js';
 import { minioClient } from '../../minio.js';
 
@@ -98,6 +99,7 @@ router.post('/', async (req, res) => {
   }
 
   const urls = [];
+  const blurhashes = [];
 
   for (const file of files) {
     const { data } = file;
@@ -160,13 +162,27 @@ router.post('/', async (req, res) => {
       );
 
       urls.push(`${CDN_BASE}/${ATTACH_BUCKET}/${filename}`);
+
+      // Generate blurhash from a small raw RGBA sample of the processed image
+      try {
+        const THUMB = 32;
+        const { data, info } = await sharp(processed)
+          .resize(THUMB, THUMB, { fit: 'inside' })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const hash = encode(new Uint8ClampedArray(data), info.width, info.height, 4, 4);
+        blurhashes.push(hash);
+      } catch {
+        blurhashes.push('');
+      }
     } catch (err) {
       console.error('Attachment upload error:', err);
       return res.status(500).json({ error: 'Failed to process image' });
     }
   }
 
-  res.json({ success: true, urls });
+  res.json({ success: true, urls, blurhashes });
 });
 
 export default router;
