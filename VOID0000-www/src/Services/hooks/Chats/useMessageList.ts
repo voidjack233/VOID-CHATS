@@ -4,7 +4,7 @@
 //   - Fetch in batches of FETCH_SIZE (50)
 //   - Keep at most CACHE_LIMIT (200) messages in memory
 //   - Bidirectional scroll: older (up) + newer (down)
-//   - Preserve scroll position when prepending older messages
+//   - Virtual list handles scroll position preservation
 //   - Track whether we're "at present" (viewing latest messages)
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -80,29 +80,10 @@ export const useMessageList = (
   const [replyCache, setReplyCache] = useState<Record<string, Message>>({});
   const fetchingReplies = useRef<Set<string>>(new Set());
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Track if user is near bottom for auto-scroll on new messages
-  const isNearBottomRef = useRef(true);
-
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
   }, [conversationId]);
-
-  // ============== Scroll Helpers ==============
-  // With column-reverse, scrollTop=0 is at the bottom (newest messages).
-  // Scrolling up toward older messages makes scrollTop go negative.
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    const el = containerRef.current;
-    if (!el) return;
-    if (behavior === 'instant') {
-      el.scrollTop = 0;
-    } else {
-      el.scrollTo({ top: 0, behavior });
-    }
-  }, []);
 
   // ============== Initial Load ==============
   useEffect(() => {
@@ -129,7 +110,6 @@ export const useMessageList = (
           setMessages(uiMessages);
           setHasOlder(cached.has_more);
           setLoading(false);
-          // column-reverse automatically shows bottom (newest) — no scrollToBottom needed
           onMessagesLoaded?.(uiMessages);
 
           setSyncing(true);
@@ -196,17 +176,14 @@ export const useMessageList = (
     messageSync.storeIncomingMessage(localMsg).catch(console.error);
 
     if (isAtPresent) {
-      // We're viewing latest — add message and auto-scroll
+      // We're viewing latest — add message (virtuoso followOutput handles auto-scroll)
       setMessages((prev) => {
         if (prev.some((m) => m.message_id === newMessage.message_id)) return prev;
         return trimMessages([newMessage, ...prev], 'old');
       });
-      if (isNearBottomRef.current) {
-        scrollToBottom();
-      }
     }
     // If not at present (user scrolled far up), don't inject — they'll see it on jump-to-present
-  }, [newMessage, isAtPresent, scrollToBottom]);
+  }, [newMessage, isAtPresent]);
 
   // ============== Handle Edits ==============
   useEffect(() => {
@@ -264,7 +241,6 @@ export const useMessageList = (
 
       const olderUI = result.messages.map(toUIMessage);
       if (olderUI.length > 0) {
-        // column-reverse naturally preserves scroll position when appending older messages
         setMessages((prev) => {
           const merged = [...prev, ...olderUI];
           const trimmed = trimMessages(merged, 'new');
@@ -345,7 +321,6 @@ export const useMessageList = (
     setLoadingNewer(true);
 
     try {
-      // Re-fetch latest batch from local (which includes any WS-delivered messages)
       const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
       const freshUI = fresh.messages.map(toUIMessage);
 
@@ -353,17 +328,13 @@ export const useMessageList = (
       setHasOlder(fresh.has_more);
       setHasNewer(false);
       setIsAtPresent(true);
-      // column-reverse resets to bottom when messages change
-      requestAnimationFrame(() => {
-        if (containerRef.current) containerRef.current.scrollTop = 0;
-      });
       onMessagesLoaded?.(freshUI);
     } catch (err) {
       console.error('Failed to jump to present:', err);
     } finally {
       setLoadingNewer(false);
     }
-  }, [encryptionKey, conversationId, scrollToBottom, onMessagesLoaded]);
+  }, [encryptionKey, conversationId, onMessagesLoaded]);
 
   // ============== Reply Parent Lookup ==============
   const getReplyParent = useCallback((replyToId: string): Message | null => {
@@ -422,29 +393,6 @@ export const useMessageList = (
     return () => { ignore = true; };
   }, [messages, replyCache, conversationId, encryptionKey]);
 
-  // ============== Scroll Handling ==============
-  // column-reverse: scrollTop=0 is at the bottom (newest), goes negative scrolling up
-  const handleScroll = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    // Near bottom = scrollTop close to 0
-    isNearBottomRef.current = Math.abs(el.scrollTop) < 150;
-
-    // Distance from visual top (oldest messages) in column-reverse
-    const distFromTop = el.scrollHeight + el.scrollTop - el.clientHeight;
-
-    // Scroll up → load older (near the visual top)
-    if (distFromTop < 200 && hasOlder && !loadingOlder) {
-      loadOlder();
-    }
-
-    // Scroll down → load newer (near the visual bottom, only if not at present)
-    if (!isAtPresent && Math.abs(el.scrollTop) < 200 && hasNewer && !loadingNewer) {
-      loadNewer();
-    }
-  }, [hasOlder, loadingOlder, hasNewer, loadingNewer, isAtPresent, loadOlder, loadNewer]);
-
   // ============== Delete (API + Local) ==============
   const handleDelete = async (messageId: string) => {
     try {
@@ -465,12 +413,10 @@ export const useMessageList = (
     hasOlder,
     hasNewer,
     isAtPresent,
-    bottomRef,
-    containerRef,
-    handleScroll,
     handleDelete,
     getReplyParent,
     jumpToPresent,
-    scrollToBottom,
+    loadOlder,
+    loadNewer,
   };
 };

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ErrorBoundary } from './components/Auth/ErrorBoundary';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
@@ -7,10 +8,10 @@ import { PresenceProvider } from './Services/hooks/Friends/usePresence';
 import { FriendsProvider } from './Services/hooks/Friends';
 import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTheme';
 
-// Import pages
-import Auth from './pages/Auth';
-import ResetPassword from './pages/Auth/ResetPassword';
-import Chat from './pages/chats';
+// Lazy-loaded pages
+const Auth = lazy(() => import('./pages/Auth'));
+const ResetPassword = lazy(() => import('./pages/Auth/ResetPassword'));
+const Chat = lazy(() => import('./pages/chats'));
 
 // Route configuration
 const ROUTE_CONFIG = {
@@ -36,22 +37,23 @@ export default function Router() {
         <FriendsProvider>
          <FriendProvider>
           <PresenceProvider>
+        <Suspense fallback={null}>
         <Routes>
           {/* Public routes */}
           {ROUTE_CONFIG.public.map(({ path, component: Component }) => (
             <Route key={path} path={path} element={<Component />} />
           ))}
-          
+
           {/* Protected routes */}
           {ROUTE_CONFIG.protected.map(({ path, component: Component }) => (
-            <Route 
-              key={path} 
-              path={path} 
+            <Route
+              key={path}
+              path={path}
               element={
                 <ProtectedRoute>
                   <Component />
                 </ProtectedRoute>
-              } 
+              }
             />
           ))}
 
@@ -59,6 +61,7 @@ export default function Router() {
           <Route path="/" element={<Navigate to="/chats" replace />} />
           <Route path="/home" element={<Navigate to="/chats" replace />} />
         </Routes>
+        </Suspense>
         </PresenceProvider>
         </FriendProvider>
        </FriendsProvider> 

@@ -42,6 +42,16 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+            'vendor-socket': ['socket.io-client'],
+            'vendor-ui': ['lucide-react', 'react-virtuoso'],
+            'vendor-misc': ['dompurify', 'uuid'],
+          },
+        },
+      },
     },
   }
 })
