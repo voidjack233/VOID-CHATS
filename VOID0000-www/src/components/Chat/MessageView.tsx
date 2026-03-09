@@ -45,8 +45,16 @@ const DENSITY: Record<Density, {
 const AVATAR_OFFSET = 'pl-10';
 const GROUP_TIME_WINDOW_MS = 5 * 60 * 1000;
 const BOTTOM_PIN_EPSILON_PX = 2;
-const TOP_PREFETCH_PX = 160;
 type ListScrollBehavior = 'auto' | 'smooth';
+
+const getTopPrefetchThreshold = (scroller: HTMLElement | null) => {
+  if (!scroller) {
+    return 240;
+  }
+
+  // Start loading older history before the top seam enters the visible area.
+  return Math.max(200, Math.min(480, Math.round(scroller.clientHeight * 0.35)));
+};
 
 const isSameDay = (a: string, b: string) => {
   const da = new Date(a);
@@ -262,7 +270,7 @@ const MessageView = ({
     if (!scroller || !canLoadOlderRef.current) {
       return;
     }
-    if (scroller.scrollTop > TOP_PREFETCH_PX) {
+    if (scroller.scrollTop > getTopPrefetchThreshold(scroller)) {
       return;
     }
     loadOlderWithAnchor();
@@ -308,7 +316,7 @@ const MessageView = ({
       return;
     }
 
-    if (scroller.scrollTop > TOP_PREFETCH_PX) {
+    if (scroller.scrollTop > getTopPrefetchThreshold(scroller)) {
       return;
     }
 
@@ -689,7 +697,6 @@ const MessageView = ({
         computeItemKey={(_index, msg) => msg.message_id}
         firstItemIndex={firstItemIndex}
         atBottomThreshold={12}
-        atTopThreshold={TOP_PREFETCH_PX}
         alignToBottom
         followOutput={(isAtBottom) => {
           if (loadingOlder) {
