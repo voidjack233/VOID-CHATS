@@ -10,7 +10,7 @@
 //   conversations_meta: { conversation_id, encryption_key_hash, last_opened_at }
 
 const DB_NAME = 'void_messages';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export interface LocalMessage {
   conversation_id: string;
@@ -55,7 +55,19 @@ class MessageStore {
             keyPath: ['conversation_id', 'message_id'],
           });
           msgStore.createIndex('by_conversation', 'conversation_id', { unique: false });
-          msgStore.createIndex('by_conv_time', ['conversation_id', 'message_id'], { unique: true });
+          msgStore.createIndex('by_conv_time', ['conversation_id', 'created_at', 'message_id'], { unique: true });
+        } else {
+          const tx = (event.target as IDBOpenDBRequest).transaction;
+          const msgStore = tx?.objectStore('messages');
+          if (msgStore) {
+            if (msgStore.indexNames.contains('by_conv_time')) {
+              msgStore.deleteIndex('by_conv_time');
+            }
+            msgStore.createIndex('by_conv_time', ['conversation_id', 'created_at', 'message_id'], { unique: true });
+            if (!msgStore.indexNames.contains('by_conversation')) {
+              msgStore.createIndex('by_conversation', 'conversation_id', { unique: false });
+            }
+          }
         }
 
         if (!db.objectStoreNames.contains('sync_cursors')) {
@@ -122,6 +134,10 @@ class MessageStore {
   ): Promise<{ messages: LocalMessage[]; has_more: boolean }> {
     const db = await this.getDb();
     const limit = options?.limit || 50;
+    const anchorId = options?.before || options?.after;
+    const anchorMessage = anchorId
+      ? await this.getMessage(conversationId, anchorId)
+      : null;
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction('messages', 'readonly');
@@ -131,9 +147,14 @@ class MessageStore {
       const messages: LocalMessage[] = [];
 
       if (options?.after) {
+        if (!anchorMessage) {
+          resolve({ messages: [], has_more: false });
+          return;
+        }
+
         // Fetch NEWER messages: ascending from after cursor
-        const lower = [conversationId, options.after];
-        const upper = [conversationId, '\uffff'];
+        const lower = [conversationId, anchorMessage.created_at, anchorMessage.message_id];
+        const upper = [conversationId, '\uffff', '\uffff'];
         const range = IDBKeyRange.bound(lower, upper, true, false);
         const cursorReq = index.openCursor(range, 'next');
 
@@ -150,11 +171,12 @@ class MessageStore {
         };
         cursorReq.onerror = () => reject(cursorReq.error);
       } else {
+        const upper = anchorMessage
+          ? [conversationId, anchorMessage.created_at, anchorMessage.message_id]
+          : [conversationId, '\uffff', '\uffff'];
+        const lower = [conversationId, '', ''];
+
         // Fetch OLDER messages (or latest): descending
-        const upper = options?.before
-          ? [conversationId, options.before]
-          : [conversationId, '\uffff'];
-        const lower = [conversationId, ''];
         const range = IDBKeyRange.bound(lower, upper, false, !!options?.before);
         const cursorReq = index.openCursor(range, 'prev');
 

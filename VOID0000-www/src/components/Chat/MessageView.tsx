@@ -1,6 +1,6 @@
 // src/components/Chat/MessageView.tsx
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -123,8 +123,10 @@ const MessageView = ({
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
 
   const groupedMessages = useGroupMessages(messages);
+  const latestMessage = messages[0] ?? null;
   const atBottomRef = useRef(true);
   const initialScrollDoneRef = useRef<string | null>(null);
+  const latestMessageIdRef = useRef<string | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
 
@@ -174,18 +176,31 @@ const MessageView = ({
   }, [conversation.id, groupedMessages.length, loading]);
 
   useEffect(() => {
-    if (!newMessage || groupedMessages.length === 0) return;
+    latestMessageIdRef.current = null;
+  }, [conversation.id]);
 
-    const shouldAutoScroll = atBottomRef.current || newMessage.sender_id === user?.id;
-    if (!shouldAutoScroll) return;
+  useLayoutEffect(() => {
+    if (!latestMessage) {
+      latestMessageIdRef.current = null;
+      return;
+    }
 
-    requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({
-        index: 'LAST',
-        behavior: 'auto',
-      });
+    const previousLatestId = latestMessageIdRef.current;
+    latestMessageIdRef.current = latestMessage.message_id;
+
+    if (!previousLatestId || previousLatestId === latestMessage.message_id) {
+      return;
+    }
+
+    if (!atBottomRef.current && latestMessage.sender_id !== user?.id) {
+      return;
+    }
+
+    virtuosoRef.current?.scrollToIndex({
+      index: 'LAST',
+      behavior: 'auto',
     });
-  }, [newMessage, groupedMessages.length, user?.id]);
+  }, [latestMessage, user?.id]);
 
   useEffect(() => {
     if (!newMessage) return;
@@ -526,8 +541,8 @@ const MessageView = ({
         ref={virtuosoRef}
         className="flex-1"
         data={groupedMessages}
-        alignToBottom
-        followOutput={(isAtBottom) => (isAtBottom ? 'auto' : false)}
+        atBottomThreshold={48}
+        followOutput={false}
         initialTopMostItemIndex={Math.max(0, groupedMessages.length - 1)}
         atBottomStateChange={(isAtBottom) => {
           atBottomRef.current = isAtBottom;
@@ -535,12 +550,7 @@ const MessageView = ({
           if (isAtBottom) {
             setHasUnseenMessages(false);
           }
-          if (isAtBottom && hasNewer) {
-            setIsAtPresent(false);
-            void loadNewer();
-            return;
-          }
-          setIsAtPresent(!hasNewer);
+          setIsAtPresent(isAtBottom && !hasNewer);
         }}
         startReached={handleStartReached}
         endReached={() => {
