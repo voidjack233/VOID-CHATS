@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
+import { Virtuoso, VirtuosoHandle, ListRange } from 'react-virtuoso';
 import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
@@ -138,24 +138,16 @@ const MessageView = ({
   const atBottomRef = useRef(true);
   const canLoadOlderRef = useRef(false);
   const lastOlderTriggerMessageIdRef = useRef<string | null>(null);
+  const lastRangeStartIndexRef = useRef<number | null>(null);
   const pendingStartReachedRef = useRef(false);
   const topLoadLockedRef = useRef(false);
   const scrollerRef = useRef<HTMLElement | null>(null);
-  const lastScrollTopRef = useRef(0);
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
-  const topRenderBufferPx = 200;
-  const bottomRenderBufferPx = 160;
-
-  const getTopLoadThreshold = useCallback((scroller: HTMLElement | null) => {
-    if (!scroller) {
-      return 72;
-    }
-
-    return Math.max(56, Math.min(120, Math.round(scroller.clientHeight * 0.12)));
-  }, []);
+  const topRenderBufferPx = 240;
+  const bottomRenderBufferPx = 200;
 
   const handleScrollerRef = useCallback((element: HTMLElement | null | Window) => {
     if (element instanceof HTMLElement) {
@@ -170,9 +162,9 @@ const MessageView = ({
   useLayoutEffect(() => {
     canLoadOlderRef.current = false;
     lastOlderTriggerMessageIdRef.current = null;
+    lastRangeStartIndexRef.current = null;
     pendingStartReachedRef.current = false;
     topLoadLockedRef.current = false;
-    lastScrollTopRef.current = 0;
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
   }, [conversation.id]);
@@ -230,41 +222,29 @@ const MessageView = ({
     triggerOlderLoad();
   }, [triggerOlderLoad]);
 
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
+  const handleRangeChanged = useCallback((range: ListRange) => {
+    const previousStartIndex = lastRangeStartIndexRef.current;
+    lastRangeStartIndexRef.current = range.startIndex;
 
-    const updatePinnedState = () => {
-      const currentScrollTop = scroller.scrollTop;
-      const movedUp = currentScrollTop < lastScrollTopRef.current - 1;
-      lastScrollTopRef.current = currentScrollTop;
-      const triggerThreshold = getTopLoadThreshold(scroller);
-      const releaseThreshold = Math.max(triggerThreshold + 64, Math.round(triggerThreshold * 2));
+    if (previousStartIndex !== null && range.startIndex < previousStartIndex) {
+      canLoadOlderRef.current = true;
+      keepPinnedOnOpenRef.current = false;
+    }
 
-      if (movedUp) {
-        canLoadOlderRef.current = true;
-        keepPinnedOnOpenRef.current = false;
-      }
+    const relativeStartIndex = range.startIndex - firstItemIndex;
 
-      if (currentScrollTop > releaseThreshold) {
-        topLoadLockedRef.current = false;
-      }
+    if (relativeStartIndex > 6) {
+      topLoadLockedRef.current = false;
+    }
 
-      if (
-        pendingStartReachedRef.current &&
-        canLoadOlderRef.current &&
-        currentScrollTop <= triggerThreshold
-      ) {
-        triggerOlderLoad();
-      }
-    };
-
-    updatePinnedState();
-    scroller.addEventListener('scroll', updatePinnedState, { passive: true });
-    return () => {
-      scroller.removeEventListener('scroll', updatePinnedState);
-    };
-  }, [conversation.id, getTopLoadThreshold, triggerOlderLoad]);
+    if (
+      pendingStartReachedRef.current &&
+      canLoadOlderRef.current &&
+      relativeStartIndex <= 1
+    ) {
+      triggerOlderLoad();
+    }
+  }, [firstItemIndex, triggerOlderLoad]);
 
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
@@ -367,7 +347,10 @@ const MessageView = ({
     const d = DENSITY[density];
     const isOwn = msg.sender_id === user?.id;
     const isRightAligned = isOwn && density === 'comfortable';
-    const showDateSeparator = !prev || !isSameDay(msg.created_at, prev.created_at);
+    const hasUnknownPreviousContext = listIndex === 0 && hasOlder;
+    const showDateSeparator =
+      (!prev && !hasUnknownPreviousContext) ||
+      (!!prev && !isSameDay(msg.created_at, prev.created_at));
     const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
     const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
     const startsGroup =
@@ -589,6 +572,7 @@ const MessageView = ({
         increaseViewportBy={{ top: topRenderBufferPx, bottom: bottomRenderBufferPx }}
         minOverscanItemCount={{ top: 8, bottom: 4 }}
         startReached={handleStartReached}
+        rangeChanged={handleRangeChanged}
         followOutput={(isAtBottom) => {
           if (loadingOlder) {
             return false;
