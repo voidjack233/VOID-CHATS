@@ -4,9 +4,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { deleteMessage, getMessageById, getMessages, Message } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
+import { MESSAGE_CACHE_LIMIT, MESSAGE_PAGE_SIZE } from '../../Chat/chatConstants';
 
-const FETCH_SIZE = 50;
-const CACHE_LIMIT = 500;
+const FETCH_SIZE = MESSAGE_PAGE_SIZE;
+const CACHE_LIMIT = MESSAGE_CACHE_LIMIT;
+const MESSAGE_LIST_BASE_INDEX = 100000;
 
 interface MessageUpdate {
   message_id: string;
@@ -42,6 +44,34 @@ function toUIMessage(local: LocalMessage): Message {
 const sortMessages = (msgs: Message[]) =>
   [...msgs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
+const sortLocalMessages = (msgs: LocalMessage[]) =>
+  [...msgs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
+  msgs.map((msg) => ({
+    conversation_id: msg.conversation_id,
+    message_id: msg.message_id,
+    sender_id: msg.sender_id,
+    content: msg.content ?? null,
+    message_type: msg.message_type,
+    reply_to: msg.reply_to,
+    is_edited: msg.is_edited,
+    edited_at: msg.edited_at,
+    is_deleted: msg.is_deleted,
+    created_at: msg.created_at,
+    reactions: (msg as any).reactions || {},
+    attachments: msg.attachments,
+  }));
+
+const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] =>
+  sortLocalMessages(
+    Array.from(
+      new Map(
+        pages.flat().map((msg) => [msg.message_id, msg])
+      ).values()
+    )
+  );
+
 // Deduplicate + keep messages newest-first before trimming
 const trimMessages = (msgs: Message[], trimFrom: 'old' | 'new'): Message[] => {
   const sorted = sortMessages(msgs);
@@ -70,14 +100,21 @@ export const useMessageList = (
   const [hasOlder, setHasOlder] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
   const [isAtPresent, setIsAtPresent] = useState(true);
+  const [firstItemIndex, setFirstItemIndex] = useState(MESSAGE_LIST_BASE_INDEX);
+  const [groupBreakBeforeIds, setGroupBreakBeforeIds] = useState<Set<string>>(new Set());
 
   const [replyCache, setReplyCache] = useState<Record<string, Message>>({});
   const fetchingReplies = useRef<Set<string>>(new Set());
+  const messagesRef = useRef<Message[]>([]);
 
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
   }, [conversationId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   // ============== Initial Load ==============
   useEffect(() => {
@@ -89,6 +126,8 @@ export const useMessageList = (
       setHasOlder(false);
       setHasNewer(false);
       setIsAtPresent(true);
+      setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
+      setGroupBreakBeforeIds(new Set());
       setLoading(true);
 
       try {
@@ -103,7 +142,8 @@ export const useMessageList = (
         if (cached.messages.length > 0) {
           const uiMessages = sortMessages(cached.messages.map(toUIMessage));
           setMessages(uiMessages);
-          setHasOlder(cached.has_more);
+          // If the cache is exactly one page, assume there may be older history until proven otherwise.
+          setHasOlder(cached.has_more || uiMessages.length >= FETCH_SIZE);
           setLoading(false);
           onMessagesLoaded?.(uiMessages);
 
@@ -111,6 +151,7 @@ export const useMessageList = (
           const syncResult = await syncPromise;
           if (ignore) return;
           setSyncing(false);
+          setHasOlder((prev) => prev || syncResult.hasMore);
 
           if (syncResult.newMessages.length > 0) {
             const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
@@ -121,7 +162,7 @@ export const useMessageList = (
               const extras = prev.filter((m) => !ids.has(m.message_id));
               return trimMessages([...freshUI, ...extras], 'old');
             });
-            setHasOlder(fresh.has_more);
+            setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= FETCH_SIZE);
             onMessagesLoaded?.(freshUI);
           }
         } else {
@@ -134,7 +175,7 @@ export const useMessageList = (
           if (ignore) return;
           const freshUI = fresh.messages.map(toUIMessage);
           setMessages(freshUI);
-          setHasOlder(fresh.has_more || syncResult.hasMore);
+          setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= FETCH_SIZE);
           setLoading(false);
           onMessagesLoaded?.(freshUI);
         }
@@ -229,6 +270,7 @@ export const useMessageList = (
     try {
       const oldest = messages[messages.length - 1];
       if (!oldest) return;
+      const seamBreakBeforeId = oldest.message_id;
 
       // Try local first
       let result = await messageSync.readLocal(conversationId, {
@@ -236,23 +278,26 @@ export const useMessageList = (
         limit: FETCH_SIZE,
       });
 
-      if (result.messages.length === 0) {
-        // Fallback to server
+      if (result.messages.length < FETCH_SIZE || !result.has_more) {
         const serverResult = await getMessages(conversationId, encryptionKey, {
           before: oldest.message_id,
           limit: FETCH_SIZE,
         });
-        const localMsgs: LocalMessage[] = serverResult.messages.map((msg) => ({
-          ...msg,
-          content: msg.content ?? null,
-          reactions: (msg as any).reactions || {},
-        }));
-        await messageStore.putMessages(localMsgs);
-        result = { messages: localMsgs, has_more: serverResult.has_more };
+        const localMsgs = toLocalMessages(serverResult.messages);
+        if (localMsgs.length > 0) {
+          await messageStore.putMessages(localMsgs);
+        }
+        result = {
+          messages: mergeLocalMessages(result.messages, localMsgs),
+          has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+        };
       }
 
       const olderUI = result.messages.map(toUIMessage);
       if (olderUI.length > 0) {
+        const existingIds = new Set(messagesRef.current.map((m) => m.message_id));
+        const prependedCount = olderUI.filter((m) => !existingIds.has(m.message_id)).length;
+
         setMessages((prev) => {
           // Merge and deduplicate to prevent any sync overlaps
           const merged = [...prev, ...olderUI];
@@ -269,8 +314,18 @@ export const useMessageList = (
           
           return trimmed;
         });
+        if (prependedCount > 0) {
+          setFirstItemIndex((prev) => prev - prependedCount);
+        }
         setHasOlder(result.has_more);
+        setGroupBreakBeforeIds((prev) => {
+          const next = new Set(prev);
+          next.add(seamBreakBeforeId);
+          return next;
+        });
         onMessagesLoaded?.(olderUI);
+      } else {
+        setHasOlder(false);
       }
     } catch (err) {
       console.error('Failed to load older messages:', err);
@@ -294,19 +349,19 @@ export const useMessageList = (
         limit: FETCH_SIZE,
       });
 
-      if (result.messages.length === 0) {
-        // Fallback to server
+      if (result.messages.length < FETCH_SIZE || !result.has_more) {
         const serverResult = await getMessages(conversationId, encryptionKey, {
           after: newest.message_id,
           limit: FETCH_SIZE,
         });
-        const localMsgs: LocalMessage[] = serverResult.messages.map((msg) => ({
-          ...msg,
-          content: msg.content ?? null,
-          reactions: (msg as any).reactions || {},
-        }));
-        await messageStore.putMessages(localMsgs);
-        result = { messages: localMsgs, has_more: serverResult.has_more };
+        const localMsgs = toLocalMessages(serverResult.messages);
+        if (localMsgs.length > 0) {
+          await messageStore.putMessages(localMsgs);
+        }
+        result = {
+          messages: mergeLocalMessages(result.messages, localMsgs),
+          has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+        };
       }
 
       const newerUI = result.messages.map(toUIMessage);
@@ -348,6 +403,8 @@ export const useMessageList = (
       const freshUI = fresh.messages.map(toUIMessage);
 
       setMessages(freshUI);
+      setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
+      setGroupBreakBeforeIds(new Set());
       setHasOlder(fresh.has_more);
       setHasNewer(false);
       setIsAtPresent(true);
@@ -436,6 +493,8 @@ export const useMessageList = (
     hasOlder,
     hasNewer,
     isAtPresent,
+    firstItemIndex,
+    groupBreakBeforeIds,
     setIsAtPresent,
     handleDelete,
     getReplyParent,

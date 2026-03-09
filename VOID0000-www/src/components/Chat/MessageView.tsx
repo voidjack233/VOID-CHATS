@@ -1,12 +1,11 @@
 // src/components/Chat/MessageView.tsx
 
-import { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
-import { useGroupMessages, MessageGroupData } from '../../Services/hooks/Chats/useGroupMessages';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
 import { Message, Conversation, ConversationMember, parseAttachments } from '../../Services/Chat/chatService';
 import { useUser } from '../../Services/Auth/UserContext';
@@ -28,15 +27,15 @@ const DENSITY: Record<Density, {
   timestampAlways: boolean;
 }> = {
   compact: {
-    groupGap: 'mt-3',
-    consecutiveGap: 'mt-0.5',
+    groupGap: 'pt-3',
+    consecutiveGap: 'pt-0.5',
     bubblePadding: 'px-3 py-1.5',
     maxWidth: 'max-w-[85%]',
     timestampAlways: false,
   },
   comfortable: {
-    groupGap: 'mt-5',
-    consecutiveGap: 'mt-1.5',
+    groupGap: 'pt-5',
+    consecutiveGap: 'pt-1.5',
     bubblePadding: 'px-4 py-2.5',
     maxWidth: 'max-w-[70%]',
     timestampAlways: true,
@@ -44,6 +43,20 @@ const DENSITY: Record<Density, {
 };
 
 const AVATAR_OFFSET = 'pl-10';
+const GROUP_TIME_WINDOW_MS = 5 * 60 * 1000;
+const BOTTOM_PIN_EPSILON_PX = 2;
+const TOP_PREFETCH_PX = 160;
+type ListScrollBehavior = 'auto' | 'smooth';
+
+const isSameDay = (a: string, b: string) => {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate()
+  );
+};
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -105,6 +118,8 @@ const MessageView = ({
     hasOlder,
     hasNewer,
     isAtPresent,
+    firstItemIndex,
+    groupBreakBeforeIds,
     setIsAtPresent,
     handleDelete,
     getReplyParent,
@@ -122,29 +137,59 @@ const MessageView = ({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
 
-  const groupedMessages = useGroupMessages(messages);
-  const latestMessage = messages[0] ?? null;
+  const visualMessages = useMemo(() => [...messages].reverse(), [messages]);
   const atBottomRef = useRef(true);
   const initialScrollDoneRef = useRef<string | null>(null);
-  const latestMessageIdRef = useRef<string | null>(null);
+  const canLoadOlderRef = useRef(false);
+  const lastOlderTriggerMessageIdRef = useRef<string | null>(null);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const preciseAtBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  const keepPinnedOnOpenRef = useRef(true);
+  const forceFollowOutputRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
 
+  const syncPinnedToBottom = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      preciseAtBottomRef.current = false;
+      return false;
+    }
+    const bottomGap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    preciseAtBottomRef.current = bottomGap <= BOTTOM_PIN_EPSILON_PX;
+    return preciseAtBottomRef.current;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ListScrollBehavior = 'auto') => {
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      scroller.scrollTo({
+        top: scroller.scrollHeight,
+        behavior,
+      });
+      return;
+    }
+
+    virtuosoRef.current?.scrollToIndex({
+      index: 'LAST',
+      align: 'end',
+      behavior,
+    });
+  }, []);
+
   const shouldScrollRef = useRef(false);
   useEffect(() => {
-    if (shouldScrollRef.current && groupedMessages.length > 0) {
+    if (shouldScrollRef.current && visualMessages.length > 0) {
       shouldScrollRef.current = false;
       requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({
-          index: 'LAST',
-          behavior: 'smooth'
-        });
+        scrollToBottom('smooth');
       });
     }
-  }, [groupedMessages]);
+  }, [scrollToBottom, visualMessages]);
 
   useEffect(() => {
-    if (loading || groupedMessages.length === 0) return;
+    if (loading || visualMessages.length === 0) return;
     if (initialScrollDoneRef.current === conversation.id) return;
 
     initialScrollDoneRef.current = conversation.id;
@@ -153,62 +198,44 @@ const MessageView = ({
     const maxAttempts = 10;
 
     const ensureBottom = () => {
-      if (cancelled || atBottomRef.current || attempts >= maxAttempts) return;
+      if (cancelled || attempts >= maxAttempts) return;
+      if (syncPinnedToBottom()) return;
       attempts += 1;
-      virtuosoRef.current?.scrollToIndex({
-        index: 'LAST',
-        behavior: 'auto',
-      });
+      scrollToBottom('auto');
       setTimeout(ensureBottom, 90);
     };
 
     requestAnimationFrame(() => {
-      virtuosoRef.current?.scrollToIndex({
-        index: 'LAST',
-        behavior: 'auto',
-      });
+      scrollToBottom('auto');
       setTimeout(ensureBottom, 90);
     });
 
     return () => {
       cancelled = true;
     };
-  }, [conversation.id, groupedMessages.length, loading]);
-
-  useEffect(() => {
-    latestMessageIdRef.current = null;
-  }, [conversation.id]);
+  }, [conversation.id, loading, scrollToBottom, syncPinnedToBottom, visualMessages.length]);
 
   useLayoutEffect(() => {
-    if (!latestMessage) {
-      latestMessageIdRef.current = null;
-      return;
-    }
-
-    const previousLatestId = latestMessageIdRef.current;
-    latestMessageIdRef.current = latestMessage.message_id;
-
-    if (!previousLatestId || previousLatestId === latestMessage.message_id) {
-      return;
-    }
-
-    if (!atBottomRef.current && latestMessage.sender_id !== user?.id) {
-      return;
-    }
-
-    virtuosoRef.current?.scrollToIndex({
-      index: 'LAST',
-      behavior: 'auto',
-    });
-  }, [latestMessage, user?.id]);
+    canLoadOlderRef.current = false;
+    lastOlderTriggerMessageIdRef.current = null;
+    lastScrollTopRef.current = 0;
+    keepPinnedOnOpenRef.current = true;
+    forceFollowOutputRef.current = false;
+  }, [conversation.id]);
 
   useEffect(() => {
     if (!newMessage) return;
-    if (newMessage.sender_id === user?.id) return;
-    if (!atBottomRef.current) {
+    if (String(newMessage.conversation_id || conversation.id) !== String(conversation.id)) {
+      return;
+    }
+    if (newMessage.sender_id === user?.id) {
+      forceFollowOutputRef.current = true;
+      return;
+    }
+    if (!preciseAtBottomRef.current) {
       setHasUnseenMessages(true);
     }
-  }, [newMessage, user?.id]);
+  }, [conversation.id, newMessage, user?.id]);
 
   const handleJumpToPresent = useCallback(async () => {
     shouldScrollRef.current = true;
@@ -216,11 +243,125 @@ const MessageView = ({
     setHasUnseenMessages(false);
   }, [jumpToPresent]);
 
-  const handleStartReached = useCallback(() => {
-    // Prevent mount-time "bounce up": only load older when user is actually away from bottom.
-    if (atBottomRef.current) return;
+  const loadOlderWithAnchor = useCallback(() => {
+    if (loadingOlder || !hasOlder) {
+      return;
+    }
+
+    const oldestVisibleMessageId = visualMessages[0]?.message_id ?? null;
+    if (oldestVisibleMessageId && lastOlderTriggerMessageIdRef.current === oldestVisibleMessageId) {
+      return;
+    }
+
+    lastOlderTriggerMessageIdRef.current = oldestVisibleMessageId;
     void loadOlder();
-  }, [loadOlder]);
+  }, [hasOlder, loadOlder, loadingOlder, visualMessages]);
+
+  const maybeLoadOlderNearTop = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !canLoadOlderRef.current) {
+      return;
+    }
+    if (scroller.scrollTop > TOP_PREFETCH_PX) {
+      return;
+    }
+    loadOlderWithAnchor();
+  }, [loadOlderWithAnchor]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+
+    const updatePinnedState = () => {
+      const currentScrollTop = scroller.scrollTop;
+      const movedUp = currentScrollTop < lastScrollTopRef.current - 1;
+      lastScrollTopRef.current = currentScrollTop;
+
+      if (movedUp) {
+        canLoadOlderRef.current = true;
+        keepPinnedOnOpenRef.current = false;
+      }
+
+      const pinned = syncPinnedToBottom();
+      if (pinned) {
+        setHasUnseenMessages(false);
+        forceFollowOutputRef.current = false;
+      }
+
+      maybeLoadOlderNearTop();
+    };
+
+    updatePinnedState();
+    scroller.addEventListener('scroll', updatePinnedState, { passive: true });
+    return () => {
+      scroller.removeEventListener('scroll', updatePinnedState);
+    };
+  }, [conversation.id, maybeLoadOlderNearTop, syncPinnedToBottom]);
+
+  useEffect(() => {
+    if (loadingOlder) {
+      return;
+    }
+
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      return;
+    }
+
+    if (scroller.scrollTop > TOP_PREFETCH_PX) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      maybeLoadOlderNearTop();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [firstItemIndex, loadingOlder, maybeLoadOlderNearTop, visualMessages.length]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const targets = [
+      scroller.firstElementChild,
+      scroller.firstElementChild?.firstElementChild ?? null,
+    ].filter((element): element is Element => element instanceof Element);
+
+    if (targets.length === 0) {
+      return;
+    }
+
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (loadingOlder) {
+        return;
+      }
+
+      if (
+        !forceFollowOutputRef.current &&
+        !keepPinnedOnOpenRef.current &&
+        !preciseAtBottomRef.current
+      ) {
+        return;
+      }
+
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        scrollToBottom('auto');
+        syncPinnedToBottom();
+      });
+    });
+
+    targets.forEach((target) => observer.observe(target));
+
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [conversation.id, loadingOlder, scrollToBottom, syncPinnedToBottom]);
 
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
@@ -317,233 +458,252 @@ const MessageView = ({
   };
 
   // ============== Virtuoso itemContent ==============
-  const renderGroup = (_index: number, group: MessageGroupData) => {
-    const isOwn = group.sender_id === user?.id;
+  const renderMessage = (index: number, msg: Message) => {
+    const listIndex = Math.max(0, index - firstItemIndex);
+    const prev = listIndex > 0 ? visualMessages[listIndex - 1] : null;
     const d = DENSITY[density];
+    const isOwn = msg.sender_id === user?.id;
     const isRightAligned = isOwn && density === 'comfortable';
-    const showAvatar = density === 'compact' ? true : !isOwn;
+    const showDateSeparator = !prev || !isSameDay(msg.created_at, prev.created_at);
+    const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
+    const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
+    const startsGroup =
+      !prev ||
+      hasPaginationBreak ||
+      !!msg.reply_to ||
+      prev.sender_id !== msg.sender_id ||
+      prev.message_type !== msg.message_type ||
+      showDateSeparator ||
+      timeDiff >= GROUP_TIME_WINDOW_MS;
+    const showAvatar = startsGroup && (density === 'compact' ? true : !isOwn);
     const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
+    const rowIndent = !isRightAligned && !showAvatar ? AVATAR_OFFSET : '';
+    const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
+    const msgReactions = getMessageReactions(msg.message_id);
 
     return (
-      <div className={`px-2 ${d.groupGap}`}>
-        {/* Date separator — above the group */}
-        {group.showDateSeparator && (
-          <div className="flex items-center gap-3 my-4">
+      <div className={`px-2 ${startsGroup ? d.groupGap : d.consecutiveGap}`}>
+        {showDateSeparator && (
+          <div className="flex items-center gap-3 py-4">
             <div className="flex-1 h-px bg-void-bg-hover" />
             <span className="text-xs text-void-text-muted font-medium shrink-0">
-              {getDateLabel(group.created_at)}
+              {getDateLabel(msg.created_at)}
             </span>
             <div className="flex-1 h-px bg-void-bg-hover" />
           </div>
         )}
 
-        {/* Header row: Shows ONCE per group */}
-        <div className={`flex items-center gap-2 text-xs mb-0.5 px-1 ${isRightAligned ? 'justify-end' : leftIndent}`}>
-          {isRightAligned ? (
-            <>
-              <span className="text-void-text-muted">{formatTime(group.created_at)}</span>
-              <span
-                className="font-semibold text-void-accent cursor-pointer hover:underline"
-                onClick={() => handleProfileClick(group.sender_id)}
-              >
-                {getSmartDisplayName(group.sender_id)}
-              </span>
-            </>
-          ) : (
-            <>
-              <span
-                className="font-semibold text-void-accent cursor-pointer hover:underline"
-                onClick={() => handleProfileClick(group.sender_id)}
-              >
-                {getSmartDisplayName(group.sender_id)}
-              </span>
-              <span className="text-void-text-muted">{formatTime(group.created_at)}</span>
-            </>
-          )}
-        </div>
+        {startsGroup && (
+          <div className={`flex items-center gap-2 text-xs pb-0.5 px-1 ${isRightAligned ? 'justify-end' : leftIndent}`}>
+            {isRightAligned ? (
+              <>
+                <span className="text-void-text-muted">{formatTime(msg.created_at)}</span>
+                <span
+                  className="font-semibold text-void-accent cursor-pointer hover:underline"
+                  onClick={() => handleProfileClick(msg.sender_id)}
+                >
+                  {getSmartDisplayName(msg.sender_id)}
+                </span>
+              </>
+            ) : (
+              <>
+                <span
+                  className="font-semibold text-void-accent cursor-pointer hover:underline"
+                  onClick={() => handleProfileClick(msg.sender_id)}
+                >
+                  {getSmartDisplayName(msg.sender_id)}
+                </span>
+                <span className="text-void-text-muted">{formatTime(msg.created_at)}</span>
+              </>
+            )}
+          </div>
+        )}
 
-        {/* Avatar + Messages Column */}
-        <div className={`flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
-          {/* Avatar: Shows ONCE per group */}
+        <div
+          onMouseEnter={() => setHoveredId(msg.message_id)}
+          onMouseLeave={() => setHoveredId(null)}
+          onContextMenu={(e) => handleContextMenu(e, msg)}
+          className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full group/msg ${rowIndent}`}
+        >
           {showAvatar && (
             <div
               className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity self-start"
-              onClick={() => handleProfileClick(group.sender_id)}
+              onClick={() => handleProfileClick(msg.sender_id)}
             >
-              <img src={getSenderAvatarUrl(group.sender_id)} alt="avatar" className="w-full h-full object-cover" />
+              <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
             </div>
           )}
 
-          {/* Messages Column Wrapper */}
-          <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0 w-full`}>
-            {group.messages.map((msg, msgIndex) => {
-              const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
-              const msgReactions = getMessageReactions(msg.message_id);
-
-              return (
-                <div
-                  key={msg.message_id}
-                  onMouseEnter={() => setHoveredId(msg.message_id)}
-                  onMouseLeave={() => setHoveredId(null)}
-                  onContextMenu={(e) => handleContextMenu(e, msg)}
-                  className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-center gap-2 max-w-full group/msg ${msgIndex > 0 ? d.consecutiveGap : ''}`}
-                >
-                  <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} min-w-0`}>
-                    
-                    {/* Reply preview */}
-                    {msg.reply_to && (
-                      <div className={`mb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
-                        <div className="inline-flex items-center gap-1.5 text-xs text-void-text-muted cursor-pointer hover:text-void-text transition-colors">
-                          <CornerUpRight className="w-3 h-3 flex-shrink-0" />
-                          {replyParent ? (
-                            <>
-                              <span className="font-semibold text-void-accent/70">{getSmartDisplayName(replyParent.sender_id)}</span>
-                              {(() => {
-                                const hasRealContent = replyParent.content && replyParent.content !== '[encrypted]' && replyParent.content !== '[deleted]';
-                                if (replyParent.is_deleted) return <span className="italic opacity-60">[deleted]</span>;
-                                if (!hasRealContent && replyParent.attachments?.length) {
-                                  return (
-                                    <span className="flex items-center gap-1.5">
-                                      <Image className="w-4 h-4 flex-shrink-0" />
-                                      <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
-                                        Click to see attachment
-                                      </span>
-                                    </span>
-                                  );
-                                }
-                                if (hasRealContent) {
-                                  return (
-                                    <span className="truncate max-w-[220px]">
-                                      {replyParent.content!.substring(0, 60) + (replyParent.content!.length > 60 ? '...' : '')}
-                                    </span>
-                                  );
-                                }
-                                return <span className="italic opacity-60">Message unavailable</span>;
-                              })()}
-                            </>
-                          ) : (
-                            <span className="italic">Loading reply...</span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Message bubble */}
-                    {msg.is_deleted ? (
-                      <div className={`${d.bubblePadding} rounded-2xl text-sm italic text-void-text-muted bg-void-bg-hover/50`}>
-                        [deleted]
-                      </div>
-                    ) : (() => {
-                      const hasRealContent = msg.content && msg.content !== '[encrypted]';
-                      if (!hasRealContent && msg.attachments?.length) return null;
-                      return (
-                        <div className={`${d.bubblePadding} rounded-2xl text-sm whitespace-pre-wrap break-words ${
-                          isRightAligned
-                            ? 'rounded-br-sm bg-void-accent text-white'
-                            : isOwn
-                              ? 'rounded-bl-sm bg-void-accent text-white'
-                              : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                        }`}>
-                          {hasRealContent ? msg.content : <span className="italic opacity-50 text-xs">encrypted</span>}
-                          {msg.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
-                        </div>
-                      );
-                    })()}
-
-                    {/* Attachments */}
-                    {!msg.is_deleted && msg.attachments && msg.attachments.length > 0 && (() => {
-                      const parsed = parseAttachments(msg.attachments);
-                      const rawUrls = parsed.map(a => a.url);
-                      return (
-                        <div className={`mt-1 grid gap-1 ${
-                          parsed.length === 1 ? 'grid-cols-1' :
-                          parsed.length === 2 ? 'grid-cols-2' :
-                          'grid-cols-3'
-                        } max-w-xs`}>
-                          {parsed.map((attachment, i) => (
-                            <button
-                              key={i}
-                              onClick={() => setImageViewer({ urls: rawUrls, index: i })}
-                              className="block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square"
-                            >
-                              <BlurImage
-                                src={attachment.url}
-                                blurhash={attachment.blurhash}
-                                alt="attachment"
-                                className="w-full h-full object-cover hover:opacity-90"
-                              />
-                            </button>
-                          ))}
-                        </div>
-                      );
-                    })()}
-
-                    {/* Reactions */}
-                    {!msg.is_deleted && Object.keys(msgReactions).length > 0 && (
-                      <div className="mt-1">
-                        <ReactionBar
-                          reactions={msgReactions}
-                          currentUserId={user?.id || ''}
-                          onToggle={(emoji) => handleToggleReaction(msg.message_id, emoji)}
-                          onAddReaction={() => {
-                            const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
-                            if (el) {
-                              const rect = el.getBoundingClientRect();
-                              setEmojiPickerTarget({
-                                messageId: msg.message_id,
-                                position: { x: rect.left, y: rect.bottom + 8 },
-                              });
-                            }
-                          }}
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Hover action bar (Tied to the specific message!) */}
-                  {hoveredId === msg.message_id && !msg.is_deleted && (
-                    <div
-                      data-msg-id={msg.message_id}
-                      className="flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 opacity-0 group-hover/msg:opacity-100 transition-opacity"
-                    >
-                      <button onClick={(e) => openEmojiPicker(msg.message_id, e)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text" title="React">
-                        <Smile className="w-3.5 h-3.5" />
-                      </button>
-                      {onReply && (
-                        <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
-                          <Reply className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      {isOwn && onEdit && (
-                        <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      {isOwn && (
-                        <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
+          <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}>
+            {msg.reply_to && (
+              <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
+                <div className="inline-flex items-center gap-1.5 text-xs text-void-text-muted cursor-pointer hover:text-void-text transition-colors">
+                  <CornerUpRight className="w-3 h-3 flex-shrink-0" />
+                  {replyParent ? (
+                    <>
+                      <span className="font-semibold text-void-accent/70">{getSmartDisplayName(replyParent.sender_id)}</span>
+                      {(() => {
+                        const hasRealContent = replyParent.content && replyParent.content !== '[encrypted]' && replyParent.content !== '[deleted]';
+                        if (replyParent.is_deleted) return <span className="italic opacity-60">[deleted]</span>;
+                        if (!hasRealContent && replyParent.attachments?.length) {
+                          return (
+                            <span className="flex items-center gap-1.5">
+                              <Image className="w-4 h-4 flex-shrink-0" />
+                              <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
+                                Click to see attachment
+                              </span>
+                            </span>
+                          );
+                        }
+                        if (hasRealContent) {
+                          return (
+                            <span className="truncate max-w-[220px]">
+                              {replyParent.content!.substring(0, 60) + (replyParent.content!.length > 60 ? '...' : '')}
+                            </span>
+                          );
+                        }
+                        return <span className="italic opacity-60">Message unavailable</span>;
+                      })()}
+                    </>
+                  ) : (
+                    <span className="italic">Loading reply...</span>
                   )}
                 </div>
+              </div>
+            )}
+
+            {msg.is_deleted ? (
+              <div className={`${d.bubblePadding} rounded-2xl text-sm italic text-void-text-muted bg-void-bg-hover/50`}>
+                [deleted]
+              </div>
+            ) : (() => {
+              const hasRealContent = msg.content && msg.content !== '[encrypted]';
+              if (!hasRealContent && msg.attachments?.length) return null;
+              return (
+                <div className={`${d.bubblePadding} rounded-2xl text-sm whitespace-pre-wrap break-words ${
+                  isRightAligned
+                    ? 'rounded-br-sm bg-void-accent text-white'
+                    : isOwn
+                      ? 'rounded-bl-sm bg-void-accent text-white'
+                      : 'rounded-bl-sm bg-void-bg-hover text-void-text'
+                }`}>
+                  {hasRealContent ? msg.content : <span className="italic opacity-50 text-xs">encrypted</span>}
+                  {msg.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
+                </div>
               );
-            })}
+            })()}
+
+            {!msg.is_deleted && msg.attachments && msg.attachments.length > 0 && (() => {
+              const parsed = parseAttachments(msg.attachments);
+              const rawUrls = parsed.map(a => a.url);
+              return (
+                <div className={`pt-1 grid gap-1 ${
+                  parsed.length === 1 ? 'grid-cols-1' :
+                  parsed.length === 2 ? 'grid-cols-2' :
+                  'grid-cols-3'
+                } max-w-xs`}>
+                  {parsed.map((attachment, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setImageViewer({ urls: rawUrls, index: i })}
+                      className="block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square"
+                    >
+                      <BlurImage
+                        src={attachment.url}
+                        blurhash={attachment.blurhash}
+                        alt="attachment"
+                        className="w-full h-full object-cover hover:opacity-90"
+                      />
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {!msg.is_deleted && Object.keys(msgReactions).length > 0 && (
+              <div className="pt-1">
+                <ReactionBar
+                  reactions={msgReactions}
+                  currentUserId={user?.id || ''}
+                  onToggle={(emoji) => handleToggleReaction(msg.message_id, emoji)}
+                  onAddReaction={() => {
+                    const el = document.querySelector(`[data-msg-id="${msg.message_id}"]`);
+                    if (el) {
+                      const rect = el.getBoundingClientRect();
+                      setEmojiPickerTarget({
+                        messageId: msg.message_id,
+                        position: { x: rect.left, y: rect.bottom + 8 },
+                      });
+                    }
+                  }}
+                />
+              </div>
+            )}
           </div>
+
+          {hoveredId === msg.message_id && !msg.is_deleted && (
+            <div
+              data-msg-id={msg.message_id}
+              className="flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 opacity-0 group-hover/msg:opacity-100 transition-opacity"
+            >
+              <button onClick={(e) => openEmojiPicker(msg.message_id, e)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text" title="React">
+                <Smile className="w-3.5 h-3.5" />
+              </button>
+              {onReply && (
+                <button onClick={() => onReply(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
+                  <Reply className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {isOwn && onEdit && (
+                <button onClick={() => onEdit(msg)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {isOwn && (
+                <button onClick={() => handleDelete(msg.message_id)} className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
   };
 
   return (
-    <div className="flex-1 flex flex-col relative">
+    <div className="flex-1 min-h-0 flex flex-col relative">
       <Virtuoso
+        key={conversation.id}
         ref={virtuosoRef}
-        className="flex-1"
-        data={groupedMessages}
-        atBottomThreshold={48}
-        followOutput={false}
-        initialTopMostItemIndex={Math.max(0, groupedMessages.length - 1)}
+        scrollerRef={(element) => {
+          if (element instanceof HTMLElement) {
+            element.style.overflowAnchor = 'none';
+            scrollerRef.current = element;
+            return;
+          }
+          scrollerRef.current = null;
+        }}
+        className="flex-1 min-h-0"
+        data={visualMessages}
+        computeItemKey={(_index, msg) => msg.message_id}
+        firstItemIndex={firstItemIndex}
+        atBottomThreshold={12}
+        atTopThreshold={TOP_PREFETCH_PX}
+        alignToBottom
+        followOutput={(isAtBottom) => {
+          if (loadingOlder) {
+            return false;
+          }
+          if (forceFollowOutputRef.current) {
+            return 'auto';
+          }
+          if (keepPinnedOnOpenRef.current || preciseAtBottomRef.current || isAtBottom) {
+            return 'auto';
+          }
+          return false;
+        }}
+        initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
         atBottomStateChange={(isAtBottom) => {
           atBottomRef.current = isAtBottom;
           setIsAtBottom(isAtBottom);
@@ -552,21 +712,27 @@ const MessageView = ({
           }
           setIsAtPresent(isAtBottom && !hasNewer);
         }}
-        startReached={handleStartReached}
         endReached={() => {
           if (!isAtPresent && hasNewer) loadNewer();
         }}
         overscan={150}
-        itemContent={renderGroup}
+        itemContent={renderMessage}
         components={{
           Header: () => (
-            <div className="p-4">
-              {!hasOlder && groupedMessages.length > 0 && (
-                <div className="mt-4 mb-6">
-                  <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center mb-4">
-                    {getConversationIcon()}
+            <div className="relative p-4">
+              {loadingOlder && (
+                <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2">
+                  <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
+              {!hasOlder && visualMessages.length > 0 && (
+                <div className="pt-4 pb-6">
+                  <div className="pb-4">
+                    <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center">
+                      {getConversationIcon()}
+                    </div>
                   </div>
-                  <h1 className="text-2xl font-bold mb-1 text-void-text">
+                  <h1 className="text-2xl font-bold pb-1 text-void-text">
                     {conversation.type === 'dm'
                       ? conversation.dm_display_name || conversation.dm_username
                       : conversation.name}
@@ -576,21 +742,16 @@ const MessageView = ({
                   </p>
                 </div>
               )}
-              {loadingOlder && (
-                <div className="flex justify-center py-2">
-                  <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
-                </div>
-              )}
             </div>
           ),
           Footer: () => (
-            <div className="pt-2 pb-3">
-              {loadingNewer && (
+            loadingNewer ? (
+              <div className="py-2">
                 <div className="flex justify-center py-2">
                   <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
                 </div>
-              )}
-            </div>
+              </div>
+            ) : null
           ),
           EmptyPlaceholder: () => (
             <p className="text-center text-void-text-muted text-sm py-8">

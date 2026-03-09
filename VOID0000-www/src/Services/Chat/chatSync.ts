@@ -8,6 +8,7 @@
 
 import { messageStore, LocalMessage } from './chatStore';
 import { getMessages } from './chatService';
+import { MESSAGE_PAGE_SIZE } from './chatConstants';
 
 interface SyncResult {
   newMessages: LocalMessage[];
@@ -74,8 +75,10 @@ class MessageSync {
     try {
       const { messages: serverMsgs, has_more } = await getMessages(
         conversationId,
-        encryptionKey
+        encryptionKey,
+        { limit: MESSAGE_PAGE_SIZE }
       );
+      const hasMore = has_more || serverMsgs.length >= MESSAGE_PAGE_SIZE;
 
       // FIX: Always update the sync cursor so the 60-second timer resets, 
       // even if the server says there are zero new messages.
@@ -87,7 +90,7 @@ class MessageSync {
       await messageStore.setSyncCursor(conversationId, newestId);
 
       if (serverMsgs.length === 0) {
-        return { newMessages: [], hasMore: has_more };
+        return { newMessages: [], hasMore };
       }
 
       const localMsgs: LocalMessage[] = serverMsgs.map((msg) => ({
@@ -110,7 +113,7 @@ class MessageSync {
       const cachedIds = new Set(cached.messages.map((m) => m.message_id));
       const newMessages = localMsgs.filter((m) => !cachedIds.has(m.message_id));
 
-      return { newMessages, hasMore: has_more };
+      return { newMessages, hasMore };
     } catch (err) {
       console.error('Background sync failed:', err);
       return { newMessages: [], hasMore: false };

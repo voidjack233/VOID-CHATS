@@ -22,7 +22,7 @@ const isSameDay = (a: string, b: string) => {
   );
 };
 
-export const useGroupMessages = (messages: Message[]) => {
+export const useGroupMessages = (messages: Message[], breakBeforeIds?: ReadonlySet<string>) => {
   return useMemo(() => {
     const oldestFirst = [...messages].reverse();
     const groups: MessageGroupData[] = [];
@@ -32,9 +32,11 @@ export const useGroupMessages = (messages: Message[]) => {
       const prev = index > 0 ? oldestFirst[index - 1] : null;
       const showDateSeparator = !prev || !isSameDay(msg.created_at, prev.created_at);
       const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
+      const hasPaginationBreak = breakBeforeIds?.has(msg.message_id) ?? false;
 
       const isConsecutive =
         !!prev &&
+        !hasPaginationBreak &&
         !msg.reply_to &&
         prev.sender_id === msg.sender_id &&
         prev.message_type === msg.message_type &&
@@ -57,5 +59,5 @@ export const useGroupMessages = (messages: Message[]) => {
     });
 
     return groups;
-  }, [messages]);
+  }, [messages, breakBeforeIds]);
 };

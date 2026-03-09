@@ -9,6 +9,8 @@
 //   sync_cursors: { conversation_id, last_message_id, last_synced_at }
 //   conversations_meta: { conversation_id, encryption_key_hash, last_opened_at }
 
+import { MESSAGE_PAGE_SIZE } from './chatConstants';
+
 const DB_NAME = 'void_messages';
 const DB_VERSION = 3;
 
@@ -133,7 +135,7 @@ class MessageStore {
     options?: { before?: string; after?: string; limit?: number }
   ): Promise<{ messages: LocalMessage[]; has_more: boolean }> {
     const db = await this.getDb();
-    const limit = options?.limit || 50;
+    const limit = options?.limit || MESSAGE_PAGE_SIZE;
     const anchorId = options?.before || options?.after;
     const anchorMessage = anchorId
       ? await this.getMessage(conversationId, anchorId)

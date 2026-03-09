@@ -255,7 +255,7 @@ export async function getMessages(
   if (options?.limit) params.set('limit', options.limit.toString());
 
   const url = `${API_PREFIX}/${conversationId}/messages${params.toString() ? '?' + params.toString() : ''}`;
-  const res = await fetchWithAuth(url);
+  const res = await fetchWithAuth(url, { cache: 'no-store' });
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
 
