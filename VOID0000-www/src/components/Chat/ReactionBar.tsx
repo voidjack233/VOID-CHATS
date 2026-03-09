@@ -16,7 +16,7 @@ const ReactionBar = ({ reactions, currentUserId, onToggle, onAddReaction }: Reac
   if (emojiEntries.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-1 mt-1">
+    <div className="flex flex-wrap items-center gap-1">
       {emojiEntries.map(([emoji, reactionData]) => {
         let hasReacted = false;
         let count = 0;

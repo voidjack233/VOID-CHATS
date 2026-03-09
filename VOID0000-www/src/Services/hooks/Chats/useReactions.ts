@@ -17,6 +17,26 @@ interface ReactionEvent {
   action: 'add' | 'remove';
 }
 
+const normalizeReactionMap = (rawReactions: any, currentUserId?: string): ReactionMap => {
+  if (!rawReactions || typeof rawReactions !== 'object') {
+    return {};
+  }
+
+  const normalized: ReactionMap = {};
+  for (const [emoji, data] of Object.entries(rawReactions)) {
+    if (Array.isArray(data)) {
+      normalized[emoji] = {
+        count: data.length,
+        me: currentUserId ? data.includes(currentUserId) : false,
+      };
+    } else if (data && typeof data === 'object') {
+      normalized[emoji] = data as ReactionData;
+    }
+  }
+
+  return normalized;
+};
+
 export const useReactions = (
   conversationId: string,
   gateway: any,
@@ -87,22 +107,9 @@ export const useReactions = (
     (messages: Array<{ message_id: string; reactions?: any }>) => {
       const reactionsMap: Record<string, ReactionMap> = {};
       for (const msg of messages) {
-        if (msg.reactions && Object.keys(msg.reactions).length > 0) {
-          const normalized: ReactionMap = {};
-          for (const [emoji, data] of Object.entries(msg.reactions)) {
-            if (Array.isArray(data)) {
-              // Legacy format: array of user IDs
-              normalized[emoji] = {
-                count: data.length,
-                me: currentUserId ? data.includes(currentUserId) : false,
-              };
-            } else if (data && typeof data === 'object') {
-              normalized[emoji] = data as ReactionData;
-            }
-          }
-          if (Object.keys(normalized).length > 0) {
-            reactionsMap[msg.message_id] = normalized;
-          }
+        const normalized = normalizeReactionMap(msg.reactions, currentUserId);
+        if (Object.keys(normalized).length > 0) {
+          reactionsMap[msg.message_id] = normalized;
         }
       }
       setReactions((prev) => ({ ...prev, ...reactionsMap }));
@@ -141,10 +148,14 @@ export const useReactions = (
   );
 
   const getMessageReactions = useCallback(
-    (messageId: string): ReactionMap => {
-      return reactions[messageId] || {};
+    (messageId: string, fallbackReactions?: any): ReactionMap => {
+      const hydrated = reactions[messageId];
+      if (hydrated) {
+        return hydrated;
+      }
+      return normalizeReactionMap(fallbackReactions, currentUserId);
     },
-    [reactions]
+    [currentUserId, reactions]
   );
 
   return {

@@ -2,8 +2,8 @@
 
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Virtuoso, VirtuosoHandle, ListRange } from 'react-virtuoso';
-import { Hash, MessageCircle, Users, Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Virtuoso, VirtuosoHandle, ListRange, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
+import { Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -17,7 +17,7 @@ import UserProfile from '../common/Profile/userProfile';
 import EmojiPicker from './EmojiPicker';
 import ReactionBar from './ReactionBar';
 import BlurImage from '../common/BlurImage';
-import { MessageViewSkeleton } from '../common/Skeleton';
+import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
 
 const DENSITY: Record<Density, {
   groupGap: string;
@@ -134,20 +134,25 @@ const MessageView = ({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
 
-  const visualMessages = useMemo(() => [...messages].reverse(), [messages]);
+  const visualMessages = useMemo(() => messages, [messages]);
   const atBottomRef = useRef(true);
   const canLoadOlderRef = useRef(false);
   const lastOlderTriggerMessageIdRef = useRef<string | null>(null);
   const lastRangeStartIndexRef = useRef<number | null>(null);
   const pendingStartReachedRef = useRef(false);
   const topLoadLockedRef = useRef(false);
+  const scrollSeekActiveRef = useRef(false);
+  const layoutCacheRef = useRef<Record<string, { startsGroup: boolean; showDateSeparator: boolean }>>({});
   const scrollerRef = useRef<HTMLElement | null>(null);
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [isNearTop, setIsNearTop] = useState(false);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
+  const [scrollSeekExitTick, setScrollSeekExitTick] = useState(0);
   const topRenderBufferPx = 240;
   const bottomRenderBufferPx = 200;
+  const scrollOverscanPx = 240;
 
   const handleScrollerRef = useCallback((element: HTMLElement | null | Window) => {
     if (element instanceof HTMLElement) {
@@ -165,8 +170,11 @@ const MessageView = ({
     lastRangeStartIndexRef.current = null;
     pendingStartReachedRef.current = false;
     topLoadLockedRef.current = false;
+    scrollSeekActiveRef.current = false;
+    layoutCacheRef.current = {};
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
+    setIsNearTop(false);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -214,7 +222,7 @@ const MessageView = ({
   }, [hasOlder, loadOlder, loadingOlder, visualMessages]);
 
   const handleStartReached = useCallback(() => {
-    if (!canLoadOlderRef.current) {
+    if (!canLoadOlderRef.current || scrollSeekActiveRef.current) {
       pendingStartReachedRef.current = true;
       return;
     }
@@ -232,6 +240,7 @@ const MessageView = ({
     }
 
     const relativeStartIndex = range.startIndex - firstItemIndex;
+    setIsNearTop(relativeStartIndex <= 1);
 
     if (relativeStartIndex > 6) {
       topLoadLockedRef.current = false;
@@ -240,11 +249,95 @@ const MessageView = ({
     if (
       pendingStartReachedRef.current &&
       canLoadOlderRef.current &&
+      !scrollSeekActiveRef.current &&
       relativeStartIndex <= 1
     ) {
       triggerOlderLoad();
     }
   }, [firstItemIndex, triggerOlderLoad]);
+
+  const scrollSeekConfiguration = useMemo(() => ({
+    enter: (velocity: number) => {
+      const shouldEnter = Math.abs(velocity) > 1400;
+      if (shouldEnter) {
+        scrollSeekActiveRef.current = true;
+      }
+      return shouldEnter;
+    },
+    exit: (velocity: number) => {
+      const shouldExit = Math.abs(velocity) < 120;
+      if (shouldExit && scrollSeekActiveRef.current) {
+        scrollSeekActiveRef.current = false;
+        setScrollSeekExitTick((prev) => prev + 1);
+      }
+      return shouldExit;
+    },
+  }), []);
+
+  useEffect(() => {
+    const relativeStartIndex =
+      lastRangeStartIndexRef.current === null
+        ? null
+        : lastRangeStartIndexRef.current - firstItemIndex;
+
+    if (
+      !scrollSeekActiveRef.current &&
+      pendingStartReachedRef.current &&
+      canLoadOlderRef.current &&
+      relativeStartIndex !== null &&
+      relativeStartIndex <= 1
+    ) {
+      triggerOlderLoad();
+    }
+  }, [firstItemIndex, scrollSeekExitTick, triggerOlderLoad]);
+
+  const renderScrollSeekPlaceholder = useCallback(({ height, index }: ScrollSeekPlaceholderProps) => {
+    const isRightAligned = density === 'comfortable' && index % 4 === 1;
+    const showAvatar = !isRightAligned && index % 3 !== 0;
+    const bubbleWidths =
+      density === 'comfortable'
+        ? ['w-36', 'w-44', 'w-56', 'w-40']
+        : ['w-32', 'w-40', 'w-52', 'w-36'];
+    const bubbleWidth = bubbleWidths[index % bubbleWidths.length];
+
+    return (
+      <div style={{ height }} className="px-2 overflow-hidden">
+        <div className={`flex h-full items-center ${isRightAligned ? 'justify-end' : 'justify-start'}`}>
+          <div className={`flex items-center gap-2 ${isRightAligned ? 'flex-row-reverse max-w-[70%]' : 'max-w-[85%]'}`}>
+            {showAvatar ? (
+              <Skeleton className="w-8 h-8" rounded="full" />
+            ) : (
+              !isRightAligned && <div className="w-8 shrink-0" />
+            )}
+            <div className={`flex flex-col gap-1 ${isRightAligned ? 'items-end' : 'items-start'}`}>
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className={`h-8 ${bubbleWidth}`} rounded="2xl" />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }, [density]);
+
+  const renderPaginationSkeleton = useCallback((position: 'top' | 'bottom') => {
+    const isBottom = position === 'bottom';
+
+    return (
+      <div className={`pointer-events-none absolute inset-x-0 z-[5] px-4 ${isBottom ? 'bottom-3' : 'top-3'}`}>
+        <div className={`flex ${isBottom ? 'justify-end' : 'justify-start'} opacity-95`}>
+          <div className="rounded-2xl bg-void-bg-main/70 p-3 backdrop-blur-sm">
+            <div className={`flex items-start gap-2 ${isBottom ? 'flex-row-reverse' : 'flex-row'}`}>
+              {!isBottom && <Skeleton className="w-8 h-8" rounded="full" />}
+              <div className={`flex flex-col gap-2 ${isBottom ? 'items-end' : 'items-start'}`}>
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className={`h-8 ${isBottom ? 'w-36' : 'w-44'}`} rounded="2xl" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }, []);
 
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
@@ -312,14 +405,6 @@ const MessageView = ({
     [emojiPickerTarget, user?.id, handleToggleReaction]
   );
 
-  const getConversationIcon = () => {
-    switch (conversation.type) {
-      case 'dm': return <MessageCircle className="w-10 h-10 text-void-text" />;
-      case 'group': return <Users className="w-10 h-10 text-void-text" />;
-      default: return <Hash className="w-10 h-10 text-void-text" />;
-    }
-  };
-
   if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
 
   if (encryptionError) return (
@@ -343,29 +428,41 @@ const MessageView = ({
   // ============== Virtuoso itemContent ==============
   const renderMessage = (index: number, msg: Message) => {
     const listIndex = Math.max(0, index - firstItemIndex);
-    const prev = listIndex > 0 ? visualMessages[listIndex - 1] : null;
     const d = DENSITY[density];
     const isOwn = msg.sender_id === user?.id;
     const isRightAligned = isOwn && density === 'comfortable';
-    const hasUnknownPreviousContext = listIndex === 0 && hasOlder;
-    const showDateSeparator =
-      (!prev && !hasUnknownPreviousContext) ||
-      (!!prev && !isSameDay(msg.created_at, prev.created_at));
-    const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
-    const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
-    const startsGroup =
-      !prev ||
-      hasPaginationBreak ||
-      !!msg.reply_to ||
-      prev.sender_id !== msg.sender_id ||
-      prev.message_type !== msg.message_type ||
-      showDateSeparator ||
-      timeDiff >= GROUP_TIME_WINDOW_MS;
+    let traits = layoutCacheRef.current[msg.message_id];
+
+    if (!traits) {
+      const prev = listIndex > 0 ? visualMessages[listIndex - 1] : null;
+      const hasUnknownPreviousContext = listIndex === 0 && hasOlder;
+      const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
+      const showDateSeparator =
+        (!prev && !hasUnknownPreviousContext) ||
+        (!!prev && !isSameDay(msg.created_at, prev.created_at));
+      const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
+      const startsGroup =
+        hasUnknownPreviousContext ||
+        hasPaginationBreak ||
+        !!msg.reply_to ||
+        (!prev && !hasUnknownPreviousContext) ||
+        (!!prev && (
+          prev.sender_id !== msg.sender_id ||
+          prev.message_type !== msg.message_type ||
+          showDateSeparator ||
+          timeDiff >= GROUP_TIME_WINDOW_MS
+        ));
+
+      traits = { startsGroup, showDateSeparator };
+      layoutCacheRef.current[msg.message_id] = traits;
+    }
+
+    const { startsGroup, showDateSeparator } = traits;
     const showAvatar = startsGroup && (density === 'compact' ? true : !isOwn);
     const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
     const rowIndent = !isRightAligned && !showAvatar ? AVATAR_OFFSET : '';
     const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
-    const msgReactions = getMessageReactions(msg.message_id);
+    const msgReactions = getMessageReactions(msg.message_id, msg.reactions);
 
     return (
       <div className={`px-2 ${startsGroup ? d.groupGap : d.consecutiveGap}`}>
@@ -416,7 +513,13 @@ const MessageView = ({
               className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity self-start"
               onClick={() => handleProfileClick(msg.sender_id)}
             >
-              <img src={getSenderAvatarUrl(msg.sender_id)} alt="avatar" className="w-full h-full object-cover" />
+              <img
+                src={getSenderAvatarUrl(msg.sender_id)}
+                alt="avatar"
+                width={32}
+                height={32}
+                className="w-full h-full object-cover"
+              />
             </div>
           )}
 
@@ -571,6 +674,7 @@ const MessageView = ({
         alignToBottom
         increaseViewportBy={{ top: topRenderBufferPx, bottom: bottomRenderBufferPx }}
         minOverscanItemCount={{ top: 8, bottom: 4 }}
+        scrollSeekConfiguration={scrollSeekConfiguration}
         startReached={handleStartReached}
         rangeChanged={handleRangeChanged}
         followOutput={(isAtBottom) => {
@@ -598,44 +702,12 @@ const MessageView = ({
         endReached={() => {
           if (!isAtPresent && hasNewer) loadNewer();
         }}
-        overscan={150}
+        overscan={scrollOverscanPx}
         itemContent={renderMessage}
         components={{
-          Header: () => (
-            <div className="relative p-4">
-              {loadingOlder && (
-                <div className="pointer-events-none absolute left-1/2 top-4 -translate-x-1/2">
-                  <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
-                </div>
-              )}
-              {!hasOlder && visualMessages.length > 0 && (
-                <div className="pt-4 pb-6">
-                  <div className="pb-4">
-                    <div className="w-16 h-16 bg-void-bg-hover rounded-full flex items-center justify-center">
-                      {getConversationIcon()}
-                    </div>
-                  </div>
-                  <h1 className="text-2xl font-bold pb-1 text-void-text">
-                    {conversation.type === 'dm'
-                      ? conversation.dm_display_name || conversation.dm_username
-                      : conversation.name}
-                  </h1>
-                  <p className="text-void-text-muted text-sm">
-                    This is the beginning of your conversation.
-                  </p>
-                </div>
-              )}
-            </div>
-          ),
-          Footer: () => (
-            loadingNewer ? (
-              <div className="py-2">
-                <div className="flex justify-center py-2">
-                  <div className="w-4 h-4 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
-                </div>
-              </div>
-            ) : null
-          ),
+          ScrollSeekPlaceholder: renderScrollSeekPlaceholder,
+          Header: () => null,
+          Footer: () => null,
           EmptyPlaceholder: () => (
             <p className="text-center text-void-text-muted text-sm py-8">
               No messages yet. Say something!
@@ -643,6 +715,16 @@ const MessageView = ({
           ),
         }}
       />
+
+      {loadingOlder && renderPaginationSkeleton('top')}
+      {loadingNewer && renderPaginationSkeleton('bottom')}
+      {!hasOlder && visualMessages.length > 0 && isNearTop && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-[4] -translate-x-1/2">
+          <div className="rounded-full border border-void-bg-hover bg-void-bg-main/80 px-3 py-1.5 text-xs text-void-text-muted backdrop-blur-sm">
+            Beginning of conversation
+          </div>
+        </div>
+      )}
 
       {/* Jump to Present */}
       {!isAtBottom && (hasNewer || hasUnseenMessages) && (
