@@ -147,7 +147,6 @@ const MessageView = ({
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const [isNearTop, setIsNearTop] = useState(false);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
   const [scrollSeekExitTick, setScrollSeekExitTick] = useState(0);
   const topRenderBufferPx = 240;
@@ -174,7 +173,6 @@ const MessageView = ({
     layoutCacheRef.current = {};
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
-    setIsNearTop(false);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -240,7 +238,6 @@ const MessageView = ({
     }
 
     const relativeStartIndex = range.startIndex - firstItemIndex;
-    setIsNearTop(relativeStartIndex <= 1);
 
     if (relativeStartIndex > 6) {
       topLoadLockedRef.current = false;
@@ -404,6 +401,34 @@ const MessageView = ({
     },
     [emojiPickerTarget, user?.id, handleToggleReaction]
   );
+
+  const dmIntroFriend = useMemo(() => {
+    if (conversation.type !== 'dm') return null;
+    return friends.find((friend) =>
+      friend.id === conversation.dm_user_id ||
+      friend.username === conversation.dm_username
+    ) || null;
+  }, [conversation.dm_user_id, conversation.dm_username, conversation.type, friends]);
+
+  const conversationStartLabel =
+    conversation.type === 'dm'
+      ? conversation.dm_display_name || dmIntroFriend?.display_name || conversation.dm_username || dmIntroFriend?.username || 'this user'
+      : conversation.name || 'this conversation';
+  const conversationStartAvatar =
+    conversation.dm_avatar_url || dmIntroFriend?.avatar_url || null;
+  const conversationStartUsername =
+    conversation.type === 'dm'
+      ? conversation.dm_username || dmIntroFriend?.username || null
+      : null;
+  const conversationStartUserId =
+    conversation.dm_user_id || dmIntroFriend?.id || null;
+  const friendsSinceLabel = dmIntroFriend?.friends_since
+    ? new Date(dmIntroFriend.friends_since).toLocaleDateString([], {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      })
+    : null;
 
   if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
 
@@ -706,7 +731,83 @@ const MessageView = ({
         itemContent={renderMessage}
         components={{
           ScrollSeekPlaceholder: renderScrollSeekPlaceholder,
-          Header: () => null,
+          Header: () => {
+            if (hasOlder) return null;
+
+            return (
+              <div className="px-4 pt-8 pb-6">
+                {conversation.type === 'dm' ? (
+                  <div className="max-w-2xl px-5 py-5">
+                    <div className="flex items-start gap-4">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (conversationStartUserId) {
+                            handleProfileClick(conversationStartUserId);
+                          }
+                        }}
+                        disabled={!conversationStartUserId}
+                        className="shrink-0 disabled:cursor-default"
+                      >
+                        {conversationStartAvatar ? (
+                          <img
+                            src={conversationStartAvatar}
+                            alt=""
+                            width={72}
+                            height={72}
+                            className="h-[72px] w-[72px] rounded-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-[72px] w-[72px] items-center justify-center rounded-full bg-void-bg-hover text-2xl font-bold text-void-text">
+                            {conversationStartLabel.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                      </button>
+
+                      <div className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (conversationStartUserId) {
+                              handleProfileClick(conversationStartUserId);
+                            }
+                          }}
+                          disabled={!conversationStartUserId}
+                          className="max-w-full text-left disabled:cursor-default"
+                        >
+                          <div className="truncate text-3xl font-bold leading-tight text-void-text">
+                            {conversationStartLabel}
+                          </div>
+                          {conversationStartUsername && conversationStartUsername !== conversationStartLabel && (
+                            <div className="mt-1 truncate text-xl font-medium text-void-text-muted">
+                              {conversationStartUsername}
+                            </div>
+                          )}
+                        </button>
+
+                        <p className="mt-4 text-sm text-void-text-muted">
+                          This is the beginning of your direct message history with{' '}
+                          <span className="font-semibold text-void-text">{conversationStartLabel}</span>.
+                        </p>
+
+                        {friendsSinceLabel && (
+                          <div className="mt-4 inline-flex items-center rounded-full border border-void-bg-hover bg-void-bg-hover/50 px-3 py-1 text-xs text-void-text-muted">
+                            Friends since {friendsSinceLabel}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="max-w-lg px-4 py-3 text-center">
+                    <p className="text-sm text-void-text-muted">
+                      This is the beginning of {conversationStartLabel}.
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          },
           Footer: () => null,
           EmptyPlaceholder: () => (
             <p className="text-center text-void-text-muted text-sm py-8">
@@ -718,13 +819,6 @@ const MessageView = ({
 
       {loadingOlder && renderPaginationSkeleton('top')}
       {loadingNewer && renderPaginationSkeleton('bottom')}
-      {!hasOlder && visualMessages.length > 0 && isNearTop && (
-        <div className="pointer-events-none absolute left-1/2 top-3 z-[4] -translate-x-1/2">
-          <div className="rounded-full border border-void-bg-hover bg-void-bg-main/80 px-3 py-1.5 text-xs text-void-text-muted backdrop-blur-sm">
-            Beginning of conversation
-          </div>
-        </div>
-      )}
 
       {/* Jump to Present */}
       {!isAtBottom && (hasNewer || hasUnseenMessages) && (
