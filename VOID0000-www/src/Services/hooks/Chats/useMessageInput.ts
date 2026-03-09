@@ -4,8 +4,8 @@ import { sendMessage, sendImageOnlyMessage, editMessage, uploadAttachments, Mess
 
 export interface PendingAttachment {
   id: string;
-  preview: string; // data URL for local preview
-  url: string | null; // CDN URL after upload
+  preview: string;
+  url: string | null;
   blurhash?: string;
   uploading: boolean;
   error?: string;
@@ -40,8 +40,19 @@ export const useMessageInput = ({
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Changed to HTMLTextAreaElement
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-resize textarea as text changes
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto'; // Reset height to recalculate
+      // Set max height to around ~120px (about 5-6 lines) before scrolling
+      inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, 120)}px`;
+    }
+  }, [text]);
 
   useEffect(() => {
     if (editingMessage) {
@@ -104,7 +115,6 @@ export const useMessageInput = ({
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  // Paste handler — captures images pasted from clipboard
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData.items).filter(
       (item) => item.kind === 'file' && ALLOWED_TYPES.includes(item.type)
@@ -174,7 +184,6 @@ export const useMessageInput = ({
         onMessageSent(msg);
         onCancelReply?.();
       } else if (uploadedUrls.length > 0) {
-        // Image-only message
         const msg = await sendImageOnlyMessage(conversation.id, uploadedUrls, {
           key_version: keyVersion,
           reply_to: replyTo?.message_id || undefined,
@@ -190,17 +199,28 @@ export const useMessageInput = ({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Check if the user is on a mobile device
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
+      if (!isMobile) {
+        // Desktop behavior: Regular Enter sends the message.
+        // (Shift + Enter is naturally ignored here, so it creates a new line)
+        e.preventDefault();
+        handleSend();
+      }
+      // Mobile behavior: We do absolutely nothing here. 
+      // The native mobile "Return" key will just create a new line like normal.
     }
+
     if (e.key === 'Escape') {
       if (editingMessage) onCancelEdit?.();
       if (replyTo) onCancelReply?.();
     }
   };
 
+  // ADDED THIS BACK IN!
   const handleCancelAction = () => {
     if (editingMessage) {
       onCancelEdit?.();
@@ -220,7 +240,7 @@ export const useMessageInput = ({
     getPlaceholder,
     handleSend,
     handleKeyDown,
-    handleCancelAction,
+    handleCancelAction, // Now this resolves correctly
     handlePaste,
     openFilePicker,
     handleFileChange,

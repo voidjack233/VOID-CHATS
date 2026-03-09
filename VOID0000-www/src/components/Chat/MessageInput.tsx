@@ -118,7 +118,7 @@ const MessageInput = (props: MessageInputProps) => {
       )}
 
       {/* Main input row */}
-      <div className={`bg-void-bg-hover flex items-center px-4 py-2.5 ${hasBanner || hasAttachments ? 'rounded-b-lg' : 'rounded-lg'}`}>
+      <div className={`bg-void-bg-hover flex items-end px-4 py-2.5 ${hasBanner || hasAttachments ? 'rounded-b-lg' : 'rounded-lg'}`}>
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
@@ -130,13 +130,12 @@ const MessageInput = (props: MessageInputProps) => {
         />
 
         {/* Attach menu */}
-        <div ref={attachMenuRef} className="relative mr-3">
+        <div ref={attachMenuRef} className="relative mr-3 pb-1">
           <button
             onClick={() => setAttachMenuOpen((o) => !o)}
             disabled={!encryptionKey || attachments.length >= 5}
-            className={`rounded-full p-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-              attachMenuOpen ? 'text-void-accent' : 'text-void-text-muted hover:text-void-text'
-            }`}
+            className={`rounded-full p-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${attachMenuOpen ? 'text-void-accent' : 'text-void-text-muted hover:text-void-text'
+              }`}
             title="Attach"
           >
             <Plus className={`w-5 h-5 transition-transform duration-150 ${attachMenuOpen ? 'rotate-45' : ''}`} />
@@ -166,22 +165,26 @@ const MessageInput = (props: MessageInputProps) => {
           )}
         </div>
 
-        <input
+        {/* REPLACED INPUT WITH TEXTAREA */}
+        <textarea
           ref={inputRef}
-          type="text"
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={getPlaceholder()}
           disabled={!encryptionKey}
-          className="flex-1 bg-transparent border-none focus:outline-none text-void-text placeholder-void-text-muted disabled:opacity-50"
+          autoComplete="off"
+          spellCheck="false"
+          enterKeyHint="enter" // <-- This forces the mobile keyboard to show "Return"
+          rows={1}
+          className="flex-1 bg-transparent border-none focus:outline-none text-void-text placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1"
         />
 
         <button
           onClick={handleSend}
           disabled={!canSend}
-          className="text-void-text-muted hover:text-void-accent ml-3 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="text-void-text-muted hover:text-void-accent ml-3 pb-1 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
           {sending ? (
             <Loader2 className="w-5 h-5 animate-spin" />

@@ -1,11 +1,4 @@
 // src/Services/hooks/Chats/useMessageList.ts
-//
-// Discord-style message loading:
-//   - Fetch in batches of FETCH_SIZE (50)
-//   - Keep at most CACHE_LIMIT (200) messages in memory
-//   - Bidirectional scroll: older (up) + newer (down)
-//   - Virtual list handles scroll position preservation
-//   - Track whether we're "at present" (viewing latest messages)
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { deleteMessage, getMessageById, getMessages, Message } from '../../Chat/chatService';
@@ -13,7 +6,7 @@ import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
 
 const FETCH_SIZE = 50;
-const CACHE_LIMIT = 200;
+const CACHE_LIMIT = 500;
 
 interface MessageUpdate {
   message_id: string;
@@ -49,10 +42,11 @@ function toUIMessage(local: LocalMessage): Message {
 const sortMessages = (msgs: Message[]) =>
   [...msgs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-// Deduplicate + sort + trim to CACHE_LIMIT from a specific end
+// Deduplicate + keep messages newest-first before trimming
 const trimMessages = (msgs: Message[], trimFrom: 'old' | 'new'): Message[] => {
   const sorted = sortMessages(msgs);
   if (sorted.length <= CACHE_LIMIT) return sorted;
+
   // trimFrom 'old' = remove oldest (keep newest) — user scrolled down
   // trimFrom 'new' = remove newest (keep oldest) — user scrolled up
   return trimFrom === 'old'
@@ -100,7 +94,8 @@ export const useMessageList = (
       try {
         const { cached, syncPromise } = await messageSync.loadConversation(
           conversationId,
-          encryptionKey
+          encryptionKey,
+          { preferSessionCache: true }
         );
 
         if (ignore) return;
@@ -158,32 +153,49 @@ export const useMessageList = (
   // ============== Handle Incoming New Messages ==============
   useEffect(() => {
     if (!newMessage) return;
+    const normalizedConversationId = newMessage.conversation_id || conversationId;
+    if (String(normalizedConversationId) !== String(conversationId)) {
+      return;
+    }
+
+    const normalizedMessage: Message = {
+      ...newMessage,
+      conversation_id: normalizedConversationId,
+      message_type: newMessage.message_type || 'text',
+      reply_to: newMessage.reply_to ?? null,
+      is_edited: Boolean(newMessage.is_edited),
+      edited_at: newMessage.edited_at ?? null,
+      is_deleted: Boolean(newMessage.is_deleted),
+      created_at: newMessage.created_at || new Date().toISOString(),
+      reactions: newMessage.reactions || {},
+    };
+
     const localMsg: LocalMessage = {
-      conversation_id: newMessage.conversation_id,
-      message_id: newMessage.message_id,
-      sender_id: newMessage.sender_id,
-      content: newMessage.content ?? null,
-      message_type: newMessage.message_type,
-      reply_to: newMessage.reply_to,
-      is_edited: newMessage.is_edited,
-      edited_at: newMessage.edited_at,
-      is_deleted: newMessage.is_deleted,
-      created_at: newMessage.created_at,
+      conversation_id: normalizedMessage.conversation_id,
+      message_id: normalizedMessage.message_id,
+      sender_id: normalizedMessage.sender_id,
+      content: normalizedMessage.content ?? null,
+      message_type: normalizedMessage.message_type,
+      reply_to: normalizedMessage.reply_to,
+      is_edited: normalizedMessage.is_edited,
+      edited_at: normalizedMessage.edited_at,
+      is_deleted: normalizedMessage.is_deleted,
+      created_at: normalizedMessage.created_at,
       reactions: {},
-      attachments: newMessage.attachments,
+      attachments: normalizedMessage.attachments,
     };
 
     messageSync.storeIncomingMessage(localMsg).catch(console.error);
 
-    if (isAtPresent) {
-      // We're viewing latest — add message (virtuoso followOutput handles auto-scroll)
-      setMessages((prev) => {
-        if (prev.some((m) => m.message_id === newMessage.message_id)) return prev;
-        return trimMessages([newMessage, ...prev], 'old');
-      });
-    }
-    // If not at present (user scrolled far up), don't inject — they'll see it on jump-to-present
-  }, [newMessage, isAtPresent]);
+    // Always inject incoming messages so realtime updates are visible without refresh.
+    setMessages((prev) => {
+      const merged = [normalizedMessage, ...prev];
+      const unique = Array.from(
+        new Map(merged.map(m => [m.message_id, m])).values()
+      );
+      return trimMessages(unique, 'old');
+    });
+  }, [newMessage, conversationId]);
 
   // ============== Handle Edits ==============
   useEffect(() => {
@@ -242,12 +254,19 @@ export const useMessageList = (
       const olderUI = result.messages.map(toUIMessage);
       if (olderUI.length > 0) {
         setMessages((prev) => {
+          // Merge and deduplicate to prevent any sync overlaps
           const merged = [...prev, ...olderUI];
-          const trimmed = trimMessages(merged, 'new');
-          if (trimmed.length < merged.length) {
+          const unique = Array.from(
+            new Map(merged.map(m => [m.message_id, m])).values()
+          );
+          
+          const trimmed = trimMessages(unique, 'new');
+          
+          if (trimmed.length < unique.length) {
             setHasNewer(true);
             setIsAtPresent(false);
           }
+          
           return trimmed;
         });
         setHasOlder(result.has_more);
@@ -294,7 +313,11 @@ export const useMessageList = (
       if (newerUI.length > 0) {
         setMessages((prev) => {
           const merged = [...newerUI, ...prev];
-          return trimMessages(merged, 'old');
+          // Deduplicate (though less likely when loading newer)
+          const unique = Array.from(
+            new Map(merged.map(m => [m.message_id, m])).values()
+          );
+          return trimMessages(unique, 'old');
         });
         // If we got fewer than FETCH_SIZE, we've reached the present
         if (newerUI.length < FETCH_SIZE) {
@@ -413,6 +436,7 @@ export const useMessageList = (
     hasOlder,
     hasNewer,
     isAtPresent,
+    setIsAtPresent,
     handleDelete,
     getReplyParent,
     jumpToPresent,

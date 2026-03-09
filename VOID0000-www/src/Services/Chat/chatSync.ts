@@ -14,40 +14,52 @@ interface SyncResult {
   hasMore: boolean;
 }
 
-// 60-second cooldown before asking the server for messages again
-const CACHE_TTL_MS = 60 * 1000; 
+interface LoadConversationOptions {
+  forceSync?: boolean;
+  preferSessionCache?: boolean;
+}
+
+const CACHE_TTL_MS = 60 * 1000;
 
 class MessageSync {
+  private sessionValidatedConversations = new Set<string>();
+
   // ============== Load Conversation ==============
 
   async loadConversation(
     conversationId: string,
-    encryptionKey: CryptoKey
+    encryptionKey: CryptoKey,
+    options?: LoadConversationOptions
   ): Promise<{
     cached: { messages: LocalMessage[]; has_more: boolean };
     syncPromise: Promise<SyncResult>;
   }> {
     const cached = await messageStore.getMessages(conversationId);
     const cursor = await messageStore.getSyncCursor(conversationId);
+    const hasSessionValidation = this.sessionValidatedConversations.has(conversationId);
+    const shouldPreferSessionCache = options?.preferSessionCache ?? false;
 
-    let shouldSync = true;
+    const isFreshByTtl = !!(
+      cached.messages.length > 0 &&
+      cursor?.last_synced_at &&
+      Date.now() - new Date(cursor.last_synced_at).getTime() < CACHE_TTL_MS
+    );
 
-    // If we have messages AND we synced recently, skip the network request!
-    if (cached.messages.length > 0 && cursor && cursor.last_synced_at) {
-      const lastSynced = new Date(cursor.last_synced_at).getTime();
-      const now = Date.now();
-      
-      if (now - lastSynced < CACHE_TTL_MS) {
-        shouldSync = false;
-      }
-    }
+    const shouldSync = options?.forceSync === true
+      ? true
+      : shouldPreferSessionCache && !hasSessionValidation
+        ? true
+        : !isFreshByTtl;
 
     let syncPromise: Promise<SyncResult>;
 
     if (shouldSync) {
-      syncPromise = this._syncFromServer(conversationId, encryptionKey, cached);
+      syncPromise = this._syncFromServer(conversationId, encryptionKey, cached)
+        .then((result) => {
+          this.sessionValidatedConversations.add(conversationId);
+          return result;
+        });
     } else {
-      // Fake the server response to instantly resolve the UI loading states
       syncPromise = Promise.resolve({ newMessages: [], hasMore: cached.has_more });
     }
 
