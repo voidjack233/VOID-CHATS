@@ -44,17 +44,6 @@ const DENSITY: Record<Density, {
 
 const AVATAR_OFFSET = 'pl-10';
 const GROUP_TIME_WINDOW_MS = 5 * 60 * 1000;
-const BOTTOM_PIN_EPSILON_PX = 2;
-type ListScrollBehavior = 'auto' | 'smooth';
-
-const getTopPrefetchThreshold = (scroller: HTMLElement | null) => {
-  if (!scroller) {
-    return 240;
-  }
-
-  // Start loading older history before the top seam enters the visible area.
-  return Math.max(200, Math.min(480, Math.round(scroller.clientHeight * 0.35)));
-};
 
 const isSameDay = (a: string, b: string) => {
   const da = new Date(a);
@@ -147,85 +136,42 @@ const MessageView = ({
 
   const visualMessages = useMemo(() => [...messages].reverse(), [messages]);
   const atBottomRef = useRef(true);
-  const initialScrollDoneRef = useRef<string | null>(null);
   const canLoadOlderRef = useRef(false);
   const lastOlderTriggerMessageIdRef = useRef<string | null>(null);
+  const pendingStartReachedRef = useRef(false);
+  const topLoadLockedRef = useRef(false);
   const scrollerRef = useRef<HTMLElement | null>(null);
-  const preciseAtBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
+  const topRenderBufferPx = 200;
+  const bottomRenderBufferPx = 160;
 
-  const syncPinnedToBottom = useCallback(() => {
-    const scroller = scrollerRef.current;
+  const getTopLoadThreshold = useCallback((scroller: HTMLElement | null) => {
     if (!scroller) {
-      preciseAtBottomRef.current = false;
-      return false;
+      return 72;
     }
-    const bottomGap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    preciseAtBottomRef.current = bottomGap <= BOTTOM_PIN_EPSILON_PX;
-    return preciseAtBottomRef.current;
+
+    return Math.max(56, Math.min(120, Math.round(scroller.clientHeight * 0.12)));
   }, []);
 
-  const scrollToBottom = useCallback((behavior: ListScrollBehavior = 'auto') => {
-    const scroller = scrollerRef.current;
-    if (scroller) {
-      scroller.scrollTo({
-        top: scroller.scrollHeight,
-        behavior,
-      });
+  const handleScrollerRef = useCallback((element: HTMLElement | null | Window) => {
+    if (element instanceof HTMLElement) {
+      element.style.overflowAnchor = 'none';
+      scrollerRef.current = element;
       return;
     }
 
-    virtuosoRef.current?.scrollToIndex({
-      index: 'LAST',
-      align: 'end',
-      behavior,
-    });
+    scrollerRef.current = null;
   }, []);
-
-  const shouldScrollRef = useRef(false);
-  useEffect(() => {
-    if (shouldScrollRef.current && visualMessages.length > 0) {
-      shouldScrollRef.current = false;
-      requestAnimationFrame(() => {
-        scrollToBottom('smooth');
-      });
-    }
-  }, [scrollToBottom, visualMessages]);
-
-  useEffect(() => {
-    if (loading || visualMessages.length === 0) return;
-    if (initialScrollDoneRef.current === conversation.id) return;
-
-    initialScrollDoneRef.current = conversation.id;
-    let cancelled = false;
-    let attempts = 0;
-    const maxAttempts = 10;
-
-    const ensureBottom = () => {
-      if (cancelled || attempts >= maxAttempts) return;
-      if (syncPinnedToBottom()) return;
-      attempts += 1;
-      scrollToBottom('auto');
-      setTimeout(ensureBottom, 90);
-    };
-
-    requestAnimationFrame(() => {
-      scrollToBottom('auto');
-      setTimeout(ensureBottom, 90);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [conversation.id, loading, scrollToBottom, syncPinnedToBottom, visualMessages.length]);
 
   useLayoutEffect(() => {
     canLoadOlderRef.current = false;
     lastOlderTriggerMessageIdRef.current = null;
+    pendingStartReachedRef.current = false;
+    topLoadLockedRef.current = false;
     lastScrollTopRef.current = 0;
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
@@ -240,19 +186,27 @@ const MessageView = ({
       forceFollowOutputRef.current = true;
       return;
     }
-    if (!preciseAtBottomRef.current) {
+    if (!atBottomRef.current) {
       setHasUnseenMessages(true);
     }
   }, [conversation.id, newMessage, user?.id]);
 
   const handleJumpToPresent = useCallback(async () => {
-    shouldScrollRef.current = true;
+    forceFollowOutputRef.current = true;
+    keepPinnedOnOpenRef.current = true;
     await jumpToPresent();
     setHasUnseenMessages(false);
+    requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: 'LAST',
+        align: 'end',
+        behavior: 'smooth',
+      });
+    });
   }, [jumpToPresent]);
 
-  const loadOlderWithAnchor = useCallback(() => {
-    if (loadingOlder || !hasOlder) {
+  const triggerOlderLoad = useCallback(() => {
+    if (loadingOlder || !hasOlder || topLoadLockedRef.current) {
       return;
     }
 
@@ -262,19 +216,19 @@ const MessageView = ({
     }
 
     lastOlderTriggerMessageIdRef.current = oldestVisibleMessageId;
+    pendingStartReachedRef.current = false;
+    topLoadLockedRef.current = true;
     void loadOlder();
   }, [hasOlder, loadOlder, loadingOlder, visualMessages]);
 
-  const maybeLoadOlderNearTop = useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || !canLoadOlderRef.current) {
+  const handleStartReached = useCallback(() => {
+    if (!canLoadOlderRef.current) {
+      pendingStartReachedRef.current = true;
       return;
     }
-    if (scroller.scrollTop > getTopPrefetchThreshold(scroller)) {
-      return;
-    }
-    loadOlderWithAnchor();
-  }, [loadOlderWithAnchor]);
+
+    triggerOlderLoad();
+  }, [triggerOlderLoad]);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -284,19 +238,25 @@ const MessageView = ({
       const currentScrollTop = scroller.scrollTop;
       const movedUp = currentScrollTop < lastScrollTopRef.current - 1;
       lastScrollTopRef.current = currentScrollTop;
+      const triggerThreshold = getTopLoadThreshold(scroller);
+      const releaseThreshold = Math.max(triggerThreshold + 64, Math.round(triggerThreshold * 2));
 
       if (movedUp) {
         canLoadOlderRef.current = true;
         keepPinnedOnOpenRef.current = false;
       }
 
-      const pinned = syncPinnedToBottom();
-      if (pinned) {
-        setHasUnseenMessages(false);
-        forceFollowOutputRef.current = false;
+      if (currentScrollTop > releaseThreshold) {
+        topLoadLockedRef.current = false;
       }
 
-      maybeLoadOlderNearTop();
+      if (
+        pendingStartReachedRef.current &&
+        canLoadOlderRef.current &&
+        currentScrollTop <= triggerThreshold
+      ) {
+        triggerOlderLoad();
+      }
     };
 
     updatePinnedState();
@@ -304,72 +264,7 @@ const MessageView = ({
     return () => {
       scroller.removeEventListener('scroll', updatePinnedState);
     };
-  }, [conversation.id, maybeLoadOlderNearTop, syncPinnedToBottom]);
-
-  useEffect(() => {
-    if (loadingOlder) {
-      return;
-    }
-
-    const scroller = scrollerRef.current;
-    if (!scroller) {
-      return;
-    }
-
-    if (scroller.scrollTop > getTopPrefetchThreshold(scroller)) {
-      return;
-    }
-
-    const frame = requestAnimationFrame(() => {
-      maybeLoadOlderNearTop();
-    });
-
-    return () => cancelAnimationFrame(frame);
-  }, [firstItemIndex, loadingOlder, maybeLoadOlderNearTop, visualMessages.length]);
-
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-
-    const targets = [
-      scroller.firstElementChild,
-      scroller.firstElementChild?.firstElementChild ?? null,
-    ].filter((element): element is Element => element instanceof Element);
-
-    if (targets.length === 0) {
-      return;
-    }
-
-    let frame = 0;
-    const observer = new ResizeObserver(() => {
-      if (loadingOlder) {
-        return;
-      }
-
-      if (
-        !forceFollowOutputRef.current &&
-        !keepPinnedOnOpenRef.current &&
-        !preciseAtBottomRef.current
-      ) {
-        return;
-      }
-
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        scrollToBottom('auto');
-        syncPinnedToBottom();
-      });
-    });
-
-    targets.forEach((target) => observer.observe(target));
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [conversation.id, loadingOlder, scrollToBottom, syncPinnedToBottom]);
+  }, [conversation.id, getTopLoadThreshold, triggerOlderLoad]);
 
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
@@ -684,20 +579,16 @@ const MessageView = ({
       <Virtuoso
         key={conversation.id}
         ref={virtuosoRef}
-        scrollerRef={(element) => {
-          if (element instanceof HTMLElement) {
-            element.style.overflowAnchor = 'none';
-            scrollerRef.current = element;
-            return;
-          }
-          scrollerRef.current = null;
-        }}
+        scrollerRef={handleScrollerRef}
         className="flex-1 min-h-0"
         data={visualMessages}
         computeItemKey={(_index, msg) => msg.message_id}
         firstItemIndex={firstItemIndex}
         atBottomThreshold={12}
         alignToBottom
+        increaseViewportBy={{ top: topRenderBufferPx, bottom: bottomRenderBufferPx }}
+        minOverscanItemCount={{ top: 8, bottom: 4 }}
+        startReached={handleStartReached}
         followOutput={(isAtBottom) => {
           if (loadingOlder) {
             return false;
@@ -705,7 +596,7 @@ const MessageView = ({
           if (forceFollowOutputRef.current) {
             return 'auto';
           }
-          if (keepPinnedOnOpenRef.current || preciseAtBottomRef.current || isAtBottom) {
+          if (keepPinnedOnOpenRef.current || isAtBottom) {
             return 'auto';
           }
           return false;
@@ -716,6 +607,7 @@ const MessageView = ({
           setIsAtBottom(isAtBottom);
           if (isAtBottom) {
             setHasUnseenMessages(false);
+            forceFollowOutputRef.current = false;
           }
           setIsAtPresent(isAtBottom && !hasNewer);
         }}
