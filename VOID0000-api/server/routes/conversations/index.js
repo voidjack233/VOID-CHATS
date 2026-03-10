@@ -2,6 +2,13 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
+import { conversationSnowflake } from '../../utils/snowflake.js';
+import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
+import {
+  ensureDefaultCategory,
+  getGroupCategories,
+  resolveGroupCategory,
+} from '../../utils/conversationCategories.js';
 import dmRouter from './dm.js';
 import membersRouter from './members.js';
 import messagesRouter from './messages.js';
@@ -9,87 +16,143 @@ import reactionsRouter from './reactions.js';
 import batchReactionsRouter from './batchReactions.js';
 import keysRouter from './keys.js';
 import attachmentsRouter from './attachments.js';
+import categoriesRouter from './categories.js';
 
 const router = Router();
 
-// Sub-routes
 router.use('/dm', authenticateUser, dmRouter);
 router.use('/:conversationId/members', authenticateUser, membersRouter);
 router.use('/:conversationId/messages', authenticateUser, messagesRouter);
 router.use('/:conversationId/messages/:messageId/reactions', authenticateUser, reactionsRouter);
 router.use('/:conversationId/reactions', authenticateUser, batchReactionsRouter);
 router.use('/:conversationId/attachments', authenticateUser, attachmentsRouter);
+router.use('/:conversationId/categories', authenticateUser, categoriesRouter);
 router.use('/keys', authenticateUser, keysRouter);
 
-// GET /api/conversations — list user's conversations
+const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+
+function normalizeConversationRow(conv) {
+  return {
+    ...conv,
+    public_id: conv.public_id ? String(conv.public_id) : null,
+    parent_public_id: conv.parent_public_id ? String(conv.parent_public_id) : null,
+    member_count: conv.member_count != null ? parseInt(conv.member_count, 10) : 0,
+    dm_avatar_url: conv.dm_avatar
+      ? `${baseUrl}/avatars/${conv.dm_avatar}`
+      : conv.dm_username
+        ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${conv.dm_username}`
+        : null,
+  };
+}
+
+async function getAccessibleChannels(groupId, userId) {
+  const result = await pool.query(
+    `SELECT
+       c.id,
+       c.public_id,
+       c.type,
+       c.name,
+       c.icon_filename,
+       c.owner_id,
+       c.parent_conversation_id,
+       c.category_id,
+       parent.public_id AS parent_public_id,
+       c.created_at,
+       c.updated_at,
+       cm.role,
+       cm.last_read_message_id,
+       NULL::text AS dm_username,
+       NULL::text AS dm_avatar,
+       NULL::text AS dm_display_name,
+       (SELECT COUNT(*) FROM conversation_members WHERE conversation_id = c.id) AS member_count
+     FROM conversations c
+     LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id
+     JOIN conversation_members cm ON cm.conversation_id = c.id
+     WHERE c.parent_conversation_id = $1
+       AND cm.user_id = $2
+     ORDER BY
+       CASE WHEN LOWER(c.name) = 'general' THEN 0 ELSE 1 END,
+       LOWER(c.name),
+       c.created_at ASC`,
+    [groupId, userId]
+  );
+
+  return result.rows.map(normalizeConversationRow);
+}
+
 router.get('/', authenticateUser, async (req, res) => {
   const userId = req.user.id;
 
   try {
     const result = await pool.query(
-      `SELECT 
-        c.id, c.type, c.name, c.icon_filename, c.owner_id, c.created_at, c.updated_at,
-        cm.role, cm.last_read_message_id,
-        CASE 
-          WHEN c.type = 'dm' THEN (
-            SELECT u.username FROM conversation_members cm2
-            JOIN users u ON u.id = cm2.user_id
-            WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
-            LIMIT 1
-          )
-          ELSE NULL
-        END AS dm_username,
-        CASE
-          WHEN c.type = 'dm' THEN (
-            SELECT up.avatar_filename FROM conversation_members cm2
-            JOIN users u ON u.id = cm2.user_id
-            JOIN user_profiles up ON up.id = u.profile_id
-            WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
-            LIMIT 1
-          )
-          ELSE NULL
-        END AS dm_avatar,
-        CASE
-          WHEN c.type = 'dm' THEN (
-            SELECT up.display_name FROM conversation_members cm2
-            JOIN users u ON u.id = cm2.user_id
-            JOIN user_profiles up ON up.id = u.profile_id
-            WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
-            LIMIT 1
-          )
-          ELSE NULL
-        END AS dm_display_name,
-        (SELECT COUNT(*) FROM conversation_members WHERE conversation_id = c.id) AS member_count
+      `SELECT
+         c.id,
+         c.public_id,
+         c.type,
+         c.name,
+         c.icon_filename,
+         c.owner_id,
+         c.parent_conversation_id,
+         c.category_id,
+         parent.public_id AS parent_public_id,
+         c.created_at,
+         c.updated_at,
+         cm.role,
+         cm.last_read_message_id,
+         CASE
+           WHEN c.type = 'dm' THEN (
+             SELECT u.username FROM conversation_members cm2
+             JOIN users u ON u.id = cm2.user_id
+             WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
+             LIMIT 1
+           )
+           ELSE NULL
+         END AS dm_username,
+         CASE
+           WHEN c.type = 'dm' THEN (
+             SELECT up.avatar_filename FROM conversation_members cm2
+             JOIN users u ON u.id = cm2.user_id
+             JOIN user_profiles up ON up.id = u.profile_id
+             WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
+             LIMIT 1
+           )
+           ELSE NULL
+         END AS dm_avatar,
+         CASE
+           WHEN c.type = 'dm' THEN (
+             SELECT up.display_name FROM conversation_members cm2
+             JOIN users u ON u.id = cm2.user_id
+             JOIN user_profiles up ON up.id = u.profile_id
+             WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
+             LIMIT 1
+           )
+           ELSE NULL
+         END AS dm_display_name,
+         (SELECT COUNT(*) FROM conversation_members WHERE conversation_id = c.id) AS member_count
        FROM conversations c
+       LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id
        JOIN conversation_members cm ON cm.conversation_id = c.id
        WHERE cm.user_id = $1
        ORDER BY c.updated_at DESC`,
       [userId]
     );
 
-    const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
-
-    const conversations = result.rows.map((conv) => ({
-      ...conv,
-      dm_avatar_url: conv.dm_avatar
-        ? `${baseUrl}/avatars/${conv.dm_avatar}`
-        : conv.dm_username
-          ? `https://api.dicebear.com/7.x/avataaars/svg?seed=${conv.dm_username}`
-          : null,
-      member_count: parseInt(conv.member_count),
-    }));
-
-    res.json({ success: true, conversations });
+    res.json({ success: true, conversations: result.rows.map(normalizeConversationRow) });
   } catch (err) {
     console.error('Conversations GET error:', err);
     res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 });
 
-// POST /api/conversations — create group or channel
 router.post('/', authenticateUser, async (req, res) => {
   const userId = req.user.id;
-  const { type, name, members } = req.body;
+  const {
+    type,
+    name,
+    members = [],
+    parent_conversation_id,
+    category_id,
+  } = req.body;
 
   if (!type || !['group', 'channel'].includes(type)) {
     return res.status(400).json({ error: 'Type must be "group" or "channel"' });
@@ -99,13 +162,20 @@ router.post('/', authenticateUser, async (req, res) => {
     return res.status(400).json({ error: 'Name is required (max 100 characters)' });
   }
 
-  if (!Array.isArray(members) || members.length === 0) {
+  if (type === 'group' && (!Array.isArray(members) || members.length === 0)) {
     return res.status(400).json({ error: 'At least one member required' });
   }
 
-  // Max 50 members on creation
-  if (members.length > 50) {
+  if (type === 'group' && members.length > 50) {
     return res.status(400).json({ error: 'Maximum 50 members on creation' });
+  }
+
+  if (type === 'channel' && !parent_conversation_id) {
+    return res.status(400).json({ error: 'parent_conversation_id is required for channels' });
+  }
+
+  if (type === 'group' && parent_conversation_id) {
+    return res.status(400).json({ error: 'Groups cannot have a parent conversation' });
   }
 
   let client;
@@ -114,28 +184,103 @@ router.post('/', authenticateUser, async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    // Create conversation
+    if (type === 'channel') {
+      const parent = await findConversationByIdentifier(parent_conversation_id, client);
+      if (!parent) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Parent group not found' });
+      }
+
+      const parentMemberResult = await client.query(
+        `SELECT role FROM conversation_members
+         WHERE conversation_id = $1 AND user_id = $2`,
+        [parent.id, userId]
+      );
+
+      if (parentMemberResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Not allowed to create a channel in this group' });
+      }
+
+      if (parent.type !== 'group') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Channels can only be created under a group' });
+      }
+
+      if (!['owner', 'admin'].includes(parentMemberResult.rows[0].role)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Only owner or admin can create channels' });
+      }
+
+      const targetCategory = category_id
+        ? await resolveGroupCategory(client, parent.id, category_id)
+        : null;
+      if (category_id && !targetCategory) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Category not found for this group' });
+      }
+
+      const existingChannel = await client.query(
+        `SELECT id
+         FROM conversations
+         WHERE parent_conversation_id = $1
+           AND LOWER(name) = LOWER($2)
+         LIMIT 1`,
+        [parent.id, name.trim()]
+      );
+
+      if (existingChannel.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'A channel with that name already exists in this group' });
+      }
+
+      const convResult = await client.query(
+        `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, category_id, public_id)
+         VALUES ('channel', $1, $2, $3, $4, $5)
+         RETURNING *`,
+        [name.trim(), parent.owner_id || userId, parent.id, targetCategory?.id || null, conversationSnowflake.nextId()]
+      );
+
+      const channel = convResult.rows[0];
+
+      await client.query(
+        `INSERT INTO conversation_members (conversation_id, user_id, role)
+         SELECT $1, user_id, role
+         FROM conversation_members
+         WHERE conversation_id = $2
+         ON CONFLICT DO NOTHING`,
+        [channel.id, parent.id]
+      );
+
+      await client.query('COMMIT');
+      return res.status(201).json({
+        success: true,
+        conversation: {
+          ...channel,
+          public_id: channel.public_id ? String(channel.public_id) : null,
+          parent_public_id: parent.public_id ? String(parent.public_id) : null,
+        },
+      });
+    }
+
     const convResult = await client.query(
-      `INSERT INTO conversations (type, name, owner_id)
-       VALUES ($1, $2, $3)
+      `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, public_id)
+       VALUES ('group', $1, $2, NULL, $3)
        RETURNING *`,
-      [type, name.trim(), userId]
+      [name.trim(), userId, conversationSnowflake.nextId()]
     );
 
     const conversation = convResult.rows[0];
 
-    // Add owner as member
     await client.query(
       `INSERT INTO conversation_members (conversation_id, user_id, role)
        VALUES ($1, $2, 'owner')`,
       [conversation.id, userId]
     );
 
-    // Add other members (verify they exist and are friends)
     const uniqueMembers = [...new Set(members.filter((id) => id !== userId))];
 
     for (const memberId of uniqueMembers) {
-      // Verify friendship
       const friendCheck = await client.query(
         `SELECT id FROM friendships
          WHERE ((requester_id = $1 AND addressee_id = $2) OR (requester_id = $2 AND addressee_id = $1))
@@ -153,11 +298,35 @@ router.post('/', authenticateUser, async (req, res) => {
       }
     }
 
+    const defaultChannelResult = await client.query(
+      `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, category_id, public_id)
+       VALUES ('channel', 'general', $1, $2, NULL, $3)
+       RETURNING *`,
+      [userId, conversation.id, conversationSnowflake.nextId()]
+    );
+
+    const defaultChannel = defaultChannelResult.rows[0];
+
+    await client.query(
+      `INSERT INTO conversation_members (conversation_id, user_id, role)
+       SELECT $1, user_id, role
+       FROM conversation_members
+       WHERE conversation_id = $2
+       ON CONFLICT DO NOTHING`,
+      [defaultChannel.id, conversation.id]
+    );
+
     await client.query('COMMIT');
 
     res.status(201).json({
       success: true,
-      conversation,
+      conversation: {
+        ...conversation,
+        public_id: conversation.public_id ? String(conversation.public_id) : null,
+        default_channel_id: defaultChannel.id,
+        default_channel_public_id: defaultChannel.public_id ? String(defaultChannel.public_id) : null,
+        default_category_id: null,
+      },
     });
   } catch (err) {
     if (client) await client.query('ROLLBACK');
@@ -168,17 +337,20 @@ router.post('/', authenticateUser, async (req, res) => {
   }
 });
 
-// GET /api/conversations/:id — get conversation details
 router.get('/:conversationId', authenticateUser, async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
 
   try {
-    // Verify membership
+    const resolvedConversation = await findConversationByIdentifier(conversationId);
+    if (!resolvedConversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     const memberCheck = await pool.query(
       `SELECT role FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+      [resolvedConversation.id, userId]
     );
 
     if (memberCheck.rows.length === 0) {
@@ -186,39 +358,47 @@ router.get('/:conversationId', authenticateUser, async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT c.*,
-        json_agg(json_build_object(
-          'user_id', cm.user_id,
-          'role', cm.role,
-          'nickname', cm.nickname,
-          'joined_at', cm.joined_at,
-          'username', u.username,
-          'display_name', up.display_name,
-          'avatar_filename', up.avatar_filename,
-          'profile_id', u.profile_id
-        )) AS members
+      `SELECT c.*, parent.public_id AS parent_public_id,
+              json_agg(json_build_object(
+                'user_id', cm.user_id,
+                'role', cm.role,
+                'nickname', cm.nickname,
+                'joined_at', cm.joined_at,
+                'username', u.username,
+                'display_name', up.display_name,
+                'avatar_filename', up.avatar_filename,
+                'profile_id', u.profile_id
+              )) AS members
        FROM conversations c
+       LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id
        JOIN conversation_members cm ON cm.conversation_id = c.id
        JOIN users u ON u.id = cm.user_id
        JOIN user_profiles up ON up.id = u.profile_id
        WHERE c.id = $1
-       GROUP BY c.id`,
-      [conversationId]
+       GROUP BY c.id, parent.public_id`,
+      [resolvedConversation.id]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    const conversation = result.rows[0];
-    const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
+    const conversation = normalizeConversationRow(result.rows[0]);
 
-    conversation.members = conversation.members.map((m) => ({
-      ...m,
-      avatar_url: m.avatar_filename
-        ? `${baseUrl}/avatars/${m.avatar_filename}`
-        : `https://api.dicebear.com/7.x/avataaars/svg?seed=${m.username}`,
+    conversation.members = conversation.members.map((member) => ({
+      ...member,
+      avatar_url: member.avatar_filename
+        ? `${baseUrl}/avatars/${member.avatar_filename}`
+        : `https://api.dicebear.com/7.x/avataaars/svg?seed=${member.username}`,
     }));
+
+    if (conversation.type === 'group') {
+      conversation.categories = await getGroupCategories(pool, conversation.id);
+      conversation.channels = await getAccessibleChannels(conversation.id, userId);
+    } else {
+      conversation.categories = [];
+      conversation.channels = [];
+    }
 
     res.json({ success: true, conversation });
   } catch (err) {
@@ -227,18 +407,21 @@ router.get('/:conversationId', authenticateUser, async (req, res) => {
   }
 });
 
-// PUT /api/conversations/:id — update conversation
 router.put('/:conversationId', authenticateUser, async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
   const { name } = req.body;
 
   try {
-    // Check if owner or admin
+    const resolvedConversation = await findConversationByIdentifier(conversationId);
+    if (!resolvedConversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     const memberCheck = await pool.query(
       `SELECT role FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+      [resolvedConversation.id, userId]
     );
 
     if (memberCheck.rows.length === 0) {
@@ -254,7 +437,7 @@ router.put('/:conversationId', authenticateUser, async (req, res) => {
        SET name = COALESCE($1, name), updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
-      [name?.trim() || null, conversationId]
+      [name?.trim() || null, resolvedConversation.id]
     );
 
     res.json({ success: true, conversation: result.rows[0] });
@@ -264,23 +447,27 @@ router.put('/:conversationId', authenticateUser, async (req, res) => {
   }
 });
 
-// DELETE /api/conversations/:id — delete conversation (owner only)
 router.delete('/:conversationId', authenticateUser, async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
 
   try {
+    const resolvedConversation = await findConversationByIdentifier(conversationId);
+    if (!resolvedConversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     const memberCheck = await pool.query(
       `SELECT role FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+      [resolvedConversation.id, userId]
     );
 
     if (memberCheck.rows.length === 0 || memberCheck.rows[0].role !== 'owner') {
       return res.status(403).json({ error: 'Only the owner can delete this conversation' });
     }
 
-    await pool.query('DELETE FROM conversations WHERE id = $1', [conversationId]);
+    await pool.query('DELETE FROM conversations WHERE id = $1', [resolvedConversation.id]);
 
     res.json({ success: true, message: 'Conversation deleted' });
   } catch (err) {

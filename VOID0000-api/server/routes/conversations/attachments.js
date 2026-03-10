@@ -9,6 +9,7 @@ import sharp from 'sharp';
 import { encode } from 'blurhash';
 import { pool } from '../../db.js';
 import { minioClient } from '../../minio.js';
+import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router({ mergeParams: true });
 
@@ -28,8 +29,8 @@ const ALLOWED_MIME_PREFIXES = [
 
 const MAGIC_BYTES = {
   jpeg: [0xff, 0xd8, 0xff],
-  png:  [0x89, 0x50, 0x4e, 0x47],
-  gif:  [0x47, 0x49, 0x46],
+  png: [0x89, 0x50, 0x4e, 0x47],
+  gif: [0x47, 0x49, 0x46],
   webp: [0x52, 0x49, 0x46, 0x46],
 };
 
@@ -39,10 +40,8 @@ const isValidImage = (buf) =>
     magic.every((byte, i) => buf[i] === byte)
   );
 
-const isGif = (buf) =>
-  MAGIC_BYTES.gif.every((byte, i) => buf[i] === byte);
+const isGif = (buf) => MAGIC_BYTES.gif.every((byte, i) => buf[i] === byte);
 
-// Public read policy for CDN access
 const PUBLIC_READ_POLICY = JSON.stringify({
   Version: '2012-10-17',
   Statement: [{
@@ -53,7 +52,6 @@ const PUBLIC_READ_POLICY = JSON.stringify({
   }],
 });
 
-// Ensure bucket exists with public read policy (run once on first import)
 (async () => {
   try {
     const exists = await minioClient.bucketExists(ATTACH_BUCKET);
@@ -61,7 +59,6 @@ const PUBLIC_READ_POLICY = JSON.stringify({
       await minioClient.makeBucket(ATTACH_BUCKET);
       console.log(`✅ MinIO bucket '${ATTACH_BUCKET}' created`);
     }
-    // Always ensure public read policy is set
     await minioClient.setBucketPolicy(ATTACH_BUCKET, PUBLIC_READ_POLICY);
     console.log(`✅ MinIO bucket '${ATTACH_BUCKET}' public read policy set`);
   } catch (err) {
@@ -74,7 +71,7 @@ const PUBLIC_READ_POLICY = JSON.stringify({
 // Returns: { urls: ['https://cdn.../chat-attachments/...'] }
 router.post('/', async (req, res) => {
   const userId = req.user.id;
-  const { conversationId } = req.params;
+  const { conversationId: conversationIdentifier } = req.params;
   const { files } = req.body;
 
   if (!Array.isArray(files) || files.length === 0) {
@@ -85,11 +82,17 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: `Maximum ${MAX_FILES} files per message` });
   }
 
-  // Verify membership
+  let conversation;
+
   try {
+    conversation = await findConversationByIdentifier(conversationIdentifier);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     const member = await pool.query(
       `SELECT role FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+      [conversation.id, userId]
     );
     if (member.rows.length === 0) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
@@ -119,7 +122,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Invalid image format. Use JPG, PNG, GIF, or WebP.' });
     }
 
-    // Strip data URL prefix and decode
     const base64 = data.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64, 'base64');
 
@@ -133,16 +135,14 @@ router.post('/', async (req, res) => {
       let ext;
 
       if (isGif(buffer)) {
-        // Keep GIFs as-is to preserve animation
         processed = buffer;
         contentType = 'image/gif';
         ext = 'gif';
       } else {
-        // Resize and convert to WebP
         const meta = await sharp(buffer).metadata();
         const needsResize = meta.width > MAX_DIMENSION || meta.height > MAX_DIMENSION;
 
-        const pipeline = sharp(buffer).rotate(); // strip EXIF, auto-orient
+        const pipeline = sharp(buffer).rotate();
         if (needsResize) {
           pipeline.resize(MAX_DIMENSION, MAX_DIMENSION, { fit: 'inside', withoutEnlargement: true });
         }
@@ -163,15 +163,14 @@ router.post('/', async (req, res) => {
 
       urls.push(`${CDN_BASE}/${ATTACH_BUCKET}/${filename}`);
 
-      // Generate blurhash from a small raw RGBA sample of the processed image
       try {
         const THUMB = 32;
-        const { data, info } = await sharp(processed)
+        const { data: blurhashData, info } = await sharp(processed)
           .resize(THUMB, THUMB, { fit: 'inside' })
           .ensureAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
-        const hash = encode(new Uint8ClampedArray(data), info.width, info.height, 4, 4);
+        const hash = encode(new Uint8ClampedArray(blurhashData), info.width, info.height, 4, 4);
         blurhashes.push(hash);
       } catch {
         blurhashes.push('');
@@ -182,7 +181,13 @@ router.post('/', async (req, res) => {
     }
   }
 
-  res.json({ success: true, urls, blurhashes });
+  res.json({
+    success: true,
+    conversation_id: conversation.id,
+    conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+    urls,
+    blurhashes,
+  });
 });
 
 export default router;

@@ -1,6 +1,7 @@
 // server/routes/conversations/dm.js
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import { conversationSnowflake } from '../../utils/snowflake.js';
 
 const router = Router();
 
@@ -13,7 +14,6 @@ router.post('/:userId', async (req, res) => {
     return res.status(400).json({ error: 'Cannot DM yourself' });
   }
 
-  // Ensure consistent ordering for dm_pairs
   const [userA, userB] = [currentUserId, targetUserId].sort();
 
   let client;
@@ -22,10 +22,11 @@ router.post('/:userId', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    // Check if DM already exists
     const existing = await client.query(
-      `SELECT conversation_id FROM dm_pairs
-       WHERE user_a = $1 AND user_b = $2`,
+      `SELECT dp.conversation_id, c.public_id
+       FROM dm_pairs dp
+       JOIN conversations c ON c.id = dp.conversation_id
+       WHERE dp.user_a = $1 AND dp.user_b = $2`,
       [userA, userB]
     );
 
@@ -34,11 +35,11 @@ router.post('/:userId', async (req, res) => {
       return res.json({
         success: true,
         conversation_id: existing.rows[0].conversation_id,
+        conversation_public_id: existing.rows[0].public_id ? String(existing.rows[0].public_id) : null,
         created: false,
       });
     }
 
-    // Verify friendship
     const friendCheck = await client.query(
       `SELECT id FROM friendships
        WHERE ((requester_id = $1 AND addressee_id = $2) OR (requester_id = $2 AND addressee_id = $1))
@@ -51,21 +52,22 @@ router.post('/:userId', async (req, res) => {
       return res.status(403).json({ error: 'You can only DM friends' });
     }
 
-    // Create conversation
     const convResult = await client.query(
-      `INSERT INTO conversations (type) VALUES ('dm') RETURNING id`
+      `INSERT INTO conversations (type, public_id)
+       VALUES ('dm', $1)
+       RETURNING id, public_id`,
+      [conversationSnowflake.nextId()]
     );
 
     const conversationId = convResult.rows[0].id;
+    const conversationPublicId = convResult.rows[0].public_id ? String(convResult.rows[0].public_id) : null;
 
-    // Add both members
     await client.query(
       `INSERT INTO conversation_members (conversation_id, user_id, role)
        VALUES ($1, $2, 'member'), ($1, $3, 'member')`,
       [conversationId, currentUserId, targetUserId]
     );
 
-    // Create DM pair lookup
     await client.query(
       `INSERT INTO dm_pairs (user_a, user_b, conversation_id)
        VALUES ($1, $2, $3)`,
@@ -77,6 +79,7 @@ router.post('/:userId', async (req, res) => {
     res.status(201).json({
       success: true,
       conversation_id: conversationId,
+      conversation_public_id: conversationPublicId,
       created: true,
     });
   } catch (err) {

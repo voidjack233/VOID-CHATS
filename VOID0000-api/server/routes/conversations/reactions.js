@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { cassandra } from '../../scylla.js';
 import { sendToUser } from '../../gateway/index.js';
+import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router({ mergeParams: true });
 
@@ -23,10 +24,14 @@ async function getConversationMembers(conversationId) {
   return result.rows.map((r) => r.user_id);
 }
 
+function conversationPublicId(conversation) {
+  return conversation?.public_id ? String(conversation.public_id) : null;
+}
+
 // PUT /:emoji — toggle reaction
 router.put('/:emoji', async (req, res) => {
   const userId = req.user.id;
-  const { conversationId, messageId } = req.params;
+  const { conversationId: conversationIdentifier, messageId } = req.params;
   const emoji = decodeURIComponent(req.params.emoji);
 
   if (!emoji || emoji.length > 10) {
@@ -34,6 +39,13 @@ router.put('/:emoji', async (req, res) => {
   }
 
   try {
+    const conversation = await findConversationByIdentifier(conversationIdentifier);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const conversationId = conversation.id;
+    const conversationPublic = conversationPublicId(conversation);
     const member = await verifyMembership(conversationId, userId);
     if (!member) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
@@ -100,6 +112,7 @@ router.put('/:emoji', async (req, res) => {
 
     const payload = {
       conversation_id: conversationId,
+      conversation_public_id: conversationPublic,
       message_id: messageId,
       emoji,
       user_id: userId,

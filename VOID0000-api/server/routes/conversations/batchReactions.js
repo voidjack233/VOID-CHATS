@@ -3,13 +3,14 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { cassandra } from '../../scylla.js';
+import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router({ mergeParams: true });
 
 // GET /api/conversations/:conversationId/reactions?message_ids=id1,id2,id3
 router.get('/', async (req, res) => {
   const userId = req.user.id;
-  const { conversationId } = req.params;
+  const { conversationId: conversationIdentifier } = req.params;
   const { message_ids } = req.query;
 
   if (!message_ids) {
@@ -17,7 +18,13 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    // Verify membership
+    const conversation = await findConversationByIdentifier(conversationIdentifier);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const conversationId = conversation.id;
+
     const memberCheck = await pool.query(
       `SELECT role FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
@@ -28,7 +35,7 @@ router.get('/', async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this conversation' });
     }
 
-    const ids = message_ids.split(',').filter(Boolean).slice(0, 100);
+    const ids = String(message_ids).split(',').filter(Boolean).slice(0, 100);
 
     if (ids.length === 0) {
       return res.json({ success: true, reactions: {} });
@@ -38,7 +45,6 @@ router.get('/', async (req, res) => {
     const userUuid = cassandra.types.Uuid.fromString(userId);
     const msgUuids = ids.map((id) => cassandra.types.TimeUuid.fromString(id));
 
-    // Counts from counter table + current user's own reactions in parallel
     const [countsResult, meResult] = await Promise.all([
       scylla.execute(
         `SELECT message_id, emoji, count FROM reaction_counts
@@ -74,7 +80,12 @@ router.get('/', async (req, res) => {
       };
     }
 
-    res.json({ success: true, reactions });
+    res.json({
+      success: true,
+      conversation_id: conversationId,
+      conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+      reactions,
+    });
   } catch (err) {
     console.error('Batch reactions error:', err);
     res.status(500).json({ error: 'Failed to fetch reactions' });

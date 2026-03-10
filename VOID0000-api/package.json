@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "nodemon server/server.js",
     "start": "node server/server.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "backfill:conversation-public-ids": "node server/scripts/backfillConversationPublicIds.js",
+    "migrate:legacy-group-to-general": "node server/scripts/migrateLegacyGroupToGeneral.js"
   },
   "dependencies": {
     "argon2": "^0.44.0",

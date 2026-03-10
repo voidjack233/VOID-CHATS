@@ -1,8 +1,18 @@
 // server/routes/conversations/keys.js
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router();
+
+async function resolveKeyConversationId(requestedConversationId) {
+  const conversation = await findConversationByIdentifier(requestedConversationId);
+  if (!conversation) {
+    return null;
+  }
+
+  return conversation.parent_conversation_id || conversation.id;
+}
 
 // ==================== KEY BACKUP (must be before /:userId) ====================
 
@@ -96,13 +106,11 @@ router.post('/', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    // Deactivate old keys
     await client.query(
       `UPDATE user_keys SET is_active = FALSE WHERE user_id = $1`,
       [userId]
     );
 
-    // Insert new key
     const result = await client.query(
       `INSERT INTO user_keys (user_id, public_key, key_id, is_active)
        VALUES ($1, $2, $3, TRUE)
@@ -130,15 +138,24 @@ router.get('/group/:conversationId', async (req, res) => {
   const { conversationId } = req.params;
 
   try {
-    // Verify membership
+    const resolvedConversation = await findConversationByIdentifier(conversationId);
+    if (!resolvedConversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     const memberCheck = await pool.query(
       `SELECT user_id FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+      [resolvedConversation.id, userId]
     );
 
     if (memberCheck.rows.length === 0) {
       return res.status(403).json({ error: 'Not a member' });
+    }
+
+    const keyConversationId = await resolveKeyConversationId(conversationId);
+    if (!keyConversationId) {
+      return res.status(404).json({ error: 'Conversation not found' });
     }
 
     const result = await pool.query(
@@ -146,7 +163,7 @@ router.get('/group/:conversationId', async (req, res) => {
        FROM group_key_distribution
        WHERE conversation_id = $1 AND user_id = $2
        ORDER BY key_version DESC`,
-      [conversationId, userId]
+      [keyConversationId, userId]
     );
 
     res.json({ success: true, keys: result.rows });
@@ -167,11 +184,20 @@ router.post('/group/:conversationId', async (req, res) => {
   }
 
   try {
-    // Verify owner or admin
+    const resolvedConversation = await findConversationByIdentifier(conversationId);
+    if (!resolvedConversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const keyConversationId = await resolveKeyConversationId(conversationId);
+    if (!keyConversationId) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
     const memberCheck = await pool.query(
       `SELECT role FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+      [keyConversationId, userId]
     );
 
     if (memberCheck.rows.length === 0) {
@@ -193,7 +219,7 @@ router.post('/group/:conversationId', async (req, res) => {
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (conversation_id, user_id, key_version)
            DO UPDATE SET encrypted_group_key = EXCLUDED.encrypted_group_key`,
-          [conversationId, dist.user_id, dist.encrypted_group_key, key_version]
+          [keyConversationId, dist.user_id, dist.encrypted_group_key, key_version]
         );
       }
 
