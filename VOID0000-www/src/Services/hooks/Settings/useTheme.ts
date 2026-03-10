@@ -3,6 +3,8 @@ import { useState, useEffect, useCallback, createContext, useContext } from 'rea
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 
 export type Theme = 'void' | 'ocean' | 'forest' | 'sunset' | 'midnight';
+export type MessageGroupSpacing = 0 | 4 | 8 | 16 | 24;
+export type ChatFontScale = 12 | 14 | 15 | 16 | 18 | 20 | 24;
 
 export interface ThemePreferences {
   accent_color: string;
@@ -10,9 +12,15 @@ export interface ThemePreferences {
   text_color: string;   // <-- Added
   hover_color: string;  // <-- Added
   theme: Theme;
+  density?: Density;
+  message_group_spacing?: MessageGroupSpacing;
+  chat_font_scale?: ChatFontScale;
 }
 
 export type Density = 'comfortable' | 'compact';
+
+const MESSAGE_GROUP_SPACING_OPTIONS = [0, 4, 8, 16, 24] as const;
+const CHAT_FONT_SCALE_OPTIONS = [12, 14, 15, 16, 18, 20, 24] as const;
 
 interface ThemeContextValue {
   accentColor: string;
@@ -21,6 +29,8 @@ interface ThemeContextValue {
   hoverColor: string;
   currentTheme: Theme;
   density: Density;
+  messageGroupSpacing: MessageGroupSpacing;
+  chatFontScale: ChatFontScale;
   loading: boolean;
   savedAccent: string;
   savedBg: string;
@@ -31,6 +41,8 @@ interface ThemeContextValue {
   setTheme: (theme: Theme) => void;
   setCustomColors: (accent: string, bg: string, text: string, hover: string) => void;
   setDensity: (d: Density) => void;
+  setMessageGroupSpacing: (spacing: MessageGroupSpacing) => void;
+  setChatFontScale: (fontScale: ChatFontScale) => void;
   savePreferences: () => Promise<void>;
   resetToDefaults: () => void;
   revertChanges: () => void;
@@ -50,6 +62,22 @@ const DEFAULT_ACCENT = THEME_PRESETS.void.accent;
 const DEFAULT_BG = THEME_PRESETS.void.bg;
 const DEFAULT_TEXT = THEME_PRESETS.void.text;
 const DEFAULT_HOVER = THEME_PRESETS.void.hover;
+const DEFAULT_MESSAGE_GROUP_SPACING: MessageGroupSpacing = 8;
+const DEFAULT_CHAT_FONT_SCALE: ChatFontScale = 16;
+
+function parseMessageGroupSpacing(value: string | null): MessageGroupSpacing {
+  const parsed = Number(value);
+  return (MESSAGE_GROUP_SPACING_OPTIONS as readonly number[]).includes(parsed)
+    ? (parsed as MessageGroupSpacing)
+    : DEFAULT_MESSAGE_GROUP_SPACING;
+}
+
+function parseChatFontScale(value: string | null): ChatFontScale {
+  const parsed = Number(value);
+  return (CHAT_FONT_SCALE_OPTIONS as readonly number[]).includes(parsed)
+    ? (parsed as ChatFontScale)
+    : DEFAULT_CHAT_FONT_SCALE;
+}
 
 export const adjustColor = (hex: string, percent: number): string => {
   if (!hex) return '#1f2937';
@@ -117,9 +145,21 @@ export function useThemeProvider(): ThemeContextValue {
     const saved = localStorage.getItem('void_density');
     return saved === 'comfortable' ? 'comfortable' : 'compact';
   });
+  const [messageGroupSpacing, setMessageGroupSpacingState] = useState<MessageGroupSpacing>(() =>
+    parseMessageGroupSpacing(localStorage.getItem('void_message_group_spacing'))
+  );
+  const [chatFontScale, setChatFontScaleState] = useState<ChatFontScale>(() =>
+    parseChatFontScale(localStorage.getItem('void_chat_font_scale'))
+  );
 
   const setDensity = useCallback((d: Density) => {
     setDensityState(d);
+  }, []);
+  const setMessageGroupSpacing = useCallback((spacing: MessageGroupSpacing) => {
+    setMessageGroupSpacingState(spacing);
+  }, []);
+  const setChatFontScale = useCallback((fontScale: ChatFontScale) => {
+    setChatFontScaleState(fontScale);
   }, []);
 
   const [savedTheme, setSavedTheme] = useState<Theme>(DEFAULT_THEME);
@@ -131,6 +171,12 @@ export function useThemeProvider(): ThemeContextValue {
     const saved = localStorage.getItem('void_density');
     return saved === 'comfortable' ? 'comfortable' : 'compact';
   });
+  const [savedMessageGroupSpacing, setSavedMessageGroupSpacing] = useState<MessageGroupSpacing>(() =>
+    parseMessageGroupSpacing(localStorage.getItem('void_message_group_spacing'))
+  );
+  const [savedChatFontScale, setSavedChatFontScale] = useState<ChatFontScale>(() =>
+    parseChatFontScale(localStorage.getItem('void_chat_font_scale'))
+  );
 
   const hasChanges =
     accentColor !== savedAccent ||
@@ -138,7 +184,9 @@ export function useThemeProvider(): ThemeContextValue {
     textColor !== savedText ||
     hoverColor !== savedHover ||
     currentTheme !== savedTheme ||
-    density !== savedDensity;
+    density !== savedDensity ||
+    messageGroupSpacing !== savedMessageGroupSpacing ||
+    chatFontScale !== savedChatFontScale;
 
   const loadPreferences = useCallback(async () => {
     try {
@@ -147,6 +195,8 @@ export function useThemeProvider(): ThemeContextValue {
       const localBg = localStorage.getItem('void_bg');
       const localText = localStorage.getItem('void_text');
       const localHover = localStorage.getItem('void_hover');
+      const localMessageGroupSpacing = parseMessageGroupSpacing(localStorage.getItem('void_message_group_spacing'));
+      const localChatFontScale = parseChatFontScale(localStorage.getItem('void_chat_font_scale'));
 
       if (localTheme && THEME_PRESETS[localTheme]) {
         const preset = THEME_PRESETS[localTheme];
@@ -172,6 +222,10 @@ export function useThemeProvider(): ThemeContextValue {
           setDensityState(localDensity);
           setSavedDensity(localDensity);
         }
+        setMessageGroupSpacingState(localMessageGroupSpacing);
+        setSavedMessageGroupSpacing(localMessageGroupSpacing);
+        setChatFontScaleState(localChatFontScale);
+        setSavedChatFontScale(localChatFontScale);
 
         applyColorsToDOM(accent, bg, text, hover);
       }
@@ -181,13 +235,28 @@ export function useThemeProvider(): ThemeContextValue {
         const data = await res.json();
 
         if (data.success && data.preferences) {
-          const { accent_color, bg_color, text_color, hover_color, theme, density: serverDensityRaw } = data.preferences;
+          const {
+            accent_color,
+            bg_color,
+            text_color,
+            hover_color,
+            theme,
+            density: serverDensityRaw,
+            message_group_spacing: serverMessageGroupSpacingRaw,
+            chat_font_scale: serverChatFontScaleRaw,
+          } = data.preferences;
           const serverTheme = (theme && THEME_PRESETS[theme as Theme]) ? theme as Theme : DEFAULT_THEME;
           const serverAccent = accent_color || THEME_PRESETS[serverTheme].accent;
           const serverBg = bg_color || THEME_PRESETS[serverTheme].bg;
           const serverText = text_color || THEME_PRESETS[serverTheme].text;
           const serverHover = hover_color || THEME_PRESETS[serverTheme].hover;
           const serverDensity: Density = (serverDensityRaw === 'comfortable' || serverDensityRaw === 'compact') ? serverDensityRaw : 'compact';
+          const serverMessageGroupSpacing = parseMessageGroupSpacing(
+            serverMessageGroupSpacingRaw != null ? String(serverMessageGroupSpacingRaw) : localStorage.getItem('void_message_group_spacing')
+          );
+          const serverChatFontScale = parseChatFontScale(
+            serverChatFontScaleRaw != null ? String(serverChatFontScaleRaw) : localStorage.getItem('void_chat_font_scale')
+          );
 
           setCurrentTheme(serverTheme);
           setAccentColor(serverAccent);
@@ -202,6 +271,10 @@ export function useThemeProvider(): ThemeContextValue {
           setSavedText(serverText);
           setSavedHover(serverHover);
           setSavedDensity(serverDensity);
+          setMessageGroupSpacingState(serverMessageGroupSpacing);
+          setSavedMessageGroupSpacing(serverMessageGroupSpacing);
+          setChatFontScaleState(serverChatFontScale);
+          setSavedChatFontScale(serverChatFontScale);
 
           applyColorsToDOM(serverAccent, serverBg, serverText, serverHover);
 
@@ -211,6 +284,8 @@ export function useThemeProvider(): ThemeContextValue {
           localStorage.setItem('void_text', serverText);
           localStorage.setItem('void_hover', serverHover);
           localStorage.setItem('void_density', serverDensity);
+          localStorage.setItem('void_message_group_spacing', String(serverMessageGroupSpacing));
+          localStorage.setItem('void_chat_font_scale', String(serverChatFontScale));
         }
       } catch {
         // Server down, rely on localStorage
@@ -268,6 +343,8 @@ export function useThemeProvider(): ThemeContextValue {
         hover_color: hoverColor,
         theme: currentTheme,
         density,
+        message_group_spacing: messageGroupSpacing,
+        chat_font_scale: chatFontScale,
       }),
     });
 
@@ -277,6 +354,8 @@ export function useThemeProvider(): ThemeContextValue {
     setSavedText(textColor);
     setSavedHover(hoverColor);
     setSavedDensity(density);
+    setSavedMessageGroupSpacing(messageGroupSpacing);
+    setSavedChatFontScale(chatFontScale);
 
     localStorage.setItem('void_theme', currentTheme);
     localStorage.setItem('void_accent', accentColor);
@@ -284,7 +363,9 @@ export function useThemeProvider(): ThemeContextValue {
     localStorage.setItem('void_text', textColor);
     localStorage.setItem('void_hover', hoverColor);
     localStorage.setItem('void_density', density);
-  }, [accentColor, bgColor, textColor, hoverColor, currentTheme, density]);
+    localStorage.setItem('void_message_group_spacing', String(messageGroupSpacing));
+    localStorage.setItem('void_chat_font_scale', String(chatFontScale));
+  }, [accentColor, bgColor, textColor, hoverColor, currentTheme, density, messageGroupSpacing, chatFontScale]);
 
   const resetToDefaults = useCallback(() => {
     setCurrentTheme(DEFAULT_THEME);
@@ -293,6 +374,8 @@ export function useThemeProvider(): ThemeContextValue {
     setTextColor(DEFAULT_TEXT);
     setHoverColor(DEFAULT_HOVER);
     setDensityState('compact');
+    setMessageGroupSpacingState(DEFAULT_MESSAGE_GROUP_SPACING);
+    setChatFontScaleState(DEFAULT_CHAT_FONT_SCALE);
     applyColorsToDOM(DEFAULT_ACCENT, DEFAULT_BG, DEFAULT_TEXT, DEFAULT_HOVER);
   }, []);
 
@@ -303,8 +386,10 @@ export function useThemeProvider(): ThemeContextValue {
     setTextColor(savedText);
     setHoverColor(savedHover);
     setDensityState(savedDensity);
+    setMessageGroupSpacingState(savedMessageGroupSpacing);
+    setChatFontScaleState(savedChatFontScale);
     applyColorsToDOM(savedAccent, savedBg, savedText, savedHover);
-  }, [savedTheme, savedAccent, savedBg, savedText, savedHover, savedDensity]);
+  }, [savedTheme, savedAccent, savedBg, savedText, savedHover, savedDensity, savedMessageGroupSpacing, savedChatFontScale]);
 
   return {
     accentColor,
@@ -313,6 +398,8 @@ export function useThemeProvider(): ThemeContextValue {
     hoverColor,
     currentTheme,
     density,
+    messageGroupSpacing,
+    chatFontScale,
     loading,
     savedAccent,
     savedBg,
@@ -323,6 +410,8 @@ export function useThemeProvider(): ThemeContextValue {
     setTheme,
     setCustomColors,
     setDensity,
+    setMessageGroupSpacing,
+    setChatFontScale,
     savePreferences,
     resetToDefaults,
     revertChanges,

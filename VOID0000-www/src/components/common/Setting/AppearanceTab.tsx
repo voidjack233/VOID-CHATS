@@ -12,6 +12,9 @@ const themePresets = [
   { id: 'midnight' as Theme, name: 'Midnight', description: 'Deep purple night', colors: ['#030712', '#8b5cf6'] },
 ] as const;
 
+const messageGroupSpacingOptions = [0, 4, 8, 16, 24] as const;
+const chatFontScaleOptions = [12, 14, 15, 16, 18, 20, 24] as const;
+
 const isDarkBackground = (bgColor: string): boolean => {
   if (!bgColor) return true;
   try {
@@ -33,11 +36,15 @@ const AppearanceTab = () => {
     hoverColor,
     currentTheme,
     density,
+    messageGroupSpacing,
+    chatFontScale,
     loading,
     hasChanges,
     setTheme,
     setCustomColors,
     setDensity,
+    setMessageGroupSpacing,
+    setChatFontScale,
     savePreferences,
     resetToDefaults,
   } = useTheme();
@@ -80,6 +87,14 @@ const AppearanceTab = () => {
     bgColor === THEME_PRESETS.void.bg &&
     textColor === THEME_PRESETS.void.text &&
     hoverColor === THEME_PRESETS.void.hover;
+  const compactPreviewGap = Math.max(8, messageGroupSpacing + 8);
+  const comfortablePreviewGap = Math.max(12, messageGroupSpacing + 12);
+  const previewNameSize = Math.max(10, chatFontScale - 5);
+  const previewMetaSize = Math.max(10, chatFontScale - 5);
+  const previewBubbleCompact = Math.max(12, chatFontScale - 2);
+  const previewBubbleComfortable = Math.max(13, chatFontScale);
+  const selectedMessageSpacingIndex = messageGroupSpacingOptions.indexOf(messageGroupSpacing);
+  const selectedChatFontScaleIndex = chatFontScaleOptions.indexOf(chatFontScale);
 
   return (
     <div className="space-y-8 pb-24">
@@ -308,10 +323,15 @@ const AppearanceTab = () => {
         <div className="w-full">
           {density === 'compact' ? (
             /* COMPACT PREVIEW: Name above, Avatar + Bubble below */
-            <div className="flex flex-col gap-4 w-full">
+            <div className="flex flex-col w-full" style={{ gap: `${compactPreviewGap}px` }}>
               {/* Other Person */}
               <div className="flex flex-col items-start w-full">
-                <span className="text-[10px] font-semibold px-1 ml-10 mb-1" style={{ color: accentColor }}>Alice</span>
+                <span
+                  className="font-semibold px-1 ml-10 mb-1"
+                  style={{ color: accentColor, fontSize: `${previewNameSize}px` }}
+                >
+                  Alice
+                </span>
                 <div className="flex items-end gap-2 w-full">
                   <div
                     className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
@@ -319,7 +339,10 @@ const AppearanceTab = () => {
                   >
                     A
                   </div>
-                  <div className="rounded-2xl rounded-bl-sm text-xs px-3 py-1.5" style={{ backgroundColor: hoverColor, color: textColor }}>
+                  <div
+                    className="rounded-2xl rounded-bl-sm px-3 py-1.5"
+                    style={{ backgroundColor: hoverColor, color: textColor, fontSize: `${previewBubbleCompact}px` }}
+                  >
                     Hey! Did you see the new update?
                   </div>
                 </div>
@@ -327,7 +350,12 @@ const AppearanceTab = () => {
 
               {/* You */}
               <div className="flex flex-col items-start w-full">
-                <span className="text-[10px] font-semibold px-1 ml-10 mb-1" style={{ color: accentColor }}>You</span>
+                <span
+                  className="font-semibold px-1 ml-10 mb-1"
+                  style={{ color: accentColor, fontSize: `${previewNameSize}px` }}
+                >
+                  You
+                </span>
                 <div className="flex items-end gap-2 w-full">
                   <div
                     className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold shadow-sm"
@@ -336,8 +364,12 @@ const AppearanceTab = () => {
                     Y
                   </div>
                   <div
-                    className="rounded-2xl rounded-bl-sm text-xs px-3 py-1.5 font-medium shadow-sm"
-                    style={{ backgroundColor: accentColor, color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827' }}
+                    className="rounded-2xl rounded-bl-sm px-3 py-1.5 font-medium shadow-sm"
+                    style={{
+                      backgroundColor: accentColor,
+                      color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827',
+                      fontSize: `${previewBubbleCompact}px`,
+                    }}
                   >
                     Yes! The compact layout is perfect now 🎉
                   </div>
@@ -346,10 +378,15 @@ const AppearanceTab = () => {
             </div>
           ) : (
             /* COMFORTABLE PREVIEW: Right aligned for you, left for them */
-            <div className="flex flex-col gap-5 w-full">
+            <div className="flex flex-col w-full" style={{ gap: `${comfortablePreviewGap}px` }}>
               {/* Other Person */}
               <div className="flex flex-col items-start w-full">
-                <span className="text-[10px] font-semibold px-1 ml-10 mb-1" style={{ color: accentColor }}>Alice</span>
+                <span
+                  className="font-semibold px-1 ml-10 mb-1"
+                  style={{ color: accentColor, fontSize: `${previewNameSize}px` }}
+                >
+                  Alice
+                </span>
                 <div className="flex items-end gap-2 w-full">
                   <div
                     className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
@@ -358,7 +395,10 @@ const AppearanceTab = () => {
                     A
                   </div>
                   <div className="flex flex-col items-start gap-1 w-full max-w-[80%]">
-                    <div className="rounded-2xl rounded-bl-sm text-sm px-4 py-2.5 shadow-sm" style={{ backgroundColor: hoverColor, color: textColor }}>
+                    <div
+                      className="rounded-2xl rounded-bl-sm px-4 py-2.5 shadow-sm"
+                      style={{ backgroundColor: hoverColor, color: textColor, fontSize: `${previewBubbleComfortable}px` }}
+                    >
                       Hey! Did you see the new update?
                     </div>
                   </div>
@@ -371,12 +411,24 @@ const AppearanceTab = () => {
                 <div className="flex items-end flex-row-reverse w-full">
                   <div className="flex flex-col items-end gap-1 w-full max-w-[80%]">
                     <div
-                      className="rounded-2xl rounded-br-sm text-sm font-medium px-4 py-2.5 shadow-sm"
-                      style={{ backgroundColor: accentColor, color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827' }}
+                      className="rounded-2xl rounded-br-sm font-medium px-4 py-2.5 shadow-sm"
+                      style={{
+                        backgroundColor: accentColor,
+                        color: isDarkBackground(accentColor) ? '#f3f4f6' : '#111827',
+                        fontSize: `${previewBubbleComfortable}px`,
+                      }}
                     >
                       Yes! Comfortable mode is super clean without avatars 🎉
                     </div>
-                    <span className="text-[10px] px-1 font-medium" style={{ color: `color-mix(in srgb, ${textColor} 40%, transparent)` }}>10:42 AM</span>
+                    <span
+                      className="px-1 font-medium"
+                      style={{
+                        color: `color-mix(in srgb, ${textColor} 40%, transparent)`,
+                        fontSize: `${previewMetaSize}px`,
+                      }}
+                    >
+                      10:42 AM
+                    </span>
                   </div>
                 </div>
               </div>
@@ -393,6 +445,74 @@ const AppearanceTab = () => {
           <span className="text-xs" style={{ color: textColor }}>
             {isDark ? 'Dark mode' : 'Light mode'} · {density === 'compact' ? 'Compact' : 'Comfortable'}
           </span>
+        </div>
+      </div>
+
+      <div className="space-y-5 rounded-lg border border-void-bg-sec bg-void-bg-sec/40 p-5">
+        <div>
+          <h3 className="text-md font-semibold text-void-text flex items-center gap-2">
+            <span className="w-1 h-4 bg-void-accent rounded-full" />
+            Chat Layout Controls
+          </h3>
+          <p className="mt-1 text-xs text-void-text-muted">
+            Adjust message group spacing and chat font size for both the preview and your chat view.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-void-text">Space Between Message Groups</p>
+              <p className="text-xs text-void-text-muted">Controls the vertical gap between separated message clusters.</p>
+            </div>
+            <span className="rounded-full bg-void-bg-main px-3 py-1 text-xs font-semibold text-void-text">
+              {messageGroupSpacing}px
+            </span>
+          </div>
+
+          <input
+            type="range"
+            min={0}
+            max={messageGroupSpacingOptions.length - 1}
+            step={1}
+            value={selectedMessageSpacingIndex}
+            onChange={(e) => setMessageGroupSpacing(messageGroupSpacingOptions[Number(e.target.value)] ?? 8)}
+            className="w-full accent-void-accent"
+          />
+
+          <div className="flex justify-between text-[11px] text-void-text-muted">
+            {messageGroupSpacingOptions.map((value) => (
+              <span key={value}>{value}px</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-void-text">Chat Font Scaling</p>
+              <p className="text-xs text-void-text-muted">Scales message text in both the preview and the actual chat view.</p>
+            </div>
+            <span className="rounded-full bg-void-bg-main px-3 py-1 text-xs font-semibold text-void-text">
+              {chatFontScale}px
+            </span>
+          </div>
+
+          <input
+            type="range"
+            min={0}
+            max={chatFontScaleOptions.length - 1}
+            step={1}
+            value={selectedChatFontScaleIndex}
+            onChange={(e) => setChatFontScale(chatFontScaleOptions[Number(e.target.value)] ?? 16)}
+            className="w-full accent-void-accent"
+          />
+
+          <div className="flex justify-between text-[11px] text-void-text-muted">
+            {chatFontScaleOptions.map((value) => (
+              <span key={value}>{value}px</span>
+            ))}
+          </div>
         </div>
       </div>
 

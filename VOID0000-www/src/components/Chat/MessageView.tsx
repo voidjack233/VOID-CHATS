@@ -20,22 +20,19 @@ import BlurImage from '../common/BlurImage';
 import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
 
 const DENSITY: Record<Density, {
-  groupGap: string;
-  consecutiveGap: string;
+  consecutiveGap: number;
   bubblePadding: string;
   maxWidth: string;
   timestampAlways: boolean;
 }> = {
   compact: {
-    groupGap: 'pt-3',
-    consecutiveGap: 'pt-0.5',
+    consecutiveGap: 2,
     bubblePadding: 'px-3 py-1.5',
     maxWidth: 'max-w-[85%]',
     timestampAlways: false,
   },
   comfortable: {
-    groupGap: 'pt-5',
-    consecutiveGap: 'pt-1.5',
+    consecutiveGap: 6,
     bubblePadding: 'px-4 py-2.5',
     maxWidth: 'max-w-[70%]',
     timestampAlways: true,
@@ -83,7 +80,7 @@ const MessageView = ({
   messageDelete,
 }: MessageViewProps) => {
   const { user } = useUser();
-  const { density } = useTheme();
+  const { density, messageGroupSpacing, chatFontScale } = useTheme();
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ msg: Message; x: number; y: number } | null>(null);
@@ -468,6 +465,11 @@ const MessageView = ({
     return date.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   };
 
+  const metaFontSize = Math.max(10, chatFontScale - 4);
+  const replyFontSize = Math.max(11, chatFontScale - 2);
+  const bubbleFontSize = chatFontScale;
+  const encryptedFontSize = Math.max(10, chatFontScale - 3);
+
   // ============== Virtuoso itemContent ==============
   const renderMessage = (index: number, msg: Message) => {
     const listIndex = Math.max(0, index - firstItemIndex);
@@ -508,11 +510,14 @@ const MessageView = ({
     const msgReactions = getMessageReactions(msg.message_id, msg.reactions);
 
     return (
-      <div className={`px-2 ${startsGroup ? d.groupGap : d.consecutiveGap}`}>
+      <div
+        className="px-2"
+        style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
+      >
         {showDateSeparator && (
           <div className="flex items-center gap-3 py-4">
             <div className="flex-1 h-px bg-void-bg-hover" />
-            <span className="text-xs text-void-text-muted font-medium shrink-0">
+            <span className="text-void-text-muted font-medium shrink-0" style={{ fontSize: `${metaFontSize}px` }}>
               {getDateLabel(msg.created_at)}
             </span>
             <div className="flex-1 h-px bg-void-bg-hover" />
@@ -520,7 +525,10 @@ const MessageView = ({
         )}
 
         {startsGroup && (
-          <div className={`flex items-center gap-2 text-xs pb-0.5 px-1 ${isRightAligned ? 'justify-end' : leftIndent}`}>
+          <div
+            className={`flex items-center gap-2 pb-0.5 px-1 ${isRightAligned ? 'justify-end' : leftIndent}`}
+            style={{ fontSize: `${metaFontSize}px` }}
+          >
             {isRightAligned ? (
               <>
                 <span className="text-void-text-muted">{formatTime(msg.created_at)}</span>
@@ -569,7 +577,10 @@ const MessageView = ({
           <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}>
             {msg.reply_to && (
               <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
-                <div className="inline-flex items-center gap-1.5 text-xs text-void-text-muted cursor-pointer hover:text-void-text transition-colors">
+                <div
+                  className="inline-flex items-center gap-1.5 text-void-text-muted cursor-pointer hover:text-void-text transition-colors"
+                  style={{ fontSize: `${replyFontSize}px` }}
+                >
                   <CornerUpRight className="w-3 h-3 flex-shrink-0" />
                   {replyParent ? (
                     <>
@@ -605,21 +616,27 @@ const MessageView = ({
             )}
 
             {msg.is_deleted ? (
-              <div className={`${d.bubblePadding} rounded-2xl text-sm italic text-void-text-muted bg-void-bg-hover/50`}>
+              <div
+                className={`${d.bubblePadding} rounded-2xl italic text-void-text-muted bg-void-bg-hover/50`}
+                style={{ fontSize: `${bubbleFontSize}px` }}
+              >
                 [deleted]
               </div>
             ) : (() => {
               const hasRealContent = msg.content && msg.content !== '[encrypted]';
               if (!hasRealContent && msg.attachments?.length) return null;
               return (
-                <div className={`${d.bubblePadding} rounded-2xl text-sm whitespace-pre-wrap break-words ${
+                <div
+                  className={`${d.bubblePadding} rounded-2xl whitespace-pre-wrap break-words ${
                   isRightAligned
                     ? 'rounded-br-sm bg-void-accent text-white'
                     : isOwn
                       ? 'rounded-bl-sm bg-void-accent text-white'
                       : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                }`}>
-                  {hasRealContent ? msg.content : <span className="italic opacity-50 text-xs">encrypted</span>}
+                }`}
+                  style={{ fontSize: `${bubbleFontSize}px` }}
+                >
+                  {hasRealContent ? msg.content : <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>encrypted</span>}
                   {msg.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
                 </div>
               );
