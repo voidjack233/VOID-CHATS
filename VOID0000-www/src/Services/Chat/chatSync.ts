@@ -18,6 +18,8 @@ interface SyncResult {
 interface LoadConversationOptions {
   forceSync?: boolean;
   preferSessionCache?: boolean;
+  initialLimit?: number;
+  syncLimit?: number;
 }
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -35,7 +37,8 @@ class MessageSync {
     cached: { messages: LocalMessage[]; has_more: boolean };
     syncPromise: Promise<SyncResult>;
   }> {
-    const cached = await messageStore.getMessages(conversationId);
+    const initialLimit = options?.initialLimit ?? MESSAGE_PAGE_SIZE;
+    const cached = await messageStore.getMessages(conversationId, { limit: initialLimit });
     const cursor = await messageStore.getSyncCursor(conversationId);
     const hasSessionValidation = this.sessionValidatedConversations.has(conversationId);
     const shouldPreferSessionCache = options?.preferSessionCache ?? false;
@@ -55,7 +58,12 @@ class MessageSync {
     let syncPromise: Promise<SyncResult>;
 
     if (shouldSync) {
-      syncPromise = this._syncFromServer(conversationId, encryptionKey, cached)
+      syncPromise = this._syncFromServer(
+        conversationId,
+        encryptionKey,
+        cached,
+        options?.syncLimit ?? MESSAGE_PAGE_SIZE
+      )
         .then((result) => {
           this.sessionValidatedConversations.add(conversationId);
           return result;
@@ -70,15 +78,16 @@ class MessageSync {
   private async _syncFromServer(
     conversationId: string,
     encryptionKey: CryptoKey,
-    cached: { messages: LocalMessage[]; has_more: boolean }
+    cached: { messages: LocalMessage[]; has_more: boolean },
+    syncLimit: number
   ): Promise<SyncResult> {
     try {
       const { messages: serverMsgs, has_more } = await getMessages(
         conversationId,
         encryptionKey,
-        { limit: MESSAGE_PAGE_SIZE }
+        { limit: syncLimit }
       );
-      const hasMore = has_more || serverMsgs.length >= MESSAGE_PAGE_SIZE;
+      const hasMore = has_more || serverMsgs.length >= syncLimit;
 
       // FIX: Always update the sync cursor so the 60-second timer resets, 
       // even if the server says there are zero new messages.

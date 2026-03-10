@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Virtuoso, VirtuosoHandle, ListRange, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
-import { Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight, Copy, Forward } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -111,6 +111,7 @@ const MessageView = ({
     messages,
     loading,
     loadingOlder,
+    prefetchingOlder,
     loadingNewer,
     hasOlder,
     hasNewer,
@@ -204,6 +205,11 @@ const MessageView = ({
   }, [jumpToPresent]);
 
   const triggerOlderLoad = useCallback(() => {
+    if (prefetchingOlder) {
+      pendingStartReachedRef.current = true;
+      return;
+    }
+
     if (loadingOlder || !hasOlder || topLoadLockedRef.current) {
       return;
     }
@@ -217,16 +223,16 @@ const MessageView = ({
     pendingStartReachedRef.current = false;
     topLoadLockedRef.current = true;
     void loadOlder();
-  }, [hasOlder, loadOlder, loadingOlder, visualMessages]);
+  }, [hasOlder, loadOlder, loadingOlder, prefetchingOlder, visualMessages]);
 
   const handleStartReached = useCallback(() => {
-    if (!canLoadOlderRef.current || scrollSeekActiveRef.current) {
+    if (!canLoadOlderRef.current || scrollSeekActiveRef.current || prefetchingOlder) {
       pendingStartReachedRef.current = true;
       return;
     }
 
     triggerOlderLoad();
-  }, [triggerOlderLoad]);
+  }, [prefetchingOlder, triggerOlderLoad]);
 
   const handleRangeChanged = useCallback((range: ListRange) => {
     const previousStartIndex = lastRangeStartIndexRef.current;
@@ -247,11 +253,12 @@ const MessageView = ({
       pendingStartReachedRef.current &&
       canLoadOlderRef.current &&
       !scrollSeekActiveRef.current &&
+      !prefetchingOlder &&
       relativeStartIndex <= 1
     ) {
       triggerOlderLoad();
     }
-  }, [firstItemIndex, triggerOlderLoad]);
+  }, [firstItemIndex, prefetchingOlder, triggerOlderLoad]);
 
   const scrollSeekConfiguration = useMemo(() => ({
     enter: (velocity: number) => {
@@ -281,12 +288,13 @@ const MessageView = ({
       !scrollSeekActiveRef.current &&
       pendingStartReachedRef.current &&
       canLoadOlderRef.current &&
+      !prefetchingOlder &&
       relativeStartIndex !== null &&
       relativeStartIndex <= 1
     ) {
       triggerOlderLoad();
     }
-  }, [firstItemIndex, scrollSeekExitTick, triggerOlderLoad]);
+  }, [firstItemIndex, prefetchingOlder, scrollSeekExitTick, triggerOlderLoad]);
 
   const renderScrollSeekPlaceholder = useCallback(({ height, index }: ScrollSeekPlaceholderProps) => {
     const isRightAligned = density === 'comfortable' && index % 4 === 1;
@@ -401,6 +409,16 @@ const MessageView = ({
     },
     [emojiPickerTarget, user?.id, handleToggleReaction]
   );
+
+  const handleCopyMessageText = useCallback(async (content?: string) => {
+    if (!content || content === '[encrypted]' || content === '[deleted]') return;
+
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch (error) {
+      console.error('Failed to copy message text:', error);
+    }
+  }, []);
 
   const dmIntroFriend = useMemo(() => {
     if (conversation.type !== 'dm') return null;
@@ -848,20 +866,26 @@ const MessageView = ({
         >
           <button
             onClick={() => {
-              const el = document.querySelector(`[data-msg-id="${contextMenu.msg.message_id}"]`);
-              if (el) {
-                const rect = el.getBoundingClientRect();
-                setEmojiPickerTarget({
-                  messageId: contextMenu.msg.message_id,
-                  position: { x: rect.left, y: rect.bottom + 8 },
-                });
-              }
+              setEmojiPickerTarget({
+                messageId: contextMenu.msg.message_id,
+                position: { x: contextMenu.x, y: contextMenu.y },
+              });
               setContextMenu(null);
             }}
             className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
           >
             <Smile className="w-4 h-4" />
             Add Reaction
+          </button>
+          <button
+            onClick={async () => {
+              await handleCopyMessageText(contextMenu.msg.content);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+          >
+            <Copy className="w-4 h-4" />
+            Copy Text
           </button>
           {onReply && (
             <button
@@ -875,6 +899,13 @@ const MessageView = ({
               Reply
             </button>
           )}
+          <button
+            disabled
+            className="w-full text-left px-3 py-2 text-sm text-void-text-muted/60 flex items-center gap-2 cursor-not-allowed"
+          >
+            <Forward className="w-4 h-4" />
+            Forward Message
+          </button>
           {contextMenu.msg.sender_id === user?.id && (
             <>
               <div className="h-px w-full bg-void-bg-hover my-1" />

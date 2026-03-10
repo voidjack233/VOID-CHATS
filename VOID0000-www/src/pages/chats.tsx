@@ -1,5 +1,5 @@
 // src/pages/Chats.tsx
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Settings, Users, Hash, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal } from 'lucide-react';
 import ConversationSettings from '../components/Chat/ConversationSettings';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
@@ -11,6 +11,7 @@ import UseSetting from '../components/common/Setting/Setting';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageView';
 import MessageInput from '../components/Chat/MessageInput';
+import GroupChannelsSidebar from '../components/Chat/GroupChannelsSidebar';
 import GroupCreateModal from '../components/Chat/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
 import AddFriend from '../components/common/Friends/AddFriend';
@@ -33,6 +34,7 @@ const ChatDashboard = () => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(true);
   const [convRefresh, setConvRefresh] = useState(0);
   const [showConvSettings, setShowConvSettings] = useState(false);
+  const [activeGroupChannelId, setActiveGroupChannelId] = useState('general');
 
   const {
     members,
@@ -83,6 +85,20 @@ const ChatDashboard = () => {
     }
     return activeConversation.name || 'Unnamed';
   };
+
+  const getHeaderSubtitle = () => {
+    if (!activeConversation) return '';
+    if (activeConversation.type === 'group') {
+      return `# ${activeGroupChannelId}`;
+    }
+    return '';
+  };
+
+  useEffect(() => {
+    if (activeConversation?.type === 'group') {
+      setActiveGroupChannelId('general');
+    }
+  }, [activeConversation?.id, activeConversation?.type]);
 
   if (loading) {
     return (
@@ -196,77 +212,94 @@ const ChatDashboard = () => {
       {/* Main Area */}
       <div className={`flex-1 flex flex-col bg-void-bg-sec min-w-0 ${!isMobileSidebarOpen ? 'flex' : 'hidden md:flex'}`}>
         {activeConversation ? (
-          <>
-            <nav className="h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm">
-              <div className="flex items-center min-w-0 flex-1">
-                <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors">
-                  <ArrowLeft className="w-5 h-5" />
-                </button>
-                {getHeaderIcon()}
-                <h1 className="text-lg font-bold truncate">{getHeaderName()}</h1>
-              </div>
-              <button
-                onClick={() => setShowConvSettings(true)}
-                className="p-2 rounded-lg text-void-text-muted hover:text-void-text hover:bg-void-bg-hover transition-colors shrink-0 ml-2"
-                title="Conversation settings"
-              >
-                <SlidersHorizontal className="w-4 h-4" />
-              </button>
-            </nav>
-
-            {encryptionError ? (
-              <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-void-bg-sec/50">
-                <ShieldAlert className="w-12 h-12 text-orange-400 mb-4 opacity-80" />
-                <p className="text-sm font-semibold text-void-text mb-2">{encryptionError}</p>
-                <p className="text-xs text-void-text-muted mb-6 max-w-xs">
-                  {encryptionError.includes('not available')
-                    ? 'Your private keys are stored on the device where you first set up encryption. Use that browser to read messages.'
-                    : 'The other user needs to initialize their encryption keys. Ask them to log in to secure this conversation.'}
-                </p>
+          <div className="flex flex-1 min-h-0">
+            <div className="flex min-w-0 flex-1 flex-col">
+              <nav className="h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm">
+                <div className="flex items-center min-w-0 flex-1">
+                  <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors">
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                  {getHeaderIcon()}
+                  <div className="min-w-0">
+                    <h1 className="text-lg font-bold truncate">{getHeaderName()}</h1>
+                    {getHeaderSubtitle() && (
+                      <p className="truncate text-xs font-medium text-void-text-muted">
+                        {getHeaderSubtitle()}
+                      </p>
+                    )}
+                  </div>
+                </div>
                 <button
-                  onClick={() => {
-                    const current = activeConversation;
-                    handleBackToMe();
-                    setTimeout(() => handleSelectConversation(current), 50);
-                  }}
-                  className="px-6 py-2 bg-void-accent-hover hover:bg-void-accent text-white text-xs font-bold rounded-lg transition-all shadow-lg"
+                  onClick={() => setShowConvSettings(true)}
+                  className="p-2 rounded-lg text-void-text-muted hover:text-void-text hover:bg-void-bg-hover transition-colors shrink-0 ml-2"
+                  title="Conversation settings"
                 >
-                  Retry Connection
+                  <SlidersHorizontal className="w-4 h-4" />
                 </button>
-              </div>
-            ) : (
-              <>
-                <MessageView
-                  key={activeConversation.id}
-                  conversation={activeConversation}
-                  encryptionKey={encryptionKey}
-                  encryptionError={encryptionError}
-                  members={members}
-                  onReply={(msg) => setReplyTo(msg)}
-                  onEdit={(msg) => setEditingMessage(msg)}
-                  newMessage={newMessage}
-                  userAvatar={myAvatarUrl}
-                  gateway={gateway}
-                  messageUpdate={messageUpdate}
-                  messageDelete={messageDelete}
-                />
-                <MessageInput
-                  conversation={activeConversation}
-                  encryptionKey={encryptionKey}
-                  keyVersion={keyVersion}
-                  onMessageSent={(...args) => {
-                    handleMessageSent(...args);
-                    setConvRefresh((n) => n + 1);
-                  }}
-                  editingMessage={editingMessage}
-                  onCancelEdit={() => setEditingMessage(null)}
-                  replyTo={replyTo}
-                  onCancelReply={() => setReplyTo(null)}
-                  onEditComplete={handleEditComplete}
-                />
-              </>
+              </nav>
+
+              {encryptionError ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-void-bg-sec/50">
+                  <ShieldAlert className="w-12 h-12 text-orange-400 mb-4 opacity-80" />
+                  <p className="text-sm font-semibold text-void-text mb-2">{encryptionError}</p>
+                  <p className="text-xs text-void-text-muted mb-6 max-w-xs">
+                    {encryptionError.includes('not available')
+                      ? 'Your private keys are stored on the device where you first set up encryption. Use that browser to read messages.'
+                      : 'The other user needs to initialize their encryption keys. Ask them to log in to secure this conversation.'}
+                  </p>
+                  <button
+                    onClick={() => {
+                      const current = activeConversation;
+                      handleBackToMe();
+                      setTimeout(() => handleSelectConversation(current), 50);
+                    }}
+                    className="px-6 py-2 bg-void-accent-hover hover:bg-void-accent text-white text-xs font-bold rounded-lg transition-all shadow-lg"
+                  >
+                    Retry Connection
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <MessageView
+                    key={activeConversation.id}
+                    conversation={activeConversation}
+                    encryptionKey={encryptionKey}
+                    encryptionError={encryptionError}
+                    members={members}
+                    onReply={(msg) => setReplyTo(msg)}
+                    onEdit={(msg) => setEditingMessage(msg)}
+                    newMessage={newMessage}
+                    userAvatar={myAvatarUrl}
+                    gateway={gateway}
+                    messageUpdate={messageUpdate}
+                    messageDelete={messageDelete}
+                  />
+                  <MessageInput
+                    conversation={activeConversation}
+                    encryptionKey={encryptionKey}
+                    keyVersion={keyVersion}
+                    onMessageSent={(...args) => {
+                      handleMessageSent(...args);
+                      setConvRefresh((n) => n + 1);
+                    }}
+                    editingMessage={editingMessage}
+                    onCancelEdit={() => setEditingMessage(null)}
+                    replyTo={replyTo}
+                    onCancelReply={() => setReplyTo(null)}
+                    onEditComplete={handleEditComplete}
+                  />
+                </>
+              )}
+            </div>
+
+            {activeConversation.type === 'group' && (
+              <GroupChannelsSidebar
+                conversation={activeConversation}
+                activeChannelId={activeGroupChannelId}
+                onSelectChannel={setActiveGroupChannelId}
+              />
             )}
-          </>
+          </div>
         ) : (
           <div className="flex-1 flex flex-col min-h-0 bg-void-bg-sec">
             <div className="md:hidden h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm bg-void-bg-sec">

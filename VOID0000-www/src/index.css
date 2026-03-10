@@ -71,6 +71,7 @@
 @theme {
   --color-void-bg-main: var(--bg-main);
   --color-void-bg-sec: var(--bg-sec);
+  --color-void-bg-secondary: var(--bg-sec);
   --color-void-bg-hover: var(--bg-hover);
   
   --color-void-accent: var(--accent);

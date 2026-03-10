@@ -4,8 +4,13 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { deleteMessage, getMessageById, getMessages, Message } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
-import { MESSAGE_CACHE_LIMIT, MESSAGE_PAGE_SIZE } from '../../Chat/chatConstants';
+import {
+  MESSAGE_CACHE_LIMIT,
+  MESSAGE_INITIAL_PAGE_SIZE,
+  MESSAGE_PAGE_SIZE,
+} from '../../Chat/chatConstants';
 
+const INITIAL_FETCH_SIZE = MESSAGE_INITIAL_PAGE_SIZE;
 const FETCH_SIZE = MESSAGE_PAGE_SIZE;
 const CACHE_LIMIT = MESSAGE_CACHE_LIMIT;
 const MESSAGE_LIST_BASE_INDEX = 100000;
@@ -105,6 +110,7 @@ export const useMessageList = (
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [prefetchingOlder, setPrefetchingOlder] = useState(false);
   const [loadingNewer, setLoadingNewer] = useState(false);
   const [hasOlder, setHasOlder] = useState(false);
   const [hasNewer, setHasNewer] = useState(false);
@@ -115,10 +121,14 @@ export const useMessageList = (
   const [replyCache, setReplyCache] = useState<Record<string, Message>>({});
   const fetchingReplies = useRef<Set<string>>(new Set());
   const messagesRef = useRef<Message[]>([]);
+  const prefetchingOlderRef = useRef(false);
+  const didSilentOlderPrefetchRef = useRef(false);
 
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
+    prefetchingOlderRef.current = false;
+    didSilentOlderPrefetchRef.current = false;
   }, [conversationId]);
 
   useEffect(() => {
@@ -137,13 +147,18 @@ export const useMessageList = (
       setIsAtPresent(true);
       setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
       setGroupBreakBeforeIds(new Set());
+      setPrefetchingOlder(false);
       setLoading(true);
 
       try {
         const { cached, syncPromise } = await messageSync.loadConversation(
           conversationId,
           encryptionKey,
-          { preferSessionCache: true }
+          {
+            preferSessionCache: true,
+            initialLimit: INITIAL_FETCH_SIZE,
+            syncLimit: INITIAL_FETCH_SIZE,
+          }
         );
 
         if (ignore) return;
@@ -152,7 +167,7 @@ export const useMessageList = (
           const uiMessages = sortMessages(cached.messages.map(toUIMessage));
           setMessages(uiMessages);
           // If the cache is exactly one page, assume there may be older history until proven otherwise.
-          setHasOlder(cached.has_more || uiMessages.length >= FETCH_SIZE);
+          setHasOlder(cached.has_more || uiMessages.length >= INITIAL_FETCH_SIZE);
           setLoading(false);
           onMessagesLoaded?.(uiMessages);
 
@@ -163,7 +178,7 @@ export const useMessageList = (
           setHasOlder((prev) => prev || syncResult.hasMore);
 
           if (syncResult.newMessages.length > 0) {
-            const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
+            const fresh = await messageSync.readLocal(conversationId, { limit: INITIAL_FETCH_SIZE });
             if (ignore) return;
             const freshUI = sortMessages(fresh.messages.map(toUIMessage));
             setMessages((prev) => {
@@ -172,7 +187,7 @@ export const useMessageList = (
               );
               return trimMessages(unique, 'old');
             });
-            setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= FETCH_SIZE);
+            setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= INITIAL_FETCH_SIZE);
             onMessagesLoaded?.(freshUI);
           }
         } else {
@@ -181,11 +196,11 @@ export const useMessageList = (
           if (ignore) return;
           setSyncing(false);
 
-          const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
+          const fresh = await messageSync.readLocal(conversationId, { limit: INITIAL_FETCH_SIZE });
           if (ignore) return;
           const freshUI = sortMessages(fresh.messages.map(toUIMessage));
           setMessages(freshUI);
-          setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= FETCH_SIZE);
+          setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= INITIAL_FETCH_SIZE);
           setLoading(false);
           onMessagesLoaded?.(freshUI);
         }
@@ -273,22 +288,73 @@ export const useMessageList = (
   }, [messageDelete]);
 
   // ============== Load Older (Scroll Up) ==============
-  const loadOlder = useCallback(async () => {
-    if (!encryptionKey || loadingOlder || !hasOlder || messages.length === 0) return;
-    setLoadingOlder(true);
+  const applyOlderMessages = useCallback((olderUI: Message[], seamBreakBeforeId: string) => {
+    if (olderUI.length === 0) return;
+
+    const existingIds = new Set(messagesRef.current.map((m) => m.message_id));
+    const prependedCount = olderUI.filter((m) => !existingIds.has(m.message_id)).length;
+    const merged = [...olderUI, ...messagesRef.current];
+    const unique = Array.from(
+      new Map(merged.map((m) => [m.message_id, m])).values()
+    );
+    const trimmed = trimMessages(unique, 'new');
+
+    messagesRef.current = trimmed;
+    setMessages(trimmed);
+
+    if (trimmed.length < unique.length) {
+      setHasNewer(true);
+      setIsAtPresent(false);
+    }
+
+    if (prependedCount > 0) {
+      setFirstItemIndex((prev) => prev - prependedCount);
+    }
+
+    setGroupBreakBeforeIds((prev) => {
+      const next = new Set(prev);
+      next.add(seamBreakBeforeId);
+      return next;
+    });
+
+    onMessagesLoaded?.(olderUI);
+  }, [onMessagesLoaded]);
+
+  const loadOlderPage = useCallback(async (options?: { silent?: boolean; forceServer?: boolean }) => {
+    const isSilent = options?.silent === true;
+    const forceServer = options?.forceServer === true;
+    if (
+      !encryptionKey ||
+      loadingOlder ||
+      prefetchingOlderRef.current ||
+      !hasOlder ||
+      messagesRef.current.length === 0
+    ) {
+      return;
+    }
+
+    if (isSilent) {
+      prefetchingOlderRef.current = true;
+      setPrefetchingOlder(true);
+    } else {
+      setLoadingOlder(true);
+    }
 
     try {
-      const oldest = messages[0];
+      const oldest = messagesRef.current[0];
       if (!oldest) return;
       const seamBreakBeforeId = oldest.message_id;
 
-      // Try local first
-      let result = await messageSync.readLocal(conversationId, {
-        before: oldest.message_id,
-        limit: FETCH_SIZE,
-      });
+      let result: { messages: LocalMessage[]; has_more: boolean };
 
-      if (result.messages.length < FETCH_SIZE || !result.has_more) {
+      if (forceServer) {
+        const localResult = await messageSync.readLocal(conversationId, {
+          before: oldest.message_id,
+          limit: FETCH_SIZE,
+        });
+        const localUI = sortMessages(localResult.messages.map(toUIMessage));
+        applyOlderMessages(localUI, seamBreakBeforeId);
+
         const serverResult = await getMessages(conversationId, encryptionKey, {
           before: oldest.message_id,
           limit: FETCH_SIZE,
@@ -298,51 +364,89 @@ export const useMessageList = (
           await messageStore.putMessages(localMsgs);
         }
         result = {
-          messages: mergeLocalMessages(result.messages, localMsgs),
-          has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+          messages: mergeLocalMessages(localResult.messages, localMsgs),
+          has_more: localResult.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
         };
+      } else {
+        // Try local first
+        result = await messageSync.readLocal(conversationId, {
+          before: oldest.message_id,
+          limit: FETCH_SIZE,
+        });
+
+        if (result.messages.length < FETCH_SIZE || !result.has_more) {
+          const serverResult = await getMessages(conversationId, encryptionKey, {
+            before: oldest.message_id,
+            limit: FETCH_SIZE,
+          });
+          const localMsgs = toLocalMessages(serverResult.messages);
+          if (localMsgs.length > 0) {
+            await messageStore.putMessages(localMsgs);
+          }
+          result = {
+            messages: mergeLocalMessages(result.messages, localMsgs),
+            has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+          };
+        }
       }
 
       const olderUI = sortMessages(result.messages.map(toUIMessage));
       if (olderUI.length > 0) {
-        const existingIds = new Set(messagesRef.current.map((m) => m.message_id));
-        const prependedCount = olderUI.filter((m) => !existingIds.has(m.message_id)).length;
-
-        setMessages((prev) => {
-          // Merge and deduplicate to prevent any sync overlaps
-          const merged = [...olderUI, ...prev];
-          const unique = Array.from(
-            new Map(merged.map(m => [m.message_id, m])).values()
-          );
-          
-          const trimmed = trimMessages(unique, 'new');
-          
-          if (trimmed.length < unique.length) {
-            setHasNewer(true);
-            setIsAtPresent(false);
-          }
-          
-          return trimmed;
-        });
-        if (prependedCount > 0) {
-          setFirstItemIndex((prev) => prev - prependedCount);
-        }
+        applyOlderMessages(olderUI, seamBreakBeforeId);
         setHasOlder(result.has_more);
-        setGroupBreakBeforeIds((prev) => {
-          const next = new Set(prev);
-          next.add(seamBreakBeforeId);
-          return next;
-        });
-        onMessagesLoaded?.(olderUI);
       } else {
         setHasOlder(false);
       }
     } catch (err) {
       console.error('Failed to load older messages:', err);
     } finally {
-      setLoadingOlder(false);
+      if (isSilent) {
+        prefetchingOlderRef.current = false;
+        setPrefetchingOlder(false);
+      } else {
+        setLoadingOlder(false);
+      }
     }
-  }, [encryptionKey, loadingOlder, hasOlder, messages, conversationId, onMessagesLoaded]);
+  }, [applyOlderMessages, conversationId, encryptionKey, hasOlder, loadingOlder]);
+
+  const loadOlder = useCallback(async () => {
+    await loadOlderPage();
+  }, [loadOlderPage]);
+
+  useEffect(() => {
+    if (
+      !encryptionKey ||
+      loading ||
+      messages.length === 0 ||
+      !hasOlder ||
+      didSilentOlderPrefetchRef.current
+    ) {
+      return;
+    }
+
+    didSilentOlderPrefetchRef.current = true;
+    let cancelled = false;
+    let frameId: number | null = null;
+    let timeoutId: number | null = null;
+
+    frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(() => {
+        if (!cancelled) {
+          void loadOlderPage({ silent: true, forceServer: true });
+        }
+      }, 0);
+    });
+
+    return () => {
+      cancelled = true;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [conversationId, encryptionKey, hasOlder, loading, loadOlderPage, messages.length]);
 
   // ============== Load Newer (Scroll Down) ==============
   const loadNewer = useCallback(async () => {
@@ -499,6 +603,7 @@ export const useMessageList = (
     loading,
     syncing,
     loadingOlder,
+    prefetchingOlder,
     loadingNewer,
     hasOlder,
     hasNewer,

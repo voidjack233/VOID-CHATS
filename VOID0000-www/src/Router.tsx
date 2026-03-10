@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { ErrorBoundary } from './components/Auth/ErrorBoundary';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
@@ -37,6 +37,15 @@ const PageLoader = () => (
 );
 
 export default function Router() {
+  useEffect(() => {
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+
+    document.addEventListener('contextmenu', handleContextMenu);
+    return () => document.removeEventListener('contextmenu', handleContextMenu);
+  }, []);
+
   return (
     <ErrorBoundary>
       <ThemeWrapper>
