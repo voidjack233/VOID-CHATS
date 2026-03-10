@@ -425,18 +425,29 @@ const MessageView = ({
     ) || null;
   }, [conversation.dm_user_id, conversation.dm_username, conversation.type, friends]);
 
+  const dmIntroMember = useMemo(() => {
+    if (conversation.type !== 'dm' || !user?.id) return null;
+    return Object.values(members).find((member) => member.user_id !== user.id) || null;
+  }, [conversation.type, members, user?.id]);
+
   const conversationStartLabel =
     conversation.type === 'dm'
-      ? conversation.dm_display_name || dmIntroFriend?.display_name || conversation.dm_username || dmIntroFriend?.username || 'this user'
+      ? conversation.dm_display_name ||
+        dmIntroMember?.display_name ||
+        dmIntroFriend?.display_name ||
+        conversation.dm_username ||
+        dmIntroMember?.username ||
+        dmIntroFriend?.username ||
+        'Direct message'
       : conversation.name || 'this conversation';
   const conversationStartAvatar =
-    conversation.dm_avatar_url || dmIntroFriend?.avatar_url || null;
+    conversation.dm_avatar_url || dmIntroMember?.avatar_url || dmIntroFriend?.avatar_url || null;
   const conversationStartUsername =
     conversation.type === 'dm'
-      ? conversation.dm_username || dmIntroFriend?.username || null
+      ? conversation.dm_username || dmIntroMember?.username || dmIntroFriend?.username || null
       : null;
   const conversationStartUserId =
-    conversation.dm_user_id || dmIntroFriend?.id || null;
+    conversation.dm_user_id || dmIntroMember?.user_id || dmIntroFriend?.id || null;
   const friendsSinceLabel = dmIntroFriend?.friends_since
     ? new Date(dmIntroFriend.friends_since).toLocaleDateString([], {
         year: 'numeric',

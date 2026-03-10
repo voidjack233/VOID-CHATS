@@ -1,6 +1,7 @@
 // src/pages/Chats.tsx
 import { useEffect, useState } from 'react';
 import { Settings, Users, Hash, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal } from 'lucide-react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../components/Chat/ConversationSettings';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
 import { useUserProfile } from '../Services/hooks/editProfile/userProfile';
@@ -11,13 +12,25 @@ import UseSetting from '../components/common/Setting/Setting';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageView';
 import MessageInput from '../components/Chat/MessageInput';
-import GroupChannelsSidebar from '../components/Chat/GroupChannelsSidebar';
-import GroupCreateModal from '../components/Chat/GroupCreateModal';
+import CreateChannelModal from '../components/Chat/groups/CreateChannelModal';
+import GroupChannelsSidebar from '../components/Chat/groups/GroupChannelsSidebar';
+import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
 import AddFriend from '../components/common/Friends/AddFriend';
 import { gateway } from '../Services/Gateway/gateway';
 
 const ChatDashboard = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const {
+    dmConversationId,
+    groupConversationId,
+    channelConversationId,
+  } = useParams<{
+    dmConversationId?: string;
+    groupConversationId?: string;
+    channelConversationId?: string;
+  }>();
   const { loading, user } = useAuth();
 
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
@@ -34,11 +47,13 @@ const ChatDashboard = () => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(true);
   const [convRefresh, setConvRefresh] = useState(0);
   const [showConvSettings, setShowConvSettings] = useState(false);
-  const [activeGroupChannelId, setActiveGroupChannelId] = useState('general');
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [createChannelInitialCategoryId, setCreateChannelInitialCategoryId] = useState<string | null>(null);
 
   const {
     members,
     activeConversation,
+    activeGroup,
     encryptionKey,
     keyVersion,
     encryptionError,
@@ -51,10 +66,84 @@ const ChatDashboard = () => {
     setReplyTo,
     setMessageUpdate,
     handleSelectConversation,
+    handleSelectChannel,
+    refreshActiveGroup,
     handleMessageSent,
     handleStartDM,
     handleBackToMe,
+    openConversationByIdentifier,
+    openGroupByIdentifier,
   } = useChatManager(user);
+
+  const getRouteId = (conversation?: { public_id?: string | null }) => conversation?.public_id || null;
+
+  const getDmRoute = (conversation?: { public_id?: string | null }) => {
+    const routeId = getRouteId(conversation);
+    return routeId ? `/chats/@me/${routeId}` : '/chats';
+  };
+
+  const getGroupRoute = (
+    group?: { public_id?: string | null },
+    channel?: { public_id?: string | null } | null
+  ) => {
+    const groupRouteId = getRouteId(group);
+    if (!groupRouteId) return '/chats';
+
+    const channelRouteId = getRouteId(channel || undefined);
+    return channelRouteId
+      ? `/chats/${groupRouteId}/${channelRouteId}`
+      : `/chats/${groupRouteId}`;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const syncRouteState = async () => {
+      if (loading || !user?.id) return;
+
+      try {
+        if (dmConversationId) {
+          const conversation = await openConversationByIdentifier(dmConversationId);
+          if (!cancelled && conversation?.type !== 'dm') {
+            handleBackToMe();
+            navigate('/chats', { replace: true });
+          }
+          return;
+        }
+
+        if (groupConversationId) {
+          const result = await openGroupByIdentifier(groupConversationId, channelConversationId || null);
+          if (cancelled) return;
+
+          const normalizedRoute = getGroupRoute(result.group, result.conversation.type === 'channel' ? result.conversation : null);
+          if (normalizedRoute !== '/chats' && normalizedRoute !== location.pathname) {
+            navigate(normalizedRoute, { replace: true });
+          }
+          return;
+        }
+
+        handleBackToMe();
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Failed to sync chat route:', err);
+        handleBackToMe();
+        navigate('/chats', { replace: true });
+      }
+    };
+
+    void syncRouteState();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loading,
+    user?.id,
+    dmConversationId,
+    groupConversationId,
+    channelConversationId,
+    location.pathname,
+    navigate,
+  ]);
 
   const handleEditComplete = (messageId: string, newContent: string) => {
     setMessageUpdate({
@@ -65,9 +154,12 @@ const ChatDashboard = () => {
     });
   };
 
+  const displayConversation = activeGroup || activeConversation;
+  const activeChannels = activeGroup?.channels || [];
+
   const getHeaderIcon = () => {
-    if (!activeConversation) return null;
-    switch (activeConversation.type) {
+    if (!displayConversation) return null;
+    switch (displayConversation.type) {
       case 'dm': return <MessageCircle className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
       case 'group': return <Users className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
       default: return <Hash className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
@@ -75,30 +167,23 @@ const ChatDashboard = () => {
   };
 
   const getHeaderName = () => {
-    if (!activeConversation) return '';
-    if (activeConversation.type === 'dm') {
-      const nameFromConv = activeConversation.dm_display_name || activeConversation.dm_username;
+    if (!displayConversation) return '';
+    if (displayConversation.type === 'dm') {
+      const nameFromConv = displayConversation.dm_display_name || displayConversation.dm_username;
       if (nameFromConv) return nameFromConv;
       const peer = Object.values(members).find((m: any) => m.user_id !== user?.id);
       if (peer) return peer.display_name || peer.username;
       return 'Unknown';
     }
-    return activeConversation.name || 'Unnamed';
+    return displayConversation.name || 'Unnamed';
   };
 
   const getHeaderSubtitle = () => {
-    if (!activeConversation) return '';
-    if (activeConversation.type === 'group') {
-      return `# ${activeGroupChannelId}`;
+    if (activeGroup && activeConversation?.type === 'channel') {
+      return `# ${activeConversation.name || 'channel'}`;
     }
     return '';
   };
-
-  useEffect(() => {
-    if (activeConversation?.type === 'group') {
-      setActiveGroupChannelId('general');
-    }
-  }, [activeConversation?.id, activeConversation?.type]);
 
   if (loading) {
     return (
@@ -108,7 +193,7 @@ const ChatDashboard = () => {
     );
   }
 
-  const isFriendsActive = !activeConversation;
+  const isFriendsActive = !displayConversation;
 
   return (
     <div className="flex h-screen bg-void-bg-main text-void-text overflow-hidden font-sans">
@@ -121,16 +206,42 @@ const ChatDashboard = () => {
       {showCreateGroup && user?.id && (
         <GroupCreateModal
           onClose={() => setShowCreateGroup(false)}
-          onCreated={() => setShowCreateGroup(false)}
+          onCreated={() => {
+            setShowCreateGroup(false);
+            setConvRefresh((n) => n + 1);
+          }}
           currentUserId={user.id}
         />
       )}
-      {showConvSettings && activeConversation && user?.id && (
+      {showCreateChannel && activeGroup && (
+        <CreateChannelModal
+          group={activeGroup}
+          initialCategoryId={createChannelInitialCategoryId}
+          onClose={() => {
+            setShowCreateChannel(false);
+            setCreateChannelInitialCategoryId(null);
+          }}
+          onCreated={async (channel) => {
+            setConvRefresh((n) => n + 1);
+            await refreshActiveGroup(channel.public_id || channel.id);
+            const nextRoute = getGroupRoute(activeGroup, channel);
+            if (nextRoute !== '/chats') {
+              navigate(nextRoute);
+              return;
+            }
+          }}
+        />
+      )}
+      {showConvSettings && displayConversation && user?.id && (
         <ConversationSettings
-          conversation={activeConversation}
+          conversation={displayConversation}
           currentUserId={user.id}
           onClose={() => setShowConvSettings(false)}
-          onLeft={() => { handleBackToMe(); setConvRefresh(n => n + 1); }}
+          onLeft={() => {
+            handleBackToMe();
+            navigate('/chats');
+            setConvRefresh((n) => n + 1);
+          }}
         />
       )}
 
@@ -144,6 +255,7 @@ const ChatDashboard = () => {
           <button
             onClick={() => {
               handleBackToMe();
+              navigate('/chats');
               setShowAddFriendView(false); // <-- Resets to the friends list view
               setIsMobileSidebarOpen(false);
             }}
@@ -183,9 +295,15 @@ const ChatDashboard = () => {
 
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
           <ConversationList
-            activeId={activeConversation?.id || null}
+            activeId={activeGroup?.id || activeConversation?.id || null}
             onSelect={(conv) => {
-              handleSelectConversation(conv);
+              if (conv.type === 'dm') {
+                navigate(getDmRoute(conv));
+              } else if (conv.type === 'group') {
+                navigate(getGroupRoute(conv));
+              } else {
+                handleSelectConversation(conv);
+              }
               setIsMobileSidebarOpen(false);
             }}
             onCreateGroup={() => setShowCreateGroup(true)}
@@ -249,9 +367,16 @@ const ChatDashboard = () => {
                   </p>
                   <button
                     onClick={() => {
-                      const current = activeConversation;
-                      handleBackToMe();
-                      setTimeout(() => handleSelectConversation(current), 50);
+                      if (dmConversationId) {
+                        void openConversationByIdentifier(dmConversationId);
+                        return;
+                      }
+                      if (groupConversationId) {
+                        void openGroupByIdentifier(groupConversationId, channelConversationId || null);
+                        return;
+                      }
+                      const current = activeGroup || activeConversation;
+                      if (current) handleSelectConversation(current);
                     }}
                     className="px-6 py-2 bg-void-accent-hover hover:bg-void-accent text-white text-xs font-bold rounded-lg transition-all shadow-lg"
                   >
@@ -292,11 +417,23 @@ const ChatDashboard = () => {
               )}
             </div>
 
-            {activeConversation.type === 'group' && (
+            {activeGroup && (
               <GroupChannelsSidebar
-                conversation={activeConversation}
-                activeChannelId={activeGroupChannelId}
-                onSelectChannel={setActiveGroupChannelId}
+                conversation={activeGroup}
+                channels={activeChannels}
+                activeChannelId={activeConversation.id}
+                onSelectChannel={(channel) => {
+                  const nextRoute = getGroupRoute(activeGroup, channel);
+                  if (nextRoute !== '/chats') {
+                    navigate(nextRoute);
+                    return;
+                  }
+                  handleSelectChannel(channel);
+                }}
+                onCreateChannel={(categoryId) => {
+                  setCreateChannelInitialCategoryId(categoryId || null);
+                  setShowCreateChannel(true);
+                }}
               />
             )}
           </div>
@@ -316,12 +453,14 @@ const ChatDashboard = () => {
               <AddFriend />
             ) : (
               <FriendsView
-              friends={friends}
-              onStartDM={(...args) => {
-                handleStartDM(...args);
-                setConvRefresh((n) => n + 1);
-              }}
-            />
+                friends={friends}
+                onStartDM={(...args) => {
+                  void handleStartDM(...args).then((routeId) => {
+                    if (routeId) navigate(`/chats/@me/${routeId}`);
+                    setConvRefresh((n) => n + 1);
+                  });
+                }}
+              />
             )}
 
           </div>

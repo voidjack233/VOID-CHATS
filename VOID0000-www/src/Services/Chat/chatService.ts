@@ -9,10 +9,14 @@ const API_PREFIX = '/api/conversations';
 
 export interface Conversation {
   id: string;
+  public_id?: string | null;
   type: 'dm' | 'group' | 'channel';
   name: string | null;
   owner_id: string | null;
   icon_filename: string | null;
+  parent_conversation_id?: string | null;
+  parent_public_id?: string | null;
+  category_id?: string | null;
   created_at: string;
   updated_at: string;
   role: string;
@@ -22,6 +26,10 @@ export interface Conversation {
   dm_display_name: string | null;
   dm_avatar_url: string | null;
   member_count: number;
+  channels?: Conversation[];
+  categories?: ConversationCategory[];
+  default_channel_id?: string;
+  default_channel_public_id?: string | null;
 }
 
 export interface Attachment {
@@ -44,6 +52,7 @@ export function parseAttachments(raws?: string[]): Attachment[] {
 
 export interface Message {
   conversation_id: string;
+  conversation_public_id?: string | null;
   message_id: string;
   sender_id: string;
   encrypted_content: string | null;
@@ -71,6 +80,16 @@ export interface ConversationMember {
   profile_id: string;
 }
 
+export interface ConversationCategory {
+  id: string;
+  group_conversation_id: string;
+  name: string;
+  position: number;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 // ============== Conversations ==============
 
 export async function getConversations(): Promise<Conversation[]> {
@@ -92,11 +111,19 @@ export async function getConversation(id: string): Promise<{
 export async function createConversation(
   type: 'group' | 'channel',
   name: string,
-  members: string[]
+  members: string[],
+  parentConversationId?: string,
+  categoryId?: string | null
 ): Promise<{ conversation: Conversation }> {
   const res = await fetchWithAuth(API_PREFIX, {
     method: 'POST',
-    body: JSON.stringify({ type, name, members }),
+    body: JSON.stringify({
+      type,
+      name,
+      members,
+      parent_conversation_id: parentConversationId || null,
+      category_id: categoryId || null,
+    }),
   });
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
@@ -122,10 +149,33 @@ export async function deleteConversation(id: string): Promise<void> {
   if (!data.success) throw new Error(data.error);
 }
 
+export async function getConversationCategories(
+  conversationId: string
+): Promise<ConversationCategory[]> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/categories`);
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data.categories;
+}
+
+export async function createConversationCategory(
+  conversationId: string,
+  name: string
+): Promise<{ category: ConversationCategory }> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/categories`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data;
+}
+
 // ============== DMs ==============
 
 export async function getOrCreateDM(userId: string): Promise<{
   conversation_id: string;
+  conversation_public_id?: string | null;
   created: boolean;
 }> {
   const res = await fetchWithAuth(`${API_PREFIX}/dm/${userId}`, {
@@ -454,7 +504,8 @@ export async function getEncryptionKey(
   }
 
   // --- GROUP CHAT LOGIC ---
-  const groupKeys = await getGroupKeys(conversation.id);
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const groupKeys = await getGroupKeys(keyConversationId);
   if (groupKeys.length === 0) {
     throw new Error('No group key available — wait for owner to distribute');
   }
@@ -462,7 +513,7 @@ export async function getEncryptionKey(
   const latest = groupKeys[0]!;
   
   // 1. Check if we already unlocked it and saved it to IndexedDB
-  const cachedGroupKey = await keyManager.getGroupKey(conversation.id, latest.key_version);
+  const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, latest.key_version);
   if (cachedGroupKey) {
     return { key: cachedGroupKey, version: latest.key_version };
   }
@@ -487,7 +538,7 @@ export async function getEncryptionKey(
   const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
 
   // Save it to IndexedDB so we don't have to do this math again
-  await keyManager.storeGroupKey(conversation.id, latest.key_version, decryptedRoomKey);
+  await keyManager.storeGroupKey(keyConversationId, latest.key_version, decryptedRoomKey);
 
   return { key: decryptedRoomKey, version: latest.key_version };
 }

@@ -8,6 +8,7 @@ import { fetchWithAuth } from '../../Auth/authServiceApi';
 export const useChatManager = (user: any) => {
   const [members, setMembers] = useState<Record<string, any>>({});
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [activeGroup, setActiveGroup] = useState<Conversation | null>(null);
   const [encryptionKey, setEncryptionKey] = useState<CryptoKey | null>(null);
   const [keyVersion, setKeyVersion] = useState(1);
   const [encryptionError, setEncryptionError] = useState<string | null>(null);
@@ -19,6 +20,127 @@ export const useChatManager = (user: any) => {
 
   const handshakeCache = useRef<Record<string, { members: Record<string, any>; key: CryptoKey; version: number }>>({});
   const pendingMessages = useRef<any[]>([]);
+
+  const resetLiveChatState = () => {
+    setEncryptionKey(null);
+    setEncryptionError(null);
+    setEditingMessage(null);
+    setReplyTo(null);
+    setNewMessage(null);
+    setMessageUpdate(null);
+    setMessageDelete(null);
+    pendingMessages.current = [];
+  };
+
+  const matchesConversationIdentifier = (conversation: Conversation | null, identifier?: string | null) => {
+    if (!conversation || !identifier) return false;
+    return conversation.id === identifier || conversation.public_id === identifier;
+  };
+
+  const hasLoadedChannel = (groupConversation: Conversation | null, channelIdentifier?: string | null) => {
+    if (!groupConversation || !channelIdentifier) return false;
+    return (groupConversation.channels || []).some((channel) =>
+      matchesConversationIdentifier(channel, channelIdentifier)
+    );
+  };
+
+  const pickInitialChannel = (groupConversation: Conversation, preferredChannelId?: string | null) => {
+    const channels = groupConversation.channels || [];
+    if (channels.length === 0) return groupConversation;
+
+    return (
+      channels.find((channel) => matchesConversationIdentifier(channel, preferredChannelId)) ||
+      channels.find((channel) => matchesConversationIdentifier(channel, groupConversation.default_channel_id)) ||
+      channels.find((channel) => matchesConversationIdentifier(channel, groupConversation.default_channel_public_id)) ||
+      channels.find((channel) => channel.name?.toLowerCase() === 'general') ||
+      channels[0] ||
+      groupConversation
+    );
+  };
+
+  const fetchConversationByIdentifier = async (identifier: string) => {
+    const res = await fetchWithAuth(`/api/conversations/${identifier}`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Failed to load conversation');
+
+    const conversation = data.conversation as Conversation & { members?: Array<{
+      user_id: string;
+      username?: string | null;
+      display_name?: string | null;
+      avatar_url?: string | null;
+    }> };
+
+    if (conversation.type !== 'dm') {
+      return conversation as Conversation;
+    }
+
+    const peer = conversation.members?.find((member) => member.user_id !== user?.id);
+
+    return {
+      ...conversation,
+      dm_user_id: conversation.dm_user_id || peer?.user_id,
+      dm_username: conversation.dm_username || peer?.username || null,
+      dm_display_name: conversation.dm_display_name || peer?.display_name || null,
+      dm_avatar_url: conversation.dm_avatar_url || peer?.avatar_url || null,
+    } as Conversation;
+  };
+
+  const openGroupByIdentifier = async (
+    groupIdentifier: string,
+    preferredChannelId?: string | null,
+    seedConversation?: Conversation,
+    options?: { forceReload?: boolean }
+  ) => {
+    const shouldReuseLoadedGroup =
+      !options?.forceReload &&
+      activeGroup &&
+      matchesConversationIdentifier(activeGroup, groupIdentifier) &&
+      (!preferredChannelId || hasLoadedChannel(activeGroup, preferredChannelId));
+
+    if (shouldReuseLoadedGroup) {
+      const selectedChannel = pickInitialChannel(activeGroup, preferredChannelId);
+      if (activeConversation?.id !== selectedChannel.id) {
+        resetLiveChatState();
+        setActiveConversation(selectedChannel);
+      }
+      return { group: activeGroup, conversation: selectedChannel };
+    }
+
+    const groupConversation = await fetchConversationByIdentifier(groupIdentifier);
+    if (groupConversation.type !== 'group') {
+      throw new Error('Requested conversation is not a group');
+    }
+
+    const hydratedGroup: Conversation = {
+      ...seedConversation,
+      ...groupConversation,
+      channels: groupConversation.channels || [],
+    };
+
+    resetLiveChatState();
+    setActiveGroup(hydratedGroup);
+    const selectedChannel = pickInitialChannel(hydratedGroup, preferredChannelId);
+    setActiveConversation(selectedChannel);
+
+    return { group: hydratedGroup, conversation: selectedChannel };
+  };
+
+  const openConversationByIdentifier = async (identifier: string) => {
+    if (!activeGroup && matchesConversationIdentifier(activeConversation, identifier)) {
+      return activeConversation;
+    }
+
+    const conversation = await fetchConversationByIdentifier(identifier);
+    if (conversation.type === 'group') {
+      const result = await openGroupByIdentifier(identifier, null, conversation);
+      return result.conversation;
+    }
+
+    resetLiveChatState();
+    setActiveGroup(null);
+    setActiveConversation(conversation);
+    return conversation;
+  };
 
   // 1. Handshake setup
   useEffect(() => {
@@ -155,35 +277,58 @@ export const useChatManager = (user: any) => {
 
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {
+    if (conv.type === 'group') {
+      if (activeGroup?.id === conv.id) return;
+      void openGroupByIdentifier(conv.public_id || conv.id, null, conv).catch((err) => {
+        console.error('Failed to select group:', err);
+        setActiveGroup(null);
+        setActiveConversation(conv);
+      });
+      return;
+    }
+
     if (activeConversation?.id === conv.id) return;
-    setEncryptionKey(null);
-    setEncryptionError(null);
+    resetLiveChatState();
+    setActiveGroup(null);
     setActiveConversation(conv);
-    setEditingMessage(null);
-    setReplyTo(null);
-    setNewMessage(null);
-    setMessageUpdate(null);
-    setMessageDelete(null);
-    pendingMessages.current = [];
+  };
+
+  const handleSelectChannel = (channel: Conversation) => {
+    if (activeConversation?.id === channel.id) return;
+    resetLiveChatState();
+    setActiveConversation(channel);
+  };
+
+  const refreshActiveGroup = async (preferredChannelId?: string | null) => {
+    if (!activeGroup) return;
+    try {
+      await openGroupByIdentifier(
+        activeGroup.public_id || activeGroup.id,
+        preferredChannelId || activeConversation?.public_id || activeConversation?.id,
+        activeGroup,
+        { forceReload: true }
+      );
+    } catch (err) {
+      console.error('Failed to refresh group:', err);
+    }
   };
 
   const handleBackToMe = () => {
+    resetLiveChatState();
     setActiveConversation(null);
-    setEncryptionError(null);
-    setEncryptionKey(null);
+    setActiveGroup(null);
   };
 
   const handleStartDM = async (targetId: string) => {
-    const { conversation_id } = await getOrCreateDM(targetId);
-    const res = await fetchWithAuth(`/api/conversations/${conversation_id}`);
-    const data = await res.json();
-    if (data.success) handleSelectConversation(data.conversation);
+    const { conversation_public_id, conversation_id } = await getOrCreateDM(targetId);
+    return conversation_public_id || conversation_id;
   };
 
   return {
-    members, activeConversation, encryptionKey, keyVersion, encryptionError,
+    members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError,
     newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
-    handleSelectConversation, handleMessageSent: setNewMessage, handleBackToMe, handleStartDM,
+    handleSelectConversation, handleSelectChannel, refreshActiveGroup, handleMessageSent: setNewMessage,
+    handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
   };
 };

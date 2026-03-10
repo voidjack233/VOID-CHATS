@@ -1,9 +1,9 @@
 // src/components/Chat/GroupCreateModal.tsx
 import { useState, useEffect } from 'react';
 import { X, Check } from 'lucide-react';
-import { fetchWithAuth } from '../../Services/Auth/authServiceApi';
-import { createSecureGroup } from '../../Services/Chat/chatService';
-import { FriendSelectSkeleton } from '../common/Skeleton';
+import { fetchWithAuth } from '../../../Services/Auth/authServiceApi';
+import { createSecureGroup } from '../../../Services/Chat/chatService';
+import { FriendSelectSkeleton } from '../../common/Skeleton';
 
 interface Friend {
   id: string;
