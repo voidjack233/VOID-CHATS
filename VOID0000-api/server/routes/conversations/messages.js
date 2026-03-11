@@ -9,7 +9,7 @@ const router = Router({ mergeParams: true });
 
 async function verifyMembership(conversationId, userId) {
   const result = await pool.query(
-    `SELECT role FROM conversation_members
+    `SELECT role, last_message_sent_at FROM conversation_members
      WHERE conversation_id = $1 AND user_id = $2`,
     [conversationId, userId]
   );
@@ -125,6 +125,27 @@ router.post('/', async (req, res) => {
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
     if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send messages' });
 
+    const slowmodeSeconds = Number(conversation.slowmode_seconds || 0);
+    const isSlowmodeExempt = ['owner', 'admin'].includes(member.role);
+
+    if (
+      conversation.type === 'channel' &&
+      slowmodeSeconds > 0 &&
+      !isSlowmodeExempt &&
+      member.last_message_sent_at
+    ) {
+      const elapsedSeconds = Math.floor((Date.now() - new Date(member.last_message_sent_at).getTime()) / 1000);
+      const retryAfterSeconds = slowmodeSeconds - elapsedSeconds;
+
+      if (retryAfterSeconds > 0) {
+        return res.status(429).json({
+          error: `Slowmode is enabled. Wait ${retryAfterSeconds}s before sending another message.`,
+          retry_after_seconds: retryAfterSeconds,
+          slowmode_seconds: slowmodeSeconds,
+        });
+      }
+    }
+
     const messageId = generateTimeUUID();
     const now = new Date();
     const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
@@ -150,6 +171,12 @@ router.post('/', async (req, res) => {
     );
 
     await pool.query('UPDATE conversations SET updated_at = NOW() WHERE id = $1', [conversationId]);
+    await pool.query(
+      `UPDATE conversation_members
+       SET last_message_sent_at = NOW()
+       WHERE conversation_id = $1 AND user_id = $2`,
+      [conversationId, userId]
+    );
 
     const message = {
       conversation_id: conversationId,
