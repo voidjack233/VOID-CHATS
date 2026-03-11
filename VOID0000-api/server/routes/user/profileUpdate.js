@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
-import { broadcastToFriends, EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/index.js';
+import { broadcastLiveEventToFriends } from '../../gateway/client.js';
 
 const router = express.Router();
 
@@ -41,7 +42,7 @@ router.put('/profile', async (req, res) => {
     }
 
     // Broadcast profile update to all friends
-    broadcastToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
+    broadcastLiveEventToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
       user_id: req.userId,
       profile_id: result.rows[0].profile_id,
       display_name: result.rows[0].display_name,

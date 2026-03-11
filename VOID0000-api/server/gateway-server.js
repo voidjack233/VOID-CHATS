@@ -11,6 +11,7 @@ import {
   broadcastToFriends,
   updateTokenExpiry,
   disconnectUserSession,
+  invalidateFriendCachePair,
 } from './gateway/index.js';
 import { initSubscriber } from './valkey-pubsub.js';
 
@@ -56,6 +57,8 @@ initSubscriber((message) => {
           message.data?.code ?? 4001,
           message.data?.reason ?? 'Session revoked'
         );
+      } else if (message.command === 'invalidateFriendCachePair') {
+        invalidateFriendCachePair(message.data?.userId1, message.data?.userId2);
       }
     } else if (message.targetUserId) {
       sendToUser(message.targetUserId, message.event, message.data);

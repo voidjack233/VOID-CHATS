@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { cassandra } from '../../scylla.js';
-import { sendToUser } from '../../gateway/index.js';
+import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router({ mergeParams: true });
@@ -122,7 +122,7 @@ router.put('/:emoji', async (req, res) => {
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
       if (memberId !== userId) {
-        sendToUser(memberId, action === 'add' ? 'REACTION_ADD' : 'REACTION_REMOVE', payload);
+        sendLiveEventToUser(memberId, action === 'add' ? 'REACTION_ADD' : 'REACTION_REMOVE', payload);
       }
     });
 

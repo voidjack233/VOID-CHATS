@@ -2,7 +2,8 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
 import sharp from 'sharp';
-import { broadcastToFriends, EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/index.js';
+import { broadcastLiveEventToFriends } from '../../gateway/client.js';
 import { profileCache } from '../../middleware/profileCache.js';
 import { queueImageUpload, imageQueueEvents } from '../../queues/imageQueue.js';
 import { minioClient, BUCKET } from '../../minio.js';
@@ -131,7 +132,7 @@ router.put('/avatar', async (req, res) => {
     updatedProfile.avatar_url = newAvatarUrl;
 
     // 10. Broadcast to friends
-    broadcastToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
+    broadcastLiveEventToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
       user_id: req.userId,
       profile_id: updatedProfile.profile_id,
       display_name: updatedProfile.display_name,
@@ -195,7 +196,7 @@ router.delete('/avatar', async (req, res) => {
     await profileCache.invalidate(profile_id);
 
     // Broadcast
-    broadcastToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
+    broadcastLiveEventToFriends(req.userId, EVENTS.PROFILE_UPDATE, {
       user_id: req.userId,
       profile_id: updatedProfile.profile_id,
       display_name: updatedProfile.display_name,

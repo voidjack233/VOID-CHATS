@@ -1,6 +1,7 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
-import { sendToUser, EVENTS, invalidateFriendCachePair } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/index.js';
+import { invalidateLiveFriendCachePair, sendLiveEventToUser } from '../../gateway/client.js';
 
 const router = express.Router();
 
@@ -30,9 +31,9 @@ router.delete('/:friendshipId', async (req, res) => {
       : friendship.requester_id;
 
     // Invalidate friend cache for both users
-    invalidateFriendCachePair(userId, otherUserId);
+    invalidateLiveFriendCachePair(userId, otherUserId);
 
-    sendToUser(otherUserId, EVENTS.FRIEND_REMOVE, {
+    sendLiveEventToUser(otherUserId, EVENTS.FRIEND_REMOVE, {
       friendship_id: friendship.id,
       removed_by: userId,
       timestamp: Date.now(),

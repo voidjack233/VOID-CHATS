@@ -2,7 +2,8 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
-import { sendToUser, EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/index.js';
+import { sendLiveEventToUser } from '../../gateway/client.js';
 
 const router = Router({ mergeParams: true });
 
@@ -83,7 +84,7 @@ router.post('/', async (req, res) => {
             );
           }
 
-          sendToUser(memberId, EVENTS.CONVERSATION_CREATE || 'CONVERSATION_CREATE', {
+          sendLiveEventToUser(memberId, EVENTS.CONVERSATION_CREATE || 'CONVERSATION_CREATE', {
             conversation_id: resolvedConversation.id,
             conversation_public_id: resolvedConversation.public_id ? String(resolvedConversation.public_id) : null,
             added_by: userId,
@@ -169,7 +170,7 @@ router.delete('/:targetUserId', async (req, res) => {
       }
     }
 
-    sendToUser(targetUserId, 'MEMBER_LEAVE', {
+    sendLiveEventToUser(targetUserId, 'MEMBER_LEAVE', {
       conversation_id: resolvedConversation.id,
       conversation_public_id: resolvedConversation.public_id ? String(resolvedConversation.public_id) : null,
       removed_by: isSelf ? null : userId,

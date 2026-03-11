@@ -74,6 +74,14 @@ const presenceStore = new Map();
 const friendCache = new Map();
 
 const handshakeAttempts = new Map();
+const PRESENCE_KEY_PREFIX = 'presence:';
+const PRESENCE_SNAPSHOT_TTL = 60 * 60 * 24 * 30;
+const HANDSHAKE_SWEEP_INTERVAL_MS = 60_000;
+const HANDSHAKE_ENTRY_TTL_MS = WS_LIMITS.handshake.windowMs * 2;
+
+let heartbeatSweepInterval = null;
+let handshakeSweepInterval = null;
+let shutdownHooksRegistered = false;
 
 // ==================== SESSION RESUME CONFIG ====================
 
@@ -89,6 +97,10 @@ function sessionKey(sessionId) {
 
 function sessionMetaKey(sessionId) {
   return `${SESSION_META_PREFIX}${sessionId}`;
+}
+
+function presenceKey(userId) {
+  return `${PRESENCE_KEY_PREFIX}${userId}`;
 }
 
 function createSessionId() {
@@ -122,6 +134,35 @@ async function getSessionIdentity(sessionId) {
   }
 }
 
+async function persistPresenceSnapshot(userId, presence) {
+  if (!userId || !presence) return;
+
+  try {
+    await valkey.set(
+      presenceKey(userId),
+      JSON.stringify({
+        status: presence.status,
+        lastActive: presence.lastActive ?? null,
+      }),
+      'EX',
+      PRESENCE_SNAPSHOT_TTL
+    );
+  } catch (err) {
+    console.error('Presence snapshot error:', err);
+  }
+}
+
+function setPresenceState(userId, presence) {
+  const nextPresence = {
+    status: presence.status,
+    lastActive: Number.isInteger(presence.lastActive) ? presence.lastActive : null,
+  };
+
+  presenceStore.set(userId, nextPresence);
+  void persistPresenceSnapshot(userId, nextPresence);
+  return nextPresence;
+}
+
 async function bufferEvent(sessionId, payload) {
   if (!sessionId) return;
 
@@ -136,6 +177,11 @@ async function bufferEvent(sessionId, payload) {
   }
 }
 
+// Replay contract:
+// - Sequence numbers are monotonic per resumable session.
+// - Buffered history records server-emitted events, not confirmed delivery.
+// - RESUME is at-least-once; clients must tolerate duplicates and ignore already-applied events.
+// - RESUME can fail when the retained buffer no longer covers the requested gap.
 async function replayEvents(ws, sessionId, lastSequence) {
   const key = sessionKey(sessionId);
 
@@ -288,17 +334,43 @@ function getAllowedOrigins() {
   ].filter(Boolean));
 }
 
-function getRequestIp(req) {
-  const forwarded = req.headers['x-forwarded-for'];
-  const ip = req.headers['cf-connecting-ip']
-    || (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : null)
-    || req.socket?.remoteAddress
-    || null;
-
-  if (!ip) return 'unknown';
+function normalizeIp(ip) {
+  if (!ip) return null;
   if (ip === '::1') return '127.0.0.1';
   if (ip.startsWith('::ffff:')) return ip.substring(7);
   return ip;
+}
+
+function getTrustedProxyIps() {
+  return new Set(
+    (process.env.TRUSTED_PROXY_IPS || '')
+      .split(',')
+      .map((ip) => normalizeIp(ip.trim()))
+      .filter(Boolean)
+  );
+}
+
+function shouldTrustProxyHeaders(req) {
+  const remoteIp = normalizeIp(req.socket?.remoteAddress);
+  if (!remoteIp) return false;
+  return getTrustedProxyIps().has(remoteIp);
+}
+
+function getRequestIp(req) {
+  const remoteIp = normalizeIp(req.socket?.remoteAddress);
+
+  if (!shouldTrustProxyHeaders(req)) {
+    return remoteIp || 'unknown';
+  }
+
+  const forwarded = req.headers['x-forwarded-for'];
+  const forwardedIp = normalizeIp(
+    req.headers['cf-connecting-ip']
+      || (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : null)
+      || null
+  );
+
+  return forwardedIp || remoteIp || 'unknown';
 }
 
 function isAllowedOrigin(origin) {
@@ -316,12 +388,23 @@ function checkHandshakeRateLimit(clientIp) {
   const limit = handshakeAttempts.get(clientIp);
 
   if (!limit || now - limit.windowStart > WS_LIMITS.handshake.windowMs) {
-    handshakeAttempts.set(clientIp, { count: 1, windowStart: now });
+    handshakeAttempts.set(clientIp, { count: 1, windowStart: now, lastSeen: now });
     return true;
   }
 
   limit.count++;
+  limit.lastSeen = now;
   return limit.count <= WS_LIMITS.handshake.maxAttempts;
+}
+
+function sweepHandshakeAttempts() {
+  const now = Date.now();
+
+  handshakeAttempts.forEach((attempt, clientIp) => {
+    if (!attempt || now - attempt.lastSeen > HANDSHAKE_ENTRY_TTL_MS) {
+      handshakeAttempts.delete(clientIp);
+    }
+  });
 }
 
 function clearConnectionTimers(info) {
@@ -343,9 +426,64 @@ function clearConnectionTimers(info) {
   }
 }
 
+function isSocketActive(ws) {
+  const info = connectionInfo.get(ws);
+  return !!info && !info.teardownStarted && ws.readyState < 2;
+}
+
+function countActiveSockets(userSockets) {
+  if (!userSockets) return 0;
+
+  let count = 0;
+  userSockets.forEach((ws) => {
+    if (isSocketActive(ws)) {
+      count++;
+    }
+  });
+
+  return count;
+}
+
+function getFirstActiveSocket(userSockets) {
+  if (!userSockets) return null;
+
+  for (const ws of userSockets) {
+    if (isSocketActive(ws)) {
+      return ws;
+    }
+  }
+
+  return null;
+}
+
+function hasActiveConnections(userId) {
+  return countActiveSockets(connections.get(userId)) > 0;
+}
+
+function beginSocketTeardown(ws) {
+  const info = connectionInfo.get(ws);
+  if (!info || info.teardownStarted) {
+    return info || null;
+  }
+
+  info.teardownStarted = true;
+  clearConnectionTimers(info);
+  return info;
+}
+
 function closeSocket(ws, code, reason) {
+  beginSocketTeardown(ws);
+
   if (ws.readyState < 2) {
     ws.close(code, reason);
+  }
+}
+
+function terminateSocket(ws) {
+  beginSocketTeardown(ws);
+
+  if (ws.readyState !== 3) {
+    ws.terminate();
   }
 }
 
@@ -385,11 +523,17 @@ function checkWsRateLimit(ws) {
 // ==================== DEBUG ====================
 
 function logConnectionStats() {
+  let totalUsers = 0;
+
   console.log('Connection Stats:');
   connections.forEach((sockets, userId) => {
-    console.log(`   User ${userId.substring(0, 8)}... has ${sockets.size} connection(s)`);
+    const activeSocketCount = countActiveSockets(sockets);
+    if (activeSocketCount > 0) {
+      totalUsers++;
+    }
+    console.log(`   User ${userId.substring(0, 8)}... has ${activeSocketCount} active connection(s)`);
   });
-  console.log(`   Total users: ${connections.size}`);
+  console.log(`   Total users: ${totalUsers}`);
 }
 
 // ==================== GATEWAY SETUP ====================
@@ -455,6 +599,7 @@ export function setupGateway(httpServer) {
       identifyTimer: null,
       rateLimit: null,
       state: 'awaiting_auth',
+      teardownStarted: false,
       clientIp,
     });
 
@@ -511,26 +656,34 @@ export function setupGateway(httpServer) {
     });
   });
 
-  setInterval(() => {
-    const now = Date.now();
-    let terminatedCount = 0;
+  if (!heartbeatSweepInterval) {
+    heartbeatSweepInterval = setInterval(() => {
+      const now = Date.now();
+      let terminatedCount = 0;
 
-    connections.forEach((sockets, userId) => {
-      sockets.forEach((ws) => {
-        const info = connectionInfo.get(ws);
+      connections.forEach((sockets, userId) => {
+        sockets.forEach((ws) => {
+          const info = connectionInfo.get(ws);
 
-        if (info && now - info.lastHeartbeat > 60000) {
-          console.log(`Terminating idle connection for user ${userId.substring(0, 8)}...`);
-          ws.terminate();
-          terminatedCount++;
-        }
+          if (info && !info.teardownStarted && now - info.lastHeartbeat > 60000) {
+            console.log(`Terminating idle connection for user ${userId.substring(0, 8)}...`);
+            terminateSocket(ws);
+            terminatedCount++;
+          }
+        });
       });
-    });
 
-    if (terminatedCount > 0) {
-      console.log(`Terminated ${terminatedCount} idle connection(s)`);
-    }
-  }, 30000);
+      if (terminatedCount > 0) {
+        console.log(`Terminated ${terminatedCount} idle connection(s)`);
+      }
+    }, 30000);
+    heartbeatSweepInterval.unref?.();
+  }
+
+  if (!handshakeSweepInterval) {
+    handshakeSweepInterval = setInterval(sweepHandshakeAttempts, HANDSHAKE_SWEEP_INTERVAL_MS);
+    handshakeSweepInterval.unref?.();
+  }
 
   const gracefulShutdown = (signal) => {
     console.log(`\nReceived ${signal}, performing graceful shutdown...`);
@@ -542,7 +695,7 @@ export function setupGateway(httpServer) {
     let notifiedCount = 0;
     connections.forEach((sockets) => {
       sockets.forEach((ws) => {
-        if (ws.readyState === 1) {
+        if (isSocketActive(ws) && ws.readyState === 1) {
           dispatch(ws, 'SHUTDOWN', { reconnect: true, in: 5000 });
           notifiedCount++;
         }
@@ -555,8 +708,7 @@ export function setupGateway(httpServer) {
       let terminated = 0;
       connections.forEach((sockets) => {
         sockets.forEach((ws) => {
-          clearConnectionTimers(connectionInfo.get(ws));
-          ws.terminate();
+          terminateSocket(ws);
           terminated++;
         });
       });
@@ -572,8 +724,11 @@ export function setupGateway(httpServer) {
     }, 10000);
   };
 
-  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  if (!shutdownHooksRegistered) {
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    shutdownHooksRegistered = true;
+  }
 
   console.log('WebSocket Gateway initialized');
   return wss;
@@ -584,7 +739,7 @@ export function setupGateway(httpServer) {
 async function handleMessage(ws, message) {
   const info = connectionInfo.get(ws);
 
-  if (!info) {
+  if (!info || info.teardownStarted) {
     throw new GatewayProtocolError(CLOSE.UNAUTHORIZED, 'Unauthorized');
   }
 
@@ -631,24 +786,19 @@ function deduplicateDevice(userId, deviceId) {
   for (const existingWs of existingSockets) {
     const existingInfo = connectionInfo.get(existingWs);
 
-    if (existingInfo?.deviceId === deviceId) {
+    if (existingInfo?.deviceId === deviceId && !existingInfo.teardownStarted) {
       console.log(`Replacing stale connection for device ${deviceId.substring(0, 8)}...`);
-      existingSockets.delete(existingWs);
-      clearConnectionTimers(existingInfo);
-      connectionInfo.delete(existingWs);
       closeSocket(existingWs, CLOSE.SESSION_REPLACED, 'Session replaced');
     }
   }
 
-  if (existingSockets.size >= MAX_CONNECTIONS_PER_USER) {
-    const oldest = existingSockets.values().next().value;
-    const oldestInfo = connectionInfo.get(oldest);
+  if (countActiveSockets(existingSockets) >= MAX_CONNECTIONS_PER_USER) {
+    const oldest = getFirstActiveSocket(existingSockets);
 
-    console.log(`Max connections reached for ${userId.substring(0, 8)}..., closing oldest`);
-    existingSockets.delete(oldest);
-    clearConnectionTimers(oldestInfo);
-    connectionInfo.delete(oldest);
-    closeSocket(oldest, CLOSE.SESSION_REPLACED, 'Too many connections');
+    if (oldest) {
+      console.log(`Max connections reached for ${userId.substring(0, 8)}..., closing oldest`);
+      closeSocket(oldest, CLOSE.SESSION_REPLACED, 'Too many connections');
+    }
   }
 }
 
@@ -667,6 +817,7 @@ function registerConnection(ws, userId, deviceId, sessionId) {
     identifyTimer: null,
     rateLimit: null,
     state: 'identified',
+    teardownStarted: false,
   });
 
   if (!connections.has(userId)) {
@@ -705,7 +856,7 @@ async function handleIdentify(ws, data) {
   console.log(`User identified: ${userId.substring(0, 8)}... (device: ${deviceId.substring(0, 8)}...)`);
   logConnectionStats();
 
-  presenceStore.set(userId, { status: 'online', lastActive: Date.now() });
+  setPresenceState(userId, { status: 'online', lastActive: Date.now() });
 
   const friendPresences = await getFriendPresences(userId);
 
@@ -772,7 +923,7 @@ async function handleResume(ws, data) {
 
   const currentPresence = presenceStore.get(userId);
   if (!currentPresence || currentPresence.status !== 'online') {
-    presenceStore.set(userId, { status: 'online', lastActive: Date.now() });
+    setPresenceState(userId, { status: 'online', lastActive: Date.now() });
     void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
       user_id: userId,
       status: 'online',
@@ -845,6 +996,7 @@ export function updateTokenExpiry(userId, newExp, deviceId = null) {
   userSockets.forEach((ws) => {
     const info = connectionInfo.get(ws);
     if (!info) return;
+    if (info.teardownStarted) return;
     if (deviceId && info.deviceId !== deviceId) return;
 
     ws.tokenExp = newExp;
@@ -867,6 +1019,7 @@ export function disconnectUserSession(
     const info = connectionInfo.get(ws);
 
     if (!info) return;
+    if (info.teardownStarted) return;
     if (deviceId && info.deviceId !== deviceId) return;
 
     disconnected++;
@@ -892,14 +1045,14 @@ function handleHeartbeat(ws) {
       const currentPresence = presenceStore.get(info.userId);
 
       if (currentPresence?.status === 'idle') {
-        presenceStore.set(info.userId, { status: 'online', lastActive: Date.now() });
+        setPresenceState(info.userId, { status: 'online', lastActive: Date.now() });
         void broadcastToFriends(info.userId, EVENTS.PRESENCE_UPDATE, {
           user_id: info.userId,
           status: 'online',
           last_active: Date.now(),
         });
       } else if (currentPresence?.status === 'online') {
-        presenceStore.set(info.userId, { ...currentPresence, lastActive: Date.now() });
+        setPresenceState(info.userId, { ...currentPresence, lastActive: Date.now() });
       }
     }
   }
@@ -926,9 +1079,13 @@ function handleDisconnect(ws) {
 
     if (userSockets.size === 0) {
       connections.delete(userId);
+    }
+
+    if (countActiveSockets(userSockets) === 0) {
+      connections.delete(userId);
 
       const presence = presenceStore.get(userId);
-      presenceStore.set(userId, {
+      const offlinePresence = setPresenceState(userId, {
         status: 'offline',
         lastActive: presence?.lastActive || Date.now(),
       });
@@ -936,7 +1093,7 @@ function handleDisconnect(ws) {
       void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
         user_id: userId,
         status: 'offline',
-        last_active: presence?.lastActive || Date.now(),
+        last_active: offlinePresence.lastActive,
       });
     }
   }
@@ -986,7 +1143,7 @@ export function invalidateFriendCachePair(userId1, userId2) {
 }
 
 function cleanupFriendCache(userId) {
-  if (!connections.has(userId)) {
+  if (!hasActiveConnections(userId)) {
     friendCache.delete(userId);
   }
 }
@@ -998,7 +1155,7 @@ async function getFriendPresences(userId) {
   friendIds.forEach((friendId) => {
     const presence = presenceStore.get(friendId);
 
-    if (presence && connections.has(friendId)) {
+    if (presence && hasActiveConnections(friendId)) {
       presences.push({
         user_id: friendId,
         status: presence.status,
@@ -1019,7 +1176,7 @@ function handleStatusUpdate(ws, data) {
 
   if (currentPresence?.status === status) return;
 
-  presenceStore.set(info.userId, {
+  const nextPresence = setPresenceState(info.userId, {
     status,
     lastActive: status === 'online'
       ? Date.now()
@@ -1029,12 +1186,12 @@ function handleStatusUpdate(ws, data) {
   void broadcastToFriends(info.userId, EVENTS.PRESENCE_UPDATE, {
     user_id: info.userId,
     status,
-    last_active: presenceStore.get(info.userId).lastActive,
+    last_active: nextPresence.lastActive,
   });
 }
 
 export function getUserPresence(userId) {
-  if (connections.has(userId)) {
+  if (hasActiveConnections(userId)) {
     return presenceStore.get(userId) || { status: 'online', lastActive: Date.now() };
   }
 
@@ -1044,12 +1201,16 @@ export function getUserPresence(userId) {
 // ==================== HELPERS ====================
 
 function sendRaw(ws, payload) {
+  const info = connectionInfo.get(ws);
+  if (info?.teardownStarted) {
+    return false;
+  }
+
   if (ws.readyState !== 1) {
     return false;
   }
 
   if (ws.bufferedAmount > WS_LIMITS.maxBufferedAmount) {
-    const info = connectionInfo.get(ws);
     console.warn(`Closing slow consumer for ${info?.userId?.substring(0, 8) || info?.clientIp || 'unknown'}`);
     closeSocket(ws, CLOSE.SLOW_CONSUMER, 'Slow consumer');
     return false;
@@ -1059,14 +1220,14 @@ function sendRaw(ws, payload) {
     ws.send(payload, (err) => {
       if (err) {
         console.error('WebSocket send error:', err);
-        ws.terminate();
+        terminateSocket(ws);
       }
     });
 
     return true;
   } catch (err) {
     console.error('WebSocket send throw:', err);
-    ws.terminate();
+    terminateSocket(ws);
     return false;
   }
 }
@@ -1100,10 +1261,15 @@ export function sendToUser(userId, event, data) {
   const userSockets = connections.get(userId);
   if (!userSockets) return;
 
-  console.log(`Sending ${event} to user ${userId.substring(0, 8)}... (${userSockets.size} device(s))`);
+  const activeSocketCount = countActiveSockets(userSockets);
+  if (activeSocketCount === 0) return;
+
+  console.log(`Sending ${event} to user ${userId.substring(0, 8)}... (${activeSocketCount} device(s))`);
 
   userSockets.forEach((ws) => {
-    dispatch(ws, event, data);
+    if (isSocketActive(ws)) {
+      dispatch(ws, event, data);
+    }
   });
 }
 
@@ -1116,16 +1282,20 @@ export async function broadcastToFriends(userId, event, data) {
 }
 
 export function getConnectionStats() {
+  let totalUsers = 0;
   const stats = {
-    totalUsers: connections.size,
+    totalUsers: 0,
     users: {},
   };
 
   connections.forEach((sockets, userId) => {
-    stats.users[userId] = sockets.size;
+    const activeSocketCount = countActiveSockets(sockets);
+    if (activeSocketCount > 0) {
+      totalUsers++;
+    }
+    stats.users[userId] = activeSocketCount;
   });
 
+  stats.totalUsers = totalUsers;
   return stats;
 }
-
-export { connections };

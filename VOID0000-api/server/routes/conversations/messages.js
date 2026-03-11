@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { generateTimeUUID, cassandra } from '../../scylla.js';
-import { sendToUser } from '../../gateway/index.js';
+import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router({ mergeParams: true });
@@ -196,7 +196,7 @@ router.post('/', async (req, res) => {
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) sendToUser(memberId, 'MESSAGE_CREATE', message);
+      if (memberId !== userId) sendLiveEventToUser(memberId, 'MESSAGE_CREATE', message);
     });
 
     res.status(201).json({ success: true, message });
@@ -427,7 +427,7 @@ router.put('/:messageId', async (req, res) => {
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) sendToUser(memberId, 'MESSAGE_UPDATE', update);
+      if (memberId !== userId) sendLiveEventToUser(memberId, 'MESSAGE_UPDATE', update);
     });
 
     res.json({ success: true, ...update });
@@ -479,7 +479,7 @@ router.delete('/:messageId', async (req, res) => {
 
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
-      if (memberId !== userId) sendToUser(memberId, 'MESSAGE_DELETE', deletion);
+      if (memberId !== userId) sendLiveEventToUser(memberId, 'MESSAGE_DELETE', deletion);
     });
 
     res.json({ success: true, message: 'Message deleted' });

@@ -4,7 +4,8 @@ import { pool } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
 import { conversationSnowflake } from '../../utils/snowflake.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
-import { sendToUser, EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/index.js';
+import { sendLiveEventToUser } from '../../gateway/client.js';
 import {
   ensureDefaultCategory,
   getGroupCategories,
@@ -532,7 +533,7 @@ router.put('/:conversationId', authenticateUser, async (req, res) => {
     };
 
     membersResult.rows.forEach(({ user_id }) => {
-      sendToUser(user_id, EVENTS.CONVERSATION_UPDATE, updatePayload);
+      sendLiveEventToUser(user_id, EVENTS.CONVERSATION_UPDATE, updatePayload);
     });
 
     res.json({ success: true, conversation: normalizedConversation });

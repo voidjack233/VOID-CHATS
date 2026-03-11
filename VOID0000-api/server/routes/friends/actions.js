@@ -1,6 +1,11 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
-import { sendToUser, EVENTS, invalidateFriendCachePair, connections } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/index.js';
+import {
+  getLiveUserPresence,
+  invalidateLiveFriendCachePair,
+  sendLiveEventToUser,
+} from '../../gateway/client.js';
 
 const router = express.Router();
 
@@ -69,7 +74,7 @@ router.post('/request/:profileId', async (req, res) => {
       [requesterId]
     );
 
-    sendToUser(addresseeId, EVENTS.FRIEND_REQUEST, {
+    sendLiveEventToUser(addresseeId, EVENTS.FRIEND_REQUEST, {
       friendship_id: result.rows[0].id,
       from: {
         id: requesterId,
@@ -121,7 +126,7 @@ router.post('/accept/:friendshipId', async (req, res) => {
       [userId]
     );
 
-    invalidateFriendCachePair(userId, friendship.requester_id);
+    invalidateLiveFriendCachePair(userId, friendship.requester_id);
 
     const requesterInfo = await db.query(
       `SELECT u.username, u.profile_id, u.created_at, up.display_name, up.avatar_filename, up.bio
@@ -131,10 +136,14 @@ router.post('/accept/:friendshipId', async (req, res) => {
       [friendship.requester_id]
     );
 
-    const accepterStatus = connections.has(userId) ? 'online' : 'offline';
-    const requesterStatus = connections.has(friendship.requester_id) ? 'online' : 'offline';
+    const [accepterPresence, requesterPresence] = await Promise.all([
+      getLiveUserPresence(userId),
+      getLiveUserPresence(friendship.requester_id),
+    ]);
+    const accepterStatus = accepterPresence.status === 'offline' ? 'offline' : 'online';
+    const requesterStatus = requesterPresence.status === 'offline' ? 'offline' : 'online';
 
-    sendToUser(friendship.requester_id, EVENTS.FRIEND_ACCEPT, {
+    sendLiveEventToUser(friendship.requester_id, EVENTS.FRIEND_ACCEPT, {
       friendship_id: friendship.id,
       friend: {
         id: userId,
@@ -149,7 +158,7 @@ router.post('/accept/:friendshipId', async (req, res) => {
       timestamp: Date.now(),
     });
 
-    sendToUser(userId, EVENTS.FRIEND_ACCEPT, {
+    sendLiveEventToUser(userId, EVENTS.FRIEND_ACCEPT, {
       friendship_id: friendship.id,
       friend: {
         id: friendship.requester_id,
