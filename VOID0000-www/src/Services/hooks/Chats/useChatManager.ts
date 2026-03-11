@@ -5,6 +5,15 @@ import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 
+type ConversationDetails = Conversation & {
+  members?: Array<{
+    user_id: string;
+    username?: string | null;
+    display_name?: string | null;
+    avatar_url?: string | null;
+  }>;
+};
+
 export const useChatManager = (user: any) => {
   const [members, setMembers] = useState<Record<string, any>>({});
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -19,6 +28,7 @@ export const useChatManager = (user: any) => {
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
 
   const handshakeCache = useRef<Record<string, { members: Record<string, any>; key: CryptoKey; version: number }>>({});
+  const conversationDetailsCache = useRef<Record<string, ConversationDetails>>({});
   const pendingMessages = useRef<any[]>([]);
 
   const resetLiveChatState = () => {
@@ -58,31 +68,60 @@ export const useChatManager = (user: any) => {
     );
   };
 
+  const getCachedConversationDetails = (identifier?: string | null) => {
+    if (!identifier) return null;
+    return conversationDetailsCache.current[identifier] || null;
+  };
+
+  const storeConversationDetails = (conversation: ConversationDetails) => {
+    const cacheEntry: ConversationDetails = {
+      ...conversation,
+      channels: conversation.channels || [],
+    };
+
+    conversationDetailsCache.current[cacheEntry.id] = cacheEntry;
+
+    if (cacheEntry.public_id) {
+      conversationDetailsCache.current[cacheEntry.public_id] = cacheEntry;
+    }
+
+    if (cacheEntry.type === 'group') {
+      (cacheEntry.channels || []).forEach((channel) => {
+        const channelEntry: ConversationDetails = {
+          ...channel,
+          members: cacheEntry.members,
+        };
+
+        conversationDetailsCache.current[channel.id] = channelEntry;
+        if (channel.public_id) {
+          conversationDetailsCache.current[channel.public_id] = channelEntry;
+        }
+      });
+    }
+
+    return cacheEntry;
+  };
+
   const fetchConversationByIdentifier = async (identifier: string) => {
     const res = await fetchWithAuth(`/api/conversations/${identifier}`);
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Failed to load conversation');
 
-    const conversation = data.conversation as Conversation & { members?: Array<{
-      user_id: string;
-      username?: string | null;
-      display_name?: string | null;
-      avatar_url?: string | null;
-    }> };
+    const conversation = data.conversation as ConversationDetails;
 
     if (conversation.type !== 'dm') {
-      return conversation as Conversation;
+      return storeConversationDetails(conversation) as Conversation;
     }
 
     const peer = conversation.members?.find((member) => member.user_id !== user?.id);
 
-    return {
+    return storeConversationDetails({
       ...conversation,
       dm_user_id: conversation.dm_user_id || peer?.user_id,
       dm_username: conversation.dm_username || peer?.username || null,
       dm_display_name: conversation.dm_display_name || peer?.display_name || null,
       dm_avatar_url: conversation.dm_avatar_url || peer?.avatar_url || null,
-    } as Conversation;
+    }) as Conversation;
   };
 
   const openGroupByIdentifier = async (
@@ -106,7 +145,8 @@ export const useChatManager = (user: any) => {
       return { group: activeGroup, conversation: selectedChannel };
     }
 
-    const groupConversation = await fetchConversationByIdentifier(groupIdentifier);
+    const cachedGroup = !options?.forceReload ? getCachedConversationDetails(groupIdentifier) : null;
+    const groupConversation = (cachedGroup || await fetchConversationByIdentifier(groupIdentifier)) as Conversation;
     if (groupConversation.type !== 'group') {
       throw new Error('Requested conversation is not a group');
     }
@@ -130,7 +170,7 @@ export const useChatManager = (user: any) => {
       return activeConversation;
     }
 
-    const conversation = await fetchConversationByIdentifier(identifier);
+    const conversation = (getCachedConversationDetails(identifier) || await fetchConversationByIdentifier(identifier)) as Conversation;
     if (conversation.type === 'group') {
       const result = await openGroupByIdentifier(identifier, null, conversation);
       return result.conversation;
@@ -159,18 +199,26 @@ export const useChatManager = (user: any) => {
       }
 
       try {
-        const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
-        const data = await res.json();
+        let conversationDetails = getCachedConversationDetails(activeConversation.id);
 
-        if (ignore) return; 
-        if (!data.success) throw new Error('Could not load members');
+        if (!conversationDetails || !conversationDetails.members) {
+          const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
+          const data = await res.json();
+
+          if (ignore) return; 
+          if (!data.success) throw new Error('Could not load members');
+
+          conversationDetails = storeConversationDetails(data.conversation as ConversationDetails);
+        }
+
+        if (ignore || !conversationDetails?.members) return;
 
         const memberMap: Record<string, any> = {};
-        data.conversation.members.forEach((m: any) => memberMap[m.user_id] = m);
+        conversationDetails.members.forEach((m: any) => memberMap[m.user_id] = m);
         setMembers(memberMap);
 
         const peerId = activeConversation.type === 'dm'
-          ? data.conversation.members.find((m: any) => m.user_id !== user.id)?.user_id
+          ? conversationDetails.members.find((m: any) => m.user_id !== user.id)?.user_id
           : undefined;
 
         const { key, version } = await getEncryptionKey(user.id, activeConversation, peerId);
@@ -212,6 +260,7 @@ export const useChatManager = (user: any) => {
       console.warn('Decryption failed! Keys might be stale. Auto-refreshing...', err);
       // Wipe the memory cache so the handshake runs fresh
       delete handshakeCache.current[data.conversation_id];
+      delete conversationDetailsCache.current[data.conversation_id];
       // Setting key to null triggers the handshake useEffect again!
       setEncryptionKey(null);
       // Buffer the message to try again in a second
@@ -328,6 +377,17 @@ export const useChatManager = (user: any) => {
 
   const patchConversationInState = (updatedConversation: Conversation) => {
     const conversationIdentifier = updatedConversation.public_id || updatedConversation.id;
+    const cachedConversation =
+      getCachedConversationDetails(updatedConversation.id) ||
+      getCachedConversationDetails(updatedConversation.public_id) ||
+      null;
+
+    if (cachedConversation) {
+      storeConversationDetails({
+        ...cachedConversation,
+        ...updatedConversation,
+      });
+    }
 
     setActiveGroup((prev) => {
       if (!prev) return prev;

@@ -15,6 +15,13 @@ const FETCH_SIZE = MESSAGE_PAGE_SIZE;
 const CACHE_LIMIT = MESSAGE_CACHE_LIMIT;
 const MESSAGE_LIST_BASE_INDEX = 100000;
 
+interface ConversationWindowSnapshot {
+  loadedCount: number;
+  hasOlder: boolean;
+}
+
+const conversationWindowCache = new Map<string, ConversationWindowSnapshot>();
+
 interface MessageUpdate {
   message_id: string;
   content: string;
@@ -98,6 +105,26 @@ const trimMessages = (msgs: Message[], trimFrom: 'old' | 'new'): Message[] => {
     : sorted.slice(0, CACHE_LIMIT);
 };
 
+const resolveInitialHasOlder = ({
+  localHasMore,
+  localCount,
+  requestedLimit,
+  sessionSnapshot,
+  syncHasMore = false,
+}: {
+  localHasMore: boolean;
+  localCount: number;
+  requestedLimit: number;
+  sessionSnapshot?: ConversationWindowSnapshot;
+  syncHasMore?: boolean;
+}) => {
+  if (sessionSnapshot) {
+    return localHasMore || syncHasMore || sessionSnapshot.hasOlder;
+  }
+
+  return localHasMore || syncHasMore || localCount >= requestedLimit;
+};
+
 export const useMessageList = (
   conversationId: string,
   encryptionKey: CryptoKey | null,
@@ -122,23 +149,41 @@ export const useMessageList = (
   const fetchingReplies = useRef<Set<string>>(new Set());
   const messagesRef = useRef<Message[]>([]);
   const prefetchingOlderRef = useRef(false);
-  const didSilentOlderPrefetchRef = useRef(false);
 
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
     prefetchingOlderRef.current = false;
-    didSilentOlderPrefetchRef.current = false;
   }, [conversationId]);
 
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
+  useEffect(() => {
+    if (
+      messages.length === 0 ||
+      messages.some((message) => String(message.conversation_id) !== String(conversationId))
+    ) {
+      return;
+    }
+
+    const existing = conversationWindowCache.get(conversationId);
+    conversationWindowCache.set(conversationId, {
+      loadedCount: Math.min(
+        CACHE_LIMIT,
+        Math.max(existing?.loadedCount ?? INITIAL_FETCH_SIZE, messages.length)
+      ),
+      hasOlder,
+    });
+  }, [conversationId, hasOlder, messages.length]);
+
   // ============== Initial Load ==============
   useEffect(() => {
     if (!encryptionKey) return;
     let ignore = false;
+    const sessionSnapshot = conversationWindowCache.get(conversationId);
+    const initialLimit = Math.max(INITIAL_FETCH_SIZE, sessionSnapshot?.loadedCount ?? 0);
 
     const load = async () => {
       setMessages([]);
@@ -156,7 +201,7 @@ export const useMessageList = (
           encryptionKey,
           {
             preferSessionCache: true,
-            initialLimit: INITIAL_FETCH_SIZE,
+            initialLimit,
             syncLimit: INITIAL_FETCH_SIZE,
           }
         );
@@ -166,8 +211,12 @@ export const useMessageList = (
         if (cached.messages.length > 0) {
           const uiMessages = sortMessages(cached.messages.map(toUIMessage));
           setMessages(uiMessages);
-          // If the cache is exactly one page, assume there may be older history until proven otherwise.
-          setHasOlder(cached.has_more || uiMessages.length >= INITIAL_FETCH_SIZE);
+          setHasOlder(resolveInitialHasOlder({
+            localHasMore: cached.has_more,
+            localCount: uiMessages.length,
+            requestedLimit: initialLimit,
+            sessionSnapshot,
+          }));
           setLoading(false);
           onMessagesLoaded?.(uiMessages);
 
@@ -178,7 +227,7 @@ export const useMessageList = (
           setHasOlder((prev) => prev || syncResult.hasMore);
 
           if (syncResult.newMessages.length > 0) {
-            const fresh = await messageSync.readLocal(conversationId, { limit: INITIAL_FETCH_SIZE });
+            const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
             if (ignore) return;
             const freshUI = sortMessages(fresh.messages.map(toUIMessage));
             setMessages((prev) => {
@@ -187,7 +236,13 @@ export const useMessageList = (
               );
               return trimMessages(unique, 'old');
             });
-            setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= INITIAL_FETCH_SIZE);
+            setHasOlder(resolveInitialHasOlder({
+              localHasMore: fresh.has_more,
+              localCount: freshUI.length,
+              requestedLimit: initialLimit,
+              sessionSnapshot,
+              syncHasMore: syncResult.hasMore,
+            }));
             onMessagesLoaded?.(freshUI);
           }
         } else {
@@ -196,11 +251,17 @@ export const useMessageList = (
           if (ignore) return;
           setSyncing(false);
 
-          const fresh = await messageSync.readLocal(conversationId, { limit: INITIAL_FETCH_SIZE });
+          const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
           if (ignore) return;
           const freshUI = sortMessages(fresh.messages.map(toUIMessage));
           setMessages(freshUI);
-          setHasOlder(fresh.has_more || syncResult.hasMore || freshUI.length >= INITIAL_FETCH_SIZE);
+          setHasOlder(resolveInitialHasOlder({
+            localHasMore: fresh.has_more,
+            localCount: freshUI.length,
+            requestedLimit: initialLimit,
+            sessionSnapshot,
+            syncHasMore: syncResult.hasMore,
+          }));
           setLoading(false);
           onMessagesLoaded?.(freshUI);
         }
@@ -412,41 +473,6 @@ export const useMessageList = (
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
   }, [loadOlderPage]);
-
-  useEffect(() => {
-    if (
-      !encryptionKey ||
-      loading ||
-      messages.length === 0 ||
-      !hasOlder ||
-      didSilentOlderPrefetchRef.current
-    ) {
-      return;
-    }
-
-    didSilentOlderPrefetchRef.current = true;
-    let cancelled = false;
-    let frameId: number | null = null;
-    let timeoutId: number | null = null;
-
-    frameId = window.requestAnimationFrame(() => {
-      timeoutId = window.setTimeout(() => {
-        if (!cancelled) {
-          void loadOlderPage({ silent: true, forceServer: true });
-        }
-      }, 0);
-    });
-
-    return () => {
-      cancelled = true;
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
-    };
-  }, [conversationId, encryptionKey, hasOlder, loading, loadOlderPage, messages.length]);
 
   // ============== Load Newer (Scroll Down) ==============
   const loadNewer = useCallback(async () => {
