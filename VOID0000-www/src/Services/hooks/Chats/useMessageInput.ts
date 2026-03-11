@@ -40,6 +40,8 @@ export const useMessageInput = ({
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [sendError, setSendError] = useState('');
+  const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
 
   // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -64,6 +66,8 @@ export const useMessageInput = ({
   useEffect(() => {
     inputRef.current?.focus();
     setAttachments([]);
+    setSendError('');
+    setSlowmodeRemaining(0);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -138,6 +142,9 @@ export const useMessageInput = ({
 
   const getPlaceholder = () => {
     if (!encryptionKey) return 'Setting up encryption...';
+    if (!editingMessage && slowmodeRemaining > 0) {
+      return `Slowmode active: wait ${slowmodeRemaining}s`;
+    }
     if (attachments.length > 0) return 'Add a caption... (optional)';
     if (conversation.type === 'dm') {
       return `Message ${conversation.dm_display_name || conversation.dm_username || 'user'}`;
@@ -145,14 +152,44 @@ export const useMessageInput = ({
     return `Message ${conversation.name || 'conversation'}`;
   };
 
-  const canSend = !sending && encryptionKey && (
+  const isSlowmodeBlocked =
+    !editingMessage &&
+    slowmodeRemaining > 0 &&
+    conversation.type === 'channel' &&
+    !['owner', 'admin'].includes(conversation.role);
+
+  const canSend = !sending && !isSlowmodeBlocked && encryptionKey && (
     text.trim().length > 0 || attachments.some((a) => a.url)
   ) && !attachments.some((a) => a.uploading);
+
+  useEffect(() => {
+    if (slowmodeRemaining <= 0) return;
+
+    const timer = window.setInterval(() => {
+      setSlowmodeRemaining((prev) => {
+        if (prev <= 1) {
+          window.clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [slowmodeRemaining]);
+
+  useEffect(() => {
+    if (slowmodeRemaining === 0 && sendError.toLowerCase().includes('slowmode')) {
+      setSendError('');
+    }
+  }, [sendError, slowmodeRemaining]);
 
   const handleSend = async () => {
     if (!canSend) return;
 
     const trimmed = text.trim();
+    const previousText = text;
+    const previousAttachments = attachments;
     const uploadedUrls = attachments
       .filter((a) => a.url)
       .map((a) => a.blurhash
@@ -160,6 +197,7 @@ export const useMessageInput = ({
         : a.url!
       );
 
+    setSendError('');
     setText('');
     setAttachments([]);
     setSending(true);
@@ -183,6 +221,9 @@ export const useMessageInput = ({
         });
         onMessageSent(msg);
         onCancelReply?.();
+        if (conversation.type === 'channel' && conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
+          setSlowmodeRemaining(conversation.slowmode_seconds);
+        }
       } else if (uploadedUrls.length > 0) {
         const msg = await sendImageOnlyMessage(conversation.id, uploadedUrls, {
           key_version: keyVersion,
@@ -190,10 +231,21 @@ export const useMessageInput = ({
         });
         onMessageSent(msg);
         onCancelReply?.();
+        if (conversation.type === 'channel' && conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
+          setSlowmodeRemaining(conversation.slowmode_seconds);
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Send failed:', err);
-      if (trimmed) setText(trimmed);
+      setText(previousText);
+      setAttachments(previousAttachments);
+
+      if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
+        setSlowmodeRemaining(err.retry_after_seconds);
+        setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
+      } else {
+        setSendError(err?.message || 'Failed to send message');
+      }
     } finally {
       setSending(false);
     }
@@ -234,6 +286,8 @@ export const useMessageInput = ({
     setText,
     sending,
     canSend,
+    sendError,
+    slowmodeRemaining,
     attachments,
     inputRef,
     fileInputRef,

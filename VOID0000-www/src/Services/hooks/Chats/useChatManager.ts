@@ -275,6 +275,19 @@ export const useChatManager = (user: any) => {
     return () => gateway.off('MESSAGE_DELETE', handleDeleteEvent);
   }, [activeConversation?.id, user?.id]);
 
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const handleConversationUpdate = (data: any) => {
+      const updatedConversation = data?.conversation as Conversation | undefined;
+      if (!updatedConversation) return;
+      patchConversationInState(updatedConversation);
+    };
+
+    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
+    return () => gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
+  }, [user?.id]);
+
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {
     if (conv.type === 'group') {
@@ -313,6 +326,47 @@ export const useChatManager = (user: any) => {
     }
   };
 
+  const patchConversationInState = (updatedConversation: Conversation) => {
+    const conversationIdentifier = updatedConversation.public_id || updatedConversation.id;
+
+    setActiveGroup((prev) => {
+      if (!prev) return prev;
+
+      if (matchesConversationIdentifier(prev, conversationIdentifier)) {
+        return {
+          ...prev,
+          ...updatedConversation,
+          channels: prev.channels || [],
+        };
+      }
+
+      const nextChannels = (prev.channels || []).map((channel) =>
+        matchesConversationIdentifier(channel, conversationIdentifier)
+          ? { ...channel, ...updatedConversation }
+          : channel
+      );
+
+      const didChange = nextChannels.some((channel, index) => channel !== (prev.channels || [])[index]);
+      if (!didChange) return prev;
+
+      return {
+        ...prev,
+        channels: nextChannels,
+      };
+    });
+
+    setActiveConversation((prev) => {
+      if (!matchesConversationIdentifier(prev, conversationIdentifier)) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        ...updatedConversation,
+      };
+    });
+  };
+
   const handleBackToMe = () => {
     resetLiveChatState();
     setActiveConversation(null);
@@ -328,7 +382,7 @@ export const useChatManager = (user: any) => {
     members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError,
     newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
-    handleSelectConversation, handleSelectChannel, refreshActiveGroup, handleMessageSent: setNewMessage,
+    handleSelectConversation, handleSelectChannel, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,
     handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
   };
 };

@@ -13,11 +13,13 @@ import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageView';
 import MessageInput from '../components/Chat/MessageInput';
 import CreateChannelModal from '../components/Chat/groups/CreateChannelModal';
+import ChannelSettingsModal from '../components/Chat/groups/ChannelSettingsModal';
 import GroupChannelsSidebar from '../components/Chat/groups/GroupChannelsSidebar';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
 import AddFriend from '../components/common/Friends/AddFriend';
 import { gateway } from '../Services/Gateway/gateway';
+import { Conversation } from '../Services/Chat/chatService';
 
 const ChatDashboard = () => {
   const location = useLocation();
@@ -49,6 +51,7 @@ const ChatDashboard = () => {
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [createChannelInitialCategoryId, setCreateChannelInitialCategoryId] = useState<string | null>(null);
+  const [channelSettingsTarget, setChannelSettingsTarget] = useState<Conversation | null>(null);
 
   const {
     members,
@@ -68,6 +71,7 @@ const ChatDashboard = () => {
     handleSelectConversation,
     handleSelectChannel,
     refreshActiveGroup,
+    patchConversationInState,
     handleMessageSent,
     handleStartDM,
     handleBackToMe,
@@ -229,6 +233,23 @@ const ChatDashboard = () => {
               navigate(nextRoute);
               return;
             }
+          }}
+        />
+      )}
+      {channelSettingsTarget && activeGroup && (
+        <ChannelSettingsModal
+          channel={channelSettingsTarget}
+          onClose={() => setChannelSettingsTarget(null)}
+          onSaved={async (channel) => {
+            patchConversationInState(channel);
+            setChannelSettingsTarget(null);
+          }}
+          onDeleted={async () => {
+            setConvRefresh((n) => n + 1);
+            setChannelSettingsTarget(null);
+            await refreshActiveGroup(null);
+            const nextRoute = getGroupRoute(activeGroup);
+            navigate(nextRoute === '/chats' ? '/chats' : nextRoute);
           }}
         />
       )}
@@ -422,6 +443,7 @@ const ChatDashboard = () => {
                 conversation={activeGroup}
                 channels={activeChannels}
                 activeChannelId={activeConversation.id}
+                currentUserId={user?.id || ''}
                 onSelectChannel={(channel) => {
                   const nextRoute = getGroupRoute(activeGroup, channel);
                   if (nextRoute !== '/chats') {
@@ -430,6 +452,7 @@ const ChatDashboard = () => {
                   }
                   handleSelectChannel(channel);
                 }}
+                onOpenChannelSettings={(channel) => setChannelSettingsTarget(channel)}
                 onCreateChannel={(categoryId) => {
                   setCreateChannelInitialCategoryId(categoryId || null);
                   setShowCreateChannel(true);

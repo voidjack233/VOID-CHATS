@@ -1,5 +1,6 @@
-import { ChevronDown, ChevronRight, Hash, Plus } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { Conversation } from '../../../Services/Chat/chatService';
+import GroupChannelListItem from './GroupChannelListItem';
 
 interface GroupChannelCategoryProps {
   category: {
@@ -8,9 +9,11 @@ interface GroupChannelCategoryProps {
     channels: Conversation[];
   };
   activeChannelId: string;
+  canManageChannels: boolean;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
   onSelectChannel: (channel: Conversation) => void;
+  onOpenChannelSettings: (channel: Conversation) => void;
   onCreateChannel: (categoryId?: string | null) => void;
   showCreateChannelButton?: boolean;
 }
@@ -18,9 +21,11 @@ interface GroupChannelCategoryProps {
 export default function GroupChannelCategory({
   category,
   activeChannelId,
+  canManageChannels,
   isCollapsed,
   onToggleCollapse,
   onSelectChannel,
+  onOpenChannelSettings,
   onCreateChannel,
   showCreateChannelButton = false,
 }: GroupChannelCategoryProps) {
@@ -40,7 +45,7 @@ export default function GroupChannelCategory({
           {isCollapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
           <span className="truncate">{category.name}</span>
         </button>
-        {showCreateChannelButton && (
+        {canManageChannels && showCreateChannelButton && (
           <button
             type="button"
             onClick={() => onCreateChannel(category.id)}
@@ -62,20 +67,14 @@ export default function GroupChannelCategory({
       ) : (
         <div className="space-y-1">
           {visibleChannels.map((channel) => (
-            <button
+            <GroupChannelListItem
               key={channel.id}
-              type="button"
-              onClick={() => onSelectChannel(channel)}
-              data-group-sidebar-action="true"
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
-                activeChannelId === channel.id
-                  ? 'bg-void-bg-hover text-void-text shadow-sm'
-                  : 'text-void-text-muted hover:bg-void-bg-hover/70 hover:text-void-text'
-              }`}
-            >
-              <Hash className="h-4 w-4 shrink-0" />
-              <span className="truncate font-medium">{channel.name}</span>
-            </button>
+              channel={channel}
+              isActive={activeChannelId === channel.id}
+              canManage={canManageChannels}
+              onSelectChannel={onSelectChannel}
+              onOpenSettings={onOpenChannelSettings}
+            />
           ))}
         </div>
       )}

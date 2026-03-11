@@ -8,12 +8,15 @@ import {
 } from '../../../Services/Chat/chatService';
 import CreateCategoryModal from './CreateCategoryModal';
 import GroupChannelCategory from './GroupChannelCategory';
+import GroupChannelListItem from './GroupChannelListItem';
 
 interface GroupChannelsSidebarProps {
   conversation: Conversation;
   channels: Conversation[];
   activeChannelId: string;
+  currentUserId: string;
   onSelectChannel: (channel: Conversation) => void;
+  onOpenChannelSettings: (channel: Conversation) => void;
   onCreateChannel: (categoryId?: string | null) => void;
 }
 
@@ -21,7 +24,9 @@ export default function GroupChannelsSidebar({
   conversation,
   channels,
   activeChannelId,
+  currentUserId,
   onSelectChannel,
+  onOpenChannelSettings,
   onCreateChannel,
 }: GroupChannelsSidebarProps) {
   const MENU_WIDTH = 192;
@@ -34,6 +39,7 @@ export default function GroupChannelsSidebar({
   const [showCreateCategory, setShowCreateCategory] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const openMenuTimeoutRef = useRef<number | null>(null);
+  const canManageChannels = currentUserId === conversation.owner_id;
 
   useEffect(() => {
     let ignore = false;
@@ -196,6 +202,7 @@ export default function GroupChannelsSidebar({
   };
 
   const handleEmptySpaceContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!canManageChannels) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest?.('[data-group-sidebar-action="true"]')) {
       return;
@@ -271,32 +278,34 @@ export default function GroupChannelsSidebar({
               Text channels
             </p>
           </div>
-          <div className="relative" data-group-sidebar-action="true">
-            <button
-              type="button"
-              data-group-sidebar-action="true"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                event.nativeEvent.stopImmediatePropagation();
-                setContextMenu(null);
-                setIsHeaderMenuOpen((prev) => !prev);
-              }}
-              className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
-              title="Channel actions"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
-
-            {isHeaderMenuOpen && (
-              <div
+          {canManageChannels && (
+            <div className="relative" data-group-sidebar-action="true">
+              <button
+                type="button"
                 data-group-sidebar-action="true"
-                className="absolute right-0 top-full z-[250] mt-2 min-w-44 rounded-xl border border-void-bg-hover bg-void-bg-main p-1.5 shadow-2xl pointer-events-auto"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.nativeEvent.stopImmediatePropagation();
+                  setContextMenu(null);
+                  setIsHeaderMenuOpen((prev) => !prev);
+                }}
+                className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
+                title="Channel actions"
               >
-                {menuActions}
-              </div>
-            )}
-          </div>
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+
+              {isHeaderMenuOpen && (
+                <div
+                  data-group-sidebar-action="true"
+                  className="absolute right-0 top-full z-[250] mt-2 min-w-44 rounded-xl border border-void-bg-hover bg-void-bg-main p-1.5 shadow-2xl pointer-events-auto"
+                >
+                  {menuActions}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -308,20 +317,14 @@ export default function GroupChannelsSidebar({
           {uncategorizedChannels.length > 0 && (
             <div className="space-y-1 pb-3">
               {uncategorizedChannels.map((channel) => (
-                <button
+                <GroupChannelListItem
                   key={channel.id}
-                  type="button"
-                  onClick={() => onSelectChannel(channel)}
-                  data-group-sidebar-action="true"
-                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
-                    activeChannelId === channel.id
-                      ? 'bg-void-bg-hover text-void-text shadow-sm'
-                      : 'text-void-text-muted hover:bg-void-bg-hover/70 hover:text-void-text'
-                  }`}
-                >
-                  <Hash className="h-4 w-4 shrink-0" />
-                  <span className="truncate font-medium">{channel.name}</span>
-                </button>
+                  channel={channel}
+                  isActive={activeChannelId === channel.id}
+                  canManage={canManageChannels}
+                  onSelectChannel={onSelectChannel}
+                  onOpenSettings={onOpenChannelSettings}
+                />
               ))}
             </div>
           )}
@@ -332,9 +335,11 @@ export default function GroupChannelsSidebar({
                 key={category.id}
                 category={category}
                 activeChannelId={activeChannelId}
+                canManageChannels={canManageChannels}
                 isCollapsed={!!collapsedCategoryIds[category.id]}
                 onToggleCollapse={() => toggleCategory(category.id)}
                 onSelectChannel={onSelectChannel}
+                onOpenChannelSettings={onOpenChannelSettings}
                 onCreateChannel={openCreateChannel}
                 showCreateChannelButton={category.showCreateChannelButton}
               />
@@ -345,7 +350,7 @@ export default function GroupChannelsSidebar({
         </div>
       </div>
 
-      {contextMenu && (
+      {canManageChannels && contextMenu && (
         <div
           data-group-sidebar-action="true"
           className="absolute z-[250] min-w-44 rounded-xl border border-void-bg-hover bg-void-bg-main p-1.5 shadow-2xl pointer-events-auto"

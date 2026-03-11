@@ -1,6 +1,6 @@
 // src/components/Chat/MessageInput.tsx
 import { useState, useRef, useEffect } from 'react';
-import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2, Image, FileText } from 'lucide-react';
+import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2, Image, FileText, TimerReset } from 'lucide-react';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 
@@ -22,6 +22,8 @@ const MessageInput = (props: MessageInputProps) => {
     setText,
     sending,
     canSend,
+    sendError,
+    slowmodeRemaining,
     attachments,
     inputRef,
     fileInputRef,
@@ -81,6 +83,17 @@ const MessageInput = (props: MessageInputProps) => {
           <button onClick={handleCancelAction} className="text-void-text-muted hover:text-void-text">
             <X className="w-4 h-4" />
           </button>
+        </div>
+      )}
+
+      {!sendError && slowmodeRemaining > 0 && props.conversation.type === 'channel' && (
+        <div
+          className={`flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-void-text-muted ${
+            hasBanner || hasAttachments ? 'bg-void-bg-hover/50' : ''
+          } ${hasBanner ? '' : 'rounded-t-lg'}`}
+        >
+          <TimerReset className="h-3.5 w-3.5 text-void-accent" />
+          <span>Slowmode is enabled. You can send again in {slowmodeRemaining}s.</span>
         </div>
       )}
 
@@ -194,8 +207,14 @@ const MessageInput = (props: MessageInputProps) => {
         </button>
       </div>
 
-      <div className="flex items-center justify-center mt-1.5">
-        <span className="text-[10px] text-void-text-muted">Messages are end-to-end encrypted</span>
+      <div className="mt-1.5 flex min-h-[16px] items-center justify-center">
+        {sendError ? (
+          <span className="text-[10px] text-orange-400">
+            {sendError}
+          </span>
+        ) : (
+          <span className="text-[10px] text-void-text-muted">Messages are end-to-end encrypted</span>
+        )}
       </div>
     </div>
   );

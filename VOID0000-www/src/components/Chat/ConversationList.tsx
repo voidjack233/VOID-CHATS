@@ -41,10 +41,12 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     
     gateway.on('MESSAGE_CREATE', handleRefresh);
     gateway.on('REACTION_ADD', handleRefresh);
+    gateway.on('CONVERSATION_UPDATE', handleRefresh);
     
     return () => {
       gateway.off('MESSAGE_CREATE', handleRefresh);
       gateway.off('REACTION_ADD', handleRefresh);
+      gateway.off('CONVERSATION_UPDATE', handleRefresh);
     };
   }, []);
 

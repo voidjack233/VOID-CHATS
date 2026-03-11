@@ -12,6 +12,9 @@ export interface Conversation {
   public_id?: string | null;
   type: 'dm' | 'group' | 'channel';
   name: string | null;
+  topic?: string | null;
+  slowmode_seconds?: number;
+  is_age_restricted?: boolean;
   owner_id: string | null;
   icon_filename: string | null;
   parent_conversation_id?: string | null;
@@ -90,6 +93,14 @@ export interface ConversationCategory {
   updated_at: string;
 }
 
+function createApiError(data: any): Error & Record<string, any> {
+  const error = new Error(data?.error || 'Request failed') as Error & Record<string, any>;
+  if (data && typeof data === 'object') {
+    Object.assign(error, data);
+  }
+  return error;
+}
+
 // ============== Conversations ==============
 
 export async function getConversations(): Promise<Conversation[]> {
@@ -132,7 +143,12 @@ export async function createConversation(
 
 export async function updateConversation(
   id: string,
-  updates: { name?: string }
+  updates: {
+    name?: string;
+    topic?: string | null;
+    slowmode_seconds?: number;
+    is_age_restricted?: boolean;
+  }
 ): Promise<{ conversation: Conversation }> {
   const res = await fetchWithAuth(`${API_PREFIX}/${id}`, {
     method: 'PUT',
@@ -252,7 +268,7 @@ export async function sendMessage(
   });
 
   const data = await res.json();
-  if (!data.success) throw new Error(data.error);
+  if (!data.success) throw createApiError(data);
 
   return { ...data.message, content: plaintext };
 }
@@ -272,7 +288,7 @@ export async function sendImageOnlyMessage(
   });
 
   const data = await res.json();
-  if (!data.success) throw new Error(data.error);
+  if (!data.success) throw createApiError(data);
 
   return { ...data.message, attachments };
 }
