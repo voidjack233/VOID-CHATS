@@ -106,6 +106,24 @@ export function publishBroadcastToFriends(userId, event, data) {
   });
 }
 
+export function publishGatewayCommand(command, data) {
+  if (!publisher) {
+    console.warn('📡 Publisher not initialized, skipping gateway command');
+    return;
+  }
+
+  const message = JSON.stringify({
+    type: 'command',
+    command,
+    data,
+    timestamp: Date.now(),
+  });
+
+  publisher.publish(CHANNEL, message).catch((err) => {
+    console.error('📡 Command publish error:', err);
+  });
+}
+
 /**
  * Cleanup connections
  */

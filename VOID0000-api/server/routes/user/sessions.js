@@ -1,6 +1,8 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
+import { sessionStore } from '../../middleware/sessionStore.js';
+import { disconnectLiveSession } from '../../gateway/control.js';
 import { hashToken } from '../../utils/hashToken.js';
 
 const router = express.Router();
@@ -48,7 +50,7 @@ router.delete('/:id', authenticateUser, async (req, res) => {
 
   try {
     const checkResult = await db.query(
-      `SELECT token_hash FROM refresh_tokens WHERE id = $1 AND user_id = $2`,
+      `SELECT token_hash, device_id FROM refresh_tokens WHERE id = $1 AND user_id = $2`,
       [sessionId, userId]
     );
 
@@ -60,10 +62,16 @@ router.delete('/:id', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Cannot revoke current session. Use logout instead.' });
     }
 
-    await db.query(
-      `DELETE FROM refresh_tokens WHERE id = $1 AND user_id = $2`,
+    const revoked = await db.query(
+      `DELETE FROM refresh_tokens WHERE id = $1 AND user_id = $2 RETURNING device_id`,
       [sessionId, userId]
     );
+
+    const revokedDeviceId = revoked.rows[0]?.device_id;
+    if (revokedDeviceId) {
+      await sessionStore.revoke(userId, revokedDeviceId);
+      await disconnectLiveSession(userId, revokedDeviceId);
+    }
 
     res.json({
       success: true,
@@ -85,9 +93,15 @@ router.delete('/', authenticateUser, async (req, res) => {
     const result = await db.query(
       `DELETE FROM refresh_tokens 
        WHERE user_id = $1 AND token_hash != $2
-       RETURNING id`,
+       RETURNING id, device_id`,
       [userId, currentTokenHash]
     );
+
+    for (const row of result.rows) {
+      if (!row.device_id) continue;
+      await sessionStore.revoke(userId, row.device_id);
+      await disconnectLiveSession(userId, row.device_id);
+    }
 
     res.json({
       success: true,

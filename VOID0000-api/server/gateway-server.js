@@ -5,7 +5,13 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
-import { setupGateway, sendToUser, broadcastToFriends } from './gateway/index.js';
+import {
+  setupGateway,
+  sendToUser,
+  broadcastToFriends,
+  updateTokenExpiry,
+  disconnectUserSession,
+} from './gateway/index.js';
 import { initSubscriber } from './valkey-pubsub.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,10 +45,19 @@ setupGateway(httpServer);
 initSubscriber((message) => {
   try {
     if (message.type === 'broadcastToFriends') {
-      // API worker wants to broadcast to a user's friends
-      broadcastToFriends(message.userId, message.event, message.data);
+      void broadcastToFriends(message.userId, message.event, message.data);
+    } else if (message.type === 'command') {
+      if (message.command === 'updateTokenExpiry') {
+        updateTokenExpiry(message.data?.userId, message.data?.newExp, message.data?.deviceId ?? null);
+      } else if (message.command === 'disconnectSession') {
+        disconnectUserSession(
+          message.data?.userId,
+          message.data?.deviceId ?? null,
+          message.data?.code ?? 4001,
+          message.data?.reason ?? 'Session revoked'
+        );
+      }
     } else if (message.targetUserId) {
-      // API worker wants to send to a specific user
       sendToUser(message.targetUserId, message.event, message.data);
     }
   } catch (err) {

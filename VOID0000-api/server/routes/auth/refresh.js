@@ -6,6 +6,7 @@ import { getClientIP } from '../../utils/securityUtils.js';
 import { accessCookieOptions, refreshCookieOptions, clearCookieOptions } from '../../utils/cookieConfig.js';
 import { hashToken } from '../../utils/hashToken.js';
 import { sessionStore } from '../../middleware/sessionStore.js';
+import { syncLiveTokenExpiry } from '../../gateway/control.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
@@ -99,7 +100,23 @@ router.post('/', async (req, res) => {
           { expiresIn: '15m' }
         );
 
+        const newAccessDecoded = jwt.decode(newAccessToken);
+
         res.cookie('accessToken', newAccessToken, accessCookieOptions());
+
+        const touched = await sessionStore.touch(decoded.id, decoded.device_id);
+        if (!touched) {
+          await sessionStore.create(decoded.id, decoded.device_id, {
+            ip: normalizeIP(getClientIP(req)),
+            userAgent: req.get('User-Agent') || 'unknown',
+            deviceName: 'Unknown',
+            deviceType: 'unknown',
+          });
+        }
+
+        if (Number.isInteger(newAccessDecoded?.exp)) {
+          await syncLiveTokenExpiry(decoded.id, decoded.device_id, newAccessDecoded.exp);
+        }
 
         console.log(`🔄 Refresh race handled for user ${decoded.id.substring(0, 8)}... — issued new access token only`);
 
@@ -159,6 +176,7 @@ router.post('/', async (req, res) => {
       ACCESS_SECRET,
       { expiresIn: '15m' }
     );
+    const newAccessDecoded = jwt.decode(newAccessToken);
 
     const newRefreshToken = jwt.sign(
       { ...tokenPayload, jti: newJtiRefresh, type: 'refresh' },
@@ -204,7 +222,19 @@ router.post('/', async (req, res) => {
 
     await client.query('COMMIT');
 
-    await sessionStore.touch(decoded.id, decoded.device_id);
+    const touched = await sessionStore.touch(decoded.id, decoded.device_id);
+    if (!touched) {
+      await sessionStore.create(decoded.id, decoded.device_id, {
+        ip: normalizeIP(getClientIP(req)),
+        userAgent: req.get('User-Agent') || 'unknown',
+        deviceName: tokenRecord.device_name || 'Unknown',
+        deviceType: tokenRecord.device_type || 'unknown',
+      });
+    }
+
+    if (Number.isInteger(newAccessDecoded?.exp)) {
+      await syncLiveTokenExpiry(decoded.id, decoded.device_id, newAccessDecoded.exp);
+    }
 
     // 6. SET COOKIES
     res.cookie('accessToken', newAccessToken, accessCookieOptions());

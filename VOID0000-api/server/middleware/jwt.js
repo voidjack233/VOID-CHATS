@@ -1,41 +1,85 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
+import { pool } from '../db.js';
+import { sessionStore } from './sessionStore.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
 
-export const authenticateUser = (req, res, next) => {
+async function verifyRequestSession(req) {
   const token = req.cookies.accessToken;
-  
+
   if (!token) {
-    return res.status(401).json({ error: 'Authentication required' });
+    return { ok: false, status: 401, body: { error: 'Authentication required' } };
   }
 
   try {
     const decoded = jwt.verify(token, ACCESS_SECRET);
-    req.user = decoded;
-    next();
+    if (!decoded.id || !decoded.device_id) {
+      return { ok: false, status: 401, body: { error: 'Token invalid or expired' } };
+    }
+
+    let session = await sessionStore.validate(decoded.id, decoded.device_id);
+
+    if (!session) {
+      const result = await pool.query(
+        `SELECT ip_address, user_agent, device_name, device_type
+         FROM refresh_tokens
+         WHERE user_id = $1
+           AND device_id = $2
+           AND is_revoked = FALSE
+           AND expires_at > NOW()
+         ORDER BY last_used_at DESC NULLS LAST, created_at DESC
+         LIMIT 1`,
+        [decoded.id, decoded.device_id]
+      );
+
+      if (result.rows.length === 0) {
+        return { ok: false, status: 401, body: { error: 'Session invalid or revoked' } };
+      }
+
+      const activeSession = result.rows[0];
+      session = await sessionStore.create(decoded.id, decoded.device_id, {
+        ip: activeSession.ip_address || 'unknown',
+        userAgent: activeSession.user_agent || 'unknown',
+        deviceName: activeSession.device_name || 'Unknown',
+        deviceType: activeSession.device_type || 'unknown',
+      });
+
+      if (!session) {
+        return { ok: false, status: 500, body: { error: 'Session validation failed' } };
+      }
+    }
+
+    return { ok: true, user: decoded };
   } catch (err) {
-    // Don't clear cookies — let the refresh flow handle token renewal
-    return res.status(401).json({ error: 'Token invalid or expired' });
+    return { ok: false, status: 401, body: { error: 'Token invalid or expired' } };
   }
+}
+
+export const authenticateUser = async (req, res, next) => {
+  const result = await verifyRequestSession(req);
+
+  if (!result.ok) {
+    return res.status(result.status).json(result.body);
+  }
+
+  req.user = result.user;
+  next();
 };
 
 // API ENDPOINT
-router.get('/', (req, res) => {
-  const token = req.cookies.accessToken;
-  
-  if (!token) {
-    return res.status(401).json({ success: false, message: 'Missing token' });
+router.get('/', async (req, res) => {
+  const result = await verifyRequestSession(req);
+
+  if (!result.ok) {
+    return res.status(result.status).json({
+      success: false,
+      message: result.body.error,
+    });
   }
 
-  try {
-    const decoded = jwt.verify(token, ACCESS_SECRET);
-    res.json({ success: true, user: decoded });
-  } catch (err) {
-    // 401, not 403 — so fetchWithAuth triggers the refresh flow
-    return res.status(401).json({ success: false, message: 'Token invalid or expired' });
-  }
+  res.json({ success: true, user: result.user });
 });
 
 export default router;

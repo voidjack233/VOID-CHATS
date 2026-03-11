@@ -4,6 +4,8 @@ import jwt from 'jsonwebtoken';
 import { IPSecurity } from '../../utils/securityUtils.js';
 import { clearCookieOptions } from '../../utils/cookieConfig.js';
 import { hashToken } from '../../utils/hashToken.js';
+import { sessionStore } from '../../middleware/sessionStore.js';
+import { disconnectLiveSession } from '../../gateway/control.js';
 
 const router = Router();
 const REFRESH_SECRET = process.env.REFRESH_SECRET;
@@ -26,23 +28,38 @@ function clearAllCookies(res) {
 router.post('/', async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   let userId = null;
+  let deviceId = null;
 
   try {
     if (refreshToken) {
       try {
         const decoded = jwt.verify(refreshToken, REFRESH_SECRET);
         userId = decoded.id;
-        
+        deviceId = decoded.device_id || null;
+
         await pool.query(
           'UPDATE refresh_tokens SET is_revoked = TRUE, revoked_at = NOW() WHERE jti = $1',
           [decoded.jti]
         );
       } catch (err) {
         const tokenHash = hashToken(refreshToken);
-        await pool.query(
-          'UPDATE refresh_tokens SET is_revoked = TRUE, revoked_at = NOW() WHERE token_hash = $1',
+        const revoked = await pool.query(
+          `UPDATE refresh_tokens
+           SET is_revoked = TRUE, revoked_at = NOW()
+           WHERE token_hash = $1
+           RETURNING user_id, device_id`,
           [tokenHash]
         );
+
+        if (revoked.rows.length > 0) {
+          userId = revoked.rows[0].user_id;
+          deviceId = revoked.rows[0].device_id;
+        }
+      }
+
+      if (userId && deviceId) {
+        await sessionStore.revoke(userId, deviceId);
+        await disconnectLiveSession(userId, deviceId);
       }
     }
 

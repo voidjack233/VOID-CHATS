@@ -9,6 +9,7 @@ import { DeviceManager, getClientIP } from '../../../utils/securityUtils.js';
 import { v4 as uuidv4 } from 'uuid';
 import argon2 from 'argon2';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
+import { sessionStore } from '../../../middleware/sessionStore.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
@@ -239,6 +240,13 @@ router.post('/', async (req, res) => {
          created_at = NOW()`,
       [user.id, tokenHash, jtiRefresh, userIp, userAgent, deviceId, deviceInfo.deviceName, deviceInfo.deviceType]
     );
+
+    await sessionStore.create(user.id, deviceId, {
+      ip: userIp,
+      userAgent,
+      deviceName: deviceInfo.deviceName,
+      deviceType: deviceInfo.deviceType,
+    });
 
     res.cookie('accessToken', accessToken, accessCookieOptions());
     res.cookie('refreshToken', refreshToken, refreshCookieOptions());

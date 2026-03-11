@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { WebSocketServer } from 'ws';
 import cookie from 'cookie';
 import jwt from 'jsonwebtoken';
@@ -31,92 +32,350 @@ export const EVENTS = {
   REACTION_REMOVE: 'REACTION_REMOVE',
 };
 
+const CLOSE = {
+  AUTH_TIMEOUT: 4000,
+  UNAUTHORIZED: 4001,
+  PROTOCOL_ERROR: 4002,
+  FORBIDDEN: 4003,
+  INVALID_SESSION: 4007,
+  RATE_LIMITED: 4008,
+  SESSION_REPLACED: 4009,
+  SLOW_CONSUMER: 4010,
+};
+
+const WS_LIMITS = {
+  maxPayload: 64 * 1024,
+  maxBufferedAmount: 512 * 1024,
+  handshake: {
+    maxAttempts: 20,
+    windowMs: 60_000,
+  },
+  preAuth: {
+    maxMessages: 5,
+    windowMs: 10_000,
+  },
+  authenticated: {
+    maxMessages: 30,
+    windowMs: 60_000,
+  },
+};
+
+const MAX_CONNECTIONS_PER_USER = 5;
+const VALID_STATUSES = new Set(['online', 'idle']);
+
 // Store connections: userId -> Set of WebSocket connections
 const connections = new Map();
-const connectionInfo = new WeakMap(); // ws -> { userId, deviceId, sessionId, seq, lastHeartbeat, tokenRefreshTimer }
+const connectionInfo = new WeakMap();
 
 // Presence store: userId -> { status, lastActive }
 const presenceStore = new Map();
 
-let wssRef = null;
+// Friend cache: userId -> Set<friendId>
+const friendCache = new Map();
+
+const handshakeAttempts = new Map();
 
 // ==================== SESSION RESUME CONFIG ====================
 
-const SESSION_BUFFER_MAX = 256;       // max events buffered per session
-const SESSION_BUFFER_TTL = 300;       // 5 minutes TTL in Valkey
-const SESSION_KEY_PREFIX = 'sess:';   // Valkey key prefix
+const SESSION_BUFFER_MAX = 256;
+const SESSION_BUFFER_TTL = 300;
+const SESSION_KEY_PREFIX = 'sess:';
+const SESSION_META_PREFIX = 'sessmeta:';
+const SESSION_ID_BYTES = 18;
 
 function sessionKey(sessionId) {
   return `${SESSION_KEY_PREFIX}${sessionId}`;
 }
 
-// Buffer an event into Valkey for session resume
+function sessionMetaKey(sessionId) {
+  return `${SESSION_META_PREFIX}${sessionId}`;
+}
+
+function createSessionId() {
+  return crypto.randomBytes(SESSION_ID_BYTES).toString('base64url');
+}
+
+async function persistSessionIdentity(sessionId, userId, deviceId) {
+  if (!sessionId || !userId || !deviceId) return;
+
+  try {
+    await valkey.set(
+      sessionMetaKey(sessionId),
+      JSON.stringify({ userId, deviceId }),
+      'EX',
+      SESSION_BUFFER_TTL
+    );
+  } catch (err) {
+    console.error('Session metadata persist error:', err);
+  }
+}
+
+async function getSessionIdentity(sessionId) {
+  if (!sessionId) return null;
+
+  try {
+    const raw = await valkey.get(sessionMetaKey(sessionId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    console.error('Session metadata lookup error:', err);
+    return null;
+  }
+}
+
 async function bufferEvent(sessionId, payload) {
   if (!sessionId) return;
+
   const key = sessionKey(sessionId);
+
   try {
     await valkey.rpush(key, payload);
     await valkey.ltrim(key, -SESSION_BUFFER_MAX, -1);
     await valkey.expire(key, SESSION_BUFFER_TTL);
   } catch (err) {
-    // Non-critical — resume just won't have this event
+    console.error('Session buffer error:', err);
   }
 }
 
-// Replay missed events from Valkey buffer
 async function replayEvents(ws, sessionId, lastSequence) {
   const key = sessionKey(sessionId);
+
   try {
     const events = await valkey.lrange(key, 0, -1);
     let replayed = 0;
+    let earliestSequence = null;
+    let latestSequence = lastSequence;
 
     for (const raw of events) {
-      const parsed = JSON.parse(raw);
+      let parsed;
+
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+
+      if (!Number.isInteger(parsed.s)) {
+        continue;
+      }
+
+      if (earliestSequence === null) {
+        earliestSequence = parsed.s;
+      }
+
+      if (parsed.s > latestSequence) {
+        latestSequence = parsed.s;
+      }
+
       if (parsed.s > lastSequence) {
-        if (ws.readyState === 1) {
-          ws.send(raw);
-          replayed++;
+        if (!sendRaw(ws, raw)) {
+          break;
         }
+
+        replayed++;
       }
     }
 
-    return replayed;
+    return {
+      replayed,
+      gapDetected: earliestSequence !== null && lastSequence < earliestSequence - 1,
+      latestSequence,
+    };
   } catch (err) {
     console.error('Session replay error:', err);
-    return 0;
+    return { replayed: 0, gapDetected: true, latestSequence: lastSequence };
+  }
+}
+
+// ==================== VALIDATION HELPERS ====================
+
+class GatewayProtocolError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function assertPlainObject(value, message = 'Invalid payload') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, message);
+  }
+}
+
+function validateIdentifyPayload(payload) {
+  assertPlainObject(payload, 'Invalid identify');
+
+  if (typeof payload.user_id !== 'string' || payload.user_id.length === 0 || payload.user_id.length > 64) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid identify');
+  }
+
+  return { user_id: payload.user_id };
+}
+
+function validateResumePayload(payload) {
+  assertPlainObject(payload, 'Invalid resume');
+
+  if (typeof payload.session_id !== 'string' || payload.session_id.length === 0 || payload.session_id.length > 128) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid resume');
+  }
+
+  if (!Number.isInteger(payload.last_sequence) || payload.last_sequence < 0) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid resume');
+  }
+
+  return {
+    session_id: payload.session_id,
+    last_sequence: payload.last_sequence,
+  };
+}
+
+function validateStatusPayload(payload) {
+  assertPlainObject(payload, 'Invalid status update');
+
+  if (!VALID_STATUSES.has(payload.status)) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid status update');
+  }
+
+  return { status: payload.status };
+}
+
+function parseIncomingMessage(raw) {
+  let message;
+
+  try {
+    message = JSON.parse(raw.toString());
+  } catch {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid JSON');
+  }
+
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid payload');
+  }
+
+  if (!Number.isInteger(message.op)) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid opcode');
+  }
+
+  switch (message.op) {
+    case OP.IDENTIFY:
+      return { op: message.op, d: validateIdentifyPayload(message.d) };
+
+    case OP.RESUME:
+      return { op: message.op, d: validateResumePayload(message.d) };
+
+    case OP.HEARTBEAT:
+      if (message.d !== undefined && message.d !== null && typeof message.d !== 'number') {
+        throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid heartbeat');
+      }
+      return { op: message.op, d: message.d };
+
+    case OP.STATUS_UPDATE:
+      return { op: message.op, d: validateStatusPayload(message.d) };
+
+    default:
+      throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Unknown opcode');
+  }
+}
+
+// ==================== CONNECTION HELPERS ====================
+
+function getAllowedOrigins() {
+  return new Set([
+    process.env.FRONT_URL ?? 'http://localhost:5173',
+    'https://void0000.online',
+    'https://www.void0000.online',
+    'http://localhost:5173',
+    'http://localhost',
+  ].filter(Boolean));
+}
+
+function getRequestIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  const ip = req.headers['cf-connecting-ip']
+    || (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : null)
+    || req.socket?.remoteAddress
+    || null;
+
+  if (!ip) return 'unknown';
+  if (ip === '::1') return '127.0.0.1';
+  if (ip.startsWith('::ffff:')) return ip.substring(7);
+  return ip;
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+
+  try {
+    return getAllowedOrigins().has(new URL(origin).origin);
+  } catch {
+    return false;
+  }
+}
+
+function checkHandshakeRateLimit(clientIp) {
+  const now = Date.now();
+  const limit = handshakeAttempts.get(clientIp);
+
+  if (!limit || now - limit.windowStart > WS_LIMITS.handshake.windowMs) {
+    handshakeAttempts.set(clientIp, { count: 1, windowStart: now });
+    return true;
+  }
+
+  limit.count++;
+  return limit.count <= WS_LIMITS.handshake.maxAttempts;
+}
+
+function clearConnectionTimers(info) {
+  if (!info) return;
+
+  if (info.identifyTimer) {
+    clearTimeout(info.identifyTimer);
+    info.identifyTimer = null;
+  }
+
+  if (info.tokenRefreshTimer) {
+    clearTimeout(info.tokenRefreshTimer);
+    info.tokenRefreshTimer = null;
+  }
+
+  if (info.tokenExpiryTimer) {
+    clearTimeout(info.tokenExpiryTimer);
+    info.tokenExpiryTimer = null;
+  }
+}
+
+function closeSocket(ws, code, reason) {
+  if (ws.readyState < 2) {
+    ws.close(code, reason);
   }
 }
 
 // ==================== WS RATE LIMITING ====================
 
-const WS_RATE_LIMIT = {
-  maxMessages: 30,
-  windowMs: 60000,
-  closeCode: 4008,
-  closeReason: 'Rate limited',
-};
-
 function checkWsRateLimit(ws) {
   const info = connectionInfo.get(ws);
-  if (!info) return true;
+  if (!info) return false;
 
   const now = Date.now();
+  const policy = info.state === 'identified'
+    ? WS_LIMITS.authenticated
+    : WS_LIMITS.preAuth;
 
   if (!info.rateLimit) {
     info.rateLimit = { count: 0, windowStart: now };
   }
 
-  const rl = info.rateLimit;
+  const rateLimit = info.rateLimit;
 
-  if (now - rl.windowStart > WS_RATE_LIMIT.windowMs) {
-    rl.count = 0;
-    rl.windowStart = now;
+  if (now - rateLimit.windowStart > policy.windowMs) {
+    rateLimit.count = 0;
+    rateLimit.windowStart = now;
   }
 
-  rl.count++;
+  rateLimit.count++;
 
-  if (rl.count > WS_RATE_LIMIT.maxMessages) {
-    console.warn(`WS rate limit hit for user ${info.userId?.substring(0, 8)}... (${rl.count} msgs in ${Math.round((now - rl.windowStart) / 1000)}s)`);
+  if (rateLimit.count > policy.maxMessages) {
+    const actor = info.userId ? `user ${info.userId.substring(0, 8)}...` : `ip ${info.clientIp}`;
+    console.warn(`WS rate limit hit for ${actor}`);
     return false;
   }
 
@@ -136,11 +395,32 @@ function logConnectionStats() {
 // ==================== GATEWAY SETUP ====================
 
 export function setupGateway(httpServer) {
-  const wss = new WebSocketServer({ server: httpServer });
-  wssRef = wss;
+  const wss = new WebSocketServer({
+    server: httpServer,
+    maxPayload: WS_LIMITS.maxPayload,
+    verifyClient: ({ origin, req }, done) => {
+      const clientIp = getRequestIp(req);
+
+      if (origin && !isAllowedOrigin(origin)) {
+        console.warn(`Rejected WS origin ${origin} from ${clientIp}`);
+        done(false, 403, 'Forbidden');
+        return;
+      }
+
+      if (!checkHandshakeRateLimit(clientIp)) {
+        console.warn(`Rejected WS flood from ${clientIp}`);
+        done(false, 429, 'Rate limited');
+        return;
+      }
+
+      done(true);
+    },
+  });
 
   wss.on('connection', (ws, req) => {
-    console.log('New WebSocket connection attempt...');
+    const clientIp = getRequestIp(req);
+
+    console.log(`New WebSocket connection attempt from ${clientIp}`);
 
     try {
       const cookies = cookie.parse(req.headers.cookie || '');
@@ -148,7 +428,7 @@ export function setupGateway(httpServer) {
 
       if (!token) {
         console.log('No access token in cookies');
-        ws.close(4001, 'Unauthorized');
+        closeSocket(ws, CLOSE.UNAUTHORIZED, 'Unauthorized');
         return;
       }
 
@@ -157,14 +437,27 @@ export function setupGateway(httpServer) {
       ws.verifiedDeviceId = decoded.device_id;
       ws.tokenExp = decoded.exp;
 
-      console.log(`Token verified for user ${decoded.id.substring(0, 8)}... device ${decoded.device_id?.substring(0, 8)}...`);
+      console.log(`Token verified for user ${decoded.id.substring(0, 8)}...`);
     } catch (err) {
       console.error('Connection refused:', err.message);
-      ws.close(4001, 'Invalid Token');
+      closeSocket(ws, CLOSE.UNAUTHORIZED, 'Invalid token');
       return;
     }
 
-    // Send HELLO
+    connectionInfo.set(ws, {
+      userId: null,
+      deviceId: ws.verifiedDeviceId || null,
+      sessionId: null,
+      seq: 0,
+      lastHeartbeat: Date.now(),
+      tokenRefreshTimer: null,
+      tokenExpiryTimer: null,
+      identifyTimer: null,
+      rateLimit: null,
+      state: 'awaiting_auth',
+      clientIp,
+    });
+
     send(ws, {
       op: OP.HELLO,
       d: {
@@ -172,30 +465,43 @@ export function setupGateway(httpServer) {
       },
     });
 
-    // Set timeout for IDENTIFY/RESUME
-    const identifyTimeout = setTimeout(() => {
-      if (!connectionInfo.get(ws)?.userId) {
+    const identifyTimer = setTimeout(() => {
+      const info = connectionInfo.get(ws);
+
+      if (info?.state !== 'identified') {
         console.log('Identify timeout, closing connection');
-        ws.close(4000, 'Auth timeout');
+        closeSocket(ws, CLOSE.AUTH_TIMEOUT, 'Auth timeout');
       }
     }, 10000);
 
-    ws.on('message', (raw) => {
-      try {
-        const message = JSON.parse(raw.toString());
+    const info = connectionInfo.get(ws);
+    if (info) {
+      info.identifyTimer = identifyTimer;
+    }
 
-        if (connectionInfo.has(ws) && !checkWsRateLimit(ws)) {
-          ws.close(WS_RATE_LIMIT.closeCode, WS_RATE_LIMIT.closeReason);
+    ws.on('message', async (raw) => {
+      try {
+        const message = parseIncomingMessage(raw);
+
+        if (!checkWsRateLimit(ws)) {
+          closeSocket(ws, CLOSE.RATE_LIMITED, 'Rate limited');
           return;
         }
 
-        handleMessage(ws, message, identifyTimeout);
+        await handleMessage(ws, message);
       } catch (err) {
-        console.error('Invalid message:', err);
+        if (err instanceof GatewayProtocolError) {
+          console.warn(`WS protocol error from ${clientIp}: ${err.message}`);
+          closeSocket(ws, err.code, err.message);
+          return;
+        }
+
+        console.error('WebSocket message error:', err);
+        closeSocket(ws, 1011, 'Internal error');
       }
     });
 
-    ws.on('close', (code, reason) => {
+    ws.on('close', (code) => {
       console.log(`WebSocket closed with code ${code}`);
       handleDisconnect(ws);
     });
@@ -205,7 +511,6 @@ export function setupGateway(httpServer) {
     });
   });
 
-  // Heartbeat checker — kill connections that missed 2 heartbeat intervals
   setInterval(() => {
     const now = Date.now();
     let terminatedCount = 0;
@@ -213,6 +518,7 @@ export function setupGateway(httpServer) {
     connections.forEach((sockets, userId) => {
       sockets.forEach((ws) => {
         const info = connectionInfo.get(ws);
+
         if (info && now - info.lastHeartbeat > 60000) {
           console.log(`Terminating idle connection for user ${userId.substring(0, 8)}...`);
           ws.terminate();
@@ -226,8 +532,6 @@ export function setupGateway(httpServer) {
     }
   }, 30000);
 
-  // ==================== GRACEFUL SHUTDOWN ====================
-
   const gracefulShutdown = (signal) => {
     console.log(`\nReceived ${signal}, performing graceful shutdown...`);
 
@@ -236,7 +540,7 @@ export function setupGateway(httpServer) {
     });
 
     let notifiedCount = 0;
-    connections.forEach((sockets, userId) => {
+    connections.forEach((sockets) => {
       sockets.forEach((ws) => {
         if (ws.readyState === 1) {
           dispatch(ws, 'SHUTDOWN', { reconnect: true, in: 5000 });
@@ -251,10 +555,7 @@ export function setupGateway(httpServer) {
       let terminated = 0;
       connections.forEach((sockets) => {
         sockets.forEach((ws) => {
-          const info = connectionInfo.get(ws);
-          if (info?.tokenRefreshTimer) {
-            clearTimeout(info.tokenRefreshTimer);
-          }
+          clearConnectionTimers(connectionInfo.get(ws));
           ws.terminate();
           terminated++;
         });
@@ -280,33 +581,48 @@ export function setupGateway(httpServer) {
 
 // ==================== MESSAGE HANDLING ====================
 
-function handleMessage(ws, message, identifyTimeout) {
+async function handleMessage(ws, message) {
+  const info = connectionInfo.get(ws);
+
+  if (!info) {
+    throw new GatewayProtocolError(CLOSE.UNAUTHORIZED, 'Unauthorized');
+  }
+
   const { op, d } = message;
 
   switch (op) {
     case OP.IDENTIFY:
-      handleIdentify(ws, d, identifyTimeout);
-      break;
+      if (info.state !== 'awaiting_auth') {
+        throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Unexpected identify');
+      }
+
+      await handleIdentify(ws, d);
+      return;
 
     case OP.RESUME:
-      handleResume(ws, d, identifyTimeout);
-      break;
+      if (info.state !== 'awaiting_auth') {
+        throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Unexpected resume');
+      }
+
+      await handleResume(ws, d);
+      return;
 
     case OP.HEARTBEAT:
       handleHeartbeat(ws);
-      break;
+      return;
 
     case OP.STATUS_UPDATE:
+      if (info.state !== 'identified') {
+        throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Unexpected status update');
+      }
+
       handleStatusUpdate(ws, d);
-      break;
+      return;
 
     default:
-      console.warn('Unknown op:', op);
+      throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Unknown opcode');
   }
 }
-
-// ==================== MAX CONNECTIONS PER USER ====================
-const MAX_CONNECTIONS_PER_USER = 5;
 
 function deduplicateDevice(userId, deviceId) {
   const existingSockets = connections.get(userId);
@@ -314,84 +630,87 @@ function deduplicateDevice(userId, deviceId) {
 
   for (const existingWs of existingSockets) {
     const existingInfo = connectionInfo.get(existingWs);
+
     if (existingInfo?.deviceId === deviceId) {
       console.log(`Replacing stale connection for device ${deviceId.substring(0, 8)}...`);
       existingSockets.delete(existingWs);
+      clearConnectionTimers(existingInfo);
       connectionInfo.delete(existingWs);
-      if (existingInfo.tokenRefreshTimer) {
-        clearTimeout(existingInfo.tokenRefreshTimer);
-      }
-      existingWs.close(4009, 'Session replaced');
+      closeSocket(existingWs, CLOSE.SESSION_REPLACED, 'Session replaced');
     }
   }
 
   if (existingSockets.size >= MAX_CONNECTIONS_PER_USER) {
     const oldest = existingSockets.values().next().value;
     const oldestInfo = connectionInfo.get(oldest);
+
     console.log(`Max connections reached for ${userId.substring(0, 8)}..., closing oldest`);
     existingSockets.delete(oldest);
+    clearConnectionTimers(oldestInfo);
     connectionInfo.delete(oldest);
-    if (oldestInfo?.tokenRefreshTimer) clearTimeout(oldestInfo.tokenRefreshTimer);
-    oldest.close(4009, 'Too many connections');
+    closeSocket(oldest, CLOSE.SESSION_REPLACED, 'Too many connections');
   }
 }
 
-function registerConnection(ws, userId, deviceId) {
-  const sessionId = `${userId}:${deviceId}`;
+function registerConnection(ws, userId, deviceId, sessionId) {
+  const existingInfo = connectionInfo.get(ws) || {};
 
   connectionInfo.set(ws, {
+    ...existingInfo,
     userId,
     deviceId,
     sessionId,
     seq: 0,
     lastHeartbeat: Date.now(),
-    tokenRefreshTimer: null,
+    tokenRefreshTimer: existingInfo.tokenRefreshTimer || null,
+    tokenExpiryTimer: existingInfo.tokenExpiryTimer || null,
+    identifyTimer: null,
     rateLimit: null,
+    state: 'identified',
   });
 
   if (!connections.has(userId)) {
     connections.set(userId, new Set());
   }
-  connections.get(userId).add(ws);
 
+  connections.get(userId).add(ws);
   return sessionId;
 }
 
-async function handleIdentify(ws, data, identifyTimeout) {
-  const { user_id } = data;
+async function handleIdentify(ws, data) {
+  const info = connectionInfo.get(ws);
 
-  if (!user_id) {
-    ws.close(4001, 'Invalid identify');
-    return;
+  if (!info) {
+    throw new GatewayProtocolError(CLOSE.UNAUTHORIZED, 'Unauthorized');
   }
 
-  if (user_id !== ws.verifiedUserId) {
-    console.warn(`Identity spoofing attempt! Token: ${ws.verifiedUserId}, Claimed: ${user_id}`);
-    ws.close(4003, 'Forbidden');
-    return;
+  if (data.user_id !== ws.verifiedUserId) {
+    console.warn(`Identity spoofing attempt! Token: ${ws.verifiedUserId}, Claimed: ${data.user_id}`);
+    throw new GatewayProtocolError(CLOSE.FORBIDDEN, 'Forbidden');
   }
 
-  clearTimeout(identifyTimeout);
+  info.state = 'authenticating';
+  clearConnectionTimers(info);
 
+  const userId = data.user_id;
   const deviceId = ws.verifiedDeviceId || 'unknown';
+  const sessionId = createSessionId();
 
-  deduplicateDevice(user_id, deviceId);
-  const sessionId = registerConnection(ws, user_id, deviceId);
+  deduplicateDevice(userId, deviceId);
+  registerConnection(ws, userId, deviceId, sessionId);
 
-  // Clear old session buffer — fresh session starts clean
-  valkey.del(sessionKey(sessionId)).catch(() => {});
+  await persistSessionIdentity(sessionId, userId, deviceId);
+  await valkey.del(sessionKey(sessionId)).catch(() => {});
 
-  console.log(`User identified: ${user_id.substring(0, 8)}... (device: ${deviceId.substring(0, 8)}...)`);
+  console.log(`User identified: ${userId.substring(0, 8)}... (device: ${deviceId.substring(0, 8)}...)`);
   logConnectionStats();
 
-  // Set presence to online
-  presenceStore.set(user_id, { status: 'online', lastActive: Date.now() });
+  presenceStore.set(userId, { status: 'online', lastActive: Date.now() });
 
-  const friendPresences = await getFriendPresences(user_id);
+  const friendPresences = await getFriendPresences(userId);
 
-  // Send READY event with session_id for resume
   dispatch(ws, EVENTS.READY, {
-    user_id,
+    user_id: userId,
     device_id: deviceId,
     session_id: sessionId,
     timestamp: Date.now(),
@@ -400,59 +719,61 @@ async function handleIdentify(ws, data, identifyTimeout) {
 
   setupTokenExpiryNotification(ws);
 
-  broadcastToFriends(user_id, EVENTS.PRESENCE_UPDATE, {
-    user_id,
+  void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
+    user_id: userId,
     status: 'online',
   });
 }
 
-async function handleResume(ws, data, identifyTimeout) {
-  const { session_id, last_sequence } = data;
+async function handleResume(ws, data) {
+  const info = connectionInfo.get(ws);
 
-  if (!session_id || typeof last_sequence !== 'number') {
-    ws.close(4001, 'Invalid resume');
-    return;
+  if (!info) {
+    throw new GatewayProtocolError(CLOSE.UNAUTHORIZED, 'Unauthorized');
   }
 
-  // Validate session_id belongs to this token's user
-  const [userId] = session_id.split(':');
-  if (userId !== ws.verifiedUserId) {
-    console.warn(`Resume spoofing attempt! Token: ${ws.verifiedUserId}, Session: ${session_id}`);
-    ws.close(4003, 'Forbidden');
-    return;
-  }
+  info.state = 'authenticating';
+  clearConnectionTimers(info);
 
-  clearTimeout(identifyTimeout);
-
+  const userId = ws.verifiedUserId;
   const deviceId = ws.verifiedDeviceId || 'unknown';
+  const sessionIdentity = await getSessionIdentity(data.session_id);
+
+  if (!sessionIdentity || sessionIdentity.userId !== userId || sessionIdentity.deviceId !== deviceId) {
+    console.warn(`Resume rejected for ${userId?.substring(0, 8)}...`);
+    throw new GatewayProtocolError(CLOSE.INVALID_SESSION, 'Invalid session');
+  }
 
   deduplicateDevice(userId, deviceId);
-  const sessionId = registerConnection(ws, userId, deviceId);
+  registerConnection(ws, userId, deviceId, data.session_id);
+  await persistSessionIdentity(data.session_id, userId, deviceId);
 
-  console.log(`Session resume: ${userId.substring(0, 8)}... from seq ${last_sequence}`);
+  console.log(`Session resume: ${userId.substring(0, 8)}... from seq ${data.last_sequence}`);
 
-  // Replay missed events
-  const replayed = await replayEvents(ws, sessionId, last_sequence);
+  const replay = await replayEvents(ws, data.session_id, data.last_sequence);
 
-  // Update the connection's seq to be at least last_sequence
-  const info = connectionInfo.get(ws);
-  if (info) {
-    info.seq = last_sequence + replayed;
+  if (replay.gapDetected) {
+    console.warn(`Resume gap detected for ${userId.substring(0, 8)}...`);
+    closeSocket(ws, CLOSE.INVALID_SESSION, 'Resume out of date');
+    return;
   }
 
-  // Send RESUMED confirmation
+  const liveInfo = connectionInfo.get(ws);
+  if (liveInfo) {
+    liveInfo.seq = Math.max(data.last_sequence, replay.latestSequence);
+  }
+
   send(ws, {
     op: OP.RESUMED,
-    d: { replayed },
+    d: { replayed: replay.replayed },
   });
 
-  console.log(`Resumed: replayed ${replayed} events for ${userId.substring(0, 8)}...`);
+  console.log(`Resumed: replayed ${replay.replayed} events for ${userId.substring(0, 8)}...`);
 
-  // Ensure presence is online (don't re-broadcast if they were already online)
   const currentPresence = presenceStore.get(userId);
   if (!currentPresence || currentPresence.status !== 'online') {
     presenceStore.set(userId, { status: 'online', lastActive: Date.now() });
-    broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
+    void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
       user_id: userId,
       status: 'online',
     });
@@ -469,23 +790,33 @@ function setupTokenExpiryNotification(ws) {
 
   if (info.tokenRefreshTimer) {
     clearTimeout(info.tokenRefreshTimer);
+    info.tokenRefreshTimer = null;
+  }
+
+  if (info.tokenExpiryTimer) {
+    clearTimeout(info.tokenExpiryTimer);
+    info.tokenExpiryTimer = null;
   }
 
   const tokenExp = ws.tokenExp;
-  if (!tokenExp) return;
+  if (!Number.isInteger(tokenExp)) return;
 
   const now = Math.floor(Date.now() / 1000);
   const timeUntilExpiry = tokenExp - now;
 
-  const notifyBefore = 120;
-  const notifyIn = (timeUntilExpiry - notifyBefore) * 1000;
+  if (timeUntilExpiry <= 0) {
+    closeSocket(ws, CLOSE.UNAUTHORIZED, 'Token expired');
+    return;
+  }
 
-  if (notifyIn > 0) {
-    console.log(`Token refresh scheduled in ${Math.round(notifyIn / 1000)}s for user ${info.userId.substring(0, 8)}... (device: ${info.deviceId.substring(0, 8)}...)`);
+  const notifyBefore = 120;
+  const notifyIn = Math.max(timeUntilExpiry - notifyBefore, 0) * 1000;
+
+  if (timeUntilExpiry > notifyBefore) {
+    console.log(`Token refresh scheduled in ${Math.round(notifyIn / 1000)}s for user ${info.userId.substring(0, 8)}...`);
 
     info.tokenRefreshTimer = setTimeout(() => {
       if (ws.readyState === 1) {
-        console.log(`Sending TOKEN_EXPIRING to ${info.userId.substring(0, 8)}... (device: ${info.deviceId.substring(0, 8)}...)`);
         dispatch(ws, EVENTS.TOKEN_EXPIRING, {
           expires_in: notifyBefore,
           timestamp: Date.now(),
@@ -493,31 +824,86 @@ function setupTokenExpiryNotification(ws) {
       }
     }, notifyIn);
   } else {
-    console.log(`Token expiring soon, notifying ${info.userId.substring(0, 8)}... immediately`);
     dispatch(ws, EVENTS.TOKEN_EXPIRING, {
-      expires_in: Math.max(timeUntilExpiry, 0),
+      expires_in: timeUntilExpiry,
       timestamp: Date.now(),
     });
   }
+
+  info.tokenExpiryTimer = setTimeout(() => {
+    console.log(`Closing expired socket for user ${info.userId.substring(0, 8)}...`);
+    closeSocket(ws, CLOSE.UNAUTHORIZED, 'Token expired');
+  }, timeUntilExpiry * 1000);
 }
 
-export function updateTokenExpiry(userId, newExp) {
+export function updateTokenExpiry(userId, newExp, deviceId = null) {
+  if (!Number.isInteger(newExp)) return;
+
   const userSockets = connections.get(userId);
-  if (userSockets) {
-    userSockets.forEach((ws) => {
-      ws.tokenExp = newExp;
-      setupTokenExpiryNotification(ws);
-    });
-  }
+  if (!userSockets) return;
+
+  userSockets.forEach((ws) => {
+    const info = connectionInfo.get(ws);
+    if (!info) return;
+    if (deviceId && info.deviceId !== deviceId) return;
+
+    ws.tokenExp = newExp;
+    setupTokenExpiryNotification(ws);
+  });
+}
+
+export function disconnectUserSession(
+  userId,
+  deviceId = null,
+  code = CLOSE.UNAUTHORIZED,
+  reason = 'Session revoked'
+) {
+  const userSockets = connections.get(userId);
+  if (!userSockets) return 0;
+
+  let disconnected = 0;
+
+  userSockets.forEach((ws) => {
+    const info = connectionInfo.get(ws);
+
+    if (!info) return;
+    if (deviceId && info.deviceId !== deviceId) return;
+
+    disconnected++;
+    closeSocket(ws, code, reason);
+  });
+
+  return disconnected;
 }
 
 // ==================== HEARTBEAT & DISCONNECT ====================
 
 function handleHeartbeat(ws) {
   const info = connectionInfo.get(ws);
+
   if (info) {
     info.lastHeartbeat = Date.now();
+
+    if (info.sessionId && info.userId && info.deviceId) {
+      void persistSessionIdentity(info.sessionId, info.userId, info.deviceId);
+    }
+
+    if (info.userId) {
+      const currentPresence = presenceStore.get(info.userId);
+
+      if (currentPresence?.status === 'idle') {
+        presenceStore.set(info.userId, { status: 'online', lastActive: Date.now() });
+        void broadcastToFriends(info.userId, EVENTS.PRESENCE_UPDATE, {
+          user_id: info.userId,
+          status: 'online',
+          last_active: Date.now(),
+        });
+      } else if (currentPresence?.status === 'online') {
+        presenceStore.set(info.userId, { ...currentPresence, lastActive: Date.now() });
+      }
+    }
   }
+
   send(ws, { op: OP.HEARTBEAT_ACK });
 }
 
@@ -525,15 +911,19 @@ function handleDisconnect(ws) {
   const info = connectionInfo.get(ws);
   if (!info) return;
 
-  const { userId, deviceId, tokenRefreshTimer } = info;
+  clearConnectionTimers(info);
+  connectionInfo.delete(ws);
 
-  if (tokenRefreshTimer) {
-    clearTimeout(tokenRefreshTimer);
+  const { userId, deviceId } = info;
+
+  if (!userId) {
+    return;
   }
 
   const userSockets = connections.get(userId);
   if (userSockets) {
     userSockets.delete(ws);
+
     if (userSockets.size === 0) {
       connections.delete(userId);
 
@@ -543,7 +933,7 @@ function handleDisconnect(ws) {
         lastActive: presence?.lastActive || Date.now(),
       });
 
-      broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
+      void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
         user_id: userId,
         status: 'offline',
         last_active: presence?.lastActive || Date.now(),
@@ -551,15 +941,12 @@ function handleDisconnect(ws) {
     }
   }
 
-  connectionInfo.delete(ws);
   cleanupFriendCache(userId);
   console.log(`User disconnected: ${userId.substring(0, 8)}... (device: ${deviceId?.substring(0, 8)}...)`);
   logConnectionStats();
 }
 
 // ==================== FRIEND CACHE ====================
-
-const friendCache = new Map();
 
 async function getFriendIds(userId) {
   if (friendCache.has(userId)) {
@@ -580,7 +967,7 @@ async function getFriendIds(userId) {
       [userId]
     );
 
-    const friendIds = new Set(result.rows.map(row => row.friend_id));
+    const friendIds = new Set(result.rows.map((row) => row.friend_id));
     friendCache.set(userId, friendIds);
     return friendIds;
   } catch (err) {
@@ -610,6 +997,7 @@ async function getFriendPresences(userId) {
 
   friendIds.forEach((friendId) => {
     const presence = presenceStore.get(friendId);
+
     if (presence && connections.has(friendId)) {
       presences.push({
         user_id: friendId,
@@ -624,21 +1012,21 @@ async function getFriendPresences(userId) {
 
 function handleStatusUpdate(ws, data) {
   const info = connectionInfo.get(ws);
-  if (!info) return;
+  if (!info?.userId) return;
 
   const { status } = data;
-  const validStatuses = ['online', 'idle'];
-  if (!validStatuses.includes(status)) return;
-
   const currentPresence = presenceStore.get(info.userId);
+
   if (currentPresence?.status === status) return;
 
   presenceStore.set(info.userId, {
     status,
-    lastActive: status === 'online' ? Date.now() : (currentPresence?.lastActive || Date.now()),
+    lastActive: status === 'online'
+      ? Date.now()
+      : (currentPresence?.lastActive || Date.now()),
   });
 
-  broadcastToFriends(info.userId, EVENTS.PRESENCE_UPDATE, {
+  void broadcastToFriends(info.userId, EVENTS.PRESENCE_UPDATE, {
     user_id: info.userId,
     status,
     last_active: presenceStore.get(info.userId).lastActive,
@@ -649,15 +1037,42 @@ export function getUserPresence(userId) {
   if (connections.has(userId)) {
     return presenceStore.get(userId) || { status: 'online', lastActive: Date.now() };
   }
+
   return { status: 'offline', lastActive: presenceStore.get(userId)?.lastActive || null };
 }
 
 // ==================== HELPERS ====================
 
-function send(ws, data) {
-  if (ws.readyState === 1) {
-    ws.send(JSON.stringify(data));
+function sendRaw(ws, payload) {
+  if (ws.readyState !== 1) {
+    return false;
   }
+
+  if (ws.bufferedAmount > WS_LIMITS.maxBufferedAmount) {
+    const info = connectionInfo.get(ws);
+    console.warn(`Closing slow consumer for ${info?.userId?.substring(0, 8) || info?.clientIp || 'unknown'}`);
+    closeSocket(ws, CLOSE.SLOW_CONSUMER, 'Slow consumer');
+    return false;
+  }
+
+  try {
+    ws.send(payload, (err) => {
+      if (err) {
+        console.error('WebSocket send error:', err);
+        ws.terminate();
+      }
+    });
+
+    return true;
+  } catch (err) {
+    console.error('WebSocket send throw:', err);
+    ws.terminate();
+    return false;
+  }
+}
+
+function send(ws, data) {
+  return sendRaw(ws, JSON.stringify(data));
 }
 
 function dispatch(ws, event, data) {
@@ -672,15 +1087,13 @@ function dispatch(ws, event, data) {
   };
 
   const payload = JSON.stringify(msg);
+  const sent = sendRaw(ws, payload);
 
-  if (ws.readyState === 1) {
-    ws.send(payload);
-  }
-
-  // Buffer for session resume
   if (info?.sessionId) {
-    bufferEvent(info.sessionId, payload);
+    void bufferEvent(info.sessionId, payload);
   }
+
+  return sent;
 }
 
 export function sendToUser(userId, event, data) {
