@@ -14,6 +14,16 @@ async function resolveKeyConversationId(requestedConversationId) {
   return conversation.parent_conversation_id || conversation.id;
 }
 
+function hasEncryptedKeyPayload(payload) {
+  return Boolean(
+    payload &&
+    typeof payload.encrypted_private_key === 'string' &&
+    typeof payload.iv === 'string' &&
+    typeof payload.salt === 'string' &&
+    typeof payload.key_id === 'string'
+  );
+}
+
 // ==================== KEY BACKUP (must be before /:userId) ====================
 
 // POST /api/conversations/keys/backup — store encrypted private key backup
@@ -48,6 +58,7 @@ router.get('/backup', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT encrypted_private_key, iv, salt, key_id, created_at
+             , recovery_encrypted_private_key, recovery_iv, recovery_salt, recovery_key_id, recovery_configured_at
        FROM user_key_backups
        WHERE user_id = $1`,
       [userId]
@@ -61,6 +72,78 @@ router.get('/backup', async (req, res) => {
   } catch (err) {
     console.error('Key backup GET error:', err);
     res.status(500).json({ error: 'Failed to fetch key backup' });
+  }
+});
+
+// POST /api/conversations/keys/backup/recovery — store recovery-wrapped private key backup
+router.post('/backup/recovery', async (req, res) => {
+  const userId = req.user.id;
+  const payload = req.body;
+
+  if (!hasEncryptedKeyPayload(payload)) {
+    return res.status(400).json({ error: 'encrypted_private_key, iv, salt, and key_id required' });
+  }
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const activeKeyResult = await client.query(
+      `SELECT key_id
+       FROM user_keys
+       WHERE user_id = $1 AND is_active = TRUE
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    const activeKeyId = activeKeyResult.rows[0]?.key_id || null;
+    if (activeKeyId && activeKeyId !== payload.key_id) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Recovery backup key does not match the active identity key',
+        code: 'KEY_ID_MISMATCH',
+      });
+    }
+
+    const existingBackupResult = await client.query(
+      `SELECT user_id
+       FROM user_key_backups
+       WHERE user_id = $1
+       FOR UPDATE`,
+      [userId]
+    );
+
+    if (existingBackupResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Create the standard password backup before configuring recovery',
+        code: 'PASSWORD_BACKUP_REQUIRED',
+      });
+    }
+
+    await client.query(
+      `UPDATE user_key_backups
+       SET recovery_encrypted_private_key = $2,
+           recovery_iv = $3,
+           recovery_salt = $4,
+           recovery_key_id = $5,
+           recovery_configured_at = COALESCE(recovery_configured_at, NOW()),
+           updated_at = NOW()
+       WHERE user_id = $1`,
+      [userId, payload.encrypted_private_key, payload.iv, payload.salt, payload.key_id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ success: true, message: 'Recovery backup stored' });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Recovery backup error:', err);
+    res.status(500).json({ error: 'Failed to store recovery backup' });
+  } finally {
+    client?.release();
   }
 });
 

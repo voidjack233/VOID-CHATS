@@ -6,21 +6,46 @@ const config = require('../config.json');
 const isCluster = config.cluster.enabled;
 
 const PRESENCE_KEY_PREFIX = 'presence:';
+const PRESENCE_COUNT_KEY_PREFIX = 'presence_count:';
 const VALID_PRESENCE_STATUSES = new Set(['online', 'idle', 'offline']);
 
 function presenceKey(userId) {
   return `${PRESENCE_KEY_PREFIX}${userId}`;
 }
 
-function normalizePresence(rawPresence) {
+function presenceCountKey(userId) {
+  return `${PRESENCE_COUNT_KEY_PREFIX}${userId}`;
+}
+
+function normalizePresence(rawPresence, activeCount = 0) {
   if (!rawPresence || typeof rawPresence !== 'object') {
-    return { status: 'offline', lastActive: null };
+    return {
+      status: activeCount > 0 ? 'online' : 'offline',
+      lastActive: null,
+      activeCount,
+    };
   }
 
-  const status = VALID_PRESENCE_STATUSES.has(rawPresence.status) ? rawPresence.status : 'offline';
+  const status = activeCount === 0
+    ? 'offline'
+    : (rawPresence.status === 'idle' ? 'idle' : 'online');
   const lastActive = Number.isInteger(rawPresence.lastActive) ? rawPresence.lastActive : null;
 
-  return { status, lastActive };
+  return { status, lastActive, activeCount };
+}
+
+function parseSharedActiveCount(rawPresence, rawCount) {
+  const parsedCount = Number.parseInt(rawCount || '', 10);
+  if (Number.isInteger(parsedCount) && parsedCount >= 0) {
+    return parsedCount;
+  }
+
+  const snapshotCount = rawPresence?.activeCount;
+  if (Number.isInteger(snapshotCount) && snapshotCount >= 0) {
+    return snapshotCount;
+  }
+
+  return 0;
 }
 
 export function sendLiveEventToUser(userId, event, data) {
@@ -82,19 +107,33 @@ export function invalidateLiveFriendCachePair(userId1, userId2) {
 
 export async function getLiveUserPresence(userId) {
   if (!userId) {
-    return { status: 'offline', lastActive: null };
+    return { status: 'offline', lastActive: null, activeCount: 0 };
   }
 
-  if (isCluster) {
-    try {
-      const raw = await valkey.get(presenceKey(userId));
-      return normalizePresence(raw ? JSON.parse(raw) : null);
-    } catch (err) {
-      console.error('Gateway presence lookup error:', err);
-      return { status: 'offline', lastActive: null };
-    }
+  try {
+    const pipeline = valkey.pipeline();
+    pipeline.get(presenceKey(userId));
+    pipeline.get(presenceCountKey(userId));
+    const results = await pipeline.exec();
+    const rawPresence = results?.[0]?.[1];
+    const rawCount = results?.[1]?.[1];
+    const parsedPresence = rawPresence ? JSON.parse(rawPresence) : null;
+    const activeCount = parseSharedActiveCount(parsedPresence, rawCount);
+
+    return normalizePresence(
+      parsedPresence,
+      activeCount
+    );
+  } catch (err) {
+    console.error('Gateway presence lookup error:', err);
   }
 
-  const { getUserPresence } = await import('./index.js');
-  return normalizePresence(getUserPresence(userId));
+  if (!isCluster) {
+    const { getUserPresence } = await import('./index.js');
+    const localPresence = getUserPresence(userId);
+    const localActiveCount = localPresence?.status === 'offline' ? 0 : 1;
+    return normalizePresence(localPresence, localActiveCount);
+  }
+
+  return { status: 'offline', lastActive: null, activeCount: 0 };
 }

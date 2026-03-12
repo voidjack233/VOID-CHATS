@@ -1,6 +1,15 @@
 // src/Services/Crypto/messageEncryption.ts
 import { cryptoWorker } from './cryptoWorkerManager';
 
+type DecryptableMessage = {
+  encrypted_content: string | null;
+  iv: string | null;
+  is_deleted: boolean;
+  [key: string]: any;
+};
+
+type MessageKeyResolver<T extends DecryptableMessage> = (message: T) => Promise<CryptoKey>;
+
 // ============== Encrypt ==============
 
 /**
@@ -43,13 +52,8 @@ export async function decryptMessage(
 // ============== Batch Operations ==============
 
 export async function decryptMessages(
-  messages: Array<{
-    encrypted_content: string | null;
-    iv: string | null;
-    is_deleted: boolean;
-    [key: string]: any;
-  }>,
-  key: CryptoKey
+  messages: DecryptableMessage[],
+  keyOrResolver: CryptoKey | MessageKeyResolver<DecryptableMessage>
 ): Promise<Array<{ content: string; [key: string]: any }>> {
   const results = await Promise.all(
     messages.map(async (msg) => {
@@ -58,6 +62,10 @@ export async function decryptMessages(
       }
 
       try {
+        const key = typeof keyOrResolver === 'function'
+          ? await keyOrResolver(msg)
+          : keyOrResolver;
+
         // Offloaded to the Web Worker
         const content = await cryptoWorker.decryptAsync(msg.encrypted_content, msg.iv, key);
         return { ...msg, content };

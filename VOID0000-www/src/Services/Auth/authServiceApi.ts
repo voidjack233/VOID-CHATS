@@ -330,10 +330,14 @@ export const authService = {
   },
 
   // ---------- PASSWORD CHANGE (AUTHENTICATED + CSRF) ----------
-  async changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse> {
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+    keyBackup?: { encrypted_private_key: string; iv: string; salt: string; key_id: string } | null
+  ): Promise<ApiResponse> {
     const response = await fetchWithAuth('/api/auth/change-password', {
       method: 'POST',
-      body: JSON.stringify({ currentPassword, newPassword }),
+      body: JSON.stringify({ currentPassword, newPassword, keyBackup: keyBackup || null }),
     });
     const result = await response.json();
 

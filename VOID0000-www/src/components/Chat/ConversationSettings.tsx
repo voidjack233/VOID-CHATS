@@ -18,7 +18,12 @@ const ConversationSettings = ({ conversation, currentUserId, onClose, onLeft }: 
   const isOwner = conversation.owner_id === currentUserId;
 
   const handleLeave = async () => {
-    if (!confirm(isOwner ? 'You own this group. Leaving will delete it. Continue?' : 'Leave this conversation?')) return;
+    if (isOwner) {
+      setError('Transfer ownership before leaving this group.');
+      return;
+    }
+
+    if (!confirm('Leave this conversation?')) return;
     setLeaving(true);
     setError('');
     try {
@@ -74,7 +79,7 @@ const ConversationSettings = ({ conversation, currentUserId, onClose, onLeft }: 
               className="w-full flex items-center gap-2.5 px-4 py-3 rounded-xl text-sm text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50"
             >
               <LogOut className="w-4 h-4" />
-              {leaving ? 'Leaving...' : isOwner ? 'Delete & Leave Group' : 'Leave Group'}
+              {leaving ? 'Leaving...' : isOwner ? 'Transfer Ownership First' : 'Leave Group'}
             </button>
           )}
         </div>

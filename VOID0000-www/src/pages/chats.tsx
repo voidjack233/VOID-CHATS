@@ -9,6 +9,7 @@ import { useChatManager } from '../Services/hooks/Chats/useChatManager';
 import { useFriends } from '../Services/hooks/Friends/useFriends';
 import UserProfile from '../components/common/Profile/userProfile';
 import UseSetting from '../components/common/Setting/Setting';
+import RecoveryPhraseModal from '../components/common/Setting/RecoveryPhraseModal';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageView';
 import MessageInput from '../components/Chat/MessageInput';
@@ -20,6 +21,8 @@ import FriendsView from '../components/common/Friends/FriendsView';
 import AddFriend from '../components/common/Friends/AddFriend';
 import { gateway } from '../Services/Gateway/gateway';
 import { Conversation } from '../Services/Chat/chatService';
+import { useUser } from '../Services/Auth/UserContext';
+import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
 
 const ChatDashboard = () => {
   const location = useLocation();
@@ -34,6 +37,7 @@ const ChatDashboard = () => {
     channelConversationId?: string;
   }>();
   const { loading, user } = useAuth();
+  const { keyStatus, keyStatusLoading, isLoggingOut, unlockWithRecoveryPhrase, logout } = useUser();
 
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
   const myAvatarUrl = myProfile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user?.username}`;
@@ -175,7 +179,9 @@ const ChatDashboard = () => {
     if (displayConversation.type === 'dm') {
       const nameFromConv = displayConversation.dm_display_name || displayConversation.dm_username;
       if (nameFromConv) return nameFromConv;
-      const peer = Object.values(members).find((m: any) => m.user_id !== user?.id);
+      const peer = Object.values(members).find(
+        (member: { user_id: string; display_name?: string | null; username?: string }) => member.user_id !== user?.id
+      );
       if (peer) return peer.display_name || peer.username;
       return 'Unknown';
     }
@@ -189,23 +195,41 @@ const ChatDashboard = () => {
     return '';
   };
 
-  if (loading) {
+  if (loading || keyStatusLoading || isLoggingOut) {
     return (
       <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
-        <div className="text-void-text text-lg font-medium">Verifying your session...</div>
+        <div className="text-void-text text-lg font-medium">
+          {isLoggingOut ? 'Signing you out...' : 'Preparing your secure chat session...'}
+        </div>
       </div>
+    );
+  }
+
+  if (keyStatus === 'LOCKED') {
+    return (
+      <RecoveryLockScreen
+        onRecover={unlockWithRecoveryPhrase}
+        onLogout={async () => {
+          await logout();
+          navigate('/auth', { replace: true });
+        }}
+        loading={keyStatusLoading}
+      />
     );
   }
 
   const isFriendsActive = !displayConversation;
 
   return (
-    <div className="flex h-screen bg-void-bg-main text-void-text overflow-hidden font-sans">
+    <div className="relative flex h-screen bg-void-bg-main text-void-text overflow-hidden font-sans">
       {/* Modals */}
       {showProfile && user?.profile_id && (
         <UserProfile profileId={user.profile_id} onClose={() => setShowProfile(false)} />
       )}
       {showSettings && <UseSetting onClose={() => setShowSettings(false)} />}
+      {user?.id && keyStatus === 'UNINITIALIZED' && !isLoggingOut && (
+        <RecoveryPhraseModal onClose={() => {}} required />
+      )}
       
       {showCreateGroup && user?.id && (
         <GroupCreateModal
@@ -410,6 +434,7 @@ const ChatDashboard = () => {
                     key={activeConversation.id}
                     conversation={activeConversation}
                     encryptionKey={encryptionKey}
+                    keyVersion={keyVersion}
                     encryptionError={encryptionError}
                     members={members}
                     onReply={(msg) => setReplyTo(msg)}

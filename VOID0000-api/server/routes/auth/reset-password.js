@@ -7,18 +7,23 @@ const router = Router();
 
 router.post('/', async (req, res) => {
   const { token, newPassword } = req.body;
+  let client;
 
   if (!token || !newPassword) {
     return res.status(400).json({ success: false, message: 'Token and new password required' });
   }
 
   try {
-    const resetResult = await pool.query(
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const resetResult = await client.query(
       `SELECT user_id FROM password_resets WHERE token = $1 AND expires_at > NOW()`,
       [token]
     );
 
     if (resetResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ success: false, message: 'Token is invalid or expired' });
     }
 
@@ -31,24 +36,26 @@ router.post('/', async (req, res) => {
       parallelism: 1
     });
 
-    await pool.query('BEGIN'); 
-
-    await pool.query(
+    await client.query(
       'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
       [hashed, user_id]
     );
 
-    await pool.query('DELETE FROM password_resets WHERE user_id = $1', [user_id]);
+    await client.query('DELETE FROM password_resets WHERE user_id = $1', [user_id]);
 
-    await pool.query('COMMIT'); 
+    await client.query('COMMIT');
 
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGED', user_id);
 
     res.json({ success: true, message: 'Password has been reset' });
   } catch (err) {
-    await pool.query('ROLLBACK'); 
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
     console.error('Reset password error:', err);
     res.status(500).json({ success: false, message: 'Failed to reset password' });
+  } finally {
+    client?.release();
   }
 });
 

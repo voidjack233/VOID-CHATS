@@ -1,4 +1,6 @@
 // src/Services/Crypto/keyManager.ts
+import { generateMnemonic, validateMnemonic } from '@scure/bip39';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 const DB_NAME = 'void_crypto';
 const DB_VERSION = 1;
@@ -106,11 +108,24 @@ async function generateKeyFingerprint(publicKeyBase64: string): Promise<string> 
 
 const PBKDF2_ITERATIONS = 600000;
 
-async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<CryptoKey> {
+function normalizeRecoveryPhrase(phrase: string): string {
+  return phrase
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(' ');
+}
+
+function isValidRecoveryPhrase(phrase: string): boolean {
+  return validateMnemonic(normalizeRecoveryPhrase(phrase), wordlist);
+}
+
+async function deriveKeyFromSecret(secret: string, salt: Uint8Array): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
-    encoder.encode(password),
+    encoder.encode(secret),
     'PBKDF2',
     false,
     ['deriveKey']
@@ -128,6 +143,19 @@ async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promis
     false,
     ['encrypt', 'decrypt']
   );
+}
+
+async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<CryptoKey> {
+  return deriveKeyFromSecret(`password:${password}`, salt);
+}
+
+async function deriveKeyFromRecoveryPhrase(recoveryPhrase: string, salt: Uint8Array): Promise<CryptoKey> {
+  const normalizedPhrase = normalizeRecoveryPhrase(recoveryPhrase);
+  if (!isValidRecoveryPhrase(normalizedPhrase)) {
+    throw new Error('INVALID_RECOVERY_PHRASE');
+  }
+
+  return deriveKeyFromSecret(`recovery:${normalizedPhrase}`, salt);
 }
 
 async function encryptPrivateKeyWithPassword(
@@ -172,6 +200,48 @@ async function decryptPrivateKeyWithPassword(
   return decoder.decode(decrypted);
 }
 
+async function encryptPrivateKeyWithRecoveryPhrase(
+  privateKeyBase64: string,
+  recoveryPhrase: string
+): Promise<{ encrypted: string; iv: string; salt: string }> {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrappingKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase, salt);
+
+  const encoder = new TextEncoder();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    wrappingKey,
+    encoder.encode(privateKeyBase64)
+  );
+
+  return {
+    encrypted: arrayBufferToBase64(encrypted),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+    salt: arrayBufferToBase64(salt.buffer as ArrayBuffer),
+  };
+}
+
+async function decryptPrivateKeyWithRecoveryPhrase(
+  encryptedBase64: string,
+  ivBase64: string,
+  saltBase64: string,
+  recoveryPhrase: string
+): Promise<string> {
+  const salt = new Uint8Array(base64ToArrayBuffer(saltBase64));
+  const iv = base64ToArrayBuffer(ivBase64);
+  const wrappingKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase, salt);
+
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    wrappingKey,
+    base64ToArrayBuffer(encryptedBase64)
+  );
+
+  const decoder = new TextDecoder();
+  return decoder.decode(decrypted);
+}
+
 async function derivePublicKeyFromPrivate(privateKeyBase64: string): Promise<string> {
   const privateKey = await importPrivateKey(privateKeyBase64);
   const jwk = await crypto.subtle.exportKey('jwk', privateKey);
@@ -195,7 +265,53 @@ async function derivePublicKeyFromPrivate(privateKeyBase64: string): Promise<str
 interface KeyCallbacks {
   uploadPublicKey: (publicKey: string, keyId: string) => Promise<void>;
   backupToServer: (data: { encrypted_private_key: string; iv: string; salt: string; key_id: string }) => Promise<void>;
-  fetchBackup: () => Promise<{ encrypted_private_key: string; iv: string; salt: string; key_id: string } | null>;
+  fetchBackup: () => Promise<KeyBackupRecord | null>;
+}
+
+interface KeyBackupRecord {
+  encrypted_private_key: string;
+  iv: string;
+  salt: string;
+  key_id: string;
+  recovery_encrypted_private_key?: string | null;
+  recovery_iv?: string | null;
+  recovery_salt?: string | null;
+  recovery_key_id?: string | null;
+}
+
+interface PasswordWrappedKeyBackup {
+  encrypted_private_key: string;
+  iv: string;
+  salt: string;
+  key_id: string;
+}
+
+async function createPasswordWrappedBackup(
+  privateKeyBase64: string,
+  password: string,
+  keyId: string
+): Promise<PasswordWrappedKeyBackup> {
+  const backupData = await encryptPrivateKeyWithPassword(privateKeyBase64, password);
+  return {
+    encrypted_private_key: backupData.encrypted,
+    iv: backupData.iv,
+    salt: backupData.salt,
+    key_id: keyId,
+  };
+}
+
+async function createRecoveryWrappedBackup(
+  privateKeyBase64: string,
+  recoveryPhrase: string,
+  keyId: string
+): Promise<PasswordWrappedKeyBackup> {
+  const backupData = await encryptPrivateKeyWithRecoveryPhrase(privateKeyBase64, recoveryPhrase);
+  return {
+    encrypted_private_key: backupData.encrypted,
+    iv: backupData.iv,
+    salt: backupData.salt,
+    key_id: keyId,
+  };
 }
 
 async function initializeKeys(
@@ -310,15 +426,37 @@ async function ensureBackup(
 ): Promise<void> {
   try {
     const existing = await callbacks.fetchBackup();
-    if (!existing) {
-      const backup = await encryptPrivateKeyWithPassword(privateKeyBase64, password);
-      await callbacks.backupToServer({
-        encrypted_private_key: backup.encrypted,
-        iv: backup.iv,
-        salt: backup.salt,
-        key_id: keyId,
-      });
-      console.log('🔑 Backup created for existing keys');
+    let needsRefresh = !existing;
+
+    if (
+      existing &&
+      (!existing.encrypted_private_key || !existing.iv || !existing.salt || existing.key_id !== keyId)
+    ) {
+      needsRefresh = true;
+    }
+
+    if (existing && !needsRefresh) {
+      try {
+        const decryptedPrivateKey = await decryptPrivateKeyWithPassword(
+          existing.encrypted_private_key,
+          existing.iv,
+          existing.salt,
+          password
+        );
+
+        if (decryptedPrivateKey !== privateKeyBase64) {
+          needsRefresh = true;
+        }
+      } catch {
+        needsRefresh = true;
+      }
+    }
+
+    if (needsRefresh) {
+      await callbacks.backupToServer(
+        await createPasswordWrappedBackup(privateKeyBase64, password, keyId)
+      );
+      console.log(existing ? '🔑 Password backup refreshed' : '🔑 Backup created for existing keys');
     }
   } catch {
     // Non-critical
@@ -444,22 +582,89 @@ async function reEncryptBackup(
   newPassword: string,
   callbacks: KeyCallbacks
 ): Promise<void> {
-  const stored = await dbGet(`keypair:${userId}`);
-  if (!stored) return;
+  await callbacks.backupToServer(await prepareBackup(userId, newPassword));
+}
 
-  const backupData = await encryptPrivateKeyWithPassword(stored.privateKey, newPassword);
-  await callbacks.backupToServer({
-    encrypted_private_key: backupData.encrypted,
-    iv: backupData.iv,
-    salt: backupData.salt,
-    key_id: stored.keyId,
+async function prepareBackup(
+  userId: string,
+  password: string
+): Promise<PasswordWrappedKeyBackup> {
+  const stored = await dbGet(`keypair:${userId}`);
+  if (!stored?.privateKey || !stored?.keyId) {
+    throw new Error('LOCAL_KEY_MISSING');
+  }
+
+  return createPasswordWrappedBackup(stored.privateKey, password, stored.keyId);
+}
+
+async function prepareRecoveryBackup(
+  userId: string,
+  recoveryPhrase: string
+): Promise<PasswordWrappedKeyBackup> {
+  const stored = await dbGet(`keypair:${userId}`);
+  if (!stored?.privateKey || !stored?.keyId) {
+    throw new Error('LOCAL_KEY_MISSING');
+  }
+
+  return createRecoveryWrappedBackup(stored.privateKey, recoveryPhrase, stored.keyId);
+}
+
+async function restoreFromRecoveryPhrase(
+  userId: string,
+  recoveryPhrase: string,
+  password: string | null,
+  callbacks: KeyCallbacks
+): Promise<{ publicKey: string; privateKey: CryptoKey }> {
+  const backup = await callbacks.fetchBackup();
+  if (
+    !backup?.recovery_encrypted_private_key ||
+    !backup.recovery_iv ||
+    !backup.recovery_salt
+  ) {
+    throw new Error('RECOVERY_NOT_CONFIGURED');
+  }
+
+  const privateKeyBase64 = await decryptPrivateKeyWithRecoveryPhrase(
+    backup.recovery_encrypted_private_key,
+    backup.recovery_iv,
+    backup.recovery_salt,
+    recoveryPhrase
+  );
+
+  const publicKeyBase64 = await derivePublicKeyFromPrivate(privateKeyBase64);
+  const keyId = await generateKeyFingerprint(publicKeyBase64);
+  const expectedKeyId = backup.recovery_key_id || backup.key_id || null;
+
+  if (expectedKeyId && expectedKeyId !== keyId) {
+    throw new Error('RECOVERY_KEY_MISMATCH');
+  }
+
+  await dbPut({
+    id: `keypair:${userId}`,
+    publicKey: publicKeyBase64,
+    privateKey: privateKeyBase64,
+    keyId,
+    createdAt: Date.now(),
   });
+
+  await callbacks.uploadPublicKey(publicKeyBase64, keyId);
+
+  if (password) {
+    await callbacks.backupToServer(await createPasswordWrappedBackup(privateKeyBase64, password, keyId));
+  }
+
+  return { publicKey: publicKeyBase64, privateKey: await importPrivateKey(privateKeyBase64) };
 }
 
 export const keyManager = {
   initializeKeys,
+  generateRecoveryPhrase: () => generateMnemonic(wordlist, 128),
+  validateRecoveryPhrase: isValidRecoveryPhrase,
   generateFreshKeys,
+  prepareBackup,
+  prepareRecoveryBackup,
   reEncryptBackup,
+  restoreFromRecoveryPhrase,
   getSharedSecret,
   encryptGroupKeyForUser,
   decryptGroupKey,

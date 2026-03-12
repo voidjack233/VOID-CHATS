@@ -27,7 +27,12 @@ export const useChatManager = (user: any) => {
   const [messageUpdate, setMessageUpdate] = useState<{ message_id: string; content: string; is_edited: boolean; edited_at: string } | null>(null);
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
 
-  const handshakeCache = useRef<Record<string, { members: Record<string, any>; key: CryptoKey; version: number }>>({});
+  const handshakeCache = useRef<Record<string, {
+    members: Record<string, any>;
+    key: CryptoKey;
+    version: number;
+    keysByVersion: Record<number, CryptoKey>;
+  }>>({});
   const conversationDetailsCache = useRef<Record<string, ConversationDetails>>({});
   const pendingMessages = useRef<any[]>([]);
 
@@ -71,6 +76,20 @@ export const useChatManager = (user: any) => {
   const getCachedConversationDetails = (identifier?: string | null) => {
     if (!identifier) return null;
     return conversationDetailsCache.current[identifier] || null;
+  };
+
+  const getPeerIdForConversation = (conversation: Conversation) => {
+    if (conversation.type !== 'dm') return undefined;
+
+    const cachedConversation =
+      getCachedConversationDetails(conversation.id)
+      || getCachedConversationDetails(conversation.public_id)
+      || null;
+
+    return conversation.dm_user_id
+      || cachedConversation?.dm_user_id
+      || cachedConversation?.members?.find((member) => member.user_id !== user?.id)?.user_id
+      || undefined;
   };
 
   const storeConversationDetails = (conversation: ConversationDetails) => {
@@ -226,7 +245,14 @@ export const useChatManager = (user: any) => {
         if (ignore) return; 
 
         if (key) {
-          handshakeCache.current[activeConversation.id] = { members: memberMap, key, version };
+          handshakeCache.current[activeConversation.id] = {
+            members: memberMap,
+            key,
+            version,
+            keysByVersion: {
+              [version]: key,
+            },
+          };
         }
 
         setEncryptionKey(key);
@@ -243,12 +269,63 @@ export const useChatManager = (user: any) => {
     return () => { ignore = true; };
   }, [activeConversation?.id, user?.id]);
 
+  const resolveMessageKey = async (data: any, fallbackKey: CryptoKey) => {
+    if (!activeConversation || !user?.id || activeConversation.type === 'dm') {
+      return fallbackKey;
+    }
+
+    const requestedVersion = Number.isInteger(data?.key_version) && data.key_version > 0
+      ? data.key_version
+      : keyVersion;
+
+    if (requestedVersion === keyVersion) {
+      return fallbackKey;
+    }
+
+    const cacheEntry = handshakeCache.current[activeConversation.id];
+    const cachedKey = cacheEntry?.keysByVersion?.[requestedVersion];
+    if (cachedKey) {
+      return cachedKey;
+    }
+
+    const { key, version } = await getEncryptionKey(
+      user.id,
+      activeConversation,
+      getPeerIdForConversation(activeConversation),
+      requestedVersion
+    );
+
+    const activeCache = handshakeCache.current[activeConversation.id];
+    if (activeCache) {
+      activeCache.keysByVersion = {
+        ...activeCache.keysByVersion,
+        [version]: key,
+      };
+
+      if (version > activeCache.version) {
+        activeCache.key = key;
+        activeCache.version = version;
+      }
+    }
+
+    if (version > keyVersion) {
+      setEncryptionKey(key);
+      setKeyVersion(version);
+    }
+
+    return key;
+  };
+
   // --- THE AUTO-HEALER FUNCTION ---
   // If decryption fails, it wipes the cache and forces a re-fetch
   const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
     try {
+      const messageKey = data.encrypted_content
+        ? await resolveMessageKey(data, key)
+        : key;
+
       const content = data.encrypted_content
-        ? await decryptMessage(data.encrypted_content, data.iv, key)
+        ? await decryptMessage(data.encrypted_content, data.iv, messageKey)
         : data.content;
       
       if (isUpdate) {

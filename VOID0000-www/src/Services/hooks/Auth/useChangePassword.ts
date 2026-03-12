@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { authService } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext';
 import { keyManager } from '../../Crypto/keyManager';
-import { uploadPublicKey, backupKeyToServer, fetchKeyBackup } from '../../Chat/chatService';
 
 export function useChangePassword() {
   const [isLoading, setIsLoading] = useState(false);
@@ -16,28 +15,28 @@ export function useChangePassword() {
     setSuccess(false);
 
     try {
-      const result = await authService.changePassword(currentPassword, newPassword);
+      let keyBackup = null;
+      if (user?.id) {
+        try {
+          keyBackup = await keyManager.prepareBackup(user.id, newPassword);
+        } catch (err) {
+          if (!(err instanceof Error) || err.message !== 'LOCAL_KEY_MISSING') {
+            throw err;
+          }
+        }
+      }
+
+      const result = await authService.changePassword(currentPassword, newPassword, keyBackup);
 
       if (!result.success) {
         setError(result.message || 'Failed to change password');
         return false;
       }
 
-      // Re-encrypt the key backup with the new password so restores still work
-      if (user?.id) {
-        keyManager.reEncryptBackup(user.id, newPassword, {
-          uploadPublicKey: async (pubKey, keyId) => await uploadPublicKey(pubKey, keyId),
-          backupToServer: async (data) => await backupKeyToServer(data),
-          fetchBackup: async () => await fetchKeyBackup(),
-        }).catch((err) => {
-          console.warn('🔑 Backup re-encryption failed (non-critical):', err);
-        });
-      }
-
       setLoginPassword(newPassword);
       setSuccess(true);
       return true;
-    } catch (err) {
+    } catch {
       setError('Something went wrong. Please try again.');
       return false;
     } finally {

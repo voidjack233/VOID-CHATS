@@ -8,4 +8,11 @@ minio-data/
 # Java compiled files
 VoidCONF/*.class
 VoidCONF/*.jar
+VOID0000-api/docs/gateway-protocol.md
+VOID0000-api/docs/gateway-roadmap.md
+VOID0000-api/docs/recovery-v2.md
+VOID0000-api/docs/sql/2026-03-12_recovery_key_backups.sql
+VOID0000-api/test/test/ws.gateway.app.e2e.test.js
+VOID0000-api/test/test/ws.gateway.protocol.e2e.test.js
+VOID0000-api/test/test/ws.gateway.e2e.helpers.js
 VOID0000-www/.*/

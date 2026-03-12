@@ -55,6 +55,7 @@ const isSameDay = (a: string, b: string) => {
 interface MessageViewProps {
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
+  keyVersion?: number;
   encryptionError?: string | null;
   members: Record<string, ConversationMember>;
   onReply?: (message: Message) => void;
@@ -69,6 +70,7 @@ interface MessageViewProps {
 const MessageView = ({
   conversation,
   encryptionKey,
+  keyVersion,
   encryptionError,
   members,
   onReply,
@@ -122,8 +124,10 @@ const MessageView = ({
     loadOlder,
     loadNewer,
   } = useMessageList(
-    conversation.id,
+    conversation,
+    user?.id,
     encryptionKey,
+    keyVersion,
     newMessage,
     messageUpdate,
     messageDelete,

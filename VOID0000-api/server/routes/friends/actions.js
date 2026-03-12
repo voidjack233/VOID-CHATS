@@ -6,6 +6,7 @@ import {
   invalidateLiveFriendCachePair,
   sendLiveEventToUser,
 } from '../../gateway/client.js';
+import { friendshipEventId } from '../../utils/eventIdentity.js';
 
 const router = express.Router();
 
@@ -75,6 +76,7 @@ router.post('/request/:profileId', async (req, res) => {
     );
 
     sendLiveEventToUser(addresseeId, EVENTS.FRIEND_REQUEST, {
+      event_id: friendshipEventId('request', result.rows[0].id),
       friendship_id: result.rows[0].id,
       from: {
         id: requesterId,
@@ -144,6 +146,7 @@ router.post('/accept/:friendshipId', async (req, res) => {
     const requesterStatus = requesterPresence.status === 'offline' ? 'offline' : 'online';
 
     sendLiveEventToUser(friendship.requester_id, EVENTS.FRIEND_ACCEPT, {
+      event_id: friendshipEventId('accept', friendship.id),
       friendship_id: friendship.id,
       friend: {
         id: userId,
@@ -159,6 +162,7 @@ router.post('/accept/:friendshipId', async (req, res) => {
     });
 
     sendLiveEventToUser(userId, EVENTS.FRIEND_ACCEPT, {
+      event_id: friendshipEventId('accept', friendship.id),
       friendship_id: friendship.id,
       friend: {
         id: friendship.requester_id,

@@ -1,7 +1,7 @@
 // src/Services/hooks/Chats/useMessageList.ts
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { deleteMessage, getMessageById, getMessages, Message } from '../../Chat/chatService';
+import { deleteMessage, getMessageById, getMessages, Message, type Conversation } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
 import {
@@ -68,6 +68,12 @@ const sortMessages = (msgs: Message[]) =>
 const sortLocalMessages = (msgs: LocalMessage[]) =>
   [...msgs].sort(compareByCreatedAtAsc);
 
+const isUndecryptableContent = (content: string | null | undefined) =>
+  content === '[unable to decrypt]';
+
+const hasUndecryptableMessage = (messages: Array<{ content?: string | null }>) =>
+  messages.some((message) => isUndecryptableContent(message.content));
+
 const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
   msgs.map((msg) => ({
     conversation_id: msg.conversation_id,
@@ -126,13 +132,17 @@ const resolveInitialHasOlder = ({
 };
 
 export const useMessageList = (
-  conversationId: string,
+  conversation: Conversation,
+  userId: string | undefined,
   encryptionKey: CryptoKey | null,
+  currentKeyVersion = 1,
   newMessage?: Message | null,
   messageUpdate?: MessageUpdate | null,
   messageDelete?: MessageDelete | null,
   onMessagesLoaded?: (messages: Message[]) => void
 ) => {
+  const conversationId = conversation.id;
+  const peerUserId = conversation.type === 'dm' ? conversation.dm_user_id : undefined;
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -203,6 +213,10 @@ export const useMessageList = (
             preferSessionCache: true,
             initialLimit,
             syncLimit: INITIAL_FETCH_SIZE,
+            conversation,
+            userId,
+            peerUserId,
+            currentKeyVersion,
           }
         );
 
@@ -275,7 +289,7 @@ export const useMessageList = (
 
     load();
     return () => { ignore = true; };
-  }, [conversationId, encryptionKey]);
+  }, [conversation, conversationId, currentKeyVersion, encryptionKey, peerUserId, userId]);
 
   // ============== Handle Incoming New Messages ==============
   useEffect(() => {
@@ -419,6 +433,10 @@ export const useMessageList = (
         const serverResult = await getMessages(conversationId, encryptionKey, {
           before: oldest.message_id,
           limit: FETCH_SIZE,
+          conversation,
+          userId,
+          peerUserId,
+          currentKeyVersion,
         });
         const localMsgs = toLocalMessages(serverResult.messages);
         if (localMsgs.length > 0) {
@@ -435,10 +453,14 @@ export const useMessageList = (
           limit: FETCH_SIZE,
         });
 
-        if (result.messages.length < FETCH_SIZE || !result.has_more) {
+        if (result.messages.length < FETCH_SIZE || !result.has_more || hasUndecryptableMessage(result.messages)) {
           const serverResult = await getMessages(conversationId, encryptionKey, {
             before: oldest.message_id,
             limit: FETCH_SIZE,
+            conversation,
+            userId,
+            peerUserId,
+            currentKeyVersion,
           });
           const localMsgs = toLocalMessages(serverResult.messages);
           if (localMsgs.length > 0) {
@@ -468,7 +490,7 @@ export const useMessageList = (
         setLoadingOlder(false);
       }
     }
-  }, [applyOlderMessages, conversationId, encryptionKey, hasOlder, loadingOlder]);
+  }, [applyOlderMessages, conversation, conversationId, currentKeyVersion, encryptionKey, hasOlder, loadingOlder, peerUserId, userId]);
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
@@ -489,10 +511,14 @@ export const useMessageList = (
         limit: FETCH_SIZE,
       });
 
-      if (result.messages.length < FETCH_SIZE || !result.has_more) {
+      if (result.messages.length < FETCH_SIZE || !result.has_more || hasUndecryptableMessage(result.messages)) {
         const serverResult = await getMessages(conversationId, encryptionKey, {
           after: newest.message_id,
           limit: FETCH_SIZE,
+          conversation,
+          userId,
+          peerUserId,
+          currentKeyVersion,
         });
         const localMsgs = toLocalMessages(serverResult.messages);
         if (localMsgs.length > 0) {
@@ -531,7 +557,7 @@ export const useMessageList = (
     } finally {
       setLoadingNewer(false);
     }
-  }, [encryptionKey, loadingNewer, hasNewer, messages, conversationId, onMessagesLoaded]);
+  }, [conversation, conversationId, currentKeyVersion, encryptionKey, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
 
   // ============== Jump to Present ==============
   const jumpToPresent = useCallback(async () => {
@@ -586,10 +612,15 @@ export const useMessageList = (
       messageStore.getMessage(conversationId, replyToId)
         .then((local) => {
           if (ignore) return;
-          if (local) {
+          if (local && !isUndecryptableContent(local.content)) {
             setReplyCache((prev) => ({ ...prev, [replyToId]: toUIMessage(local) }));
           } else {
-            getMessageById(conversationId, replyToId, encryptionKey)
+            getMessageById(conversationId, replyToId, encryptionKey, {
+              conversation,
+              userId,
+              peerUserId,
+              currentKeyVersion,
+            })
               .then((msg: any) => {
                 if (ignore) return;
                 const actualMsg = msg?.message || msg;
@@ -611,7 +642,7 @@ export const useMessageList = (
     });
 
     return () => { ignore = true; };
-  }, [messages, replyCache, conversationId, encryptionKey]);
+  }, [messages, replyCache, conversation, conversationId, currentKeyVersion, encryptionKey, peerUserId, userId]);
 
   // ============== Delete (API + Local) ==============
   const handleDelete = async (messageId: string) => {

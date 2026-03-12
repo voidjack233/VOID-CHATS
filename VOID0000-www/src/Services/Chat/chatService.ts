@@ -72,6 +72,26 @@ export interface Message {
   reactions?: ReactionMap;
 }
 
+export interface KeyBackupRecord {
+  encrypted_private_key: string;
+  iv: string;
+  salt: string;
+  key_id: string;
+  created_at?: string;
+  recovery_encrypted_private_key?: string | null;
+  recovery_iv?: string | null;
+  recovery_salt?: string | null;
+  recovery_key_id?: string | null;
+  recovery_configured_at?: string | null;
+}
+
+export interface MessageDecryptionContext {
+  conversation?: Conversation;
+  userId?: string;
+  peerUserId?: string;
+  currentKeyVersion?: number;
+}
+
 export interface ConversationMember {
   user_id: string;
   role: string;
@@ -99,6 +119,51 @@ function createApiError(data: any): Error & Record<string, any> {
     Object.assign(error, data);
   }
   return error;
+}
+
+function normalizeKeyVersion(value: unknown, fallback = 1): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+type VersionedDecryptableMessage = {
+  encrypted_content: string | null;
+  iv: string | null;
+  is_deleted: boolean;
+  key_version?: number;
+  [key: string]: any;
+};
+
+function createMessageKeyResolver(
+  fallbackKey: CryptoKey,
+  context?: MessageDecryptionContext
+) {
+  if (!context?.conversation || !context.userId || context.conversation.type === 'dm') {
+    return null;
+  }
+
+  const versionCache = new Map<number, Promise<CryptoKey>>();
+  const currentVersion = normalizeKeyVersion(context.currentKeyVersion, 1);
+  versionCache.set(currentVersion, Promise.resolve(fallbackKey));
+
+  return async (message: VersionedDecryptableMessage) => {
+    const targetVersion = normalizeKeyVersion(message.key_version, currentVersion);
+
+    if (!versionCache.has(targetVersion)) {
+      versionCache.set(
+        targetVersion,
+        getEncryptionKey(
+          context.userId as string,
+          context.conversation as Conversation,
+          context.peerUserId,
+          targetVersion
+        ).then(({ key }) => key)
+      );
+    }
+
+    return versionCache.get(targetVersion) as Promise<CryptoKey>;
+  };
 }
 
 // ============== Conversations ==============
@@ -313,7 +378,7 @@ export async function uploadAttachments(
 export async function getMessages(
   conversationId: string,
   encryptionKey: CryptoKey,
-  options?: { before?: string; after?: string; limit?: number }
+  options?: { before?: string; after?: string; limit?: number } & MessageDecryptionContext
 ): Promise<{ messages: Message[]; has_more: boolean }> {
   const params = new URLSearchParams();
   if (options?.before) params.set('before', options.before);
@@ -325,7 +390,8 @@ export async function getMessages(
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
 
-  const decrypted = await decryptMessages(data.messages, encryptionKey);
+  const keyResolver = createMessageKeyResolver(encryptionKey, options);
+  const decrypted = await decryptMessages(data.messages, keyResolver || encryptionKey);
 
   // Preserve reactions from server response onto decrypted messages
   const messagesWithReactions = decrypted.map((msg: any, i: number) => ({
@@ -510,7 +576,8 @@ export async function createSecureGroup(
 export async function getEncryptionKey(
   userId: string,
   conversation: Conversation,
-  peerUserId?: string
+  peerUserId?: string,
+  requestedKeyVersion?: number
 ): Promise<{ key: CryptoKey; version: number }> {
   // --- 1-ON-1 DM LOGIC ---
   if (conversation.type === 'dm' && peerUserId) {
@@ -526,12 +593,18 @@ export async function getEncryptionKey(
     throw new Error('No group key available — wait for owner to distribute');
   }
 
-  const latest = groupKeys[0]!;
+  const targetKey = Number.isInteger(requestedKeyVersion)
+    ? groupKeys.find((entry) => entry.key_version === requestedKeyVersion)
+    : groupKeys[0];
+
+  if (!targetKey) {
+    throw new Error(`Group key version ${requestedKeyVersion} is unavailable`);
+  }
   
   // 1. Check if we already unlocked it and saved it to IndexedDB
-  const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, latest.key_version);
+  const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetKey.key_version);
   if (cachedGroupKey) {
-    return { key: cachedGroupKey, version: latest.key_version };
+    return { key: cachedGroupKey, version: targetKey.key_version };
   }
 
   // 2. If not, we need to unlock it using the shared secret with the group owner
@@ -544,7 +617,7 @@ export async function getEncryptionKey(
   const sharedSecret = await keyManager.getSharedSecret(userId, conversation.owner_id, ownerKeyData.public_key);
 
   // Split our combined string back into IV and Encrypted Key
-  const [iv, encryptedBase64] = latest.encrypted_group_key.split('.');
+  const [iv, encryptedBase64] = targetKey.encrypted_group_key.split('.');
   
   if (!iv || !encryptedBase64) {
     throw new Error('Group key data is corrupted or missing IV');
@@ -554,9 +627,9 @@ export async function getEncryptionKey(
   const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
 
   // Save it to IndexedDB so we don't have to do this math again
-  await keyManager.storeGroupKey(keyConversationId, latest.key_version, decryptedRoomKey);
+  await keyManager.storeGroupKey(keyConversationId, targetKey.key_version, decryptedRoomKey);
 
-  return { key: decryptedRoomKey, version: latest.key_version };
+  return { key: decryptedRoomKey, version: targetKey.key_version };
 }
 
 export async function backupKeyToServer(data: {
@@ -573,12 +646,21 @@ export async function backupKeyToServer(data: {
   if (!res.ok) throw new Error('Failed to backup key');
 }
 
-export async function fetchKeyBackup(): Promise<{
+export async function backupRecoveryKeyToServer(data: {
   encrypted_private_key: string;
   iv: string;
   salt: string;
   key_id: string;
-} | null> {
+}): Promise<void> {
+  const res = await fetchWithAuth('/api/conversations/keys/backup/recovery', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error('Failed to backup recovery key');
+}
+
+export async function fetchKeyBackup(): Promise<KeyBackupRecord | null> {
   const res = await fetchWithAuth('/api/conversations/keys/backup');
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Failed to fetch key backup');
@@ -589,7 +671,8 @@ export async function fetchKeyBackup(): Promise<{
 export async function getMessageById(
   conversationId: string,
   messageId: string,
-  encryptionKey: CryptoKey
+  encryptionKey: CryptoKey,
+  options?: MessageDecryptionContext
 ): Promise<Message | null> {
   try {
     const res = await fetchWithAuth(
@@ -598,7 +681,8 @@ export async function getMessageById(
     const data = await res.json();
     if (!data.success || !data.message) return null;
 
-    const [decrypted] = await decryptMessages([data.message], encryptionKey);
+    const keyResolver = createMessageKeyResolver(encryptionKey, options);
+    const [decrypted] = await decryptMessages([data.message], keyResolver || encryptionKey);
     return decrypted as Message;
   } catch (err) {
     console.error('Failed to fetch single message:', err);

@@ -3,7 +3,13 @@ import { createContext, useContext, useState, useEffect, useRef, ReactNode } fro
 import { authService, fetchWithAuth } from './authServiceApi';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
-import { uploadPublicKey, backupKeyToServer, fetchKeyBackup } from '../Chat/chatService';
+import {
+  uploadPublicKey,
+  backupKeyToServer,
+  backupRecoveryKeyToServer,
+  fetchKeyBackup,
+  type KeyBackupRecord,
+} from '../Chat/chatService';
 
 export interface User {
   id: string;
@@ -13,13 +19,21 @@ export interface User {
   [key: string]: any;
 }
 
+export type KeyStatus = 'SECURE' | 'LOCKED' | 'UNINITIALIZED';
+
 interface UserContextType {
   user: User | null;
   loading: boolean;
+  keyStatus: KeyStatus;
+  keyStatusLoading: boolean;
+  isLoggingOut: boolean;
   setUser: (user: User | null) => void;
   refreshUser: () => Promise<void>;
+  refreshKeyStatus: () => Promise<KeyStatus>;
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;
+  saveRecoveryPhrase: (recoveryPhrase: string) => Promise<void>;
+  unlockWithRecoveryPhrase: (recoveryPhrase: string) => Promise<void>;
 }
 
 const UserContext = createContext<UserContextType | null>(null);
@@ -31,12 +45,33 @@ export function UserProvider({ children }: { children: ReactNode }) {
     return stored ? JSON.parse(stored) : null;
   });
   const [loading, setLoading] = useState(!localStorage.getItem(USER_STORAGE_KEY));
+  const [keyStatus, setKeyStatus] = useState<KeyStatus>('UNINITIALIZED');
+  const [keyStatusLoading, setKeyStatusLoading] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const loginPasswordRef = useRef<string | null>(null);
 
   const setLoginPassword = (password: string) => {
     loginPasswordRef.current = password;
   };
+
+  const resolveKeyStatusFromBackup = (backup: KeyBackupRecord | null): KeyStatus => {
+    const hasRecoveryBackup = Boolean(
+      backup?.recovery_encrypted_private_key &&
+      backup.recovery_iv &&
+      backup.recovery_salt
+    );
+
+    return hasRecoveryBackup ? 'SECURE' : 'UNINITIALIZED';
+  };
+
+  const createKeyCallbacks = () => ({
+    uploadPublicKey: async (pubKey: string, keyId: string) => uploadPublicKey(pubKey, keyId),
+    backupToServer: async (data: { encrypted_private_key: string; iv: string; salt: string; key_id: string }) => {
+      await backupKeyToServer(data);
+    },
+    fetchBackup: async () => fetchKeyBackup(),
+  });
 
   const setUser = (newUser: User | null) => {
     const previousUser = user;
@@ -82,14 +117,76 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const refreshKeyStatus = async (): Promise<KeyStatus> => {
+    if (!user?.id) {
+      setKeyStatus('UNINITIALIZED');
+      return 'UNINITIALIZED';
+    }
+
+    try {
+      const backup = await fetchKeyBackup();
+      const nextStatus = resolveKeyStatusFromBackup(backup);
+      setKeyStatus(nextStatus);
+      return nextStatus;
+    } catch (err) {
+      console.error('Failed to refresh key status:', err);
+      return keyStatus;
+    }
+  };
+
   const logout = async () => {
+    setIsLoggingOut(true);
     gateway.disconnect();
     loginPasswordRef.current = null;
-    await authService.logout();
-    setUser(null);
-    Object.keys(localStorage).forEach((key) => {
-      if (key.startsWith('void_')) localStorage.removeItem(key);
-    });
+    setKeyStatus('UNINITIALIZED');
+    setKeyStatusLoading(false);
+    try {
+      await authService.logout();
+    } finally {
+      setUser(null);
+      Object.keys(localStorage).forEach((key) => {
+        if (key.startsWith('void_')) localStorage.removeItem(key);
+      });
+      setIsLoggingOut(false);
+    }
+  };
+
+  const saveRecoveryPhrase = async (recoveryPhrase: string) => {
+    if (!user?.id) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    const recoveryBackup = await keyManager.prepareRecoveryBackup(user.id, recoveryPhrase);
+    await backupRecoveryKeyToServer(recoveryBackup);
+
+    if (loginPasswordRef.current) {
+      await backupKeyToServer(await keyManager.prepareBackup(user.id, loginPasswordRef.current));
+    }
+
+    setKeyStatus('SECURE');
+  };
+
+  const unlockWithRecoveryPhrase = async (recoveryPhrase: string) => {
+    if (!user?.id) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    const callbacks = createKeyCallbacks();
+    setKeyStatusLoading(true);
+
+    try {
+      await keyManager.restoreFromRecoveryPhrase(
+        user.id,
+        recoveryPhrase,
+        loginPasswordRef.current,
+        callbacks
+      );
+      setKeyStatus('SECURE');
+      window.location.reload();
+    } catch (err) {
+      setKeyStatusLoading(false);
+      throw err;
+    }
   };
 
   // Initial user fetch
@@ -120,11 +217,17 @@ export function UserProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user?.id) {
       gateway.disconnect();
+      setKeyStatus('UNINITIALIZED');
+      setKeyStatusLoading(false);
+      return;
+    }
+    if (keyStatus === 'LOCKED') {
+      gateway.disconnect();
       return;
     }
     gateway.connect(user.id);
     return () => { gateway.disconnect(); };
-  }, [user?.id]);
+  }, [keyStatus, user?.id]);
 
   // Initialize encryption keys
   useEffect(() => {
@@ -132,44 +235,62 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     const userId = user.id;
     const password = loginPasswordRef.current;
+    const callbacks = createKeyCallbacks();
+    let cancelled = false;
 
-    const callbacks = {
-      uploadPublicKey: async (pubKey: string, keyId: string) => await uploadPublicKey(pubKey, keyId),
-      backupToServer: async (data: any) => await backupKeyToServer(data),
-      fetchBackup: async () => await fetchKeyBackup(),
-    };
+    setKeyStatusLoading(true);
 
     keyManager.initializeKeys(userId, password, callbacks)
-      .then(() => {
+      .then(async () => {
+        if (cancelled) return;
         console.log('🔑 Encryption keys ready');
+        try {
+          const backup = await callbacks.fetchBackup();
+          if (!cancelled) {
+            setKeyStatus(resolveKeyStatusFromBackup(backup));
+          }
+        } catch (err) {
+          console.error('Failed to inspect key backup status:', err);
+          if (!cancelled) {
+            setKeyStatus('UNINITIALIZED');
+          }
+        } finally {
+          if (!cancelled) {
+            setKeyStatusLoading(false);
+          }
+        }
       })
       .catch((err) => {
-        if (err.message === 'KEY_NEEDS_PASSWORD') {
-          console.warn('🔑 No keys and no password — forcing re-login');
-          logout();
-        } else if (err.message === 'KEY_RESTORE_FAILED') {
-          // Backup exists but can't be decrypted — silently generate fresh keys if we have the password
-          if (password) {
-            console.warn('🔑 Backup restore failed — generating fresh keys silently');
-            keyManager.generateFreshKeys(userId, password, callbacks)
-              .then(() => {
-                console.log('🔑 Fresh keys generated');
-                window.location.reload();
-              })
-              .catch(() => logout());
-          } else {
-            // No password in memory, force re-login so we get it
-            logout();
-          }
+        if (cancelled) return;
+        if (err.message === 'KEY_NEEDS_PASSWORD' || err.message === 'KEY_RESTORE_FAILED') {
+          console.warn('🔑 Keys are locked on this device');
+          setKeyStatus('LOCKED');
         } else {
           console.warn('🔑 Key init failed:', err.message);
+          setKeyStatus('UNINITIALIZED');
         }
+        setKeyStatusLoading(false);
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id]);
 
   return (
     <UserContext.Provider value={{
-      user, loading, setUser, refreshUser, logout, setLoginPassword,
+      user,
+      loading,
+      keyStatus,
+      keyStatusLoading,
+      isLoggingOut,
+      setUser,
+      refreshUser,
+      refreshKeyStatus,
+      logout,
+      setLoginPassword,
+      saveRecoveryPhrase,
+      unlockWithRecoveryPhrase,
     }}>
       {children}
     </UserContext.Provider>

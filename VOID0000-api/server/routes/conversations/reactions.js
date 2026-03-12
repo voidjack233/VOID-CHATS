@@ -4,6 +4,7 @@ import { pool } from '../../db.js';
 import scylla, { cassandra } from '../../scylla.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
+import { reactionEventId } from '../../utils/eventIdentity.js';
 
 const router = Router({ mergeParams: true });
 
@@ -111,6 +112,13 @@ router.put('/:emoji', async (req, res) => {
     }
 
     const payload = {
+      event_id: reactionEventId({
+        conversationId,
+        messageId,
+        emoji,
+        userId,
+        action,
+      }),
       conversation_id: conversationId,
       conversation_public_id: conversationPublic,
       message_id: messageId,

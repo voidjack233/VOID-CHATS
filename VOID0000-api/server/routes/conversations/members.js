@@ -153,6 +153,13 @@ router.delete('/:targetUserId', async (req, res) => {
       return res.status(403).json({ error: 'Cannot remove the owner' });
     }
 
+    if (targetCheck.rows[0].role === 'owner' && isSelf) {
+      return res.status(403).json({
+        error: 'Transfer ownership before leaving this group',
+        code: 'OWNER_TRANSFER_REQUIRED',
+      });
+    }
+
     await pool.query(
       `DELETE FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,

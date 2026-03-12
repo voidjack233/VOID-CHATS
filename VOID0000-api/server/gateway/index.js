@@ -62,6 +62,8 @@ const WS_LIMITS = {
 
 const MAX_CONNECTIONS_PER_USER = 5;
 const VALID_STATUSES = new Set(['online', 'idle']);
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const HEARTBEAT_TIMEOUT_MS = 120_000;
 
 // Store connections: userId -> Set of WebSocket connections
 const connections = new Map();
@@ -75,6 +77,7 @@ const friendCache = new Map();
 
 const handshakeAttempts = new Map();
 const PRESENCE_KEY_PREFIX = 'presence:';
+const PRESENCE_COUNT_KEY_PREFIX = 'presence_count:';
 const PRESENCE_SNAPSHOT_TTL = 60 * 60 * 24 * 30;
 const HANDSHAKE_SWEEP_INTERVAL_MS = 60_000;
 const HANDSHAKE_ENTRY_TTL_MS = WS_LIMITS.handshake.windowMs * 2;
@@ -103,17 +106,21 @@ function presenceKey(userId) {
   return `${PRESENCE_KEY_PREFIX}${userId}`;
 }
 
+function presenceCountKey(userId) {
+  return `${PRESENCE_COUNT_KEY_PREFIX}${userId}`;
+}
+
 function createSessionId() {
   return crypto.randomBytes(SESSION_ID_BYTES).toString('base64url');
 }
 
-async function persistSessionIdentity(sessionId, userId, deviceId) {
+async function persistSessionIdentity(sessionId, userId, deviceId, clientInstanceId = null) {
   if (!sessionId || !userId || !deviceId) return;
 
   try {
     await valkey.set(
       sessionMetaKey(sessionId),
-      JSON.stringify({ userId, deviceId }),
+      JSON.stringify({ userId, deviceId, clientInstanceId }),
       'EX',
       SESSION_BUFFER_TTL
     );
@@ -134,7 +141,7 @@ async function getSessionIdentity(sessionId) {
   }
 }
 
-async function persistPresenceSnapshot(userId, presence) {
+async function persistPresenceSnapshot(userId, presence, activeCount) {
   if (!userId || !presence) return;
 
   try {
@@ -143,7 +150,15 @@ async function persistPresenceSnapshot(userId, presence) {
       JSON.stringify({
         status: presence.status,
         lastActive: presence.lastActive ?? null,
+        activeCount,
       }),
+      'EX',
+      PRESENCE_SNAPSHOT_TTL
+    );
+
+    await valkey.set(
+      presenceCountKey(userId),
+      String(activeCount),
       'EX',
       PRESENCE_SNAPSHOT_TTL
     );
@@ -152,15 +167,29 @@ async function persistPresenceSnapshot(userId, presence) {
   }
 }
 
-function setPresenceState(userId, presence) {
+function syncSharedPresence(userId, presence = null) {
+  if (!userId) return;
+
+  const activeCount = countActiveSockets(connections.get(userId));
+  const basePresence = presence || presenceStore.get(userId) || { status: 'offline', lastActive: null };
+  const normalizedStatus = activeCount === 0
+    ? 'offline'
+    : (basePresence.status === 'idle' ? 'idle' : 'online');
   const nextPresence = {
-    status: presence.status,
-    lastActive: Number.isInteger(presence.lastActive) ? presence.lastActive : null,
+    status: normalizedStatus,
+    lastActive: Number.isInteger(basePresence.lastActive) ? basePresence.lastActive : null,
   };
 
   presenceStore.set(userId, nextPresence);
-  void persistPresenceSnapshot(userId, nextPresence);
-  return nextPresence;
+  void persistPresenceSnapshot(userId, nextPresence, activeCount);
+  return {
+    ...nextPresence,
+    activeCount,
+  };
+}
+
+function setPresenceState(userId, presence) {
+  return syncSharedPresence(userId, presence);
 }
 
 async function bufferEvent(sessionId, payload) {
@@ -254,7 +283,23 @@ function validateIdentifyPayload(payload) {
     throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid identify');
   }
 
-  return { user_id: payload.user_id };
+  if (
+    payload.client_instance_id !== undefined
+    && (
+      typeof payload.client_instance_id !== 'string'
+      || payload.client_instance_id.length === 0
+      || payload.client_instance_id.length > 128
+    )
+  ) {
+    throw new GatewayProtocolError(CLOSE.PROTOCOL_ERROR, 'Invalid identify');
+  }
+
+  return {
+    user_id: payload.user_id,
+    client_instance_id: typeof payload.client_instance_id === 'string'
+      ? payload.client_instance_id
+      : null,
+  };
 }
 
 function validateResumePayload(payload) {
@@ -383,6 +428,22 @@ function isAllowedOrigin(origin) {
   }
 }
 
+function rejectUpgrade(socket, statusCode, statusText, body = statusText) {
+  if (!socket.writable || socket.destroyed) {
+    return;
+  }
+
+  socket.write(
+    `HTTP/1.1 ${statusCode} ${statusText}\r\n`
+      + 'Connection: close\r\n'
+      + 'Content-Type: text/plain\r\n'
+      + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+      + '\r\n'
+      + body
+  );
+  socket.destroy();
+}
+
 function checkHandshakeRateLimit(clientIp) {
   const now = Date.now();
   const limit = handshakeAttempts.get(clientIp);
@@ -424,6 +485,19 @@ function clearConnectionTimers(info) {
     clearTimeout(info.tokenExpiryTimer);
     info.tokenExpiryTimer = null;
   }
+}
+
+function shouldReplaceExistingConnection(existingInfo, deviceId, clientInstanceId) {
+  if (!existingInfo || existingInfo.teardownStarted) {
+    return false;
+  }
+
+  if (!clientInstanceId) {
+    return false;
+  }
+
+  return existingInfo.deviceId === deviceId
+    && existingInfo.clientInstanceId === clientInstanceId;
 }
 
 function isSocketActive(ws) {
@@ -487,6 +561,36 @@ function terminateSocket(ws) {
   }
 }
 
+function authenticateUpgradeRequest(req) {
+  try {
+    const cookies = cookie.parse(req.headers.cookie || '');
+    const token = cookies.accessToken;
+
+    if (!token) {
+      return { ok: false, statusCode: 401, statusText: 'Unauthorized', logMessage: 'No access token in cookies' };
+    }
+
+    const decoded = jwt.verify(token, process.env.ACCESS_SECRET);
+
+    if (typeof decoded?.id !== 'string' || decoded.id.length === 0) {
+      return { ok: false, statusCode: 401, statusText: 'Unauthorized', logMessage: 'Invalid token payload' };
+    }
+
+    return {
+      ok: true,
+      auth: {
+        userId: decoded.id,
+        deviceId: typeof decoded.device_id === 'string' && decoded.device_id.length > 0
+          ? decoded.device_id
+          : null,
+        tokenExp: Number.isInteger(decoded.exp) ? decoded.exp : null,
+      },
+    };
+  } catch (err) {
+    return { ok: false, statusCode: 401, statusText: 'Unauthorized', logMessage: err.message };
+  }
+}
+
 // ==================== WS RATE LIMITING ====================
 
 function checkWsRateLimit(ws) {
@@ -540,57 +644,65 @@ function logConnectionStats() {
 
 export function setupGateway(httpServer) {
   const wss = new WebSocketServer({
-    server: httpServer,
+    noServer: true,
     maxPayload: WS_LIMITS.maxPayload,
-    verifyClient: ({ origin, req }, done) => {
-      const clientIp = getRequestIp(req);
+  });
 
-      if (origin && !isAllowedOrigin(origin)) {
-        console.warn(`Rejected WS origin ${origin} from ${clientIp}`);
-        done(false, 403, 'Forbidden');
-        return;
-      }
+  httpServer.on('upgrade', (req, socket, head) => {
+    const clientIp = getRequestIp(req);
+    const origin = req.headers.origin;
 
-      if (!checkHandshakeRateLimit(clientIp)) {
-        console.warn(`Rejected WS flood from ${clientIp}`);
-        done(false, 429, 'Rate limited');
-        return;
-      }
+    if (origin && !isAllowedOrigin(origin)) {
+      console.warn(`Rejected WS origin ${origin} from ${clientIp}`);
+      rejectUpgrade(socket, 403, 'Forbidden');
+      return;
+    }
 
-      done(true);
-    },
+    if (!checkHandshakeRateLimit(clientIp)) {
+      console.warn(`Rejected WS flood from ${clientIp}`);
+      rejectUpgrade(socket, 429, 'Too Many Requests', 'Rate limited');
+      return;
+    }
+
+    const authResult = authenticateUpgradeRequest(req);
+    if (!authResult.ok) {
+      console.error(`Connection refused from ${clientIp}: ${authResult.logMessage}`);
+      rejectUpgrade(socket, authResult.statusCode, authResult.statusText);
+      return;
+    }
+
+    req.wsUpgradeContext = {
+      clientIp,
+      auth: authResult.auth,
+    };
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req);
+    });
   });
 
   wss.on('connection', (ws, req) => {
-    const clientIp = getRequestIp(req);
+    const clientIp = req.wsUpgradeContext?.clientIp || getRequestIp(req);
+    const upgradeAuth = req.wsUpgradeContext?.auth;
 
     console.log(`New WebSocket connection attempt from ${clientIp}`);
 
-    try {
-      const cookies = cookie.parse(req.headers.cookie || '');
-      const token = cookies.accessToken;
-
-      if (!token) {
-        console.log('No access token in cookies');
-        closeSocket(ws, CLOSE.UNAUTHORIZED, 'Unauthorized');
-        return;
-      }
-
-      const decoded = jwt.verify(token, process.env.ACCESS_SECRET);
-      ws.verifiedUserId = decoded.id;
-      ws.verifiedDeviceId = decoded.device_id;
-      ws.tokenExp = decoded.exp;
-
-      console.log(`Token verified for user ${decoded.id.substring(0, 8)}...`);
-    } catch (err) {
-      console.error('Connection refused:', err.message);
-      closeSocket(ws, CLOSE.UNAUTHORIZED, 'Invalid token');
+    if (!upgradeAuth?.userId) {
+      console.error(`Connection refused from ${clientIp}: missing upgrade auth context`);
+      closeSocket(ws, CLOSE.UNAUTHORIZED, 'Unauthorized');
       return;
     }
+
+    ws.verifiedUserId = upgradeAuth.userId;
+    ws.verifiedDeviceId = upgradeAuth.deviceId;
+    ws.tokenExp = upgradeAuth.tokenExp;
+
+    console.log(`Token verified for user ${upgradeAuth.userId.substring(0, 8)}...`);
 
     connectionInfo.set(ws, {
       userId: null,
       deviceId: ws.verifiedDeviceId || null,
+      clientInstanceId: null,
       sessionId: null,
       seq: 0,
       lastHeartbeat: Date.now(),
@@ -606,7 +718,7 @@ export function setupGateway(httpServer) {
     send(ws, {
       op: OP.HELLO,
       d: {
-        heartbeat_interval: 30000,
+        heartbeat_interval: HEARTBEAT_INTERVAL_MS,
       },
     });
 
@@ -665,7 +777,7 @@ export function setupGateway(httpServer) {
         sockets.forEach((ws) => {
           const info = connectionInfo.get(ws);
 
-          if (info && !info.teardownStarted && now - info.lastHeartbeat > 60000) {
+          if (info && !info.teardownStarted && now - info.lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
             console.log(`Terminating idle connection for user ${userId.substring(0, 8)}...`);
             terminateSocket(ws);
             terminatedCount++;
@@ -676,7 +788,7 @@ export function setupGateway(httpServer) {
       if (terminatedCount > 0) {
         console.log(`Terminated ${terminatedCount} idle connection(s)`);
       }
-    }, 30000);
+    }, HEARTBEAT_INTERVAL_MS);
     heartbeatSweepInterval.unref?.();
   }
 
@@ -779,14 +891,14 @@ async function handleMessage(ws, message) {
   }
 }
 
-function deduplicateDevice(userId, deviceId) {
+function deduplicateDevice(userId, deviceId, clientInstanceId = null) {
   const existingSockets = connections.get(userId);
   if (!existingSockets) return;
 
   for (const existingWs of existingSockets) {
     const existingInfo = connectionInfo.get(existingWs);
 
-    if (existingInfo?.deviceId === deviceId && !existingInfo.teardownStarted) {
+    if (shouldReplaceExistingConnection(existingInfo, deviceId, clientInstanceId)) {
       console.log(`Replacing stale connection for device ${deviceId.substring(0, 8)}...`);
       closeSocket(existingWs, CLOSE.SESSION_REPLACED, 'Session replaced');
     }
@@ -802,13 +914,14 @@ function deduplicateDevice(userId, deviceId) {
   }
 }
 
-function registerConnection(ws, userId, deviceId, sessionId) {
+function registerConnection(ws, userId, deviceId, sessionId, clientInstanceId = null) {
   const existingInfo = connectionInfo.get(ws) || {};
 
   connectionInfo.set(ws, {
     ...existingInfo,
     userId,
     deviceId,
+    clientInstanceId,
     sessionId,
     seq: 0,
     lastHeartbeat: Date.now(),
@@ -845,18 +958,19 @@ async function handleIdentify(ws, data) {
 
   const userId = data.user_id;
   const deviceId = ws.verifiedDeviceId || 'unknown';
+  const clientInstanceId = data.client_instance_id;
   const sessionId = createSessionId();
 
-  deduplicateDevice(userId, deviceId);
-  registerConnection(ws, userId, deviceId, sessionId);
+  deduplicateDevice(userId, deviceId, clientInstanceId);
+  registerConnection(ws, userId, deviceId, sessionId, clientInstanceId);
 
-  await persistSessionIdentity(sessionId, userId, deviceId);
+  await persistSessionIdentity(sessionId, userId, deviceId, clientInstanceId);
   await valkey.del(sessionKey(sessionId)).catch(() => {});
 
   console.log(`User identified: ${userId.substring(0, 8)}... (device: ${deviceId.substring(0, 8)}...)`);
   logConnectionStats();
 
-  setPresenceState(userId, { status: 'online', lastActive: Date.now() });
+  syncSharedPresence(userId, { status: 'online', lastActive: Date.now() });
 
   const friendPresences = await getFriendPresences(userId);
 
@@ -895,9 +1009,11 @@ async function handleResume(ws, data) {
     throw new GatewayProtocolError(CLOSE.INVALID_SESSION, 'Invalid session');
   }
 
-  deduplicateDevice(userId, deviceId);
-  registerConnection(ws, userId, deviceId, data.session_id);
-  await persistSessionIdentity(data.session_id, userId, deviceId);
+  const clientInstanceId = sessionIdentity.clientInstanceId || null;
+
+  deduplicateDevice(userId, deviceId, clientInstanceId);
+  registerConnection(ws, userId, deviceId, data.session_id, clientInstanceId);
+  await persistSessionIdentity(data.session_id, userId, deviceId, clientInstanceId);
 
   console.log(`Session resume: ${userId.substring(0, 8)}... from seq ${data.last_sequence}`);
 
@@ -922,11 +1038,14 @@ async function handleResume(ws, data) {
   console.log(`Resumed: replayed ${replay.replayed} events for ${userId.substring(0, 8)}...`);
 
   const currentPresence = presenceStore.get(userId);
-  if (!currentPresence || currentPresence.status !== 'online') {
-    setPresenceState(userId, { status: 'online', lastActive: Date.now() });
+  const resumedPresence = syncSharedPresence(userId, {
+    status: currentPresence?.status === 'idle' ? 'idle' : 'online',
+    lastActive: Date.now(),
+  });
+  if (!currentPresence || currentPresence.status !== resumedPresence.status) {
     void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {
       user_id: userId,
-      status: 'online',
+      status: resumedPresence.status,
     });
   }
 
@@ -1038,7 +1157,12 @@ function handleHeartbeat(ws) {
     info.lastHeartbeat = Date.now();
 
     if (info.sessionId && info.userId && info.deviceId) {
-      void persistSessionIdentity(info.sessionId, info.userId, info.deviceId);
+      void persistSessionIdentity(
+        info.sessionId,
+        info.userId,
+        info.deviceId,
+        info.clientInstanceId || null
+      );
     }
 
     if (info.userId) {
@@ -1077,6 +1201,11 @@ function handleDisconnect(ws) {
   if (userSockets) {
     userSockets.delete(ws);
 
+    const remainingPresence = syncSharedPresence(userId, {
+      status: presenceStore.get(userId)?.status || 'online',
+      lastActive: presenceStore.get(userId)?.lastActive || Date.now(),
+    });
+
     if (userSockets.size === 0) {
       connections.delete(userId);
     }
@@ -1084,10 +1213,9 @@ function handleDisconnect(ws) {
     if (countActiveSockets(userSockets) === 0) {
       connections.delete(userId);
 
-      const presence = presenceStore.get(userId);
-      const offlinePresence = setPresenceState(userId, {
+      const offlinePresence = syncSharedPresence(userId, {
         status: 'offline',
-        lastActive: presence?.lastActive || Date.now(),
+        lastActive: remainingPresence.lastActive || Date.now(),
       });
 
       void broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, {

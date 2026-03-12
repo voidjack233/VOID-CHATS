@@ -4,6 +4,7 @@ import { pool } from '../../db.js';
 import scylla, { generateTimeUUID, cassandra } from '../../scylla.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
+import { messageEventId } from '../../utils/eventIdentity.js';
 
 const router = Router({ mergeParams: true });
 
@@ -179,6 +180,7 @@ router.post('/', async (req, res) => {
     );
 
     const message = {
+      event_id: messageEventId(messageId.toString()),
       conversation_id: conversationId,
       conversation_public_id: conversationPublic,
       message_id: messageId.toString(),

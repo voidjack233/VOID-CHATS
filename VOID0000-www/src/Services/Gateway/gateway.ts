@@ -13,6 +13,7 @@ const OP = {
 type EventHandler = (data: any) => void;
 
 class Gateway {
+  private static readonly CLIENT_INSTANCE_STORAGE_KEY = 'void_gateway_client_instance_id';
   private ws: WebSocket | null = null;
   private heartbeatInterval: number | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -25,11 +26,22 @@ class Gateway {
   private lastRefreshTime = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private waitingForAck = false;
+  private missedHeartbeatAcks = 0;
+  private readonly clientInstanceId = Gateway.getOrCreateClientInstanceId();
 
   // Session resume state
   private sessionId: string | null = null;
   private lastSequence = 0;
   private canResume = false;
+
+  private static getOrCreateClientInstanceId() {
+    const existing = window.sessionStorage.getItem(Gateway.CLIENT_INSTANCE_STORAGE_KEY);
+    if (existing) return existing;
+
+    const nextId = crypto.randomUUID();
+    window.sessionStorage.setItem(Gateway.CLIENT_INSTANCE_STORAGE_KEY, nextId);
+    return nextId;
+  }
 
   connect(userId: string) {
     if (this.isConnecting) {
@@ -65,6 +77,8 @@ class Gateway {
       console.log('Gateway connected');
       this.isConnecting = false;
       this.reconnectAttempts = 0;
+      this.waitingForAck = false;
+      this.missedHeartbeatAcks = 0;
     };
 
     this.ws.onmessage = (event) => {
@@ -88,10 +102,11 @@ class Gateway {
         return;
       }
 
-      // Session replaced — don't reconnect
       if (event.code === 4009) {
-        console.log('Session replaced by newer connection');
+        console.log('Session replaced by newer connection, reconnecting...');
         this.invalidateSession();
+        this.cleanup();
+        this.scheduleReconnect();
         return;
       }
 
@@ -133,6 +148,7 @@ class Gateway {
 
       case OP.HEARTBEAT_ACK:
         this.waitingForAck = false;
+        this.missedHeartbeatAcks = 0;
         break;
 
       case OP.RESUMED:
@@ -261,7 +277,10 @@ class Gateway {
     this.canResume = false;
     this.send({
       op: OP.IDENTIFY,
-      d: { user_id: this.userId },
+      d: {
+        user_id: this.userId,
+        client_instance_id: this.clientInstanceId,
+      },
     });
   }
 
@@ -286,12 +305,19 @@ class Gateway {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
 
     this.waitingForAck = false;
+    this.missedHeartbeatAcks = 0;
 
     this.heartbeatTimer = setInterval(() => {
       if (this.waitingForAck) {
-        console.log('Missed heartbeat ACK, connection is zombie -- reconnecting');
-        this.ws?.close();
-        return;
+        this.missedHeartbeatAcks += 1;
+
+        if (this.missedHeartbeatAcks >= 2) {
+          console.log('Missed two heartbeat ACKs, reconnecting websocket');
+          this.ws?.close();
+          return;
+        }
+
+        console.log('Missed heartbeat ACK, tolerating one miss before reconnect');
       }
 
       this.waitingForAck = true;
@@ -314,6 +340,9 @@ class Gateway {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+
+    this.waitingForAck = false;
+    this.missedHeartbeatAcks = 0;
   }
 
   private scheduleReconnect() {

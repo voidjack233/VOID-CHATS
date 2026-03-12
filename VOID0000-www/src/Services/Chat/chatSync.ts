@@ -7,7 +7,7 @@
 // - handleEdit / handleDelete: apply mutations to the local store
 
 import { messageStore, LocalMessage } from './chatStore';
-import { getMessages } from './chatService';
+import { getMessages, type MessageDecryptionContext } from './chatService';
 import { MESSAGE_PAGE_SIZE } from './chatConstants';
 
 interface SyncResult {
@@ -15,11 +15,15 @@ interface SyncResult {
   hasMore: boolean;
 }
 
-interface LoadConversationOptions {
+interface LoadConversationOptions extends MessageDecryptionContext {
   forceSync?: boolean;
   preferSessionCache?: boolean;
   initialLimit?: number;
   syncLimit?: number;
+}
+
+function hasUndecryptablePlaceholder(messages: LocalMessage[]): boolean {
+  return messages.some((message) => message.content === '[unable to decrypt]');
 }
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -42,6 +46,7 @@ class MessageSync {
     const cursor = await messageStore.getSyncCursor(conversationId);
     const hasSessionValidation = this.sessionValidatedConversations.has(conversationId);
     const shouldPreferSessionCache = options?.preferSessionCache ?? false;
+    const hasStaleUndecryptableMessage = hasUndecryptablePlaceholder(cached.messages);
 
     const isFreshByTtl = !!(
       cached.messages.length > 0 &&
@@ -51,6 +56,8 @@ class MessageSync {
 
     const shouldSync = options?.forceSync === true
       ? true
+      : hasStaleUndecryptableMessage
+        ? true
       : shouldPreferSessionCache && !hasSessionValidation
         ? true
         : !isFreshByTtl;
@@ -62,7 +69,8 @@ class MessageSync {
         conversationId,
         encryptionKey,
         cached,
-        options?.syncLimit ?? MESSAGE_PAGE_SIZE
+        options?.syncLimit ?? MESSAGE_PAGE_SIZE,
+        options
       )
         .then((result) => {
           this.sessionValidatedConversations.add(conversationId);
@@ -79,13 +87,14 @@ class MessageSync {
     conversationId: string,
     encryptionKey: CryptoKey,
     cached: { messages: LocalMessage[]; has_more: boolean },
-    syncLimit: number
+    syncLimit: number,
+    decryptContext?: MessageDecryptionContext
   ): Promise<SyncResult> {
     try {
       const { messages: serverMsgs, has_more } = await getMessages(
         conversationId,
         encryptionKey,
-        { limit: syncLimit }
+        { limit: syncLimit, ...decryptContext }
       );
       const hasMore = has_more || serverMsgs.length >= syncLimit;
 
