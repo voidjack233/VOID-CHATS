@@ -10,19 +10,47 @@ const minioClient = new Minio.Client({
 });
 
 const BUCKET = process.env.MINIO_BUCKET || 'avatars';
+const GROUP_AVATAR_BUCKET = process.env.MINIO_GROUP_AVATAR_BUCKET || 'group-avatars';
+const ATTACH_BUCKET = process.env.MINIO_ATTACH_BUCKET || 'chat-attachments';
 
-// Ensure bucket exists on startup
+async function ensureBucketExists(bucket) {
+  const exists = await minioClient.bucketExists(bucket);
+  if (!exists) {
+    await minioClient.makeBucket(bucket);
+    console.log(`✅ MinIO bucket '${bucket}' created`);
+  }
+}
+
+function buildPublicReadPolicy(bucket) {
+  return JSON.stringify({
+    Version: '2012-10-17',
+    Statement: [{
+      Effect: 'Allow',
+      Principal: { AWS: ['*'] },
+      Action: ['s3:GetObject'],
+      Resource: [`arn:aws:s3:::${bucket}/*`],
+    }],
+  });
+}
+
+async function ensurePublicReadBucket(bucket) {
+  await ensureBucketExists(bucket);
+  await minioClient.setBucketPolicy(bucket, buildPublicReadPolicy(bucket));
+  console.log(`✅ MinIO bucket '${bucket}' public read policy set`);
+}
+
+// Ensure buckets exist on startup
 (async () => {
   try {
-    const exists = await minioClient.bucketExists(BUCKET);
-    if (!exists) {
-      await minioClient.makeBucket(BUCKET);
-      console.log(`✅ MinIO bucket '${BUCKET}' created`);
-    }
+    await Promise.all([
+      ensurePublicReadBucket(BUCKET),
+      ensurePublicReadBucket(GROUP_AVATAR_BUCKET),
+      ensurePublicReadBucket(ATTACH_BUCKET),
+    ]);
     console.log('✅ MinIO connected');
   } catch (err) {
     console.error('❌ MinIO init error:', err.message);
   }
 })();
 
-export { minioClient, BUCKET };
+export { minioClient, BUCKET, GROUP_AVATAR_BUCKET, ATTACH_BUCKET };

@@ -23,6 +23,7 @@ import { gateway } from '../Services/Gateway/gateway';
 import { Conversation } from '../Services/Chat/chatService';
 import { useUser } from '../Services/Auth/UserContext';
 import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
+import UserAvatar from '../components/common/UserAvatar';
 
 const ChatDashboard = () => {
   const location = useLocation();
@@ -40,7 +41,6 @@ const ChatDashboard = () => {
   const { keyStatus, keyStatusLoading, isLoggingOut, unlockWithRecoveryPhrase, logout } = useUser();
 
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
-  const myAvatarUrl = myProfile?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user?.username}`;
 
   // Friends from the shared FriendsProvider — single source of truth
   const { friends } = useFriends();
@@ -281,12 +281,19 @@ const ChatDashboard = () => {
         <ConversationSettings
           conversation={displayConversation}
           currentUserId={user.id}
-          onClose={() => setShowConvSettings(false)}
-          onLeft={() => {
-            handleBackToMe();
-            navigate('/chats');
+          members={Object.values(members)}
+          onConversationUpdated={async (nextConversation) => {
+            patchConversationInState(nextConversation);
             setConvRefresh((n) => n + 1);
           }}
+          onMembershipChanged={async () => {
+            setConvRefresh((n) => n + 1);
+
+            if (activeGroup) {
+              await refreshActiveGroup(activeConversation?.public_id || activeConversation?.id);
+            }
+          }}
+          onClose={() => setShowConvSettings(false)}
         />
       )}
 
@@ -362,7 +369,14 @@ const ChatDashboard = () => {
         <div className="h-[52px] bg-void-bg-main/90 flex items-center px-2 border-t border-void-bg-sec shrink-0">
           <div className="flex items-center hover:bg-void-bg-hover p-1 rounded-md cursor-pointer flex-1 min-w-0" onClick={() => setShowProfile(true)}>
             <div className="w-8 h-8 rounded-full mr-2 relative shrink-0">
-              <img src={myAvatarUrl} alt="Avatar" className="w-full h-full object-cover rounded-full" />
+              <UserAvatar
+                src={myProfile?.avatar_url || null}
+                displayName={myProfile?.display_name}
+                username={user?.username}
+                alt="Avatar"
+                className="w-full h-full rounded-full"
+                fallbackClassName="text-xs"
+              />
             </div>
             <div className="text-sm font-semibold truncate flex-1">{myProfile?.display_name || user?.username || 'User'}</div>
           </div>
@@ -440,7 +454,7 @@ const ChatDashboard = () => {
                     onReply={(msg) => setReplyTo(msg)}
                     onEdit={(msg) => setEditingMessage(msg)}
                     newMessage={newMessage}
-                    userAvatar={myAvatarUrl}
+                    userAvatar={myProfile?.avatar_url || undefined}
                     gateway={gateway}
                     messageUpdate={messageUpdate}
                     messageDelete={messageDelete}

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { Check, X, User } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { FriendRequest, useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
+import UserAvatar from '../../common/UserAvatar';
 
 interface IncomingRequestsProps {
   requests: FriendRequest[];
@@ -25,17 +26,14 @@ export default function IncomingRequests({ requests, onAccept, onReject }: Incom
           className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg"
         >
           <div className="flex items-center gap-3">
-            {request.avatar_url ? (
-              <img
-                src={request.avatar_url}
-                alt={request.display_name || request.username}
-                className="w-10 h-10 rounded-full object-cover"
-              />
-            ) : (
-              <div className="w-10 h-10 rounded-full bg-void-bg-hover flex items-center justify-center">
-                <User className="w-5 h-5 text-void-text-muted" />
-              </div>
-            )}
+            <UserAvatar
+              src={request.avatar_url}
+              displayName={request.display_name}
+              username={request.username}
+              alt={request.display_name || request.username}
+              className="w-10 h-10 rounded-full"
+              fallbackClassName="text-sm"
+            />
             <div>
               <p className="text-void-text font-medium">
                 {request.display_name || request.username}

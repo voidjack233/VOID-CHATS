@@ -19,7 +19,7 @@ export async function findConversationByIdentifier(identifier, db = pool) {
 
   if (isUuid(value)) {
     result = await db.query(
-      `SELECT id, public_id, type, owner_id, parent_conversation_id
+      `SELECT id, public_id, type, owner_id, parent_conversation_id, current_key_version
        FROM conversations
        WHERE id = $1
        LIMIT 1`,
@@ -27,7 +27,7 @@ export async function findConversationByIdentifier(identifier, db = pool) {
     );
   } else if (isSnowflakeId(value)) {
     result = await db.query(
-      `SELECT id, public_id, type, owner_id, parent_conversation_id
+      `SELECT id, public_id, type, owner_id, parent_conversation_id, current_key_version
        FROM conversations
        WHERE public_id = $1
        LIMIT 1`,

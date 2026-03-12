@@ -47,6 +47,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(!localStorage.getItem(USER_STORAGE_KEY));
   const [keyStatus, setKeyStatus] = useState<KeyStatus>('UNINITIALIZED');
   const [keyStatusLoading, setKeyStatusLoading] = useState(false);
+  const [keyInitResolved, setKeyInitResolved] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const loginPasswordRef = useRef<string | null>(null);
@@ -219,25 +220,35 @@ export function UserProvider({ children }: { children: ReactNode }) {
       gateway.disconnect();
       setKeyStatus('UNINITIALIZED');
       setKeyStatusLoading(false);
+      setKeyInitResolved(false);
       return;
     }
+
+    if (!keyInitResolved || keyStatusLoading) {
+      return;
+    }
+
     if (keyStatus === 'LOCKED') {
       gateway.disconnect();
       return;
     }
     gateway.connect(user.id);
     return () => { gateway.disconnect(); };
-  }, [keyStatus, user?.id]);
+  }, [keyInitResolved, keyStatus, keyStatusLoading, user?.id]);
 
   // Initialize encryption keys
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      setKeyInitResolved(false);
+      return;
+    }
 
     const userId = user.id;
     const password = loginPasswordRef.current;
     const callbacks = createKeyCallbacks();
     let cancelled = false;
 
+    setKeyInitResolved(false);
     setKeyStatusLoading(true);
 
     keyManager.initializeKeys(userId, password, callbacks)
@@ -257,6 +268,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         } finally {
           if (!cancelled) {
             setKeyStatusLoading(false);
+            setKeyInitResolved(true);
           }
         }
       })
@@ -270,6 +282,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
           setKeyStatus('UNINITIALIZED');
         }
         setKeyStatusLoading(false);
+        setKeyInitResolved(true);
       });
 
     return () => {

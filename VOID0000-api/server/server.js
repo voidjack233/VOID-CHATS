@@ -30,7 +30,6 @@ const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
 const allowedOrigins = [
   FRONT_URL,
   'https://void0000.online',
-  'https://www.void0000.online',
   'http://localhost:5173',
   'http://localhost'
 ];

@@ -29,6 +29,62 @@ function conversationPublicId(conversation) {
   return conversation?.public_id ? String(conversation.public_id) : null;
 }
 
+function normalizeKeyVersion(value, fallback = 1) {
+  const parsed = parseInt(String(value ?? fallback), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function getConversationKeyState(conversation, userId) {
+  if (!conversation || conversation.type === 'dm') {
+    return {
+      currentKeyVersion: 1,
+      historyStartVersion: 1,
+      joinedAt: null,
+    };
+  }
+
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const result = await pool.query(
+    `SELECT c.current_key_version, cm.history_start_version, cm.joined_at
+     FROM conversations c
+     JOIN conversation_members cm ON cm.conversation_id = c.id
+     WHERE c.id = $1 AND cm.user_id = $2
+     LIMIT 1`,
+    [keyConversationId, userId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return {
+    currentKeyVersion: normalizeKeyVersion(result.rows[0].current_key_version, 1),
+    historyStartVersion: normalizeKeyVersion(result.rows[0].history_start_version, 1),
+    joinedAt: result.rows[0].joined_at ? new Date(result.rows[0].joined_at).toISOString() : null,
+  };
+}
+
+function canAccessMessageForHistory(message, keyState) {
+  if (!keyState) return false;
+
+  if (normalizeKeyVersion(message.key_version, 1) < keyState.historyStartVersion) {
+    return false;
+  }
+
+  if (!keyState.joinedAt || !message.created_at) {
+    return true;
+  }
+
+  const joinedAt = Date.parse(keyState.joinedAt);
+  const createdAt = Date.parse(message.created_at);
+
+  if (Number.isNaN(joinedAt) || Number.isNaN(createdAt)) {
+    return true;
+  }
+
+  return createdAt >= joinedAt;
+}
+
 /**
  * Fetches reaction counts from the counter table + checks current user's reactions.
  * Returns: { messageId: { emoji: { count: Number, me: Boolean } } }
@@ -126,6 +182,23 @@ router.post('/', async (req, res) => {
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
     if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send messages' });
 
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ error: 'Missing group key membership state' });
+    }
+
+    const requestedKeyVersion = conversation.type === 'dm'
+      ? 1
+      : normalizeKeyVersion(key_version, 0);
+
+    if (requestedKeyVersion !== keyState.currentKeyVersion) {
+      return res.status(409).json({
+        error: `Expected key_version ${keyState.currentKeyVersion}`,
+        code: 'STALE_KEY_VERSION',
+        current_key_version: keyState.currentKeyVersion,
+      });
+    }
+
     const slowmodeSeconds = Number(conversation.slowmode_seconds || 0);
     const isSlowmodeExempt = ['owner', 'admin'].includes(member.role);
 
@@ -162,7 +235,7 @@ router.post('/', async (req, res) => {
         cassandra.types.Uuid.fromString(userId),
         encrypted_content || null,
         iv || null,
-        key_version || 1,
+        requestedKeyVersion,
         message_type || 'text',
         reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null,
         attachList,
@@ -187,7 +260,7 @@ router.post('/', async (req, res) => {
       sender_id: userId,
       encrypted_content: encrypted_content || null,
       iv: iv || null,
-      key_version: key_version || 1,
+      key_version: requestedKeyVersion,
       message_type: message_type || 'text',
       reply_to: reply_to || null,
       attachments: attachList || [],
@@ -224,6 +297,11 @@ router.get('/', async (req, res) => {
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
 
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ error: 'Missing group key membership state' });
+    }
+
     let query;
     let params;
 
@@ -259,18 +337,29 @@ router.get('/', async (req, res) => {
 
     if (after) messages = messages.reverse();
 
-    const messageIds = messages.map((m) => m.message_id);
+    const visibleMessages = conversation.type === 'dm'
+      ? messages
+      : messages.filter((message) => canAccessMessageForHistory(message, keyState));
+
+    const messageIds = visibleMessages.map((m) => m.message_id);
     const reactions = await batchFetchReactions(conversationId, messageIds, userId);
 
-    const messagesWithReactions = messages.map((m) => ({
+    const messagesWithReactions = visibleMessages.map((m) => ({
       ...m,
       reactions: reactions[m.message_id] || {},
     }));
 
+    const hasVisibleMessages = visibleMessages.length > 0;
+    const hasMore = conversation.type === 'dm'
+      ? messages.length === pageSize
+      : hasVisibleMessages
+        ? messages.length === pageSize
+        : false;
+
     res.json({
       success: true,
       messages: messagesWithReactions,
-      has_more: messages.length === pageSize,
+      has_more: hasMore,
     });
   } catch (err) {
     console.error('Message history error:', err);
@@ -291,6 +380,11 @@ router.get('/:messageId', async (req, res) => {
     const conversationPublic = conversationPublicId(conversation);
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
+
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ error: 'Missing group key membership state' });
+    }
 
     const result = await scylla.execute(
       `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
@@ -316,6 +410,10 @@ router.get('/:messageId', async (req, res) => {
       is_deleted: row.is_deleted,
       created_at: row.created_at?.toISOString(),
     };
+
+    if (conversation.type !== 'dm' && !canAccessMessageForHistory(message, keyState)) {
+      return res.status(404).json({ success: false, error: 'Message not found' });
+    }
 
     res.json({ success: true, message });
   } catch (err) {
@@ -370,6 +468,23 @@ router.put('/:messageId', async (req, res) => {
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ error: 'Missing group key membership state' });
+    }
+
+    const requestedKeyVersion = conversation.type === 'dm'
+      ? 1
+      : normalizeKeyVersion(key_version, 0);
+
+    if (requestedKeyVersion !== keyState.currentKeyVersion) {
+      return res.status(409).json({
+        error: `Expected key_version ${keyState.currentKeyVersion}`,
+        code: 'STALE_KEY_VERSION',
+        current_key_version: keyState.currentKeyVersion,
+      });
+    }
+
     const msgResult = await scylla.execute(
       `SELECT sender_id, is_deleted FROM messages WHERE conversation_id = ? AND message_id = ?`,
       [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
@@ -396,7 +511,7 @@ router.put('/:messageId', async (req, res) => {
         editId,
         encrypted_content,
         iv,
-        key_version || 1,
+        requestedKeyVersion,
         now,
       ],
       { prepare: true }
@@ -408,7 +523,7 @@ router.put('/:messageId', async (req, res) => {
       [
         encrypted_content,
         iv,
-        key_version || 1,
+        requestedKeyVersion,
         now,
         cassandra.types.Uuid.fromString(conversationId),
         cassandra.types.TimeUuid.fromString(messageId),
@@ -422,7 +537,7 @@ router.put('/:messageId', async (req, res) => {
       message_id: messageId,
       encrypted_content,
       iv,
-      key_version: key_version || 1,
+      key_version: requestedKeyVersion,
       is_edited: true,
       edited_at: now.toISOString(),
     };

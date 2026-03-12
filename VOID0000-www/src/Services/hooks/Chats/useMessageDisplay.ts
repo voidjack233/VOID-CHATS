@@ -29,12 +29,8 @@ const getSenderName = useCallback((senderId: string) => {
     if (senderId === user?.id && userAvatar) return userAvatar;
     
     // 2. Other members
-    const memberAvatar = members[senderId]?.avatar_url;
-    if (memberAvatar) return memberAvatar;
-    
-    // 3. Fallback
-    const fallbackName = getSenderName(senderId);
-    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${fallbackName}`;
+    const member = members[senderId];
+    return member?.avatar_url || null;
   }, [user, userAvatar, members, getSenderName]);
 
   return { formatTime, getSenderName, getSenderAvatarUrl };

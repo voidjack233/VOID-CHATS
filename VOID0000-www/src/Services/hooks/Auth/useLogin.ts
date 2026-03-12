@@ -8,6 +8,18 @@ interface LoginForm {
   password: string;
 }
 
+const PENDING_INVITE_PATH_KEY = 'void_pending_invite_path';
+
+function getPostLoginDestination() {
+  const pendingInvitePath = sessionStorage.getItem(PENDING_INVITE_PATH_KEY);
+  if (pendingInvitePath) {
+    sessionStorage.removeItem(PENDING_INVITE_PATH_KEY);
+    return pendingInvitePath;
+  }
+
+  return '/chats';
+}
+
 export function useLogin() {
   const navigate = useNavigate();
   const { refreshUser, setLoginPassword } = useUser();
@@ -95,7 +107,7 @@ export function useLogin() {
       setLoginPassword(formData.password);
 
       await refreshUser();
-      navigate('/chats');
+      navigate(getPostLoginDestination());
 
     } catch (err: any) {
       console.log('Login error:', err);
@@ -167,7 +179,7 @@ export function useLogin() {
       // Success! Clear 2FA state and finish login
       setTwoFactorData(null);
       await refreshUser();
-      navigate('/chats');
+      navigate(getPostLoginDestination());
 
     } catch (err: any) {
       console.error('2FA verification error:', err);

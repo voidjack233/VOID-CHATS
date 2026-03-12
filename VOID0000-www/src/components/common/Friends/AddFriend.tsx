@@ -1,9 +1,10 @@
 // src/components/common/Friends/AddFriend.tsx
 import { useState } from 'react';
-import { Search, UserPlus, User, Loader2, Check, Users } from 'lucide-react';
+import { Search, UserPlus, Loader2, Check, Users } from 'lucide-react';
 import { API_URL } from '../../../Services/config';
 import { useFriendRequests, FriendRequest } from '../../../Services/hooks/Friends/useFriendRequests';
 import { useFriends } from '../../../Services/hooks/Friends/useFriends';
+import UserAvatar from '../../common/UserAvatar';
 
 interface SearchResult {
   id: string;
@@ -171,17 +172,14 @@ export default function AddFriend() {
                 className="flex items-center justify-between p-4 bg-void-bg-sec rounded-xl border border-transparent hover:border-void-border transition-colors group"
               >
                 <div className="flex items-center gap-4">
-                  {user.avatar_url ? (
-                    <img
-                      src={user.avatar_url}
-                      alt={user.display_name || user.username}
-                      className="w-12 h-12 rounded-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-full bg-void-bg-main flex items-center justify-center">
-                      <User className="w-6 h-6 text-void-text-muted" />
-                    </div>
-                  )}
+                  <UserAvatar
+                    src={user.avatar_url}
+                    displayName={user.display_name}
+                    username={user.username}
+                    alt={user.display_name || user.username}
+                    className="w-12 h-12 rounded-full"
+                    fallbackClassName="text-base"
+                  />
                   <div>
                     <p className="text-void-text font-bold text-base">
                       {user.display_name || user.username}

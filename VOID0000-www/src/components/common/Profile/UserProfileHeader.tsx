@@ -1,6 +1,7 @@
 import React from 'react';
 import { Camera, Loader2, AlertCircle } from 'lucide-react';
 import { UserProfileHeaderProps } from './types';
+import UserAvatar from '../../common/UserAvatar';
 
 const UserProfileHeader: React.FC<UserProfileHeaderProps & { 
   tempProfile?: any, 
@@ -17,11 +18,6 @@ const UserProfileHeader: React.FC<UserProfileHeaderProps & {
   uploadError,
   allowUpload = true,
 }) => {
-  const avatarToShow =
-    previewUrl ||
-    displayProfile.avatar_url ||
-    `https://api.dicebear.com/7.x/avataaars/svg?seed=${displayProfile.username}`;
-
   return (
     <div className="flex items-center gap-5">
       {/* Hidden file input */}
@@ -38,10 +34,14 @@ const UserProfileHeader: React.FC<UserProfileHeaderProps & {
       {/* Avatar Section */}
       <div className="relative group flex-shrink-0">
         <div className="w-[88px] h-[88px] rounded-full bg-void-bg-hover overflow-hidden ring-4 ring-void-bg-secondary shadow-xl">
-          <img
-            src={avatarToShow}
+          <UserAvatar
+            src={previewUrl || displayProfile.avatar_url || null}
+            displayName={displayProfile.display_name}
+            username={displayProfile.username}
             alt="Avatar"
-            className="w-full h-full rounded-full object-cover"
+            className="w-full h-full rounded-full"
+            fallbackClassName="text-3xl font-bold"
+            fallbackTone="plain"
           />
         </div>
 

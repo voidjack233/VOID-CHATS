@@ -7,16 +7,9 @@ import {
   sendLiveEventToUser,
 } from '../../gateway/client.js';
 import { friendshipEventId } from '../../utils/eventIdentity.js';
+import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
-
-const getAvatarUrl = (avatarFilename, username) => {
-  const APIBASE = process.env.CDN_URL || 'https://cdn.void0000.online';
-
-  return avatarFilename
-    ? `${APIBASE}/avatars/${avatarFilename}`
-    : `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
-};
 
 // POST /api/friends/request/:profileId - Send friend request
 router.post('/request/:profileId', async (req, res) => {
@@ -83,7 +76,10 @@ router.post('/request/:profileId', async (req, res) => {
         username: requesterInfo.rows[0].username,
         profile_id: requesterInfo.rows[0].profile_id,
         display_name: requesterInfo.rows[0].display_name,
-        avatar_url: getAvatarUrl(requesterInfo.rows[0].avatar_filename, requesterInfo.rows[0].username),
+        avatar_url: resolveUserAvatarUrl(requesterInfo.rows[0].avatar_filename, {
+          displayName: requesterInfo.rows[0].display_name,
+          username: requesterInfo.rows[0].username,
+        }),
       },
       timestamp: Date.now(),
     });
@@ -153,7 +149,10 @@ router.post('/accept/:friendshipId', async (req, res) => {
         username: accepterInfo.rows[0].username,
         profile_id: accepterInfo.rows[0].profile_id,
         display_name: accepterInfo.rows[0].display_name,
-        avatar_url: getAvatarUrl(accepterInfo.rows[0].avatar_filename, accepterInfo.rows[0].username),
+        avatar_url: resolveUserAvatarUrl(accepterInfo.rows[0].avatar_filename, {
+          displayName: accepterInfo.rows[0].display_name,
+          username: accepterInfo.rows[0].username,
+        }),
         bio: accepterInfo.rows[0].bio,
         member_since: accepterInfo.rows[0].created_at,
         status: accepterStatus,
@@ -169,7 +168,10 @@ router.post('/accept/:friendshipId', async (req, res) => {
         username: requesterInfo.rows[0].username,
         profile_id: requesterInfo.rows[0].profile_id,
         display_name: requesterInfo.rows[0].display_name,
-        avatar_url: getAvatarUrl(requesterInfo.rows[0].avatar_filename, requesterInfo.rows[0].username),
+        avatar_url: resolveUserAvatarUrl(requesterInfo.rows[0].avatar_filename, {
+          displayName: requesterInfo.rows[0].display_name,
+          username: requesterInfo.rows[0].username,
+        }),
         bio: requesterInfo.rows[0].bio,
         member_since: requesterInfo.rows[0].created_at,
         status: requesterStatus,

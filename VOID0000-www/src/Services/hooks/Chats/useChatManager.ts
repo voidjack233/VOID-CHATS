@@ -36,6 +36,12 @@ export const useChatManager = (user: any) => {
   const conversationDetailsCache = useRef<Record<string, ConversationDetails>>({});
   const pendingMessages = useRef<any[]>([]);
 
+  const normalizeRequiredVersion = (value: unknown): number | null => {
+    return typeof value === 'number' && Number.isInteger(value) && value > 0
+      ? value
+      : null;
+  };
+
   const resetLiveChatState = () => {
     setEncryptionKey(null);
     setEncryptionError(null);
@@ -208,13 +214,22 @@ export const useChatManager = (user: any) => {
     const setupConversation = async () => {
       if (!activeConversation || !user?.id) return;
       setEncryptionError(null);
+      const requiredGroupVersion = activeConversation.type === 'dm'
+        ? null
+        : normalizeRequiredVersion(
+            activeGroup?.current_key_version ?? activeConversation.current_key_version ?? null
+          );
 
       const cached = handshakeCache.current[activeConversation.id];
-      if (cached) {
+      if (cached && (!requiredGroupVersion || cached.version === requiredGroupVersion)) {
         setMembers(cached.members);
         setEncryptionKey(cached.key);
         setKeyVersion(cached.version);
         return; 
+      }
+
+      if (cached && requiredGroupVersion && cached.version !== requiredGroupVersion) {
+        delete handshakeCache.current[activeConversation.id];
       }
 
       try {
@@ -240,7 +255,12 @@ export const useChatManager = (user: any) => {
           ? conversationDetails.members.find((m: any) => m.user_id !== user.id)?.user_id
           : undefined;
 
-        const { key, version } = await getEncryptionKey(user.id, activeConversation, peerId);
+        const { key, version } = await getEncryptionKey(
+          user.id,
+          activeConversation,
+          peerId,
+          requiredGroupVersion || undefined
+        );
 
         if (ignore) return; 
 
@@ -267,7 +287,13 @@ export const useChatManager = (user: any) => {
 
     setupConversation();
     return () => { ignore = true; };
-  }, [activeConversation?.id, user?.id]);
+  }, [
+    activeConversation,
+    activeConversation?.id,
+    activeConversation?.current_key_version,
+    activeGroup?.current_key_version,
+    user?.id,
+  ]);
 
   const resolveMessageKey = async (data: any, fallbackKey: CryptoKey) => {
     if (!activeConversation || !user?.id || activeConversation.type === 'dm') {
@@ -407,12 +433,55 @@ export const useChatManager = (user: any) => {
     const handleConversationUpdate = (data: any) => {
       const updatedConversation = data?.conversation as Conversation | undefined;
       if (!updatedConversation) return;
+
+      const conversationIdentifier = updatedConversation.public_id || updatedConversation.id;
+      const touchesActiveGroup = matchesConversationIdentifier(activeGroup, conversationIdentifier);
+      const keyVersionChanged =
+        touchesActiveGroup &&
+        updatedConversation.current_key_version != null &&
+        updatedConversation.current_key_version !== activeGroup?.current_key_version;
+      const memberCountChanged =
+        touchesActiveGroup &&
+        updatedConversation.member_count != null &&
+        updatedConversation.member_count !== activeGroup?.member_count;
+
       patchConversationInState(updatedConversation);
+
+      if (touchesActiveGroup && (keyVersionChanged || memberCountChanged)) {
+        void refreshActiveGroup(activeConversation?.public_id || activeConversation?.id);
+      }
     };
 
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     return () => gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
-  }, [user?.id]);
+  }, [
+    activeConversation?.id,
+    activeConversation?.public_id,
+    activeGroup?.current_key_version,
+    activeGroup?.id,
+    activeGroup?.member_count,
+    activeGroup?.public_id,
+    user?.id,
+  ]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const handleMemberLeave = (data: any) => {
+      const conversationId = data?.conversation_id;
+      if (!conversationId) return;
+
+      if (
+        matchesConversationIdentifier(activeConversation, conversationId) ||
+        matchesConversationIdentifier(activeGroup, conversationId)
+      ) {
+        handleBackToMe();
+      }
+    };
+
+    gateway.on('MEMBER_LEAVE', handleMemberLeave);
+    return () => gateway.off('MEMBER_LEAVE', handleMemberLeave);
+  }, [activeConversation?.id, activeGroup?.id, user?.id]);
 
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {

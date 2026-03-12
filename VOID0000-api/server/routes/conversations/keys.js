@@ -242,7 +242,7 @@ router.get('/group/:conversationId', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT encrypted_group_key, key_version, created_at
+      `SELECT encrypted_group_key, key_version, wrapped_by_user_id, created_at
        FROM group_key_distribution
        WHERE conversation_id = $1 AND user_id = $2
        ORDER BY key_version DESC`,
@@ -287,8 +287,8 @@ router.post('/group/:conversationId', async (req, res) => {
       return res.status(403).json({ error: 'Not a member' });
     }
 
-    if (!['owner', 'admin'].includes(memberCheck.rows[0].role)) {
-      return res.status(403).json({ error: 'Only owner or admin can distribute keys' });
+    if (memberCheck.rows[0].role !== 'owner') {
+      return res.status(403).json({ error: 'Only the owner can distribute group keys' });
     }
 
     let client;
@@ -298,11 +298,19 @@ router.post('/group/:conversationId', async (req, res) => {
 
       for (const dist of distributions) {
         await client.query(
-          `INSERT INTO group_key_distribution (conversation_id, user_id, encrypted_group_key, key_version)
-           VALUES ($1, $2, $3, $4)
+          `INSERT INTO group_key_distribution (
+             conversation_id,
+             user_id,
+             encrypted_group_key,
+             key_version,
+             wrapped_by_user_id
+           )
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (conversation_id, user_id, key_version)
-           DO UPDATE SET encrypted_group_key = EXCLUDED.encrypted_group_key`,
-          [keyConversationId, dist.user_id, dist.encrypted_group_key, key_version]
+           DO UPDATE SET
+             encrypted_group_key = EXCLUDED.encrypted_group_key,
+             wrapped_by_user_id = EXCLUDED.wrapped_by_user_id`,
+          [keyConversationId, dist.user_id, dist.encrypted_group_key, key_version, userId]
         );
       }
 

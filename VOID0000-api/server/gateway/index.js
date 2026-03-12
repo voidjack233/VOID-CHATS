@@ -373,7 +373,6 @@ function getAllowedOrigins() {
   return new Set([
     process.env.FRONT_URL ?? 'http://localhost:5173',
     'https://void0000.online',
-    'https://www.void0000.online',
     'http://localhost:5173',
     'http://localhost',
   ].filter(Boolean));
@@ -386,28 +385,8 @@ function normalizeIp(ip) {
   return ip;
 }
 
-function getTrustedProxyIps() {
-  return new Set(
-    (process.env.TRUSTED_PROXY_IPS || '')
-      .split(',')
-      .map((ip) => normalizeIp(ip.trim()))
-      .filter(Boolean)
-  );
-}
-
-function shouldTrustProxyHeaders(req) {
-  const remoteIp = normalizeIp(req.socket?.remoteAddress);
-  if (!remoteIp) return false;
-  return getTrustedProxyIps().has(remoteIp);
-}
-
 function getRequestIp(req) {
   const remoteIp = normalizeIp(req.socket?.remoteAddress);
-
-  if (!shouldTrustProxyHeaders(req)) {
-    return remoteIp || 'unknown';
-  }
-
   const forwarded = req.headers['x-forwarded-for'];
   const forwardedIp = normalizeIp(
     req.headers['cf-connecting-ip']

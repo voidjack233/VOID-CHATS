@@ -16,7 +16,9 @@ export interface Conversation {
   slowmode_seconds?: number;
   is_age_restricted?: boolean;
   owner_id: string | null;
+  current_key_version?: number | null;
   icon_filename: string | null;
+  icon_url?: string | null;
   parent_conversation_id?: string | null;
   parent_public_id?: string | null;
   category_id?: string | null;
@@ -97,10 +99,64 @@ export interface ConversationMember {
   role: string;
   nickname: string | null;
   joined_at: string;
+  joined_key_version?: number | null;
+  history_start_version?: number | null;
   username: string;
   display_name: string | null;
-  avatar_url: string;
+  avatar_url: string | null;
   profile_id: string;
+}
+
+export interface GroupKeyDistribution {
+  encrypted_group_key: string;
+  key_version: number;
+  wrapped_by_user_id?: string | null;
+}
+
+export interface GroupKeyDistributionPayload {
+  user_id: string;
+  encrypted_group_key: string;
+}
+
+export interface ConversationInviteLink {
+  id: number;
+  code: string;
+  url: string;
+  max_uses: number | null;
+  use_count: number;
+  expires_at: string | null;
+  is_revoked: boolean;
+  created_at: string;
+}
+
+export interface ConversationJoinRequest {
+  id: number;
+  status: string;
+  created_at: string;
+  invite_link_id: number | null;
+  requester_user_id: string;
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  profile_id: string;
+}
+
+export interface InvitePreview {
+  id: number;
+  code: string;
+  max_uses: number | null;
+  use_count: number;
+  expires_at: string | null;
+  created_at: string;
+  conversation_id: string;
+  conversation_public_id?: string | null;
+  conversation_name: string | null;
+  conversation_icon_url?: string | null;
+  owner_id: string | null;
+  owner_display_name: string | null;
+  owner_username: string | null;
+  owner_avatar_url: string | null;
+  member_count: number;
 }
 
 export interface ConversationCategory {
@@ -224,6 +280,30 @@ export async function updateConversation(
   return data;
 }
 
+export async function uploadConversationIcon(
+  id: string,
+  icon: string
+): Promise<{ conversation: Conversation }> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${id}/icon`, {
+    method: 'PUT',
+    body: JSON.stringify({ icon }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data;
+}
+
+export async function removeConversationIcon(
+  id: string
+): Promise<{ conversation: Conversation }> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${id}/icon`, {
+    method: 'DELETE',
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error);
+  return data;
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   const res = await fetchWithAuth(`${API_PREFIX}/${id}`, { method: 'DELETE' });
   const data = await res.json();
@@ -282,6 +362,162 @@ export async function addMembers(
   return data;
 }
 
+async function createGroupKeyDistributions(
+  participantIds: string[],
+  currentUserId: string,
+  roomKey: CryptoKey
+): Promise<GroupKeyDistributionPayload[]> {
+  const distributions: GroupKeyDistributionPayload[] = [];
+
+  for (const targetUserId of [...new Set(participantIds)]) {
+    const targetUserKeys = await getUserPublicKey(targetUserId);
+    const sharedSecret = await keyManager.getSharedSecret(
+      currentUserId,
+      targetUserId,
+      targetUserKeys.public_key
+    );
+
+    const { encrypted, iv } = await keyManager.encryptGroupKeyForUser(roomKey, sharedSecret);
+    distributions.push({
+      user_id: targetUserId,
+      encrypted_group_key: `${iv}.${encrypted}`,
+    });
+  }
+
+  return distributions;
+}
+
+export async function rotateAddMembers(
+  conversation: Conversation,
+  currentUserId: string,
+  currentMemberIds: string[],
+  newMemberIds: string[]
+): Promise<{ added: string[]; key_version: number }> {
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const additions = [...new Set(newMemberIds.filter((memberId) => memberId && memberId !== currentUserId))];
+
+  if (additions.length === 0) {
+    throw new Error('Select at least one member to add');
+  }
+
+  const finalMemberIds = [...new Set([...currentMemberIds, ...additions, currentUserId])];
+  const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+  const roomKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  const distributions = await createGroupKeyDistributions(finalMemberIds, currentUserId, roomKey);
+  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-add`, {
+    method: 'POST',
+    body: JSON.stringify({
+      members: additions,
+      new_key_version: nextKeyVersion,
+      distributions,
+    }),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+
+  await keyManager.storeGroupKey(keyConversationId, nextKeyVersion, roomKey);
+
+  return {
+    added: data.added || additions,
+    key_version: data.key_version || nextKeyVersion,
+  };
+}
+
+export async function rotateRemoveMember(
+  conversation: Conversation,
+  currentUserId: string,
+  remainingMemberIds: string[],
+  targetUserId: string
+): Promise<{ key_version: number }> {
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const survivors = [...new Set(remainingMemberIds.filter(Boolean))];
+
+  if (!targetUserId) {
+    throw new Error('targetUserId required');
+  }
+
+  if (survivors.length === 0) {
+    throw new Error('At least one member must remain in the group');
+  }
+
+  const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+  const roomKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  const distributions = await createGroupKeyDistributions(survivors, currentUserId, roomKey);
+  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
+    method: 'POST',
+    body: JSON.stringify({
+      target_user_id: targetUserId,
+      new_key_version: nextKeyVersion,
+      distributions,
+    }),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+
+  if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
+    await keyManager.storeGroupKey(keyConversationId, nextKeyVersion, roomKey);
+  }
+
+  return { key_version: data.key_version || nextKeyVersion };
+}
+
+export async function approveConversationJoinRequest(
+  conversation: Conversation,
+  currentUserId: string,
+  currentMemberIds: string[],
+  requestId: number,
+  requesterUserId: string
+): Promise<{ approved_user_id: string; key_version: number }> {
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
+  const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+  const roomKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  const distributions = await createGroupKeyDistributions(finalMemberIds, currentUserId, roomKey);
+  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({
+      new_key_version: nextKeyVersion,
+      distributions,
+    }),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+
+  await keyManager.storeGroupKey(keyConversationId, nextKeyVersion, roomKey);
+
+  return {
+    approved_user_id: data.approved_user_id || requesterUserId,
+    key_version: data.key_version || nextKeyVersion,
+  };
+}
+
+export async function declineConversationJoinRequest(
+  conversationId: string,
+  requestId: number
+): Promise<void> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/invites/requests/${requestId}/decline`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+}
+
 export async function removeMember(
   conversationId: string,
   userId: string
@@ -308,6 +544,83 @@ export async function updateMemberRole(
   );
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
+}
+
+// ============== Invites ==============
+
+export async function getConversationInvites(
+  conversationId: string
+): Promise<{
+  invites: ConversationInviteLink[];
+  pending_requests: ConversationJoinRequest[];
+}> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/invites`);
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+  return {
+    invites: data.invites || [],
+    pending_requests: data.pending_requests || [],
+  };
+}
+
+export async function createConversationInviteLink(
+  conversationId: string,
+  options?: { expires_in_days?: number; max_uses?: number | null }
+): Promise<ConversationInviteLink> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/invites`, {
+    method: 'POST',
+    body: JSON.stringify({
+      expires_in_days: options?.expires_in_days ?? 7,
+      max_uses: options?.max_uses ?? null,
+    }),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+  return data.invite as ConversationInviteLink;
+}
+
+export async function revokeConversationInviteLink(
+  conversationId: string,
+  inviteId: number
+): Promise<void> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/invites/${inviteId}/revoke`, {
+    method: 'POST',
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+}
+
+export async function getInvitePreview(code: string): Promise<InvitePreview> {
+  const res = await fetchWithAuth(`${API_PREFIX}/invite-links/${code}`);
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+  return data.invite as InvitePreview;
+}
+
+export async function getInviteRequestStatus(
+  code: string
+): Promise<{
+  status: 'none' | 'pending' | 'declined' | 'approved' | 'member';
+  conversation_public_id?: string | null;
+  created_at?: string | null;
+  resolved_at?: string | null;
+}> {
+  const res = await fetchWithAuth(`${API_PREFIX}/invite-links/${code}/status`);
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+  return data;
+}
+
+export async function requestJoinByInviteCode(
+  code: string
+): Promise<{ status: 'pending'; request_id: number; created_at: string }> {
+  const res = await fetchWithAuth(`${API_PREFIX}/invite-links/${code}/request`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+  return data;
 }
 
 // ============== Messages ==============
@@ -499,7 +812,7 @@ export async function uploadPublicKey(
 
 export async function getGroupKeys(
   conversationId: string
-): Promise<Array<{ encrypted_group_key: string; key_version: number }>> {
+): Promise<GroupKeyDistribution[]> {
   const res = await fetchWithAuth(`${API_PREFIX}/keys/group/${conversationId}`);
   const data = await res.json();
   if (!data.success) throw new Error(data.error);
@@ -537,28 +850,7 @@ export async function createSecureGroup(
 
   // 3. Prepare to distribute it to everyone (including yourself!)
   const allParticipants = [...new Set([...memberIds, currentUserId])];
-  const distributions = [];
-
-  for (const targetUserId of allParticipants) {
-    try {
-      const targetUserKeys = await getUserPublicKey(targetUserId);
-      const sharedSecret = await keyManager.getSharedSecret(
-        currentUserId, 
-        targetUserId, 
-        targetUserKeys.public_key
-      );
-
-      const { encrypted, iv } = await keyManager.encryptGroupKeyForUser(roomKey, sharedSecret);
-      const combinedKeyData = `${iv}.${encrypted}`;
-
-      distributions.push({
-        user_id: targetUserId,
-        encrypted_group_key: combinedKeyData
-      });
-    } catch (err) {
-      console.error(`Failed to generate key for user ${targetUserId}:`, err);
-    }
-  }
+  const distributions = await createGroupKeyDistributions(allParticipants, currentUserId, roomKey);
 
   // 4. Send the locked boxes to the server
   if (distributions.length > 0) {
@@ -607,14 +899,14 @@ export async function getEncryptionKey(
     return { key: cachedGroupKey, version: targetKey.key_version };
   }
 
-  // 2. If not, we need to unlock it using the shared secret with the group owner
-  if (!conversation.owner_id) {
-    throw new Error('Cannot decrypt group key without knowing the owner');
+  // 2. If not, we need to unlock it using the shared secret with the user who wrapped it
+  const wrapperUserId = targetKey.wrapped_by_user_id || conversation.owner_id;
+  if (!wrapperUserId) {
+    throw new Error('Cannot decrypt group key without wrapper metadata');
   }
 
-  // We need the owner's public key to recreate the shared secret lock
-  const ownerKeyData = await getUserPublicKey(conversation.owner_id);
-  const sharedSecret = await keyManager.getSharedSecret(userId, conversation.owner_id, ownerKeyData.public_key);
+  const wrapperKeyData = await getUserPublicKey(wrapperUserId);
+  const sharedSecret = await keyManager.getSharedSecret(userId, wrapperUserId, wrapperKeyData.public_key);
 
   // Split our combined string back into IV and Encrypted Key
   const [iv, encryptedBase64] = targetKey.encrypted_group_key.split('.');

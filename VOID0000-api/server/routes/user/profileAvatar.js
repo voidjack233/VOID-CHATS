@@ -7,6 +7,7 @@ import { broadcastLiveEventToFriends } from '../../gateway/client.js';
 import { profileCache } from '../../middleware/profileCache.js';
 import { queueImageUpload, imageQueueEvents } from '../../queues/imageQueue.js';
 import { minioClient, BUCKET } from '../../minio.js';
+import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
 
@@ -190,7 +191,7 @@ router.delete('/avatar', async (req, res) => {
     );
 
     const updatedProfile = updateResult.rows[0];
-    updatedProfile.avatar_url = `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
+    updatedProfile.avatar_url = resolveUserAvatarUrl(null, { username });
 
     // Invalidate cache
     await profileCache.invalidate(profile_id);

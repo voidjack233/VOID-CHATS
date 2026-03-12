@@ -8,12 +8,11 @@ import { Router } from 'express';
 import sharp from 'sharp';
 import { encode } from 'blurhash';
 import { pool } from '../../db.js';
-import { minioClient } from '../../minio.js';
+import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router({ mergeParams: true });
 
-const ATTACH_BUCKET = process.env.MINIO_ATTACH_BUCKET || 'chat-attachments';
 const CDN_BASE = process.env.CDN_URL || 'https://cdn.void0000.online';
 const MAX_FILES = 5;
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB base64 string length
@@ -41,30 +40,6 @@ const isValidImage = (buf) =>
   );
 
 const isGif = (buf) => MAGIC_BYTES.gif.every((byte, i) => buf[i] === byte);
-
-const PUBLIC_READ_POLICY = JSON.stringify({
-  Version: '2012-10-17',
-  Statement: [{
-    Effect: 'Allow',
-    Principal: { AWS: ['*'] },
-    Action: ['s3:GetObject'],
-    Resource: [`arn:aws:s3:::${ATTACH_BUCKET}/*`],
-  }],
-});
-
-(async () => {
-  try {
-    const exists = await minioClient.bucketExists(ATTACH_BUCKET);
-    if (!exists) {
-      await minioClient.makeBucket(ATTACH_BUCKET);
-      console.log(`✅ MinIO bucket '${ATTACH_BUCKET}' created`);
-    }
-    await minioClient.setBucketPolicy(ATTACH_BUCKET, PUBLIC_READ_POLICY);
-    console.log(`✅ MinIO bucket '${ATTACH_BUCKET}' public read policy set`);
-  } catch (err) {
-    console.error('❌ MinIO attach bucket error:', err.message);
-  }
-})();
 
 // POST /api/conversations/:conversationId/attachments
 // Body: { files: [{ data: 'data:image/...;base64,...', name: 'optional.jpg' }] }

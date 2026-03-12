@@ -1,4 +1,5 @@
 import { authService } from '../Auth/authServiceApi';
+import { SOCKET_URL } from '../config';
 
 const OP = {
   EVENT: 0,
@@ -43,6 +44,27 @@ class Gateway {
     return nextId;
   }
 
+  private resolveGatewayUrl() {
+    if (import.meta.env.DEV) {
+      return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway`;
+    }
+
+    const fallbackBase = SOCKET_URL || 'https://api.void0000.online';
+
+    try {
+      const url = new URL(fallbackBase);
+      url.protocol = url.protocol === 'http:' ? 'ws:' : 'wss:';
+
+      if (!url.pathname || url.pathname === '/') {
+        url.pathname = '/gateway';
+      }
+
+      return url.toString();
+    } catch {
+      return 'wss://api.void0000.online/gateway';
+    }
+  }
+
   connect(userId: string) {
     if (this.isConnecting) {
       console.log('Connection attempt already in progress, skipping');
@@ -60,9 +82,7 @@ class Gateway {
 
     window.addEventListener('online', this.handleOnline);
 
-    const wsUrl = import.meta.env.DEV
-      ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/gateway`
-      : 'wss://api.void0000.online';
+    const wsUrl = this.resolveGatewayUrl();
 
     try {
       this.ws = new WebSocket(wsUrl);

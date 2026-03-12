@@ -12,11 +12,13 @@ import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTh
 const Auth = lazy(() => import('./pages/Auth'));
 const ResetPassword = lazy(() => import('./pages/Auth/ResetPassword'));
 const Chat = lazy(() => import('./pages/chats'));
+const Invite = lazy(() => import('./pages/Invite'));
 
 const ROUTE_CONFIG = {
   public: [
     { path: '/auth', component: Auth },
     { path: '/reset-password', component: ResetPassword },
+    { path: '/invite/:code', component: Invite },
   ],
   protected: [
     { path: '/chats', component: Chat },

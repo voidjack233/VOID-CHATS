@@ -10,4 +10,4 @@ export const CDN_URL = import.meta.env.DEV
 
 export const SOCKET_URL = import.meta.env.DEV
   ? ''
-  : import.meta.env.VITE_API_URL;
+  : import.meta.env.VITE_GATEWAY_URL || import.meta.env.VITE_API_URL;

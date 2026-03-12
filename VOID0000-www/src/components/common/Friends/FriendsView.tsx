@@ -7,6 +7,7 @@ import { useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequ
 import FriendProfile from './FriendProfile';
 import AddFriend from './AddFriend';
 import IncomingRequests from './IncomingRequests';
+import UserAvatar from '../../common/UserAvatar';
 
 interface FriendsViewProps {
   friends: Friend[];
@@ -60,10 +61,6 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
       case 'idle': return 'Idle';
       default: return 'Offline';
     }
-  };
-
-  const getAvatarUrl = (friend: Friend) => {
-    return friend.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${friend.username}`;
   };
 
   // Execution of the confirmed removal
@@ -184,10 +181,13 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
                     {outgoing.map((req) => (
                       <div key={req.friendship_id} className="flex items-center justify-between p-3 bg-void-bg-hover/30 rounded-lg">
                         <div className="flex items-center gap-3">
-                          <img
-                            src={req.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${req.username}`}
+                          <UserAvatar
+                            src={req.avatar_url}
+                            displayName={req.display_name}
+                            username={req.username}
                             alt={req.username}
-                            className="w-10 h-10 rounded-full object-cover"
+                            className="w-10 h-10 rounded-full"
+                            fallbackClassName="text-sm"
                           />
                           <div>
                             <p className="text-void-text font-medium text-sm">{req.display_name || req.username}</p>
@@ -250,12 +250,14 @@ const FriendsView = ({ friends, onStartDM }: FriendsViewProps) => {
                         className="relative shrink-0 cursor-pointer"
                         onClick={() => setSelectedFriend(friend)}
                       >
-                        <img
-                          src={getAvatarUrl(friend)}
-                          className={`w-10 h-10 rounded-full object-cover ${
+                        <UserAvatar
+                          src={friend.avatar_url}
+                          displayName={friend.display_name}
+                          username={friend.username}
+                          className={`w-10 h-10 rounded-full ${
                             presence === 'offline' ? 'opacity-50 grayscale' : ''
                           }`}
-                          alt=""
+                          fallbackClassName="text-sm"
                         />
                         <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-void-bg-sec ${getStatusColor(presence)}`} />
                       </div>

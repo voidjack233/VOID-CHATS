@@ -6,6 +6,7 @@ import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
 import { gateway } from '../../Services/Gateway/gateway';
 import { ConversationItemSkeleton } from '../common/Skeleton';
+import UserAvatar from '../common/UserAvatar';
 
 interface ConversationListProps {
   activeId: string | null;
@@ -42,11 +43,13 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     gateway.on('MESSAGE_CREATE', handleRefresh);
     gateway.on('REACTION_ADD', handleRefresh);
     gateway.on('CONVERSATION_UPDATE', handleRefresh);
+    gateway.on('MEMBER_LEAVE', handleRefresh);
     
     return () => {
       gateway.off('MESSAGE_CREATE', handleRefresh);
       gateway.off('REACTION_ADD', handleRefresh);
       gateway.off('CONVERSATION_UPDATE', handleRefresh);
+      gateway.off('MEMBER_LEAVE', handleRefresh);
     };
   }, []);
 
@@ -83,7 +86,15 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     if (conv.type === 'dm' && conv.dm_avatar_url) {
       return conv.dm_avatar_url;
     }
+    if (conv.type === 'group' && conv.icon_url) {
+      return conv.icon_url;
+    }
     return null;
+  };
+
+  const getInitial = (name: string | null | undefined) => {
+    const trimmed = name?.trim();
+    return trimmed ? trimmed.charAt(0).toUpperCase() : '#';
   };
 
   const getIcon = (type: string) => {
@@ -117,8 +128,20 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         }`}
       >
         <div className="relative shrink-0">
-          {avatar ? (
+          {conv.type === 'dm' ? (
+            <UserAvatar
+              src={avatar}
+              displayName={conv.dm_display_name}
+              username={conv.dm_username}
+              className="w-8 h-8 rounded-full shrink-0"
+              fallbackClassName="text-xs"
+            />
+          ) : avatar ? (
             <img src={avatar} className="w-8 h-8 rounded-full object-cover shrink-0" alt="" />
+          ) : conv.type === 'group' ? (
+            <div className="w-8 h-8 rounded-full bg-void-accent/15 text-void-accent flex items-center justify-center shrink-0 text-xs font-semibold">
+              {getInitial(conv.name)}
+            </div>
           ) : (
             <div className="w-8 h-8 rounded-full bg-void-bg-hover flex items-center justify-center shrink-0">
               {getIcon(conv.type)}

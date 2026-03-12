@@ -4,6 +4,7 @@ import { ProfileFormSkeleton } from '../Skeleton';
 import { useUser } from '../../../Services/Auth/UserContext';
 import { useUserProfile } from '../../../Services/hooks/editProfile/userProfile';
 import { useAvatarUpload } from '../../../Services/hooks/editProfile/useAvatarUpload';
+import UserAvatar from '../../common/UserAvatar';
 
 const updateLocalCache = (profileId: string, data: any) => {
   localStorage.setItem(`void_profile_${profileId}`, JSON.stringify(data));
@@ -57,11 +58,6 @@ const ProfileTab = () => {
   })();
 
   const canSave = isDirty && !bioError && !isGlobalLoading && !saveCooldown;
-
-  const avatarToShow =
-    previewUrl ||
-    profile?.avatar_url ||
-    `https://api.dicebear.com/7.x/avataaars/svg?seed=${profile?.username}`;
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -163,10 +159,14 @@ const ProfileTab = () => {
         <div className="flex items-center gap-4">
           <div className="relative group">
             <div className="w-20 h-20 rounded-full bg-void-bg-hover overflow-hidden ring-2 ring-void-border">
-              <img
-                src={avatarToShow}
+              <UserAvatar
+                src={previewUrl || profile?.avatar_url || null}
+                displayName={profile?.display_name}
+                username={profile?.username}
                 alt="Avatar"
-                className="w-full h-full object-cover"
+                className="w-full h-full rounded-full"
+                fallbackClassName="text-2xl font-bold"
+                fallbackTone="plain"
               />
             </div>
 

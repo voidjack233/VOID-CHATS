@@ -1,8 +1,15 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
 import { profileCache } from '../../middleware/profileCache.js';
+import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
+
+function sanitizeAvatarUrl(avatarUrl) {
+  return typeof avatarUrl === 'string' && avatarUrl.startsWith('data:image/svg+xml')
+    ? null
+    : avatarUrl;
+}
 
 // GET /api/users/:profile_id
 router.get('/:profile_id', async (req, res) => {
@@ -12,7 +19,11 @@ router.get('/:profile_id', async (req, res) => {
     // Check cache first
     const cached = await profileCache.get(profile_id);
     if (cached && !cached.stale) {
-      return res.json(cached.data);
+      const cachedData = {
+        ...cached.data,
+        avatar_url: sanitizeAvatarUrl(cached.data?.avatar_url),
+      };
+      return res.json(cachedData);
     }
 
     const result = await db.query(
@@ -34,10 +45,11 @@ router.get('/:profile_id', async (req, res) => {
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
     const user = result.rows[0];
-    const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
-    user.avatar_url = user.avatar_filename
-      ? `${baseUrl}/avatars/${user.avatar_filename}`
-      : `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.username}`;
+    user.avatar_url = resolveUserAvatarUrl(user.avatar_filename, {
+      displayName: user.display_name,
+      username: user.username,
+    });
+    user.avatar_url = sanitizeAvatarUrl(user.avatar_url);
 
     // Cache it
     await profileCache.set(profile_id, user);

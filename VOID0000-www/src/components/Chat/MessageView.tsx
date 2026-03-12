@@ -18,6 +18,7 @@ import EmojiPicker from './EmojiPicker';
 import ReactionBar from './ReactionBar';
 import BlurImage from '../common/BlurImage';
 import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
+import UserAvatar from '../common/UserAvatar';
 
 const DENSITY: Record<Density, {
   consecutiveGap: number;
@@ -460,13 +461,13 @@ const MessageView = ({
       })
     : null;
 
-  if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
-
   if (encryptionError) return (
     <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
       <p>Encryption Error: {encryptionError}</p>
     </div>
   );
+
+  if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
 
   const getDateLabel = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -579,12 +580,13 @@ const MessageView = ({
               className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity self-start"
               onClick={() => handleProfileClick(msg.sender_id)}
             >
-              <img
+              <UserAvatar
                 src={getSenderAvatarUrl(msg.sender_id)}
+                displayName={getSmartDisplayName(msg.sender_id)}
+                username={members[msg.sender_id]?.username}
                 alt="avatar"
-                width={32}
-                height={32}
-                className="w-full h-full object-cover"
+                className="w-full h-full rounded-full"
+                fallbackClassName="text-xs"
               />
             </div>
           )}
@@ -799,19 +801,13 @@ const MessageView = ({
                         disabled={!conversationStartUserId}
                         className="shrink-0 disabled:cursor-default"
                       >
-                        {conversationStartAvatar ? (
-                          <img
-                            src={conversationStartAvatar}
-                            alt=""
-                            width={72}
-                            height={72}
-                            className="h-[72px] w-[72px] rounded-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-[72px] w-[72px] items-center justify-center rounded-full bg-void-bg-hover text-2xl font-bold text-void-text">
-                            {conversationStartLabel.charAt(0).toUpperCase()}
-                          </div>
-                        )}
+                        <UserAvatar
+                          src={conversationStartAvatar}
+                          displayName={conversationStartLabel}
+                          username={conversationStartUsername}
+                          className="h-[72px] w-[72px] rounded-full"
+                          fallbackClassName="text-2xl font-bold"
+                        />
                       </button>
 
                       <div className="min-w-0">

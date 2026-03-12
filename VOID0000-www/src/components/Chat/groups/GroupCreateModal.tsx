@@ -4,12 +4,13 @@ import { X, Check } from 'lucide-react';
 import { fetchWithAuth } from '../../../Services/Auth/authServiceApi';
 import { createSecureGroup } from '../../../Services/Chat/chatService';
 import { FriendSelectSkeleton } from '../../common/Skeleton';
+import UserAvatar from '../../common/UserAvatar';
 
 interface Friend {
   id: string;
   username: string;
   display_name: string | null;
-  avatar_url: string;
+  avatar_url: string | null;
 }
 
 interface GroupCreateModalProps {
@@ -132,10 +133,12 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
                         : 'hover:bg-void-bg-hover text-void-text'
                     }`}
                   >
-                    <img
+                    <UserAvatar
                       src={friend.avatar_url}
-                      className="w-8 h-8 rounded-full object-cover"
-                      alt=""
+                      displayName={friend.display_name}
+                      username={friend.username}
+                      className="w-8 h-8 rounded-full"
+                      fallbackClassName="text-xs"
                     />
                     <span className="flex-1 text-sm text-left truncate">
                       {friend.display_name || friend.username}

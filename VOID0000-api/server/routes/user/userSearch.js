@@ -1,16 +1,9 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
+import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
-
-const getAvatarUrl = (avatarFilename, username) => {
-  const APIBASE = process.env.CDN_URL || 'https://cdn.void0000.online';
-  
-  return avatarFilename
-    ? `${APIBASE}/avatars/${avatarFilename}`
-    : `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`;
-};
 
 // GET /api/users/search?q=username
 router.get('/', authenticateUser, async (req, res) => {
@@ -49,7 +42,10 @@ router.get('/', authenticateUser, async (req, res) => {
       profile_id: user.profile_id,
       display_name: user.display_name,
       avatar_filename: user.avatar_filename,
-      avatar_url: getAvatarUrl(user.avatar_filename, user.username)
+      avatar_url: resolveUserAvatarUrl(user.avatar_filename, {
+        displayName: user.display_name,
+        username: user.username,
+      })
     }));
 
     res.json({

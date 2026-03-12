@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ensureCSRFToken } from '../../Auth/authServiceApi';
+import { isGeneratedFallbackAvatarUrl } from '../../Chat/avatarFallback';
 
 export interface UserProfileData {
   id: string;
@@ -16,7 +17,13 @@ const PROFILE_CACHE_KEY = 'void_profile';
 
 const getCachedProfile = (profileId: string): UserProfileData | null => {
   const cached = localStorage.getItem(`${PROFILE_CACHE_KEY}_${profileId}`);
-  return cached ? JSON.parse(cached) : null;
+  if (!cached) return null;
+
+  const parsed = JSON.parse(cached) as UserProfileData;
+  if (isGeneratedFallbackAvatarUrl(parsed.avatar_url)) {
+    parsed.avatar_url = undefined;
+  }
+  return parsed;
 };
 
 const setCachedProfile = (profileId: string, data: UserProfileData) => {

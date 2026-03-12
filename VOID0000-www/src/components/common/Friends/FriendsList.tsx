@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { UserMinus, User, Users } from 'lucide-react';
+import { UserMinus, Users } from 'lucide-react';
 import { Friend } from '../../../Services/hooks/Friends/useFriends';
 import PresenceDot from '../../common/PresenceDot';
+import UserAvatar from '../../common/UserAvatar';
 
 interface GroupedFriends {
   online: Friend[];
@@ -54,17 +55,14 @@ export default function FriendsList({ grouped, onRemove, onSelect }: FriendsList
     >
       <div className="flex items-center gap-3">
         <div className="relative flex-shrink-0">
-          {friend.avatar_url ? (
-            <img
-              src={friend.avatar_url}
-              alt={friend.display_name || friend.username}
-              className="w-10 h-10 rounded-full object-cover"
-            />
-          ) : (
-            <div className="w-10 h-10 rounded-full bg-void-bg-hover flex items-center justify-center">
-              <User className="w-5 h-5 text-void-text-muted" />
-            </div>
-          )}
+          <UserAvatar
+            src={friend.avatar_url}
+            displayName={friend.display_name}
+            username={friend.username}
+            alt={friend.display_name || friend.username}
+            className="w-10 h-10 rounded-full"
+            fallbackClassName="text-sm"
+          />
           <span className="absolute -bottom-0.5 -right-0.5">
             <PresenceDot status={status} size="md" />
           </span>
