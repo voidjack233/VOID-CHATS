@@ -482,11 +482,16 @@ router.get('/:conversationId', authenticateUser, async (req, res) => {
       ...member,
       joined_key_version: member.joined_key_version != null ? parseInt(member.joined_key_version, 10) : null,
       history_start_version: member.history_start_version != null ? parseInt(member.history_start_version, 10) : null,
-      avatar_url: resolveUserAvatarUrl(member.avatar_filename, {
-        displayName: member.display_name,
-        username: member.username,
-      }),
+      avatar_url: resolveUserAvatarUrl(member.avatar_filename),
     }));
+
+    if (conversation.type === 'dm') {
+      const peer = conversation.members.find((member) => member.user_id !== userId) || null;
+      conversation.dm_user_id = peer?.user_id || null;
+      conversation.dm_username = peer?.username || null;
+      conversation.dm_display_name = peer?.display_name || null;
+      conversation.dm_avatar_url = peer?.avatar_url || null;
+    }
 
     if (conversation.type === 'group') {
       conversation.categories = await getGroupCategories(pool, conversation.id);

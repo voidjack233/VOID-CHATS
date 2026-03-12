@@ -169,7 +169,7 @@ app.use('/api/users/search', userSearchRouter);
 app.use('/api/users', authenticateUser, preferencesRouter, profileUpdateRouter, profileAvatarRouter);
 app.use('/api/users', profileReadRouter);
 app.use('/api/friends', friendRouter);
-app.use('/api/conversations', conversationRouter);
+app.use('/api/conversations', noCache, conversationRouter);
 
 // ================== CLEANUP ==================
 

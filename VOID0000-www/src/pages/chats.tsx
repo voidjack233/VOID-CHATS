@@ -164,11 +164,28 @@ const ChatDashboard = () => {
 
   const displayConversation = activeGroup || activeConversation;
   const activeChannels = activeGroup?.channels || [];
+  const dmPeer = displayConversation?.type === 'dm'
+    ? Object.values(members).find(
+        (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) => member.user_id !== user?.id
+      ) || null
+    : null;
+  const resolvedDmDisplayName = dmPeer?.display_name || displayConversation?.dm_display_name || null;
+  const resolvedDmUsername = dmPeer?.username || displayConversation?.dm_username || null;
+  const resolvedDmAvatarUrl = dmPeer?.avatar_url || displayConversation?.dm_avatar_url || null;
 
   const getHeaderIcon = () => {
     if (!displayConversation) return null;
     switch (displayConversation.type) {
-      case 'dm': return <MessageCircle className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
+      case 'dm':
+        return (
+          <UserAvatar
+            src={resolvedDmAvatarUrl}
+            displayName={resolvedDmDisplayName}
+            username={resolvedDmUsername}
+            className="w-8 h-8 rounded-full mr-3 shrink-0"
+            fallbackClassName="text-sm"
+          />
+        );
       case 'group': return <Users className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
       default: return <Hash className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
     }
@@ -177,18 +194,18 @@ const ChatDashboard = () => {
   const getHeaderName = () => {
     if (!displayConversation) return '';
     if (displayConversation.type === 'dm') {
-      const nameFromConv = displayConversation.dm_display_name || displayConversation.dm_username;
+      const nameFromConv = resolvedDmDisplayName || resolvedDmUsername;
       if (nameFromConv) return nameFromConv;
-      const peer = Object.values(members).find(
-        (member: { user_id: string; display_name?: string | null; username?: string }) => member.user_id !== user?.id
-      );
-      if (peer) return peer.display_name || peer.username;
       return 'Unknown';
     }
     return displayConversation.name || 'Unnamed';
   };
 
   const getHeaderSubtitle = () => {
+    if (displayConversation?.type === 'dm') {
+      return resolvedDmUsername ? `@${resolvedDmUsername}` : '';
+    }
+
     if (activeGroup && activeConversation?.type === 'channel') {
       return `# ${activeConversation.name || 'channel'}`;
     }

@@ -84,6 +84,24 @@ export const useChatManager = (user: any) => {
     return conversationDetailsCache.current[identifier] || null;
   };
 
+  const hasConversationDetails = (conversation: Conversation | null | undefined) => {
+    if (!conversation) return false;
+
+    const cachedConversation =
+      getCachedConversationDetails(conversation.id) ||
+      getCachedConversationDetails(conversation.public_id) ||
+      null;
+
+    if (conversation.type === 'dm') {
+      return !!(
+        cachedConversation?.members?.length ||
+        (conversation.dm_user_id && (conversation.dm_display_name || conversation.dm_username))
+      );
+    }
+
+    return !!cachedConversation?.members?.length;
+  };
+
   const getPeerIdForConversation = (conversation: Conversation) => {
     if (conversation.type !== 'dm') return undefined;
 
@@ -191,7 +209,11 @@ export const useChatManager = (user: any) => {
   };
 
   const openConversationByIdentifier = async (identifier: string) => {
-    if (!activeGroup && matchesConversationIdentifier(activeConversation, identifier)) {
+    if (
+      !activeGroup &&
+      matchesConversationIdentifier(activeConversation, identifier) &&
+      hasConversationDetails(activeConversation)
+    ) {
       return activeConversation;
     }
 
@@ -247,12 +269,47 @@ export const useChatManager = (user: any) => {
 
         if (ignore || !conversationDetails?.members) return;
 
+        const peer = conversationDetails.members.find((member: any) => member.user_id !== user.id);
+        const hydratedConversationDetails: ConversationDetails = conversationDetails.type === 'dm'
+          ? storeConversationDetails({
+              ...conversationDetails,
+              dm_user_id: conversationDetails.dm_user_id || peer?.user_id,
+              dm_username: conversationDetails.dm_username || peer?.username || null,
+              dm_display_name: conversationDetails.dm_display_name || peer?.display_name || null,
+              dm_avatar_url: conversationDetails.dm_avatar_url || peer?.avatar_url || null,
+            })
+          : conversationDetails;
+
+        setActiveConversation((prev) => {
+          if (!prev || prev.id !== activeConversation.id) {
+            return prev;
+          }
+
+          const needsHydration =
+            prev.dm_user_id !== hydratedConversationDetails.dm_user_id ||
+            prev.dm_username !== hydratedConversationDetails.dm_username ||
+            prev.dm_display_name !== hydratedConversationDetails.dm_display_name ||
+            prev.dm_avatar_url !== hydratedConversationDetails.dm_avatar_url;
+
+          if (!needsHydration) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            ...hydratedConversationDetails,
+          };
+        });
+
+        const hydratedMembers = hydratedConversationDetails.members || [];
         const memberMap: Record<string, any> = {};
-        conversationDetails.members.forEach((m: any) => memberMap[m.user_id] = m);
+        hydratedMembers.forEach((m: any) => {
+          memberMap[m.user_id] = m;
+        });
         setMembers(memberMap);
 
         const peerId = activeConversation.type === 'dm'
-          ? conversationDetails.members.find((m: any) => m.user_id !== user.id)?.user_id
+          ? hydratedMembers.find((m: any) => m.user_id !== user.id)?.user_id
           : undefined;
 
         const { key, version } = await getEncryptionKey(
@@ -288,7 +345,6 @@ export const useChatManager = (user: any) => {
     setupConversation();
     return () => { ignore = true; };
   }, [
-    activeConversation,
     activeConversation?.id,
     activeConversation?.current_key_version,
     activeGroup?.current_key_version,

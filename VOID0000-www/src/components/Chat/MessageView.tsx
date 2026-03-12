@@ -152,6 +152,7 @@ const MessageView = ({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
   const [scrollSeekExitTick, setScrollSeekExitTick] = useState(0);
+  const [visibleStartIndex, setVisibleStartIndex] = useState<number | null>(null);
   const topRenderBufferPx = 240;
   const bottomRenderBufferPx = 200;
   const scrollOverscanPx = 240;
@@ -176,6 +177,7 @@ const MessageView = ({
     layoutCacheRef.current = {};
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
+    setVisibleStartIndex(null);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -239,6 +241,10 @@ const MessageView = ({
   const handleRangeChanged = useCallback((range: ListRange) => {
     const previousStartIndex = lastRangeStartIndexRef.current;
     lastRangeStartIndexRef.current = range.startIndex;
+
+    setVisibleStartIndex((current) => (
+      current === range.startIndex ? current : range.startIndex
+    ));
 
     if (previousStartIndex !== null && range.startIndex < previousStartIndex) {
       canLoadOlderRef.current = true;
@@ -367,7 +373,7 @@ const MessageView = ({
 
   const getSmartDisplayName = useCallback((senderId: string) => {
     if (senderId === user?.id) {
-      return myProfile?.display_name;
+      return myProfile?.display_name || user?.username || 'You';
     }
     const friend = friends.find(f => f.id === senderId);
     if (friend && friend.display_name) {
@@ -437,22 +443,22 @@ const MessageView = ({
 
   const conversationStartLabel =
     conversation.type === 'dm'
-      ? conversation.dm_display_name ||
-        dmIntroMember?.display_name ||
+      ? dmIntroMember?.display_name ||
         dmIntroFriend?.display_name ||
-        conversation.dm_username ||
+        conversation.dm_display_name ||
         dmIntroMember?.username ||
         dmIntroFriend?.username ||
+        conversation.dm_username ||
         'Direct message'
       : conversation.name || 'this conversation';
   const conversationStartAvatar =
-    conversation.dm_avatar_url || dmIntroMember?.avatar_url || dmIntroFriend?.avatar_url || null;
+    dmIntroMember?.avatar_url || dmIntroFriend?.avatar_url || conversation.dm_avatar_url || null;
   const conversationStartUsername =
     conversation.type === 'dm'
-      ? conversation.dm_username || dmIntroMember?.username || dmIntroFriend?.username || null
+      ? dmIntroMember?.username || dmIntroFriend?.username || conversation.dm_username || null
       : null;
   const conversationStartUserId =
-    conversation.dm_user_id || dmIntroMember?.user_id || dmIntroFriend?.id || null;
+    dmIntroMember?.user_id || dmIntroFriend?.id || conversation.dm_user_id || null;
   const friendsSinceLabel = dmIntroFriend?.friends_since
     ? new Date(dmIntroFriend.friends_since).toLocaleDateString([], {
         year: 'numeric',
@@ -460,6 +466,13 @@ const MessageView = ({
         day: 'numeric',
       })
     : null;
+  const introIdentityKey = [
+    conversation.id,
+    conversationStartUserId || '',
+    conversationStartUsername || '',
+    conversationStartLabel || '',
+    conversationStartAvatar || '',
+  ].join(':');
 
   if (encryptionError) return (
     <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
@@ -519,7 +532,9 @@ const MessageView = ({
     }
 
     const { startsGroup, showDateSeparator } = traits;
-    const showAvatar = startsGroup && (density === 'compact' ? true : !isOwn);
+    const showViewportSenderMeta = visibleStartIndex === index && listIndex > 0 && !startsGroup;
+    const showSenderMeta = startsGroup || showViewportSenderMeta;
+    const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
     const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
     const rowIndent = !isRightAligned && !showAvatar ? AVATAR_OFFSET : '';
     const replyParent = msg.reply_to ? getReplyParent(msg.reply_to) : null;
@@ -540,7 +555,7 @@ const MessageView = ({
           </div>
         )}
 
-        {startsGroup && (
+        {showSenderMeta && (
           <div
             className={`flex items-center gap-2 pb-0.5 px-1 ${isRightAligned ? 'justify-end' : leftIndent}`}
             style={{ fontSize: `${metaFontSize}px` }}
@@ -740,7 +755,7 @@ const MessageView = ({
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
       <Virtuoso
-        key={conversation.id}
+        key={introIdentityKey}
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         className="flex-1 min-h-0"
@@ -824,9 +839,9 @@ const MessageView = ({
                           <div className="truncate text-3xl font-bold leading-tight text-void-text">
                             {conversationStartLabel}
                           </div>
-                          {conversationStartUsername && conversationStartUsername !== conversationStartLabel && (
+                          {conversationStartUsername && (
                             <div className="mt-1 truncate text-xl font-medium text-void-text-muted">
-                              {conversationStartUsername}
+                              @{conversationStartUsername}
                             </div>
                           )}
                         </button>
