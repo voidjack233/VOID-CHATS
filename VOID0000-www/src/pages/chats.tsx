@@ -361,8 +361,10 @@ const ChatDashboard = () => {
       {showConvSettings && displayConversation && user?.id && (
         <ConversationSettings
           conversation={displayConversation}
+          activeChannel={activeConversation?.type === 'channel' ? activeConversation : null}
           currentUserId={user.id}
           members={Object.values(members)}
+          onMessageCreated={handleMessageSent}
           onConversationUpdated={async (nextConversation) => {
             patchConversationInState(nextConversation);
             setConvRefresh((n) => n + 1);

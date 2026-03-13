@@ -722,7 +722,7 @@ export async function sendMessage(
   conversationId: string,
   plaintext: string,
   encryptionKey: CryptoKey,
-  options?: { reply_to?: string; key_version?: number; attachments?: string[] }
+  options?: { reply_to?: string; key_version?: number; attachments?: string[]; message_type?: string }
 ): Promise<Message> {
   const { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
 
@@ -732,7 +732,7 @@ export async function sendMessage(
       encrypted_content,
       iv,
       key_version: options?.key_version || 1,
-      message_type: 'text',
+      message_type: options?.message_type || 'text',
       reply_to: options?.reply_to || null,
       attachments: options?.attachments || [],
     }),

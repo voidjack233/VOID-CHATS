@@ -544,12 +544,42 @@ const MessageView = ({
   const renderMessage = (index: number, msg: Message) => {
     const listIndex = Math.max(0, index - firstItemIndex);
     const d = DENSITY[density];
+    const isSystem = msg.message_type === 'system';
     const isOwn = msg.sender_id === user?.id;
     const isRightAligned = isOwn && density === 'comfortable';
     const traits = layoutTraitsById[msg.message_id]
       || { startsGroup: true, showDateSeparator: listIndex === 0 && !hasOlder };
 
     const { startsGroup, showDateSeparator } = traits;
+    if (isSystem) {
+      const hasContent = typeof msg.content === 'string' && msg.content.trim().length > 0;
+      return (
+        <div
+          className="px-2"
+          style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
+        >
+          {showDateSeparator && (
+            <div className="flex items-center gap-3 py-4">
+              <div className="flex-1 h-px bg-void-bg-hover" />
+              <span className="text-void-text-muted font-medium shrink-0" style={{ fontSize: `${metaFontSize}px` }}>
+                {getDateLabel(msg.created_at)}
+              </span>
+              <div className="flex-1 h-px bg-void-bg-hover" />
+            </div>
+          )}
+
+          <div className="flex justify-center py-0.5">
+            <span
+              className="max-w-[92%] rounded-full border border-void-bg-hover bg-void-bg-hover/35 px-3 py-1 text-center text-void-text-muted"
+              style={{ fontSize: `${metaFontSize}px` }}
+            >
+              {hasContent ? msg.content : 'System event'}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
     const showSenderMeta = startsGroup;
     const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
     const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';

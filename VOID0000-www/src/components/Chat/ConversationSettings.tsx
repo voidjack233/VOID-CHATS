@@ -6,12 +6,15 @@ import {
   ConversationInviteLink,
   ConversationJoinRequest,
   ConversationMember,
+  Message,
   createConversationInviteLink,
   declineConversationJoinRequest,
   getConversationInvites,
   removeConversationIcon,
   rotateRemoveMember,
   revokeConversationInviteLink,
+  sendMessage,
+  getEncryptionKey,
   updateConversation,
   updateMemberRole,
   uploadConversationIcon,
@@ -23,8 +26,10 @@ type GroupSettingsTab = 'profile' | 'members' | 'roles' | 'invites' | 'access';
 
 interface ConversationSettingsProps {
   conversation: Conversation;
+  activeChannel?: Conversation | null;
   currentUserId: string;
   members: ConversationMember[];
+  onMessageCreated?: (message: Message) => void;
   onConversationUpdated?: (conversation: Conversation) => Promise<void> | void;
   onMembershipChanged?: () => Promise<void> | void;
   onClose: () => void;
@@ -172,8 +177,10 @@ function readFileAsDataURL(file: File): Promise<string> {
 
 const ConversationSettings = ({
   conversation,
+  activeChannel = null,
   currentUserId,
   members,
+  onMessageCreated,
   onConversationUpdated,
   onMembershipChanged,
   onClose,
@@ -251,6 +258,32 @@ const ConversationSettings = ({
     !!pendingIconFile ||
     removeCurrentIcon;
   const canManageMembers = isOwner && conversation.type === 'group';
+
+  const getActorLabel = () => {
+    const actor = memberList.find((member) => member.user_id === currentUserId);
+    return actor?.display_name || actor?.username || 'A moderator';
+  };
+
+  const postMembershipSystemMessage = async (
+    text: string,
+    keyVersion: number
+  ) => {
+    try {
+      const targetConversation = activeChannel || conversation;
+      const keyConversation: Conversation = {
+        ...targetConversation,
+        current_key_version: keyVersion,
+      };
+      const { key } = await getEncryptionKey(currentUserId, keyConversation, undefined, keyVersion);
+      const message = await sendMessage(targetConversation.id, text, key, {
+        key_version: keyVersion,
+        message_type: 'system',
+      });
+      onMessageCreated?.(message);
+    } catch (error) {
+      console.warn('Failed to post membership system message:', error);
+    }
+  };
 
   useEffect(() => {
     setActiveTab('profile');
@@ -442,6 +475,13 @@ const ConversationSettings = ({
           },
         ];
       });
+
+      const approvedLabel = getRequestLabel(request);
+      const actorLabel = getActorLabel();
+      void postMembershipSystemMessage(
+        `${actorLabel} approved ${approvedLabel}'s join request.`,
+        result.key_version
+      );
 
       void onMembershipChanged?.();
     } catch (error) {
@@ -637,6 +677,14 @@ const ConversationSettings = ({
       );
       setMemberMenuUserId(null);
       setKickConfirmMember(null);
+
+      const actorLabel = getActorLabel();
+      const targetLabel = getMemberLabel(targetMember);
+      void postMembershipSystemMessage(
+        `${actorLabel} removed ${targetLabel} from the group.`,
+        result.key_version
+      );
+
       void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to remove member:', error);
