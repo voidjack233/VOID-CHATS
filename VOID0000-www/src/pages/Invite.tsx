@@ -32,6 +32,7 @@ export default function InvitePage() {
   const [requesting, setRequesting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const canRequestJoin = status === 'none' || status === 'declined' || status === 'approved';
 
   useEffect(() => {
     let ignore = false;
@@ -220,14 +221,18 @@ export default function InvitePage() {
                 </button>
               )}
 
-              {user && status === 'none' && (
+              {user && canRequestJoin && (
                 <button
                   type="button"
                   onClick={handleRequestJoin}
                   disabled={requesting}
                   className="inline-flex w-full items-center justify-center rounded-2xl bg-void-accent px-5 py-3 text-sm font-semibold text-white transition-colors hover:brightness-110 disabled:opacity-60 sm:w-auto"
                 >
-                  {requesting ? 'Sending Request...' : 'Request Join'}
+                  {requesting
+                    ? 'Sending Request...'
+                    : status === 'none'
+                      ? 'Request Join'
+                      : 'Request Again'}
                 </button>
               )}
 
@@ -248,17 +253,6 @@ export default function InvitePage() {
                   className="inline-flex w-full items-center justify-center rounded-2xl bg-void-accent px-5 py-3 text-sm font-semibold text-white transition-colors hover:brightness-110 sm:w-auto"
                 >
                   Open Group
-                </button>
-              )}
-
-              {user && status === 'declined' && (
-                <button
-                  type="button"
-                  onClick={handleRequestJoin}
-                  disabled={requesting}
-                  className="inline-flex w-full items-center justify-center rounded-2xl bg-void-accent px-5 py-3 text-sm font-semibold text-white transition-colors hover:brightness-110 disabled:opacity-60 sm:w-auto"
-                >
-                  {requesting ? 'Sending Request...' : 'Request Again'}
                 </button>
               )}
 

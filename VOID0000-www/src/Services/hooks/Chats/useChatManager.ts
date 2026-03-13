@@ -1,5 +1,5 @@
 // src/Services/hooks/Chats/useChatManager.ts
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Conversation, Message, getEncryptionKey, getOrCreateDM } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
@@ -37,10 +37,42 @@ export const useChatManager = (user: any) => {
   const pendingMessages = useRef<any[]>([]);
 
   const normalizeRequiredVersion = (value: unknown): number | null => {
-    return typeof value === 'number' && Number.isInteger(value) && value > 0
-      ? value
-      : null;
+    if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return null;
   };
+
+  const isTransientGroupKeyError = (message: string) =>
+    message.includes('No group key available') ||
+    message.includes('is unavailable');
+
+  const wait = (ms: number) => new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+
+  const requiredConversationKeyVersion = useMemo(() => {
+    if (!activeConversation || activeConversation.type === 'dm') {
+      return null;
+    }
+
+    return normalizeRequiredVersion(
+      activeGroup?.current_key_version ?? activeConversation.current_key_version ?? null
+    );
+  }, [
+    activeConversation?.id,
+    activeConversation?.type,
+    activeConversation?.current_key_version,
+    activeGroup?.current_key_version,
+  ]);
 
   const resetLiveChatState = () => {
     setEncryptionKey(null);
@@ -200,9 +232,14 @@ export const useChatManager = (user: any) => {
       channels: groupConversation.channels || [],
     };
 
-    resetLiveChatState();
-    setActiveGroup(hydratedGroup);
     const selectedChannel = pickInitialChannel(hydratedGroup, preferredChannelId);
+    const isSameChannel = activeConversation?.id === selectedChannel.id;
+
+    if (!isSameChannel) {
+      resetLiveChatState();
+    }
+
+    setActiveGroup(hydratedGroup);
     setActiveConversation(selectedChannel);
 
     return { group: hydratedGroup, conversation: selectedChannel };
@@ -235,27 +272,24 @@ export const useChatManager = (user: any) => {
 
     const setupConversation = async () => {
       if (!activeConversation || !user?.id) return;
-      setEncryptionError(null);
-      const requiredGroupVersion = activeConversation.type === 'dm'
-        ? null
-        : normalizeRequiredVersion(
-            activeGroup?.current_key_version ?? activeConversation.current_key_version ?? null
-          );
+      const requiredGroupVersion = requiredConversationKeyVersion;
 
       const cached = handshakeCache.current[activeConversation.id];
       if (cached && (!requiredGroupVersion || cached.version === requiredGroupVersion)) {
+        setEncryptionError(null);
         setMembers(cached.members);
         setEncryptionKey(cached.key);
         setKeyVersion(cached.version);
         return; 
       }
 
-      if (cached && requiredGroupVersion && cached.version !== requiredGroupVersion) {
+      const staleHandshake = cached && requiredGroupVersion && cached.version !== requiredGroupVersion;
+      if (staleHandshake) {
         delete handshakeCache.current[activeConversation.id];
       }
 
       try {
-        let conversationDetails = getCachedConversationDetails(activeConversation.id);
+        let conversationDetails = staleHandshake ? null : getCachedConversationDetails(activeConversation.id);
 
         if (!conversationDetails || !conversationDetails.members) {
           const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
@@ -267,9 +301,13 @@ export const useChatManager = (user: any) => {
           conversationDetails = storeConversationDetails(data.conversation as ConversationDetails);
         }
 
-        if (ignore || !conversationDetails?.members) return;
+        if (ignore) return;
+        if (!conversationDetails) {
+          throw new Error('Could not load conversation details');
+        }
 
-        const peer = conversationDetails.members.find((member: any) => member.user_id !== user.id);
+        const conversationMembers = conversationDetails.members || [];
+        const peer = conversationMembers.find((member: any) => member.user_id !== user.id);
         const hydratedConversationDetails: ConversationDetails = conversationDetails.type === 'dm'
           ? storeConversationDetails({
               ...conversationDetails,
@@ -309,15 +347,48 @@ export const useChatManager = (user: any) => {
         setMembers(memberMap);
 
         const peerId = activeConversation.type === 'dm'
-          ? hydratedMembers.find((m: any) => m.user_id !== user.id)?.user_id
+          ? (
+              activeConversation.dm_user_id ||
+              hydratedConversationDetails.dm_user_id ||
+              hydratedMembers.find((m: any) => m.user_id !== user.id)?.user_id
+            )
           : undefined;
 
-        const { key, version } = await getEncryptionKey(
-          user.id,
-          activeConversation,
-          peerId,
-          requiredGroupVersion || undefined
-        );
+        if (activeConversation.type === 'dm' && !peerId) {
+          throw new Error('Could not resolve DM peer');
+        }
+
+        let keyResult: { key: CryptoKey; version: number } | null = null;
+        let lastKeyError: Error | null = null;
+
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            keyResult = await getEncryptionKey(
+              user.id,
+              activeConversation,
+              peerId,
+              requiredGroupVersion || undefined
+            );
+            lastKeyError = null;
+            break;
+          } catch (err) {
+            const nextError = err instanceof Error ? err : new Error(String(err || ''));
+            lastKeyError = nextError;
+
+            if (attempt < 2 && isTransientGroupKeyError(nextError.message)) {
+              await wait(450 * (attempt + 1));
+              continue;
+            }
+
+            throw nextError;
+          }
+        }
+
+        if (!keyResult) {
+          throw lastKeyError || new Error('Failed to resolve conversation encryption key');
+        }
+
+        const { key, version } = keyResult;
 
         if (ignore) return; 
 
@@ -332,12 +403,29 @@ export const useChatManager = (user: any) => {
           };
         }
 
+        setEncryptionError(null);
         setEncryptionKey(key);
         setKeyVersion(version);
       } catch (err: any) {
         if (ignore) return;
         console.error('Handshake Error:', err);
         setEncryptionKey(null);
+        const reason = err instanceof Error ? err.message : String(err || '');
+
+        if (reason.includes('Identity keys missing')) {
+          setEncryptionError('Your private keys are not available on this device yet.');
+          return;
+        }
+
+        if (
+          reason.includes('No group key available') ||
+          reason.includes('Group key version') ||
+          reason.includes('not decryptable')
+        ) {
+          setEncryptionError('Group encryption key distribution is unavailable for this account.');
+          return;
+        }
+
         setEncryptionError('Failed to load encryption keys for this chat.');
       }
     };
@@ -346,8 +434,7 @@ export const useChatManager = (user: any) => {
     return () => { ignore = true; };
   }, [
     activeConversation?.id,
-    activeConversation?.current_key_version,
-    activeGroup?.current_key_version,
+    requiredConversationKeyVersion,
     user?.id,
   ]);
 
@@ -527,6 +614,18 @@ export const useChatManager = (user: any) => {
       const conversationId = data?.conversation_id;
       if (!conversationId) return;
 
+      const affectedUserId =
+        data?.user_id ||
+        data?.member_user_id ||
+        data?.target_user_id ||
+        data?.removed_user_id ||
+        null;
+
+      // Only force-close when this current user is the one removed.
+      if (affectedUserId && String(affectedUserId) !== String(user.id)) {
+        return;
+      }
+
       if (
         matchesConversationIdentifier(activeConversation, conversationId) ||
         matchesConversationIdentifier(activeGroup, conversationId)
@@ -537,7 +636,7 @@ export const useChatManager = (user: any) => {
 
     gateway.on('MEMBER_LEAVE', handleMemberLeave);
     return () => gateway.off('MEMBER_LEAVE', handleMemberLeave);
-  }, [activeConversation?.id, activeGroup?.id, user?.id]);
+  }, [activeConversation?.id, activeConversation?.public_id, activeGroup?.id, activeGroup?.public_id, user?.id]);
 
   // Handlers
   const handleSelectConversation = (conv: Conversation) => {

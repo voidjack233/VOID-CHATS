@@ -212,6 +212,21 @@ const ChatDashboard = () => {
     return '';
   };
 
+  const getEncryptionHint = (error: string) => {
+    if (
+      error.includes('private keys') ||
+      error.includes('not available')
+    ) {
+      return 'Your private keys are stored on the device where you first set up encryption. Use that browser to read messages.';
+    }
+
+    if (error.includes('distribution')) {
+      return 'This account does not have a usable group key yet. Ask the group owner to rotate or re-distribute the latest group key.';
+    }
+
+    return 'The other user needs to initialize their encryption keys. Ask them to log in to secure this conversation.';
+  };
+
   if (loading || keyStatusLoading || isLoggingOut) {
     return (
       <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
@@ -437,9 +452,7 @@ const ChatDashboard = () => {
                   <ShieldAlert className="w-12 h-12 text-orange-400 mb-4 opacity-80" />
                   <p className="text-sm font-semibold text-void-text mb-2">{encryptionError}</p>
                   <p className="text-xs text-void-text-muted mb-6 max-w-xs">
-                    {encryptionError.includes('not available')
-                      ? 'Your private keys are stored on the device where you first set up encryption. Use that browser to read messages.'
-                      : 'The other user needs to initialize their encryption keys. Ask them to log in to secure this conversation.'}
+                    {getEncryptionHint(encryptionError)}
                   </p>
                   <button
                     onClick={() => {

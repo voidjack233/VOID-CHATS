@@ -156,10 +156,8 @@ const MessageView = ({
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
   const [scrollSeekExitTick, setScrollSeekExitTick] = useState(0);
-  const [visibleStartIndex, setVisibleStartIndex] = useState<number | null>(null);
   const topRenderBufferPx = 240;
   const bottomRenderBufferPx = 200;
-  const scrollOverscanPx = 240;
 
   const handleScrollerRef = useCallback((element: HTMLElement | null | Window) => {
     if (element instanceof HTMLElement) {
@@ -180,7 +178,6 @@ const MessageView = ({
     scrollSeekActiveRef.current = false;
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
-    setVisibleStartIndex(null);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -244,10 +241,6 @@ const MessageView = ({
   const handleRangeChanged = useCallback((range: ListRange) => {
     const previousStartIndex = lastRangeStartIndexRef.current;
     lastRangeStartIndexRef.current = range.startIndex;
-
-    setVisibleStartIndex((current) => (
-      current === range.startIndex ? current : range.startIndex
-    ));
 
     if (previousStartIndex !== null && range.startIndex < previousStartIndex) {
       canLoadOlderRef.current = true;
@@ -557,8 +550,7 @@ const MessageView = ({
       || { startsGroup: true, showDateSeparator: listIndex === 0 && !hasOlder };
 
     const { startsGroup, showDateSeparator } = traits;
-    const showViewportSenderMeta = visibleStartIndex === index && listIndex > 0 && !startsGroup;
-    const showSenderMeta = startsGroup || showViewportSenderMeta;
+    const showSenderMeta = startsGroup;
     const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
     const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
     const rowIndent = !isRightAligned && !showAvatar ? AVATAR_OFFSET : '';
@@ -819,7 +811,6 @@ const MessageView = ({
         endReached={() => {
           if (!isAtPresent && hasNewer) loadNewer();
         }}
-        overscan={scrollOverscanPx}
         itemContent={renderMessage}
         components={{
           ScrollSeekPlaceholder: renderScrollSeekPlaceholder,

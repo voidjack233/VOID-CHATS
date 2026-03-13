@@ -274,9 +274,6 @@ export default function GroupChannelsSidebar({
             <p className="truncate text-sm font-semibold text-void-text">
               {conversation.name || 'Unnamed Group'}
             </p>
-            <p className="text-xs text-void-text-muted">
-              Text channels
-            </p>
           </div>
           {canManageChannels && (
             <div className="relative" data-group-sidebar-action="true">

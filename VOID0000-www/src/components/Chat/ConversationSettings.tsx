@@ -199,6 +199,7 @@ const ConversationSettings = ({
   const [memberActionError, setMemberActionError] = useState('');
   const [memberMenuUserId, setMemberMenuUserId] = useState<string | null>(null);
   const [expandedRoleEditorUserId, setExpandedRoleEditorUserId] = useState<string | null>(null);
+  const [kickConfirmMember, setKickConfirmMember] = useState<ConversationMember | null>(null);
   const [busyMemberAction, setBusyMemberAction] = useState<{
     userId: string;
     action: 'role' | 'kick';
@@ -221,6 +222,26 @@ const ConversationSettings = ({
   const profileInitial = getConversationInitial(profileName || conversation.name);
   const displayedIconUrl = removeCurrentIcon ? (profilePreviewUrl || null) : (profilePreviewUrl || conversation.icon_url || null);
   const trimmedProfileName = profileName.trim();
+  const membersSignature = useMemo(
+    () =>
+      [...members]
+        .sort((left, right) => left.user_id.localeCompare(right.user_id))
+        .map((member) =>
+          [
+            member.user_id,
+            member.role,
+            member.nickname || '',
+            member.username,
+            member.display_name || '',
+            member.avatar_url || '',
+            member.joined_at,
+            member.joined_key_version ?? '',
+            member.history_start_version ?? '',
+          ].join(':')
+        )
+        .join('|'),
+    [members]
+  );
   const isProfileDirty =
     trimmedProfileName !== (conversation.name || '') ||
     !!pendingIconFile ||
@@ -231,12 +252,13 @@ const ConversationSettings = ({
     setActiveTab('profile');
     setMemberMenuUserId(null);
     setExpandedRoleEditorUserId(null);
+    setKickConfirmMember(null);
     setMemberActionError('');
   }, [conversation.id]);
 
   useEffect(() => {
     setMemberList(members);
-  }, [conversation.id, members]);
+  }, [conversation.id, membersSignature]);
 
   useEffect(() => {
     setCurrentKeyVersion(conversation.current_key_version || 1);
@@ -412,13 +434,13 @@ const ConversationSettings = ({
         ];
       });
 
-      await onMembershipChanged?.();
+      void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to approve join request:', error);
       setInviteActionError(
         error instanceof Error ? error.message : 'Failed to approve join request'
       );
-      await refreshInvites();
+      void refreshInvites();
     } finally {
       setBusyRequestId(null);
     }
@@ -577,11 +599,6 @@ const ConversationSettings = ({
   };
 
   const handleKickMember = async (targetMember: ConversationMember) => {
-    const memberLabel = getMemberLabel(targetMember);
-    if (!window.confirm(`Remove ${memberLabel} from this group? They will lose access to future messages.`)) {
-      return;
-    }
-
     try {
       setBusyMemberAction({ userId: targetMember.user_id, action: 'kick' });
       setMemberActionError('');
@@ -605,7 +622,8 @@ const ConversationSettings = ({
         current === targetMember.user_id ? null : current
       );
       setMemberMenuUserId(null);
-      await onMembershipChanged?.();
+      setKickConfirmMember(null);
+      void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to remove member:', error);
       setMemberActionError(
@@ -984,7 +1002,10 @@ const ConversationSettings = ({
                                       <div className="my-2 h-px bg-void-bg-hover" />
                                       <button
                                         type="button"
-                                        onClick={() => void handleKickMember(member)}
+                                        onClick={() => {
+                                          setMemberMenuUserId(null);
+                                          setKickConfirmMember(member);
+                                        }}
                                         disabled={isKickBusy}
                                         className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
                                       >
@@ -1389,6 +1410,50 @@ const ConversationSettings = ({
             </div>
           </div>
         </div>
+
+        {kickConfirmMember && (
+          <div className="fixed inset-0 z-[340] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-void-bg-hover bg-void-bg-sec shadow-2xl">
+              <div className="border-b border-void-bg-hover px-5 py-4">
+                <h3 className="text-base font-semibold text-void-text">Remove Member</h3>
+                <p className="mt-1 text-sm text-void-text-muted">
+                  Remove <span className="font-semibold text-void-text">{getMemberLabel(kickConfirmMember)}</span> from this group?
+                </p>
+                <p className="mt-2 text-xs text-void-text-muted">
+                  They will lose access to future encrypted messages after key rotation.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-5 py-4">
+                <button
+                  type="button"
+                  onClick={() => setKickConfirmMember(null)}
+                  disabled={
+                    busyMemberAction?.action === 'kick' &&
+                    busyMemberAction.userId === kickConfirmMember.user_id
+                  }
+                  className="rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-4 py-2.5 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleKickMember(kickConfirmMember)}
+                  disabled={
+                    busyMemberAction?.action === 'kick' &&
+                    busyMemberAction.userId === kickConfirmMember.user_id
+                  }
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-500/20 px-4 py-2.5 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busyMemberAction?.action === 'kick' && busyMemberAction.userId === kickConfirmMember.user_id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : null}
+                  Remove Member
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

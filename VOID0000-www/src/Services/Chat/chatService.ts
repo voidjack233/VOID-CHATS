@@ -178,9 +178,18 @@ function createApiError(data: any): Error & Record<string, any> {
 }
 
 function normalizeKeyVersion(value: unknown, fallback = 1): number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0
-    ? value
-    : fallback;
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return fallback;
 }
 
 type VersionedDecryptableMessage = {
@@ -885,43 +894,57 @@ export async function getEncryptionKey(
     throw new Error('No group key available — wait for owner to distribute');
   }
 
-  const targetKey = Number.isInteger(requestedKeyVersion)
-    ? groupKeys.find((entry) => entry.key_version === requestedKeyVersion)
-    : groupKeys[0];
+  const sortedKeys = [...groupKeys].sort(
+    (left, right) => normalizeKeyVersion(right.key_version, 0) - normalizeKeyVersion(left.key_version, 0)
+  );
+  const hasRequestedVersion = Number.isInteger(requestedKeyVersion) && (requestedKeyVersion as number) > 0;
+  const targetVersion: number = hasRequestedVersion
+    ? (requestedKeyVersion as number)
+    : normalizeKeyVersion(sortedKeys[0]?.key_version, 1);
+  const candidateKeys = sortedKeys.filter(
+    (entry) => normalizeKeyVersion(entry.key_version, 0) === targetVersion
+  );
 
-  if (!targetKey) {
-    throw new Error(`Group key version ${requestedKeyVersion} is unavailable`);
+  if (candidateKeys.length === 0) {
+    throw new Error(`Group key version ${targetVersion} is unavailable`);
   }
-  
+
   // 1. Check if we already unlocked it and saved it to IndexedDB
-  const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetKey.key_version);
+  const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (cachedGroupKey) {
-    return { key: cachedGroupKey, version: targetKey.key_version };
+    return { key: cachedGroupKey, version: targetVersion };
   }
 
-  // 2. If not, we need to unlock it using the shared secret with the user who wrapped it
-  const wrapperUserId = targetKey.wrapped_by_user_id || conversation.owner_id;
-  if (!wrapperUserId) {
-    throw new Error('Cannot decrypt group key without wrapper metadata');
+  let lastError: Error | null = null;
+
+  // 2. Try every candidate row for this version. This handles APIs that return
+  // multiple distributions for a key version (one row per recipient).
+  for (const candidate of candidateKeys) {
+    try {
+      const wrapperUserId = candidate.wrapped_by_user_id || conversation.owner_id;
+      if (!wrapperUserId) {
+        throw new Error('Cannot decrypt group key without wrapper metadata');
+      }
+
+      const wrapperKeyData = await getUserPublicKey(wrapperUserId);
+      const sharedSecret = await keyManager.getSharedSecret(userId, wrapperUserId, wrapperKeyData.public_key);
+
+      const [iv, encryptedBase64] = candidate.encrypted_group_key.split('.');
+      if (!iv || !encryptedBase64) {
+        throw new Error('Group key data is corrupted or missing IV');
+      }
+
+      const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
+      await keyManager.storeGroupKey(keyConversationId, targetVersion, decryptedRoomKey);
+
+      return { key: decryptedRoomKey, version: targetVersion };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error('Unknown group key decrypt error');
+    }
   }
 
-  const wrapperKeyData = await getUserPublicKey(wrapperUserId);
-  const sharedSecret = await keyManager.getSharedSecret(userId, wrapperUserId, wrapperKeyData.public_key);
-
-  // Split our combined string back into IV and Encrypted Key
-  const [iv, encryptedBase64] = targetKey.encrypted_group_key.split('.');
-  
-  if (!iv || !encryptedBase64) {
-    throw new Error('Group key data is corrupted or missing IV');
-  }
-
-  // Unlock the Room Key
-  const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
-
-  // Save it to IndexedDB so we don't have to do this math again
-  await keyManager.storeGroupKey(keyConversationId, targetKey.key_version, decryptedRoomKey);
-
-  return { key: decryptedRoomKey, version: targetKey.key_version };
+  const details = lastError?.message ? `: ${lastError.message}` : '';
+  throw new Error(`Group key version ${targetVersion} is not decryptable for this account${details}`);
 }
 
 export async function backupKeyToServer(data: {
