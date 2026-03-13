@@ -1,5 +1,5 @@
 // src/pages/Chats.tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Settings, Users, Hash, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../components/Chat/ConversationSettings';
@@ -56,6 +56,7 @@ const ChatDashboard = () => {
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [createChannelInitialCategoryId, setCreateChannelInitialCategoryId] = useState<string | null>(null);
   const [channelSettingsTarget, setChannelSettingsTarget] = useState<Conversation | null>(null);
+  const memberDisplayCacheRef = useRef<Record<string, any>>({});
 
   const {
     members,
@@ -182,6 +183,24 @@ const ChatDashboard = () => {
     location.pathname,
     navigate,
   ]);
+
+  useEffect(() => {
+    Object.entries(members).forEach(([userId, member]) => {
+      if (!member) return;
+      memberDisplayCacheRef.current[userId] = {
+        ...(memberDisplayCacheRef.current[userId] || {}),
+        ...member,
+      };
+    });
+  }, [members]);
+
+  const messageDisplayMembers = useMemo(
+    () => ({
+      ...memberDisplayCacheRef.current,
+      ...members,
+    }),
+    [members, activeConversation?.id]
+  );
 
   const handleEditComplete = (messageId: string, newContent: string) => {
     setMessageUpdate({
@@ -512,7 +531,7 @@ const ChatDashboard = () => {
                     encryptionKey={encryptionKey}
                     keyVersion={keyVersion}
                     encryptionError={encryptionError}
-                    members={members}
+                    members={messageDisplayMembers}
                     onReply={(msg) => setReplyTo(msg)}
                     onEdit={(msg) => setEditingMessage(msg)}
                     newMessage={newMessage}
