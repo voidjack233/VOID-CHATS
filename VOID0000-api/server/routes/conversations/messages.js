@@ -40,12 +40,13 @@ async function getConversationKeyState(conversation, userId) {
       currentKeyVersion: 1,
       historyStartVersion: 1,
       joinedAt: null,
+      role: null,
     };
   }
 
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
   const result = await pool.query(
-    `SELECT c.current_key_version, cm.history_start_version, cm.joined_at
+    `SELECT c.current_key_version, cm.history_start_version, cm.joined_at, cm.role
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id = c.id
      WHERE c.id = $1 AND cm.user_id = $2
@@ -61,6 +62,7 @@ async function getConversationKeyState(conversation, userId) {
     currentKeyVersion: normalizeKeyVersion(result.rows[0].current_key_version, 1),
     historyStartVersion: normalizeKeyVersion(result.rows[0].history_start_version, 1),
     joinedAt: result.rows[0].joined_at ? new Date(result.rows[0].joined_at).toISOString() : null,
+    role: result.rows[0].role || null,
   };
 }
 
@@ -69,6 +71,10 @@ function canAccessMessageForHistory(message, keyState) {
 
   if (normalizeKeyVersion(message.key_version, 1) < keyState.historyStartVersion) {
     return false;
+  }
+
+  if (keyState.role === 'owner') {
+    return true;
   }
 
   if (!keyState.joinedAt || !message.created_at) {
@@ -287,6 +293,8 @@ router.get('/', async (req, res) => {
   const { conversationId: conversationIdentifier } = req.params;
   const { before, after, limit } = req.query;
   const pageSize = Math.min(parseInt(limit, 10) || 50, 100);
+  const fetchChunkSize = Math.min(Math.max(pageSize * 2, 50), 200);
+  const maxFetchIterations = 12;
 
   try {
     const conversation = await findConversationByIdentifier(conversationIdentifier);
@@ -302,44 +310,108 @@ router.get('/', async (req, res) => {
       return res.status(403).json({ error: 'Missing group key membership state' });
     }
 
-    let query;
-    let params;
+    let afterCursor = null;
+    let beforeCursor = null;
 
-    if (after) {
-      query = `SELECT * FROM messages WHERE conversation_id = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?`;
-      params = [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(after), pageSize];
-    } else if (before) {
-      query = `SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?`;
-      params = [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(before), pageSize];
-    } else {
-      query = `SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_id DESC LIMIT ?`;
-      params = [cassandra.types.Uuid.fromString(conversationId), pageSize];
+    try {
+      if (after) {
+        afterCursor = cassandra.types.TimeUuid.fromString(String(after));
+      }
+      if (before) {
+        beforeCursor = cassandra.types.TimeUuid.fromString(String(before));
+      }
+    } catch {
+      return res.status(400).json({ error: 'Invalid before/after cursor' });
     }
 
-    const result = await scylla.execute(query, params, { prepare: true });
+    const seenMessageIds = new Set();
+    const collectedVisibleMessages = [];
+    let exhausted = false;
+    let iterations = 0;
 
-    let messages = result.rows.map((row) => ({
-      conversation_id: row.conversation_id.toString(),
-      conversation_public_id: conversationPublic,
-      message_id: row.message_id.toString(),
-      sender_id: row.sender_id.toString(),
-      encrypted_content: row.is_deleted ? null : row.encrypted_content,
-      iv: row.is_deleted ? null : row.iv,
-      key_version: row.key_version,
-      message_type: row.message_type,
-      reply_to: row.reply_to?.toString() || null,
-      attachments: row.is_deleted ? [] : (row.attachments || []),
-      is_edited: row.is_edited,
-      edited_at: row.edited_at?.toISOString() || null,
-      is_deleted: row.is_deleted,
-      created_at: row.created_at?.toISOString(),
-    }));
+    while (collectedVisibleMessages.length < pageSize && !exhausted && iterations < maxFetchIterations) {
+      iterations += 1;
 
-    if (after) messages = messages.reverse();
+      let query;
+      let params;
 
-    const visibleMessages = conversation.type === 'dm'
-      ? messages
-      : messages.filter((message) => canAccessMessageForHistory(message, keyState));
+      if (afterCursor) {
+        query = 'SELECT * FROM messages WHERE conversation_id = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?';
+        params = [
+          cassandra.types.Uuid.fromString(conversationId),
+          afterCursor,
+          fetchChunkSize,
+        ];
+      } else if (beforeCursor) {
+        query = 'SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?';
+        params = [
+          cassandra.types.Uuid.fromString(conversationId),
+          beforeCursor,
+          fetchChunkSize,
+        ];
+      } else {
+        query = 'SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_id DESC LIMIT ?';
+        params = [cassandra.types.Uuid.fromString(conversationId), fetchChunkSize];
+      }
+
+      const result = await scylla.execute(query, params, { prepare: true });
+      const rows = result.rows || [];
+
+      if (rows.length === 0) {
+        exhausted = true;
+        break;
+      }
+
+      const mappedMessages = rows.map((row) => ({
+        conversation_id: row.conversation_id.toString(),
+        conversation_public_id: conversationPublic,
+        message_id: row.message_id.toString(),
+        sender_id: row.sender_id.toString(),
+        encrypted_content: row.is_deleted ? null : row.encrypted_content,
+        iv: row.is_deleted ? null : row.iv,
+        key_version: row.key_version,
+        message_type: row.message_type,
+        reply_to: row.reply_to?.toString() || null,
+        attachments: row.is_deleted ? [] : (row.attachments || []),
+        is_edited: row.is_edited,
+        edited_at: row.edited_at?.toISOString() || null,
+        is_deleted: row.is_deleted,
+        created_at: row.created_at?.toISOString(),
+      }));
+
+      const visibleChunk = conversation.type === 'dm'
+        ? mappedMessages
+        : mappedMessages.filter((message) => canAccessMessageForHistory(message, keyState));
+
+      for (const message of visibleChunk) {
+        if (seenMessageIds.has(message.message_id)) continue;
+        seenMessageIds.add(message.message_id);
+        collectedVisibleMessages.push(message);
+        if (collectedVisibleMessages.length >= pageSize) break;
+      }
+
+      if (!afterCursor && conversation.type !== 'dm' && visibleChunk.length === 0) {
+        exhausted = true;
+        break;
+      }
+
+      if (rows.length < fetchChunkSize) {
+        exhausted = true;
+      }
+
+      const lastRow = rows[rows.length - 1];
+      if (!lastRow?.message_id) {
+        exhausted = true;
+      } else if (afterCursor) {
+        afterCursor = lastRow.message_id;
+      } else {
+        beforeCursor = lastRow.message_id;
+      }
+    }
+
+    const visibleMessages = after
+      ? [...collectedVisibleMessages].reverse()
+      : collectedVisibleMessages;
 
     const messageIds = visibleMessages.map((m) => m.message_id);
     const reactions = await batchFetchReactions(conversationId, messageIds, userId);
@@ -349,17 +421,10 @@ router.get('/', async (req, res) => {
       reactions: reactions[m.message_id] || {},
     }));
 
-    const hasVisibleMessages = visibleMessages.length > 0;
-    const hasMore = conversation.type === 'dm'
-      ? messages.length === pageSize
-      : hasVisibleMessages
-        ? messages.length === pageSize
-        : false;
-
     res.json({
       success: true,
       messages: messagesWithReactions,
-      has_more: hasMore,
+      has_more: !exhausted,
     });
   } catch (err) {
     console.error('Message history error:', err);
@@ -432,10 +497,48 @@ router.put('/read', async (req, res) => {
     const conversation = await findConversationByIdentifier(conversationIdentifier);
     if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
 
+    const member = await verifyMembership(conversation.id, userId);
+    if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
+
+    let parsedMessageId = null;
+    if (message_id) {
+      try {
+        parsedMessageId = cassandra.types.TimeUuid.fromString(String(message_id));
+      } catch {
+        return res.status(400).json({ error: 'Invalid message_id' });
+      }
+
+      if (conversation.type !== 'dm') {
+        const keyState = await getConversationKeyState(conversation, userId);
+        if (!keyState) {
+          return res.status(403).json({ error: 'Missing group key membership state' });
+        }
+
+        const result = await scylla.execute(
+          'SELECT message_id, key_version, created_at FROM messages WHERE conversation_id = ? AND message_id = ?',
+          [cassandra.types.Uuid.fromString(conversation.id), parsedMessageId],
+          { prepare: true }
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Message not found' });
+        }
+
+        const row = result.rows[0];
+        const historyProbe = {
+          key_version: row.key_version,
+          created_at: row.created_at?.toISOString() || null,
+        };
+
+        if (!canAccessMessageForHistory(historyProbe, keyState)) {
+          return res.status(404).json({ error: 'Message not found' });
+        }
+      }
+    }
+
     await pool.query(
-      `UPDATE conversation_members SET last_read_message_id = $1
-       WHERE conversation_id = $2 AND user_id = $3`,
-      [message_id, conversation.id, userId]
+      'UPDATE conversation_members SET last_read_message_id = $1 WHERE conversation_id = $2 AND user_id = $3',
+      [message_id || null, conversation.id, userId]
     );
 
     res.json({

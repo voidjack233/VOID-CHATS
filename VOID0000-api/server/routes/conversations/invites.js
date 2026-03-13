@@ -30,13 +30,35 @@ async function ensureOwnerConversation(db, conversationId, userId) {
     return { error: { status: 400, body: { error: 'Invites are only supported for groups' } } };
   }
 
-  const membership = await getGroupMembership(db, conversation.id, userId);
+  const isConversationOwner =
+    conversation.owner_id != null &&
+    String(conversation.owner_id) === String(userId);
+
+  let membership = await getGroupMembership(db, conversation.id, userId);
+
   if (!membership) {
-    return { error: { status: 403, body: { error: 'Not a member' } } };
+    if (!isConversationOwner) {
+      return { error: { status: 403, body: { error: 'Not a member' } } };
+    }
+
+    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+    await db.query(
+      `INSERT INTO conversation_members (conversation_id, user_id, role, joined_key_version, history_start_version) VALUES ($1, $2, 'owner', $3, 1) ON CONFLICT (conversation_id, user_id) DO UPDATE SET role = 'owner'`,
+      [conversation.id, userId, currentKeyVersion]
+    );
+
+    membership = { role: 'owner' };
   }
 
   if (membership.role !== 'owner') {
-    return { error: { status: 403, body: { error: 'Only the owner can manage invite links' } } };
+    if (!isConversationOwner) {
+      return { error: { status: 403, body: { error: 'Only the owner can manage invite links' } } };
+    }
+
+    await db.query(
+      `UPDATE conversation_members SET role = 'owner' WHERE conversation_id = $1 AND user_id = $2`,
+      [conversation.id, userId]
+    );
   }
 
   return { conversation };

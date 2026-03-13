@@ -36,6 +36,48 @@ let csrfToken: string | null = null;
 let isLoggingOut = false;
 
 let refreshPromise: Promise<boolean> | null = null;
+const SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const CSRF_ERROR_PATTERN = /\b(csrf|xsrf|forgery)\b|token validation failed/i;
+
+function isMutationMethod(method?: string): boolean {
+  if (!method) return false;
+  return !SAFE_HTTP_METHODS.has(method.toUpperCase());
+}
+
+function containsCSRFSignal(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return CSRF_ERROR_PATTERN.test(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(containsCSRFSignal);
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).some(containsCSRFSignal);
+  }
+
+  return false;
+}
+
+async function isLikelyCSRFError(response: Response): Promise<boolean> {
+  if (![400, 403, 419].includes(response.status)) {
+    return false;
+  }
+
+  try {
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.toLowerCase().includes('application/json')) {
+      const payload = await response.clone().json();
+      return containsCSRFSignal(payload);
+    }
+
+    const textPayload = await response.clone().text();
+    return containsCSRFSignal(textPayload);
+  } catch {
+    return false;
+  }
+}
 
 // ============== CSRF ==============
 async function getCSRFToken(): Promise<string | null> {
@@ -96,24 +138,29 @@ async function fetchWithAuth(
   options: RequestInit = {}
 ): Promise<Response> {
   const fullUrl = url.startsWith('http') ? url : `${API_URL}${url}`;
+  const method = options.method?.toUpperCase() || 'GET';
+  const needsCSRFToken = isMutationMethod(method);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
 
-  if (options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase())) {
+  if (needsCSRFToken) {
     const token = await ensureCSRFToken();
     if (token) {
       headers['X-CSRF-Token'] = token;
     }
   }
 
-  let response = await fetch(fullUrl, {
-    ...options,
-    credentials: 'include',
-    headers,
-  });
+  const performRequest = () =>
+    fetch(fullUrl, {
+      ...options,
+      credentials: 'include',
+      headers,
+    });
+
+  let response = await performRequest();
 
   if (response.status === 401 && !isLoggingOut) {
     const refreshed = await doRefresh();
@@ -121,15 +168,22 @@ async function fetchWithAuth(
     if (refreshed) {
       clearCSRFToken();
       const newCsrfToken = await getCSRFToken();
-      if (newCsrfToken && options.method && !['GET', 'HEAD', 'OPTIONS'].includes(options.method.toUpperCase())) {
+      if (newCsrfToken && needsCSRFToken) {
         headers['X-CSRF-Token'] = newCsrfToken;
       }
 
-      response = await fetch(fullUrl, {
-        ...options,
-        credentials: 'include',
-        headers,
-      });
+      response = await performRequest();
+    }
+  }
+
+  // Some backends rotate CSRF secrets during membership/session transitions.
+  // If we detect CSRF validation, or any mutation returns 403, refresh once.
+  if (needsCSRFToken && ((await isLikelyCSRFError(response)) || response.status === 403)) {
+    clearCSRFToken();
+    const newCsrfToken = await getCSRFToken();
+    if (newCsrfToken) {
+      headers['X-CSRF-Token'] = newCsrfToken;
+      response = await performRequest();
     }
   }
 

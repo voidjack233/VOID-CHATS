@@ -46,6 +46,10 @@ const ROLE_STYLES: Record<string, string> = {
 
 const VALID_ICON_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_ICON_FILE_SIZE = 7 * 1024 * 1024;
+const JOIN_APPROVALS_PAUSED = false;
+const MEMBER_REMOVAL_PAUSED = false;
+const JOIN_APPROVALS_PAUSED_MESSAGE =
+  'Join approvals are temporarily paused while we stabilize encrypted key delivery.';
 
 const SETTINGS_SECTIONS: Array<{
   label: string;
@@ -217,7 +221,7 @@ const ConversationSettings = ({
     (isOwner || currentUserRole === 'admin');
   const leaveBlockedReason = isOwner
     ? 'Transfer ownership before leaving this group.'
-    : 'Secure leave is not available yet. Ask the group owner to remove you so the room key can rotate.';
+    : 'Secure leave is not available yet. Ask the group owner to remove you from this group.';
   const activeTabMeta = SETTINGS_TABS.find((tab) => tab.id === activeTab);
   const profileInitial = getConversationInitial(profileName || conversation.name);
   const displayedIconUrl = removeCurrentIcon ? (profilePreviewUrl || null) : (profilePreviewUrl || conversation.icon_url || null);
@@ -398,6 +402,11 @@ const ConversationSettings = ({
   };
 
   const handleApproveRequest = async (request: ConversationJoinRequest) => {
+    if (JOIN_APPROVALS_PAUSED) {
+      setInviteActionError(JOIN_APPROVALS_PAUSED_MESSAGE);
+      return;
+    }
+
     try {
       setBusyRequestId(request.id);
       setInviteActionError('');
@@ -599,6 +608,11 @@ const ConversationSettings = ({
   };
 
   const handleKickMember = async (targetMember: ConversationMember) => {
+    if (MEMBER_REMOVAL_PAUSED) {
+      setMemberActionError('Member removal is temporarily paused while we stabilize encrypted key delivery.');
+      return;
+    }
+
     try {
       setBusyMemberAction({ userId: targetMember.user_id, action: 'kick' });
       setMemberActionError('');
@@ -917,7 +931,7 @@ const ConversationSettings = ({
                       <div>
                         <h3 className="text-sm font-semibold text-void-text">Current Members</h3>
                         <p className="mt-1 text-sm text-void-text-muted">
-                          Membership changes will route through key rotation before they become interactive here.
+                          Manage roles here, and use this list to monitor current membership state.
                         </p>
                       </div>
                       <div className="inline-flex items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text">
@@ -927,6 +941,12 @@ const ConversationSettings = ({
                     </div>
 
                     <div className="mt-5 space-y-3">
+                      {MEMBER_REMOVAL_PAUSED && (
+                        <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                          Member removal is temporarily paused while we stabilize encrypted key delivery.
+                        </div>
+                      )}
+
                       {sortedMembers.map((member) => {
                         const isRoleEditorOpen = expandedRoleEditorUserId === member.user_id;
                         const isRoleBusy =
@@ -1006,10 +1026,10 @@ const ConversationSettings = ({
                                           setMemberMenuUserId(null);
                                           setKickConfirmMember(member);
                                         }}
-                                        disabled={isKickBusy}
+                                        disabled={isKickBusy || MEMBER_REMOVAL_PAUSED}
                                         className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
                                       >
-                                        <span>Kick Member</span>
+                                        <span>{MEMBER_REMOVAL_PAUSED ? 'Member Removal Paused' : 'Kick Member'}</span>
                                         {isKickBusy ? (
                                           <Loader2 className="h-4 w-4 animate-spin" />
                                         ) : null}
@@ -1099,7 +1119,7 @@ const ConversationSettings = ({
                       <div>
                         <h3 className="text-sm font-semibold text-void-text">Ranked Roles</h3>
                         <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
-                          This screen is the next step after the epoch-based member controls. It will let the owner
+                          This screen is the next step after member controls. It will let the owner
                           define ranked roles and choose which powers each role can exercise.
                         </p>
                       </div>
@@ -1136,8 +1156,8 @@ const ConversationSettings = ({
                       <div className="max-w-2xl">
                         <h3 className="text-sm font-semibold text-void-text">Invite Links</h3>
                         <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
-                          Invite links do not add anyone immediately. They create a join request, and approval rotates
-                          the group key so new members only see messages from the moment they are approved.
+                          Invite links do not add anyone immediately. They create a join request, and approved members
+                          only see the history their account is allowed to access.
                         </p>
                       </div>
 
@@ -1201,7 +1221,7 @@ const ConversationSettings = ({
                           <div className="min-w-0">
                             <h3 className="text-sm font-semibold text-void-text">Pending Join Requests</h3>
                             <p className="mt-1 text-sm text-void-text-muted">
-                              Approving a request adds the member at the next key epoch, not into old history.
+                              Approval grants access from the member start point, not full back-history.
                             </p>
                           </div>
                           <div className="inline-flex self-start items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text sm:self-auto">
@@ -1214,6 +1234,12 @@ const ConversationSettings = ({
                           {!invitesLoading && invitesLoaded && pendingRequests.length === 0 && (
                             <div className="rounded-xl border border-dashed border-void-bg-hover bg-void-bg-sec/45 px-4 py-5 text-sm text-void-text-muted">
                               No pending requests right now.
+                            </div>
+                          )}
+
+                          {JOIN_APPROVALS_PAUSED && pendingRequests.length > 0 && (
+                            <div className="rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                              {JOIN_APPROVALS_PAUSED_MESSAGE}
                             </div>
                           )}
 
@@ -1259,15 +1285,17 @@ const ConversationSettings = ({
                                   <button
                                     type="button"
                                     onClick={() => void handleApproveRequest(request)}
-                                    disabled={isBusy}
+                                    disabled={isBusy || JOIN_APPROVALS_PAUSED}
                                     className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-void-accent-hover disabled:cursor-not-allowed disabled:opacity-70 sm:w-auto"
                                   >
                                     {isBusy ? (
                                       <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : JOIN_APPROVALS_PAUSED ? (
+                                      <Lock className="h-4 w-4" />
                                     ) : (
                                       <Check className="h-4 w-4" />
                                     )}
-                                    Approve
+                                    {JOIN_APPROVALS_PAUSED ? 'Paused' : 'Approve'}
                                   </button>
                                 </div>
                               </div>
@@ -1420,7 +1448,7 @@ const ConversationSettings = ({
                   Remove <span className="font-semibold text-void-text">{getMemberLabel(kickConfirmMember)}</span> from this group?
                 </p>
                 <p className="mt-2 text-xs text-void-text-muted">
-                  They will lose access to future encrypted messages after key rotation.
+                  They will lose access to future encrypted messages.
                 </p>
               </div>
 

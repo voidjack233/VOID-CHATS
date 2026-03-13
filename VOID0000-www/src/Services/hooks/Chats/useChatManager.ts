@@ -1,9 +1,10 @@
 // src/Services/hooks/Chats/useChatManager.ts
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Conversation, Message, getEncryptionKey, getOrCreateDM } from '../../Chat/chatService';
+import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
+import { messageStore } from '../../Chat/chatStore';
 
 type ConversationDetails = Conversation & {
   members?: Array<{
@@ -26,6 +27,7 @@ export const useChatManager = (user: any) => {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [messageUpdate, setMessageUpdate] = useState<{ message_id: string; content: string; is_edited: boolean; edited_at: string } | null>(null);
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
+  const [handshakeRetryToken, setHandshakeRetryToken] = useState(0);
 
   const handshakeCache = useRef<Record<string, {
     members: Record<string, any>;
@@ -35,6 +37,7 @@ export const useChatManager = (user: any) => {
   }>>({});
   const conversationDetailsCache = useRef<Record<string, ConversationDetails>>({});
   const pendingMessages = useRef<any[]>([]);
+  const lastActiveChannelRef = useRef<{ id: string; public_id?: string | null } | null>(null);
 
   const normalizeRequiredVersion = (value: unknown): number | null => {
     if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
@@ -53,7 +56,9 @@ export const useChatManager = (user: any) => {
 
   const isTransientGroupKeyError = (message: string) =>
     message.includes('No group key available') ||
-    message.includes('is unavailable');
+    message.includes('is unavailable') ||
+    message.includes('not decryptable') ||
+    message.includes('OperationError');
 
   const wait = (ms: number) => new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
@@ -73,6 +78,55 @@ export const useChatManager = (user: any) => {
     activeConversation?.current_key_version,
     activeGroup?.current_key_version,
   ]);
+
+  const getConversationKeyScopeId = (conversation: Conversation | null | undefined) => {
+    if (!conversation) return null;
+    if (conversation.type === 'dm') return conversation.id;
+    return conversation.parent_conversation_id || activeGroup?.id || conversation.id;
+  };
+
+  const getConversationKeyScopePublicId = (conversation: Conversation | null | undefined) => {
+    if (!conversation) return null;
+    if (conversation.type === 'dm') return conversation.public_id || null;
+    return conversation.parent_public_id || activeGroup?.public_id || conversation.public_id || null;
+  };
+
+  const getConversationDetailsLookupId = (conversation: Conversation) => {
+    if (conversation.type !== 'channel') {
+      return conversation.public_id || conversation.id;
+    }
+
+    return (
+      conversation.parent_public_id ||
+      activeGroup?.public_id ||
+      conversation.parent_conversation_id ||
+      activeGroup?.id ||
+      conversation.public_id ||
+      conversation.id
+    );
+  };
+
+  const getKeyLookupConversation = (conversation: Conversation): Conversation => {
+    if (conversation.type !== 'channel') {
+      return conversation;
+    }
+
+    const parentConversationId = conversation.parent_conversation_id || activeGroup?.id || null;
+    const parentPublicId = conversation.parent_public_id || activeGroup?.public_id || null;
+
+    if (
+      parentConversationId === conversation.parent_conversation_id &&
+      parentPublicId === conversation.parent_public_id
+    ) {
+      return conversation;
+    }
+
+    return {
+      ...conversation,
+      parent_conversation_id: parentConversationId,
+      parent_public_id: parentPublicId,
+    };
+  };
 
   const resetLiveChatState = () => {
     setEncryptionKey(null);
@@ -108,6 +162,20 @@ export const useChatManager = (user: any) => {
       channels.find((channel) => channel.name?.toLowerCase() === 'general') ||
       channels[0] ||
       groupConversation
+    );
+  };
+
+  const getPreferredChannelIdentifier = (preferredChannelId?: string | null) => {
+    if (preferredChannelId) return preferredChannelId;
+
+    if (activeConversation?.type === 'channel') {
+      return activeConversation.public_id || activeConversation.id;
+    }
+
+    return (
+      lastActiveChannelRef.current?.public_id ||
+      lastActiveChannelRef.current?.id ||
+      null
     );
   };
 
@@ -205,19 +273,27 @@ export const useChatManager = (user: any) => {
     seedConversation?: Conversation,
     options?: { forceReload?: boolean }
   ) => {
+    const preferredIdentifier = getPreferredChannelIdentifier(preferredChannelId);
     const shouldReuseLoadedGroup =
       !options?.forceReload &&
       activeGroup &&
       matchesConversationIdentifier(activeGroup, groupIdentifier) &&
-      (!preferredChannelId || hasLoadedChannel(activeGroup, preferredChannelId));
+      (!preferredIdentifier || hasLoadedChannel(activeGroup, preferredIdentifier));
 
     if (shouldReuseLoadedGroup) {
-      const selectedChannel = pickInitialChannel(activeGroup, preferredChannelId);
-      if (activeConversation?.id !== selectedChannel.id) {
+      const selectedChannel = pickInitialChannel(activeGroup, preferredIdentifier);
+      const keepCurrentChannel =
+        selectedChannel.type === 'group' &&
+        activeConversation?.type === 'channel' &&
+        (matchesConversationIdentifier(activeGroup, activeConversation.parent_conversation_id) ||
+          matchesConversationIdentifier(activeGroup, activeConversation.parent_public_id));
+      const nextChannel = keepCurrentChannel ? activeConversation : selectedChannel;
+
+      if (activeConversation?.id !== nextChannel.id) {
         resetLiveChatState();
-        setActiveConversation(selectedChannel);
+        setActiveConversation(nextChannel);
       }
-      return { group: activeGroup, conversation: selectedChannel };
+      return { group: activeGroup, conversation: nextChannel };
     }
 
     const cachedGroup = !options?.forceReload ? getCachedConversationDetails(groupIdentifier) : null;
@@ -226,23 +302,52 @@ export const useChatManager = (user: any) => {
       throw new Error('Requested conversation is not a group');
     }
 
+    const fallbackChannels = matchesConversationIdentifier(activeGroup, groupIdentifier)
+      ? (activeGroup?.channels || [])
+      : (seedConversation?.channels || []);
+    const fetchedChannels = Array.isArray(groupConversation.channels) ? groupConversation.channels : [];
+    const hydratedChannels = fetchedChannels.length > 0 ? fetchedChannels : fallbackChannels;
+
     const hydratedGroup: Conversation = {
       ...seedConversation,
       ...groupConversation,
-      channels: groupConversation.channels || [],
+      channels: hydratedChannels,
     };
 
-    const selectedChannel = pickInitialChannel(hydratedGroup, preferredChannelId);
-    const isSameChannel = activeConversation?.id === selectedChannel.id;
+    const selectedChannel = pickInitialChannel(hydratedGroup, preferredIdentifier);
+    const activeChannelBelongsToGroup = !!(
+      activeConversation?.type === 'channel' &&
+      (
+        matchesConversationIdentifier(hydratedGroup, activeConversation.parent_conversation_id) ||
+        matchesConversationIdentifier(hydratedGroup, activeConversation.parent_public_id) ||
+        hydratedChannels.some((channel) =>
+          matchesConversationIdentifier(channel, activeConversation.id) ||
+          (activeConversation.public_id
+            ? matchesConversationIdentifier(channel, activeConversation.public_id)
+            : false)
+        )
+      )
+    );
+    const shouldKeepCurrentChannel =
+      selectedChannel.type === 'group' &&
+      activeChannelBelongsToGroup;
+    const nextChannel = shouldKeepCurrentChannel ? activeConversation : selectedChannel;
+    const isSameChannel = activeConversation?.id === nextChannel.id;
 
     if (!isSameChannel) {
       resetLiveChatState();
     }
 
     setActiveGroup(hydratedGroup);
-    setActiveConversation(selectedChannel);
 
-    return { group: hydratedGroup, conversation: selectedChannel };
+    // Only update activeConversation if the channel actually changed.
+    // Setting a new object reference for the same channel triggers
+    // useMessageList to clear messages and re-fetch unnecessarily.
+    if (!isSameChannel) {
+      setActiveConversation(nextChannel);
+    }
+
+    return { group: hydratedGroup, conversation: isSameChannel ? (activeConversation as Conversation) : nextChannel };
   };
 
   const openConversationByIdentifier = async (identifier: string) => {
@@ -273,8 +378,11 @@ export const useChatManager = (user: any) => {
     const setupConversation = async () => {
       if (!activeConversation || !user?.id) return;
       const requiredGroupVersion = requiredConversationKeyVersion;
+      const keyScopeId = getConversationKeyScopeId(activeConversation) || activeConversation.id;
+      const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
+      const keyLookupConversation = getKeyLookupConversation(activeConversation);
 
-      const cached = handshakeCache.current[activeConversation.id];
+      const cached = handshakeCache.current[keyScopeId];
       if (cached && (!requiredGroupVersion || cached.version === requiredGroupVersion)) {
         setEncryptionError(null);
         setMembers(cached.members);
@@ -285,14 +393,25 @@ export const useChatManager = (user: any) => {
 
       const staleHandshake = cached && requiredGroupVersion && cached.version !== requiredGroupVersion;
       if (staleHandshake) {
-        delete handshakeCache.current[activeConversation.id];
+        delete handshakeCache.current[keyScopeId];
       }
 
       try {
-        let conversationDetails = staleHandshake ? null : getCachedConversationDetails(activeConversation.id);
+        let conversationDetails = staleHandshake
+          ? null
+          : (
+              getCachedConversationDetails(activeConversation.id) ||
+              getCachedConversationDetails(activeConversation.public_id) ||
+              getCachedConversationDetails(keyScopeId) ||
+              getCachedConversationDetails(keyScopePublicId) ||
+              getCachedConversationDetails(activeGroup?.id) ||
+              getCachedConversationDetails(activeGroup?.public_id) ||
+              null
+            );
 
         if (!conversationDetails || !conversationDetails.members) {
-          const res = await fetchWithAuth(`/api/conversations/${activeConversation.id}`);
+          const lookupId = getConversationDetailsLookupId(activeConversation);
+          const res = await fetchWithAuth(`/api/conversations/${lookupId}`);
           const data = await res.json();
 
           if (ignore) return; 
@@ -365,7 +484,7 @@ export const useChatManager = (user: any) => {
           try {
             keyResult = await getEncryptionKey(
               user.id,
-              activeConversation,
+              keyLookupConversation,
               peerId,
               requiredGroupVersion || undefined
             );
@@ -393,7 +512,7 @@ export const useChatManager = (user: any) => {
         if (ignore) return; 
 
         if (key) {
-          handshakeCache.current[activeConversation.id] = {
+          handshakeCache.current[keyScopeId] = {
             members: memberMap,
             key,
             version,
@@ -406,6 +525,23 @@ export const useChatManager = (user: any) => {
         setEncryptionError(null);
         setEncryptionKey(key);
         setKeyVersion(version);
+
+        // Owner auto-redistribution: re-wrap the current group key for
+        // every member using fresh shared secrets.  Fixes stale
+        // distributions caused by identity key changes or members added
+        // without a distribution.  Fire-and-forget — never blocks the UI.
+        const ownerConversation = activeGroup || activeConversation;
+        if (
+          ownerConversation &&
+          ownerConversation.type !== 'dm' &&
+          ownerConversation.owner_id === user.id
+        ) {
+          ensureGroupKeyDistribution(
+            ownerConversation,
+            user.id,
+            Object.keys(memberMap)
+          ).catch(() => {});
+        }
       } catch (err: any) {
         if (ignore) return;
         console.error('Handshake Error:', err);
@@ -420,9 +556,12 @@ export const useChatManager = (user: any) => {
         if (
           reason.includes('No group key available') ||
           reason.includes('Group key version') ||
-          reason.includes('not decryptable')
+          reason.includes('not decryptable') ||
+          reason.includes('OperationError')
         ) {
-          setEncryptionError('Group encryption key distribution is unavailable for this account.');
+          setEncryptionError(
+            'Group encryption keys are being refreshed. Ask the group owner to open this conversation, then try again.'
+          );
           return;
         }
 
@@ -434,7 +573,13 @@ export const useChatManager = (user: any) => {
     return () => { ignore = true; };
   }, [
     activeConversation?.id,
+    activeConversation?.public_id,
+    activeConversation?.parent_conversation_id,
+    activeConversation?.parent_public_id,
+    activeGroup?.id,
+    activeGroup?.public_id,
     requiredConversationKeyVersion,
+    handshakeRetryToken,
     user?.id,
   ]);
 
@@ -451,7 +596,9 @@ export const useChatManager = (user: any) => {
       return fallbackKey;
     }
 
-    const cacheEntry = handshakeCache.current[activeConversation.id];
+    const keyScopeId = getConversationKeyScopeId(activeConversation) || activeConversation.id;
+    const keyLookupConversation = getKeyLookupConversation(activeConversation);
+    const cacheEntry = handshakeCache.current[keyScopeId];
     const cachedKey = cacheEntry?.keysByVersion?.[requestedVersion];
     if (cachedKey) {
       return cachedKey;
@@ -459,12 +606,12 @@ export const useChatManager = (user: any) => {
 
     const { key, version } = await getEncryptionKey(
       user.id,
-      activeConversation,
+      keyLookupConversation,
       getPeerIdForConversation(activeConversation),
       requestedVersion
     );
 
-    const activeCache = handshakeCache.current[activeConversation.id];
+    const activeCache = handshakeCache.current[keyScopeId];
     if (activeCache) {
       activeCache.keysByVersion = {
         ...activeCache.keysByVersion,
@@ -475,6 +622,15 @@ export const useChatManager = (user: any) => {
         activeCache.key = key;
         activeCache.version = version;
       }
+    } else {
+      handshakeCache.current[keyScopeId] = {
+        members,
+        key,
+        version,
+        keysByVersion: {
+          [version]: key,
+        },
+      };
     }
 
     if (version > keyVersion) {
@@ -505,12 +661,40 @@ export const useChatManager = (user: any) => {
     } catch (err) {
       console.warn('Decryption failed! Keys might be stale. Auto-refreshing...', err);
       // Wipe the memory cache so the handshake runs fresh
-      delete handshakeCache.current[data.conversation_id];
-      delete conversationDetailsCache.current[data.conversation_id];
-      // Setting key to null triggers the handshake useEffect again!
+      const keyScopeId = getConversationKeyScopeId(activeConversation);
+      const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
+
+      if (keyScopeId) {
+        delete handshakeCache.current[keyScopeId];
+      }
+
+      [
+        data.conversation_id,
+        activeConversation?.id,
+        activeConversation?.public_id,
+        keyScopeId,
+        keyScopePublicId,
+        activeGroup?.id,
+        activeGroup?.public_id,
+      ]
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .forEach((identifier) => {
+          delete conversationDetailsCache.current[identifier];
+        });
+
+      // Explicit retry token guarantees the handshake effect runs again.
       setEncryptionKey(null);
+      setHandshakeRetryToken((current) => current + 1);
       // Buffer the message to try again in a second
-      pendingMessages.current.push(data);
+      const isAlreadyBuffered = pendingMessages.current.some(
+        (pending) =>
+          pending.message_id === data.message_id &&
+          pending.conversation_id === data.conversation_id &&
+          pending.edited_at === data.edited_at
+      );
+      if (!isAlreadyBuffered) {
+        pendingMessages.current.push(data);
+      }
     }
   };
 
@@ -571,6 +755,63 @@ export const useChatManager = (user: any) => {
   }, [activeConversation?.id, user?.id]);
 
   useEffect(() => {
+    if (activeConversation?.type !== 'channel') {
+      return;
+    }
+
+    lastActiveChannelRef.current = {
+      id: activeConversation.id,
+      public_id: activeConversation.public_id || null,
+    };
+  }, [activeConversation?.id, activeConversation?.public_id, activeConversation?.type]);
+
+  useEffect(() => {
+    if (!activeGroup) return;
+
+    const channels = activeGroup.channels || [];
+    if (channels.length === 0) return;
+
+    const activeIsChannelInGroup = !!(
+      activeConversation &&
+      activeConversation.type === 'channel' &&
+      channels.some((channel) => matchesConversationIdentifier(channel, activeConversation.id) || (
+        activeConversation.public_id && matchesConversationIdentifier(channel, activeConversation.public_id)
+      ))
+    );
+
+    if (activeIsChannelInGroup) {
+      return;
+    }
+
+    const preferredIdentifier =
+      getPreferredChannelIdentifier(null) ||
+      activeGroup.default_channel_public_id ||
+      activeGroup.default_channel_id ||
+      null;
+    const fallbackChannel = pickInitialChannel(activeGroup, preferredIdentifier);
+
+    if (fallbackChannel.type !== 'channel') {
+      return;
+    }
+
+    if (activeConversation?.id === fallbackChannel.id) {
+      return;
+    }
+
+    resetLiveChatState();
+    setActiveConversation(fallbackChannel);
+  }, [
+    activeConversation?.id,
+    activeConversation?.public_id,
+    activeConversation?.type,
+    activeGroup?.id,
+    activeGroup?.public_id,
+    activeGroup?.default_channel_id,
+    activeGroup?.default_channel_public_id,
+    activeGroup?.channels,
+  ]);
+
+  useEffect(() => {
     if (!user?.id) return;
 
     const handleConversationUpdate = (data: any) => {
@@ -591,7 +832,12 @@ export const useChatManager = (user: any) => {
       patchConversationInState(updatedConversation);
 
       if (touchesActiveGroup && (keyVersionChanged || memberCountChanged)) {
-        void refreshActiveGroup(activeConversation?.public_id || activeConversation?.id);
+        const preferredChannelId =
+          lastActiveChannelRef.current?.public_id ||
+          lastActiveChannelRef.current?.id ||
+          activeConversation?.public_id ||
+          activeConversation?.id;
+        void refreshActiveGroup(preferredChannelId);
       }
     };
 
@@ -612,6 +858,7 @@ export const useChatManager = (user: any) => {
 
     const handleMemberLeave = (data: any) => {
       const conversationId = data?.conversation_id;
+      const conversationPublicId = data?.conversation_public_id || null;
       if (!conversationId) return;
 
       const affectedUserId =
@@ -624,6 +871,30 @@ export const useChatManager = (user: any) => {
       // Only force-close when this current user is the one removed.
       if (affectedUserId && String(affectedUserId) !== String(user.id)) {
         return;
+      }
+
+      // Purge all stale caches so that if the user re-joins later
+      // they start fresh — no old messages, no stale handshake keys.
+      const identifiers = [conversationId, conversationPublicId].filter(Boolean) as string[];
+      identifiers.forEach((id) => {
+        delete handshakeCache.current[id];
+        delete conversationDetailsCache.current[id];
+      });
+
+      // Clear the local IndexedDB message cache for this conversation
+      // (and its channels if it was a group) so the user won't see
+      // pre-kick messages if they rejoin.
+      messageStore.clearConversation(conversationId).catch(() => {});
+      if (activeGroup && matchesConversationIdentifier(activeGroup, conversationId)) {
+        (activeGroup.channels || []).forEach((channel) => {
+          messageStore.clearConversation(channel.id).catch(() => {});
+          if (channel.public_id) {
+            delete handshakeCache.current[channel.public_id];
+            delete conversationDetailsCache.current[channel.public_id];
+          }
+          delete handshakeCache.current[channel.id];
+          delete conversationDetailsCache.current[channel.id];
+        });
       }
 
       if (
@@ -665,9 +936,15 @@ export const useChatManager = (user: any) => {
   const refreshActiveGroup = async (preferredChannelId?: string | null) => {
     if (!activeGroup) return;
     try {
+      const preferredIdentifier =
+        getPreferredChannelIdentifier(preferredChannelId) ||
+        activeGroup.default_channel_public_id ||
+        activeGroup.default_channel_id ||
+        null;
+
       await openGroupByIdentifier(
         activeGroup.public_id || activeGroup.id,
-        preferredChannelId || activeConversation?.public_id || activeConversation?.id,
+        preferredIdentifier,
         activeGroup,
         { forceReload: true }
       );
@@ -682,6 +959,11 @@ export const useChatManager = (user: any) => {
       getCachedConversationDetails(updatedConversation.id) ||
       getCachedConversationDetails(updatedConversation.public_id) ||
       null;
+    const hasPatchChanges = (target: Conversation | null | undefined) =>
+      !!target &&
+      Object.entries(updatedConversation).some(
+        ([key, value]) => (target as any)[key] !== value
+      );
 
     if (cachedConversation) {
       storeConversationDetails({
@@ -694,6 +976,10 @@ export const useChatManager = (user: any) => {
       if (!prev) return prev;
 
       if (matchesConversationIdentifier(prev, conversationIdentifier)) {
+        if (!hasPatchChanges(prev)) {
+          return prev;
+        }
+
         return {
           ...prev,
           ...updatedConversation,
@@ -703,7 +989,7 @@ export const useChatManager = (user: any) => {
 
       const nextChannels = (prev.channels || []).map((channel) =>
         matchesConversationIdentifier(channel, conversationIdentifier)
-          ? { ...channel, ...updatedConversation }
+          ? (hasPatchChanges(channel) ? { ...channel, ...updatedConversation } : channel)
           : channel
       );
 
@@ -718,6 +1004,10 @@ export const useChatManager = (user: any) => {
 
     setActiveConversation((prev) => {
       if (!matchesConversationIdentifier(prev, conversationIdentifier)) {
+        return prev;
+      }
+
+      if (!hasPatchChanges(prev || null)) {
         return prev;
       }
 

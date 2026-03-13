@@ -1,6 +1,6 @@
 // src/Services/hooks/Chats/useMessageList.ts
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { deleteMessage, getMessageById, getMessages, Message, type Conversation } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
@@ -142,7 +142,21 @@ export const useMessageList = (
   onMessagesLoaded?: (messages: Message[]) => void
 ) => {
   const conversationId = conversation.id;
-  const peerUserId = conversation.type === 'dm' ? conversation.dm_user_id : undefined;
+  // Keep decryption context stable across non-key metadata updates
+  // (e.g. member_count / updated_at) to avoid unnecessary reload loops.
+  const decryptionConversation = useMemo(
+    () => conversation,
+    [
+      conversation.id,
+      conversation.public_id,
+      conversation.type,
+      conversation.parent_conversation_id,
+      conversation.parent_public_id,
+      conversation.owner_id,
+      conversation.dm_user_id,
+    ]
+  );
+  const peerUserId = decryptionConversation.type === 'dm' ? decryptionConversation.dm_user_id : undefined;
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -159,6 +173,11 @@ export const useMessageList = (
   const fetchingReplies = useRef<Set<string>>(new Set());
   const messagesRef = useRef<Message[]>([]);
   const prefetchingOlderRef = useRef(false);
+
+  // Track which conversation we last loaded so we can distinguish between
+  // a genuine conversation switch (needs full reset) and a key rotation
+  // within the same conversation (should preserve visible messages).
+  const lastLoadedConversationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     setReplyCache({});
@@ -196,14 +215,21 @@ export const useMessageList = (
     const initialLimit = Math.max(INITIAL_FETCH_SIZE, sessionSnapshot?.loadedCount ?? 0);
 
     const load = async () => {
-      setMessages([]);
-      setHasOlder(false);
-      setHasNewer(false);
-      setIsAtPresent(true);
-      setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
-      setGroupBreakBeforeIds(new Set());
-      setPrefetchingOlder(false);
-      setLoading(true);
+      // If the conversation hasn't changed, this is a key rotation —
+      // keep existing messages visible while we re-sync from the server.
+      const isKeyRotation = lastLoadedConversationIdRef.current === conversationId;
+      lastLoadedConversationIdRef.current = conversationId;
+
+      if (!isKeyRotation) {
+        setMessages([]);
+        setHasOlder(false);
+        setHasNewer(false);
+        setIsAtPresent(true);
+        setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
+        setGroupBreakBeforeIds(new Set());
+        setPrefetchingOlder(false);
+        setLoading(true);
+      }
 
       try {
         const { cached, syncPromise } = await messageSync.loadConversation(
@@ -213,7 +239,7 @@ export const useMessageList = (
             preferSessionCache: true,
             initialLimit,
             syncLimit: INITIAL_FETCH_SIZE,
-            conversation,
+            conversation: decryptionConversation,
             userId,
             peerUserId,
             currentKeyVersion,
@@ -224,7 +250,17 @@ export const useMessageList = (
 
         if (cached.messages.length > 0) {
           const uiMessages = sortMessages(cached.messages.map(toUIMessage));
-          setMessages(uiMessages);
+          if (isKeyRotation) {
+            setMessages((prev) => {
+              if (prev.length === 0) return uiMessages;
+              const unique = Array.from(
+                new Map([...prev, ...uiMessages].map((m) => [m.message_id, m])).values()
+              );
+              return trimMessages(unique, 'old');
+            });
+          } else {
+            setMessages(uiMessages);
+          }
           setHasOlder(resolveInitialHasOlder({
             localHasMore: cached.has_more,
             localCount: uiMessages.length,
@@ -268,7 +304,17 @@ export const useMessageList = (
           const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
           if (ignore) return;
           const freshUI = sortMessages(fresh.messages.map(toUIMessage));
-          setMessages(freshUI);
+          if (isKeyRotation) {
+            setMessages((prev) => {
+              if (freshUI.length === 0) return prev;
+              const unique = Array.from(
+                new Map([...prev, ...freshUI].map((m) => [m.message_id, m])).values()
+              );
+              return trimMessages(unique, 'old');
+            });
+          } else {
+            setMessages(freshUI);
+          }
           setHasOlder(resolveInitialHasOlder({
             localHasMore: fresh.has_more,
             localCount: freshUI.length,
@@ -289,7 +335,7 @@ export const useMessageList = (
 
     load();
     return () => { ignore = true; };
-  }, [conversation, conversationId, currentKeyVersion, encryptionKey, peerUserId, userId]);
+  }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, peerUserId, userId]);
 
   // ============== Handle Incoming New Messages ==============
   useEffect(() => {
@@ -433,7 +479,7 @@ export const useMessageList = (
         const serverResult = await getMessages(conversationId, encryptionKey, {
           before: oldest.message_id,
           limit: FETCH_SIZE,
-          conversation,
+          conversation: decryptionConversation,
           userId,
           peerUserId,
           currentKeyVersion,
@@ -457,7 +503,7 @@ export const useMessageList = (
           const serverResult = await getMessages(conversationId, encryptionKey, {
             before: oldest.message_id,
             limit: FETCH_SIZE,
-            conversation,
+            conversation: decryptionConversation,
             userId,
             peerUserId,
             currentKeyVersion,
@@ -490,7 +536,7 @@ export const useMessageList = (
         setLoadingOlder(false);
       }
     }
-  }, [applyOlderMessages, conversation, conversationId, currentKeyVersion, encryptionKey, hasOlder, loadingOlder, peerUserId, userId]);
+  }, [applyOlderMessages, conversationId, currentKeyVersion, decryptionConversation, encryptionKey, hasOlder, loadingOlder, peerUserId, userId]);
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
@@ -515,7 +561,7 @@ export const useMessageList = (
         const serverResult = await getMessages(conversationId, encryptionKey, {
           after: newest.message_id,
           limit: FETCH_SIZE,
-          conversation,
+          conversation: decryptionConversation,
           userId,
           peerUserId,
           currentKeyVersion,
@@ -557,7 +603,7 @@ export const useMessageList = (
     } finally {
       setLoadingNewer(false);
     }
-  }, [conversation, conversationId, currentKeyVersion, encryptionKey, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
+  }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
 
   // ============== Jump to Present ==============
   const jumpToPresent = useCallback(async () => {
@@ -616,7 +662,7 @@ export const useMessageList = (
             setReplyCache((prev) => ({ ...prev, [replyToId]: toUIMessage(local) }));
           } else {
             getMessageById(conversationId, replyToId, encryptionKey, {
-              conversation,
+              conversation: decryptionConversation,
               userId,
               peerUserId,
               currentKeyVersion,
@@ -642,7 +688,7 @@ export const useMessageList = (
     });
 
     return () => { ignore = true; };
-  }, [messages, replyCache, conversation, conversationId, currentKeyVersion, encryptionKey, peerUserId, userId]);
+  }, [messages, replyCache, conversationId, currentKeyVersion, decryptionConversation, encryptionKey, peerUserId, userId]);
 
   // ============== Delete (API + Local) ==============
   const handleDelete = async (messageId: string) => {

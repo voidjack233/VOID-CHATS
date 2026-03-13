@@ -671,6 +671,15 @@ export const keyManager = {
   clearAllKeys,
   importPublicKey,
   generateKeyFingerprint,
+  clearSharedSecret: async (userId: string, peerId: string): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(KEY_STORE, 'readwrite');
+      tx.objectStore(KEY_STORE).delete(`shared:${userId}:${peerId}`);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  },
   storeGroupKey: async (id: string, v: number, key: CryptoKey) => {
     const raw = await crypto.subtle.exportKey('raw', key);
     await dbPut({ id: `group:${id}:${v}`, key: arrayBufferToBase64(raw), version: v });

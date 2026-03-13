@@ -243,6 +243,8 @@ export const useMessageInput = ({
       if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
         setSlowmodeRemaining(err.retry_after_seconds);
         setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
+      } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
+        setSendError('Encryption keys changed. Please close and reopen this conversation, then try again.');
       } else {
         setSendError(err?.message || 'Failed to send message');
       }

@@ -103,6 +103,14 @@ const ChatDashboard = () => {
       : `/chats/${groupRouteId}`;
   };
 
+  const matchesConversationIdentifier = (
+    conversation?: { id?: string; public_id?: string | null } | null,
+    identifier?: string | null
+  ) => {
+    if (!conversation || !identifier) return false;
+    return conversation.id === identifier || conversation.public_id === identifier;
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -111,6 +119,14 @@ const ChatDashboard = () => {
 
       try {
         if (dmConversationId) {
+          const dmAlreadyHydrated =
+            !activeGroup &&
+            activeConversation?.type === 'dm' &&
+            matchesConversationIdentifier(activeConversation, dmConversationId);
+          if (dmAlreadyHydrated) {
+            return;
+          }
+
           const conversation = await openConversationByIdentifier(dmConversationId);
           if (!cancelled && conversation?.type !== 'dm') {
             handleBackToMe();
@@ -120,6 +136,12 @@ const ChatDashboard = () => {
         }
 
         if (groupConversationId) {
+          const groupMatchesRoute = matchesConversationIdentifier(activeGroup, groupConversationId);
+          const channelMatchesRoute = !channelConversationId || matchesConversationIdentifier(activeConversation, channelConversationId);
+          if (groupMatchesRoute && channelMatchesRoute) {
+            return;
+          }
+
           const result = await openGroupByIdentifier(groupConversationId, channelConversationId || null);
           if (cancelled) return;
 
@@ -133,7 +155,10 @@ const ChatDashboard = () => {
         handleBackToMe();
       } catch (err) {
         if (cancelled) return;
-        console.error('Failed to sync chat route:', err);
+        const reason = err instanceof Error ? err.message : String(err || '');
+        if (!reason.includes('Not a member of this conversation')) {
+          console.error('Failed to sync chat route:', err);
+        }
         handleBackToMe();
         navigate('/chats', { replace: true });
       }
@@ -144,6 +169,11 @@ const ChatDashboard = () => {
       cancelled = true;
     };
   }, [
+    activeConversation?.id,
+    activeConversation?.public_id,
+    activeConversation?.type,
+    activeGroup?.id,
+    activeGroup?.public_id,
     loading,
     user?.id,
     dmConversationId,
@@ -221,7 +251,7 @@ const ChatDashboard = () => {
     }
 
     if (error.includes('distribution')) {
-      return 'This account does not have a usable group key yet. Ask the group owner to rotate or re-distribute the latest group key.';
+      return 'This account does not have a usable group key yet. Ask the group owner to resend key distribution for your account.';
     }
 
     return 'The other user needs to initialize their encryption keys. Ask them to log in to secure this conversation.';
@@ -322,7 +352,9 @@ const ChatDashboard = () => {
             setConvRefresh((n) => n + 1);
 
             if (activeGroup) {
-              await refreshActiveGroup(activeConversation?.public_id || activeConversation?.id);
+              await refreshActiveGroup(
+                channelConversationId || activeConversation?.public_id || activeConversation?.id
+              );
             }
           }}
           onClose={() => setShowConvSettings(false)}

@@ -29,6 +29,64 @@ function conversationPublicId(conversation) {
   return conversation?.public_id ? String(conversation.public_id) : null;
 }
 
+function normalizeKeyVersion(value, fallback = 1) {
+  const parsed = parseInt(String(value ?? fallback), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function getConversationKeyState(conversation, userId) {
+  if (!conversation || conversation.type === 'dm') {
+    return {
+      currentKeyVersion: 1,
+      historyStartVersion: 1,
+      joinedAt: null,
+      role: null,
+    };
+  }
+
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const result = await pool.query(
+    'SELECT c.current_key_version, cm.history_start_version, cm.joined_at, cm.role FROM conversations c JOIN conversation_members cm ON cm.conversation_id = c.id WHERE c.id = $1 AND cm.user_id = $2 LIMIT 1',
+    [keyConversationId, userId]
+  );
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  return {
+    currentKeyVersion: normalizeKeyVersion(result.rows[0].current_key_version, 1),
+    historyStartVersion: normalizeKeyVersion(result.rows[0].history_start_version, 1),
+    joinedAt: result.rows[0].joined_at ? new Date(result.rows[0].joined_at).toISOString() : null,
+    role: result.rows[0].role || null,
+  };
+}
+
+function canAccessMessageForHistory(message, keyState) {
+  if (!keyState) return false;
+
+  if (normalizeKeyVersion(message.key_version, 1) < keyState.historyStartVersion) {
+    return false;
+  }
+
+  if (keyState.role === 'owner') {
+    return true;
+  }
+
+  if (!keyState.joinedAt || !message.created_at) {
+    return true;
+  }
+
+  const joinedAt = Date.parse(keyState.joinedAt);
+  const createdAt = Date.parse(message.created_at);
+
+  if (Number.isNaN(joinedAt) || Number.isNaN(createdAt)) {
+    return true;
+  }
+
+  return createdAt >= joinedAt;
+}
+
 // PUT /:emoji — toggle reaction
 router.put('/:emoji', async (req, res) => {
   const userId = req.user.id;
@@ -55,6 +113,33 @@ router.put('/:emoji', async (req, res) => {
     const convUuid = cassandra.types.Uuid.fromString(conversationId);
     const msgUuid = cassandra.types.TimeUuid.fromString(messageId);
     const userUuid = cassandra.types.Uuid.fromString(userId);
+
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ error: 'Missing group key membership state' });
+    }
+
+    if (conversation.type !== 'dm') {
+      const visibilityResult = await scylla.execute(
+        'SELECT message_id, key_version, created_at FROM messages WHERE conversation_id = ? AND message_id = ?',
+        [convUuid, msgUuid],
+        { prepare: true }
+      );
+
+      if (visibilityResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+
+      const row = visibilityResult.rows[0];
+      const historyProbe = {
+        key_version: row.key_version,
+        created_at: row.created_at?.toISOString() || null,
+      };
+
+      if (!canAccessMessageForHistory(historyProbe, keyState)) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
+    }
 
     const existing = await scylla.execute(
       `SELECT user_id FROM message_reactions
