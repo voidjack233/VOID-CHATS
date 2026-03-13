@@ -65,6 +65,7 @@ const ChatDashboard = () => {
     encryptionKey,
     keyVersion,
     encryptionError,
+    typingUsers,
     newMessage,
     editingMessage,
     replyTo,
@@ -213,6 +214,22 @@ const ChatDashboard = () => {
 
   const displayConversation = activeGroup || activeConversation;
   const activeChannels = activeGroup?.channels || [];
+  const typingParticipants = useMemo(() => {
+    if (!activeConversation) return [];
+
+    return Object.entries(typingUsers)
+      .filter(([typingUserId]) => typingUserId !== user?.id)
+      .sort(([, a], [, b]) => b - a)
+      .map(([typingUserId]) => {
+        const member = messageDisplayMembers[typingUserId] || members[typingUserId];
+        return {
+          userId: typingUserId,
+          displayName: member?.display_name || member?.username || 'Someone',
+          username: member?.username || null,
+          avatarUrl: member?.avatar_url || null,
+        };
+      });
+  }, [activeConversation?.id, members, messageDisplayMembers, typingUsers, user?.id]);
   const dmPeer = displayConversation?.type === 'dm'
     ? Object.values(members).find(
         (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) => member.user_id !== user?.id
@@ -534,6 +551,7 @@ const ChatDashboard = () => {
                     keyVersion={keyVersion}
                     encryptionError={encryptionError}
                     members={messageDisplayMembers}
+                    typingParticipants={typingParticipants}
                     onReply={(msg) => setReplyTo(msg)}
                     onEdit={(msg) => setEditingMessage(msg)}
                     newMessage={newMessage}

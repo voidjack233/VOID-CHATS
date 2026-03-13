@@ -27,6 +27,7 @@ export const useChatManager = (user: any) => {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [messageUpdate, setMessageUpdate] = useState<{ message_id: string; content: string; is_edited: boolean; edited_at: string } | null>(null);
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
+  const [typingUsers, setTypingUsers] = useState<Record<string, number>>({});
   const [handshakeRetryToken, setHandshakeRetryToken] = useState(0);
 
   const handshakeCache = useRef<Record<string, {
@@ -719,6 +720,16 @@ export const useChatManager = (user: any) => {
     if (!user?.id) return;
     const handleMessage = async (data: any) => {
       if (data.conversation_id === activeConversation?.id) {
+        if (data.sender_id) {
+          setTypingUsers((prev) => {
+            const senderId = String(data.sender_id);
+            if (!prev[senderId]) return prev;
+            const next = { ...prev };
+            delete next[senderId];
+            return next;
+          });
+        }
+
         if (encryptionKey) {
           await attemptDecryption(data, encryptionKey);
         } else {
@@ -764,6 +775,53 @@ export const useChatManager = (user: any) => {
       public_id: activeConversation.public_id || null,
     };
   }, [activeConversation?.id, activeConversation?.public_id, activeConversation?.type]);
+
+  useEffect(() => {
+    setTypingUsers({});
+  }, [activeConversation?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const handleTypingStart = (data: any) => {
+      const conversationId = data?.conversation_id;
+      const typingUserId = data?.user_id;
+      if (!conversationId || !typingUserId || !activeConversation?.id) return;
+      if (String(conversationId) !== String(activeConversation.id)) return;
+      if (String(typingUserId) === String(user.id)) return;
+
+      setTypingUsers((prev) => ({
+        ...prev,
+        [String(typingUserId)]: Date.now(),
+      }));
+    };
+
+    gateway.on('TYPING_START', handleTypingStart);
+    return () => gateway.off('TYPING_START', handleTypingStart);
+  }, [activeConversation?.id, user?.id]);
+
+  useEffect(() => {
+    if (Object.keys(typingUsers).length === 0) return;
+
+    const timer = window.setInterval(() => {
+      const cutoff = Date.now() - 4500;
+      setTypingUsers((prev) => {
+        let changed = false;
+        const next: Record<string, number> = {};
+        Object.entries(prev).forEach(([typingUserId, timestamp]) => {
+          if (timestamp >= cutoff) {
+            next[typingUserId] = timestamp;
+          } else {
+            changed = true;
+          }
+        });
+
+        return changed ? next : prev;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [typingUsers]);
 
   useEffect(() => {
     if (!activeGroup) return;
@@ -1031,6 +1089,7 @@ export const useChatManager = (user: any) => {
 
   return {
     members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError,
+    typingUsers,
     newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
     handleSelectConversation, handleSelectChannel, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,

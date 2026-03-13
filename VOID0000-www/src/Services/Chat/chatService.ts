@@ -764,6 +764,17 @@ export async function sendImageOnlyMessage(
   return { ...data.message, attachments };
 }
 
+export async function sendTypingStart(
+  conversationId: string
+): Promise<void> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages/typing`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+}
+
 export async function uploadAttachments(
   conversationId: string,
   files: Array<{ data: string }>

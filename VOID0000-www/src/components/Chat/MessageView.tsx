@@ -64,6 +64,12 @@ interface MessageViewProps {
   keyVersion?: number;
   encryptionError?: string | null;
   members: Record<string, ConversationMember>;
+  typingParticipants?: Array<{
+    userId: string;
+    displayName: string;
+    username?: string | null;
+    avatarUrl?: string | null;
+  }>;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   newMessage?: Message | null;
@@ -73,12 +79,17 @@ interface MessageViewProps {
   messageDelete?: { message_id: string } | null;
 }
 
+type MessageListItem =
+  | { kind: 'message'; message: Message }
+  | { kind: 'typing'; id: 'typing-indicator' };
+
 const MessageView = ({
   conversation,
   encryptionKey,
   keyVersion,
   encryptionError,
   members,
+  typingParticipants = [],
   onReply,
   onEdit,
   newMessage,
@@ -170,7 +181,7 @@ const MessageView = ({
   }, []);
 
   useLayoutEffect(() => {
-    canLoadOlderRef.current = false;
+    canLoadOlderRef.current = true;
     lastOlderTriggerMessageIdRef.current = null;
     lastRangeStartIndexRef.current = null;
     pendingStartReachedRef.current = false;
@@ -179,6 +190,12 @@ const MessageView = ({
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
   }, [conversation.id]);
+
+  useEffect(() => {
+    if (!loadingOlder && !prefetchingOlder) {
+      topLoadLockedRef.current = false;
+    }
+  }, [loadingOlder, prefetchingOlder, visualMessages.length]);
 
   useEffect(() => {
     if (!newMessage) return;
@@ -251,6 +268,7 @@ const MessageView = ({
 
     if (relativeStartIndex > 6) {
       topLoadLockedRef.current = false;
+      lastOlderTriggerMessageIdRef.current = null;
     }
 
     if (
@@ -539,6 +557,63 @@ const MessageView = ({
   const replyFontSize = Math.max(11, chatFontScale - 2);
   const bubbleFontSize = chatFontScale;
   const encryptedFontSize = Math.max(10, chatFontScale - 3);
+  const typingVisibleParticipants = typingParticipants.slice(0, 3);
+  const typingOverflowCount = Math.max(0, typingParticipants.length - typingVisibleParticipants.length);
+  const typingText = (() => {
+    const names = typingParticipants
+      .map((participant) => normalizeText(participant.displayName) || normalizeText(participant.username) || 'Someone')
+      .filter(Boolean) as string[];
+
+    if (names.length === 0) return '';
+    if (names.length === 1) return `${names[0]} is typing...`;
+    if (names.length === 2) return `${names[0]} and ${names[1]} are typing...`;
+    if (names.length === 3) return `${names[0]}, ${names[1]}, ${names[2]} are typing...`;
+    return `${names[0]}, ${names[1]} and others are typing...`;
+  })();
+  const listItems: MessageListItem[] = [
+    ...visualMessages.map((message) => ({
+      kind: 'message' as const,
+      message,
+    })),
+    ...(typingText ? [{ kind: 'typing' as const, id: 'typing-indicator' as const }] : []),
+  ];
+
+  const renderTypingIndicatorRow = () => {
+    if (!typingText) return null;
+
+    return (
+      <div className="px-2 pb-2 pt-1">
+        <div className="flex max-w-full items-center gap-2">
+          {typingOverflowCount > 0 && (
+            <span className="rounded-full bg-void-bg-hover px-1.5 py-0.5 text-[10px] font-semibold text-void-text-muted">
+              +{typingOverflowCount}
+            </span>
+          )}
+
+          <div className="flex items-center pr-0.5">
+            {typingVisibleParticipants.map((participant, index) => (
+              <div
+                key={participant.userId}
+                className={`h-5 w-5 overflow-hidden rounded-full ring-2 ring-void-bg-main ${index === 0 ? '' : '-ml-1.5'}`}
+              >
+                <UserAvatar
+                  src={participant.avatarUrl}
+                  displayName={participant.displayName}
+                  username={participant.username}
+                  className="h-5 w-5 rounded-full"
+                  fallbackClassName="text-[9px]"
+                />
+              </div>
+            ))}
+          </div>
+
+          <span className="max-w-full truncate rounded-2xl bg-void-bg-hover px-3 py-1.5 text-xs text-void-text-muted">
+            {typingText}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   // ============== Virtuoso itemContent ==============
   const renderMessage = (index: number, msg: Message) => {
@@ -806,8 +881,8 @@ const MessageView = ({
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         className="flex-1 min-h-0"
-        data={visualMessages}
-        computeItemKey={(_index, msg) => msg.message_id}
+        data={listItems}
+        computeItemKey={(_index, item) => item.kind === 'message' ? item.message.message_id : item.id}
         firstItemIndex={firstItemIndex}
         atBottomThreshold={12}
         alignToBottom
@@ -841,7 +916,11 @@ const MessageView = ({
         endReached={() => {
           if (!isAtPresent && hasNewer) loadNewer();
         }}
-        itemContent={renderMessage}
+        itemContent={(index, item) => (
+          item.kind === 'message'
+            ? renderMessage(index, item.message)
+            : renderTypingIndicatorRow()
+        )}
         components={{
           ScrollSeekPlaceholder: renderScrollSeekPlaceholder,
           Header: () => {

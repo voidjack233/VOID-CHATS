@@ -1,6 +1,6 @@
 // src/Services/hooks/Chats/useMessageInput.ts
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { sendMessage, sendImageOnlyMessage, editMessage, uploadAttachments, Message, Conversation } from '../../Chat/chatService';
+import { sendMessage, sendImageOnlyMessage, editMessage, uploadAttachments, sendTypingStart, Message, Conversation } from '../../Chat/chatService';
 
 export interface PendingAttachment {
   id: string;
@@ -42,6 +42,7 @@ export const useMessageInput = ({
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sendError, setSendError] = useState('');
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
+  const lastTypingSentAtRef = useRef(0);
 
   // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -68,6 +69,7 @@ export const useMessageInput = ({
     setAttachments([]);
     setSendError('');
     setSlowmodeRemaining(0);
+    lastTypingSentAtRef.current = 0;
   }, [conversation.id]);
 
   useEffect(() => {
@@ -183,6 +185,43 @@ export const useMessageInput = ({
       setSendError('');
     }
   }, [sendError, slowmodeRemaining]);
+
+  useEffect(() => {
+    const isTypingEligible =
+      !!encryptionKey &&
+      !sending &&
+      text.trim().length > 0 &&
+      !editingMessage;
+
+    if (!isTypingEligible) {
+      return;
+    }
+
+    let cancelled = false;
+    const emitTyping = async () => {
+      const now = Date.now();
+      if (now - lastTypingSentAtRef.current < 2200) return;
+
+      lastTypingSentAtRef.current = now;
+      try {
+        await sendTypingStart(conversation.id);
+      } catch {
+        // Typing signals are best-effort and should never block input.
+      }
+    };
+
+    void emitTyping();
+    const timer = window.setInterval(() => {
+      if (!cancelled) {
+        void emitTyping();
+      }
+    }, 2200);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [conversation.id, editingMessage, encryptionKey, sending, text]);
 
   const handleSend = async () => {
     if (!canSend) return;
