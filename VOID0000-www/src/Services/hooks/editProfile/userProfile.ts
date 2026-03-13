@@ -113,6 +113,7 @@ export const useUserProfile = (profileId: string) => {
     try {
       setSaving(true);
       setError(null);
+      const normalizedDisplayName = (tempProfile.display_name || '').trim();
 
       const headers = await getAuthHeaders();
 
@@ -121,7 +122,7 @@ export const useUserProfile = (profileId: string) => {
         headers,
         credentials: 'include',
         body: JSON.stringify({
-          display_name: tempProfile.display_name,
+          display_name: normalizedDisplayName,
           bio: tempProfile.bio,
         }),
       });
@@ -132,7 +133,7 @@ export const useUserProfile = (profileId: string) => {
 
       const newProfileData = {
         ...profile!,
-        display_name: updatedProfile.display_name,
+        display_name: updatedProfile.display_name ?? normalizedDisplayName,
         bio: updatedProfile.bio
       };
 

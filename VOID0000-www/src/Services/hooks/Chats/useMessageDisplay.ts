@@ -3,6 +3,11 @@ import { useCallback } from 'react';
 import { useUser } from '../../Auth/UserContext';
 import { ConversationMember } from '../../Chat/chatService';
 
+const normalizeName = (value?: string | null) => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 export const useMessageDisplay = (
   members: Record<string, ConversationMember>,
   userAvatar?: string
@@ -14,24 +19,20 @@ export const useMessageDisplay = (
   }, []);
 
 const getSenderName = useCallback((senderId: string) => {
-    // FIX: Prioritize the current user's display_name before falling back to username
     if (senderId === user?.id) {
-      return user?.display_name || user?.username || 'You';
+      return normalizeName(user?.display_name) || normalizeName(user?.username) || 'You';
     }
-    
-    // For other members, it was already doing it correctly!
+
     const member = members[senderId];
-    return member?.display_name || member?.username || senderId.substring(0, 8);
+    return normalizeName(member?.display_name) || normalizeName(member?.username) || senderId.substring(0, 8);
   }, [user, members]);
 
   const getSenderAvatarUrl = useCallback((senderId: string) => {
-    // 1. Current user
     if (senderId === user?.id && userAvatar) return userAvatar;
-    
-    // 2. Other members
+
     const member = members[senderId];
     return member?.avatar_url || null;
-  }, [user, userAvatar, members, getSenderName]);
+  }, [user, userAvatar, members]);
 
   return { formatTime, getSenderName, getSenderAvatarUrl };
 };

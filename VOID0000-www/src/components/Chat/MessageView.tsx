@@ -43,6 +43,11 @@ const DENSITY: Record<Density, {
 const AVATAR_OFFSET = 'pl-10';
 const GROUP_TIME_WINDOW_MS = 5 * 60 * 1000;
 
+const normalizeText = (value?: string | null) => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const isSameDay = (a: string, b: string) => {
   const da = new Date(a);
   const db = new Date(b);
@@ -145,7 +150,6 @@ const MessageView = ({
   const pendingStartReachedRef = useRef(false);
   const topLoadLockedRef = useRef(false);
   const scrollSeekActiveRef = useRef(false);
-  const layoutCacheRef = useRef<Record<string, { startsGroup: boolean; showDateSeparator: boolean }>>({});
   const scrollerRef = useRef<HTMLElement | null>(null);
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
@@ -174,7 +178,6 @@ const MessageView = ({
     pendingStartReachedRef.current = false;
     topLoadLockedRef.current = false;
     scrollSeekActiveRef.current = false;
-    layoutCacheRef.current = {};
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
     setVisibleStartIndex(null);
@@ -373,14 +376,28 @@ const MessageView = ({
 
   const getSmartDisplayName = useCallback((senderId: string) => {
     if (senderId === user?.id) {
-      return myProfile?.display_name || user?.username || 'You';
+      return normalizeText(myProfile?.display_name) || normalizeText(user?.username) || 'You';
     }
     const friend = friends.find(f => f.id === senderId);
-    if (friend && friend.display_name) {
-      return friend.display_name;
+    const friendDisplayName = normalizeText(friend?.display_name);
+    if (friendDisplayName) {
+      return friendDisplayName;
+    }
+    const friendUsername = normalizeText(friend?.username);
+    if (friendUsername) {
+      return friendUsername;
     }
     return getSenderName(senderId);
   }, [user, myProfile, friends, getSenderName]);
+
+  const getSmartUsername = useCallback((senderId: string) => {
+    if (senderId === user?.id) {
+      return normalizeText(user?.username);
+    }
+
+    const friend = friends.find((f) => f.id === senderId);
+    return normalizeText(friend?.username) || normalizeText(members[senderId]?.username);
+  }, [friends, members, user?.id, user?.username]);
 
   const handleProfileClick = useCallback((senderId: string) => {
     if (senderId === user?.id && user?.profile_id) {
@@ -443,19 +460,19 @@ const MessageView = ({
 
   const conversationStartLabel =
     conversation.type === 'dm'
-      ? dmIntroMember?.display_name ||
-        dmIntroFriend?.display_name ||
-        conversation.dm_display_name ||
-        dmIntroMember?.username ||
-        dmIntroFriend?.username ||
-        conversation.dm_username ||
+      ? normalizeText(dmIntroMember?.display_name) ||
+        normalizeText(dmIntroFriend?.display_name) ||
+        normalizeText(conversation.dm_display_name) ||
+        normalizeText(dmIntroMember?.username) ||
+        normalizeText(dmIntroFriend?.username) ||
+        normalizeText(conversation.dm_username) ||
         'Direct message'
-      : conversation.name || 'this conversation';
+      : normalizeText(conversation.name) || 'this conversation';
   const conversationStartAvatar =
     dmIntroMember?.avatar_url || dmIntroFriend?.avatar_url || conversation.dm_avatar_url || null;
   const conversationStartUsername =
     conversation.type === 'dm'
-      ? dmIntroMember?.username || dmIntroFriend?.username || conversation.dm_username || null
+      ? normalizeText(dmIntroMember?.username) || normalizeText(dmIntroFriend?.username) || normalizeText(conversation.dm_username) || null
       : null;
   const conversationStartUserId =
     dmIntroMember?.user_id || dmIntroFriend?.id || conversation.dm_user_id || null;
@@ -473,6 +490,37 @@ const MessageView = ({
     conversationStartLabel || '',
     conversationStartAvatar || '',
   ].join(':');
+
+  const layoutTraitsById = useMemo(() => {
+    const next: Record<string, { startsGroup: boolean; showDateSeparator: boolean }> = {};
+
+    for (let i = 0; i < visualMessages.length; i += 1) {
+      const msg = visualMessages[i];
+      if (!msg) continue;
+      const prev = i > 0 ? visualMessages[i - 1] : null;
+      const hasUnknownPreviousContext = i === 0 && hasOlder;
+      const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
+      const showDateSeparator =
+        (!prev && !hasUnknownPreviousContext) ||
+        (!!prev && !isSameDay(msg.created_at, prev.created_at));
+      const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
+      const startsGroup =
+        hasUnknownPreviousContext ||
+        hasPaginationBreak ||
+        !!msg.reply_to ||
+        (!prev && !hasUnknownPreviousContext) ||
+        (!!prev && (
+          prev.sender_id !== msg.sender_id ||
+          prev.message_type !== msg.message_type ||
+          showDateSeparator ||
+          timeDiff >= GROUP_TIME_WINDOW_MS
+        ));
+
+      next[msg.message_id] = { startsGroup, showDateSeparator };
+    }
+
+    return next;
+  }, [groupBreakBeforeIds, hasOlder, visualMessages]);
 
   if (encryptionError) return (
     <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center">
@@ -505,31 +553,8 @@ const MessageView = ({
     const d = DENSITY[density];
     const isOwn = msg.sender_id === user?.id;
     const isRightAligned = isOwn && density === 'comfortable';
-    let traits = layoutCacheRef.current[msg.message_id];
-
-    if (!traits) {
-      const prev = listIndex > 0 ? visualMessages[listIndex - 1] : null;
-      const hasUnknownPreviousContext = listIndex === 0 && hasOlder;
-      const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
-      const showDateSeparator =
-        (!prev && !hasUnknownPreviousContext) ||
-        (!!prev && !isSameDay(msg.created_at, prev.created_at));
-      const timeDiff = prev ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime() : 0;
-      const startsGroup =
-        hasUnknownPreviousContext ||
-        hasPaginationBreak ||
-        !!msg.reply_to ||
-        (!prev && !hasUnknownPreviousContext) ||
-        (!!prev && (
-          prev.sender_id !== msg.sender_id ||
-          prev.message_type !== msg.message_type ||
-          showDateSeparator ||
-          timeDiff >= GROUP_TIME_WINDOW_MS
-        ));
-
-      traits = { startsGroup, showDateSeparator };
-      layoutCacheRef.current[msg.message_id] = traits;
-    }
+    const traits = layoutTraitsById[msg.message_id]
+      || { startsGroup: true, showDateSeparator: listIndex === 0 && !hasOlder };
 
     const { startsGroup, showDateSeparator } = traits;
     const showViewportSenderMeta = visibleStartIndex === index && listIndex > 0 && !startsGroup;
@@ -598,7 +623,7 @@ const MessageView = ({
               <UserAvatar
                 src={getSenderAvatarUrl(msg.sender_id)}
                 displayName={getSmartDisplayName(msg.sender_id)}
-                username={members[msg.sender_id]?.username}
+                username={getSmartUsername(msg.sender_id)}
                 alt="avatar"
                 className="w-full h-full rounded-full"
                 fallbackClassName="text-xs"
