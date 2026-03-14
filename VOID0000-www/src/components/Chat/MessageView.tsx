@@ -621,6 +621,7 @@ const MessageView = ({
     const d = DENSITY[density];
     const isSystem = msg.message_type === 'system';
     const isOwn = msg.sender_id === user?.id;
+    const isSending = msg.local_status === 'sending';
     const isRightAligned = isOwn && density === 'comfortable';
     const traits = layoutTraitsById[msg.message_id]
       || { startsGroup: true, showDateSeparator: listIndex === 0 && !hasOlder };
@@ -707,10 +708,14 @@ const MessageView = ({
         )}
 
         <div
-          onMouseEnter={() => setHoveredId(msg.message_id)}
+          onMouseEnter={() => {
+            if (!isSending) setHoveredId(msg.message_id);
+          }}
           onMouseLeave={() => setHoveredId(null)}
-          onContextMenu={(e) => handleContextMenu(e, msg)}
-          className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full group/msg ${rowIndent}`}
+          onContextMenu={(e) => {
+            if (!isSending) handleContextMenu(e, msg);
+          }}
+          className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full group/msg ${rowIndent} ${isSending ? 'opacity-65 saturate-50' : ''}`}
         >
           {showAvatar && (
             <div
@@ -787,7 +792,7 @@ const MessageView = ({
                     : isOwn
                       ? 'rounded-bl-sm bg-void-accent text-white'
                       : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                }`}
+                } ${isSending ? 'brightness-90' : ''}`}
                   style={{ fontSize: `${bubbleFontSize}px` }}
                 >
                   {hasRealContent ? msg.content : <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>encrypted</span>}
@@ -809,7 +814,8 @@ const MessageView = ({
                     <button
                       key={i}
                       onClick={() => setImageViewer({ urls: rawUrls, index: i })}
-                      className="block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square"
+                      disabled={isSending}
+                      className={`block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square ${isSending ? 'cursor-not-allowed' : ''}`}
                     >
                       <BlurImage
                         src={attachment.url}
@@ -842,9 +848,17 @@ const MessageView = ({
                 />
               </div>
             )}
+
+            {isSending && (
+              <div className={`pt-1 ${isRightAligned ? 'text-right' : 'text-left'}`}>
+                <span className="text-[10px] italic text-void-text-muted">
+                  sending...
+                </span>
+              </div>
+            )}
           </div>
 
-          {hoveredId === msg.message_id && !msg.is_deleted && (
+          {hoveredId === msg.message_id && !msg.is_deleted && !isSending && (
             <div
               data-msg-id={msg.message_id}
               className="flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 opacity-0 group-hover/msg:opacity-100 transition-opacity"

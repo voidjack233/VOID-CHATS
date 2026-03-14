@@ -1,5 +1,5 @@
 // src/Services/Crypto/keyManager.ts
-import { generateMnemonic, validateMnemonic } from '@scure/bip39';
+import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 const DB_NAME = 'void_crypto';
@@ -107,6 +107,39 @@ async function generateKeyFingerprint(publicKeyBase64: string): Promise<string> 
 // ============== Password-Based Key Encryption (for backup) ==============
 
 const PBKDF2_ITERATIONS = 600000;
+const RECOVERY_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+interface RecoveryCodeFormat {
+  payloadLength: number;
+  totalLength: number;
+  groupSizes: readonly number[];
+}
+
+// New default: 6 blocks (1..6 in UI)
+const DEFAULT_RECOVERY_CODE_FORMAT: RecoveryCodeFormat = {
+  payloadLength: 29,
+  totalLength: 30,
+  groupSizes: [5, 5, 5, 5, 5, 5] as const,
+};
+
+// Legacy activation-key format support (already-issued codes)
+const LEGACY_RECOVERY_CODE_FORMAT: RecoveryCodeFormat = {
+  payloadLength: 25,
+  totalLength: 26,
+  groupSizes: [5, 5, 5, 5, 6] as const,
+};
+
+const ACCEPTED_RECOVERY_CODE_FORMATS: readonly RecoveryCodeFormat[] = [
+  DEFAULT_RECOVERY_CODE_FORMAT,
+  LEGACY_RECOVERY_CODE_FORMAT,
+];
+
+type RecoverySecretKind = 'phrase' | 'activation_code';
+
+interface ParsedRecoverySecret {
+  kind: RecoverySecretKind;
+  normalized: string;
+}
 
 function normalizeRecoveryPhrase(phrase: string): string {
   return phrase
@@ -117,8 +150,100 @@ function normalizeRecoveryPhrase(phrase: string): string {
     .join(' ');
 }
 
+function normalizeRecoveryCode(value: string): string {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '')
+    .replace(/I/g, '1')
+    .replace(/L/g, '1')
+    .replace(/O/g, '0');
+}
+
+function formatRecoveryCode(compact: string, groupSizes: readonly number[]): string {
+  const groups: string[] = [];
+  let offset = 0;
+  for (const groupSize of groupSizes) {
+    groups.push(compact.slice(offset, offset + groupSize));
+    offset += groupSize;
+  }
+  return groups.filter(Boolean).join('-');
+}
+
+function computeRecoveryCodeChecksum(payload: string): string {
+  let acc = 17;
+  for (const char of payload) {
+    const charIndex = RECOVERY_CODE_ALPHABET.indexOf(char);
+    if (charIndex < 0) {
+      throw new Error('INVALID_RECOVERY_PHRASE');
+    }
+    acc = (acc * 33 + charIndex) % RECOVERY_CODE_ALPHABET.length;
+  }
+  return RECOVERY_CODE_ALPHABET.charAt(acc);
+}
+
+function isValidRecoveryCodeForFormat(compact: string, format: RecoveryCodeFormat): boolean {
+  if (compact.length !== format.totalLength) {
+    return false;
+  }
+
+  const payload = compact.slice(0, format.payloadLength);
+  const checksum = compact.slice(format.payloadLength);
+  if (!payload || checksum.length !== 1) {
+    return false;
+  }
+
+  if (!/^[0-9A-HJKMNPQRSTVWXYZ]+$/.test(payload)) {
+    return false;
+  }
+  if (!/^[0-9A-HJKMNPQRSTVWXYZ]$/.test(checksum)) {
+    return false;
+  }
+
+  return computeRecoveryCodeChecksum(payload) === checksum;
+}
+
+function isValidRecoveryCode(compact: string): boolean {
+  return ACCEPTED_RECOVERY_CODE_FORMATS.some((format) =>
+    isValidRecoveryCodeForFormat(compact, format)
+  );
+}
+
+function parseRecoverySecret(value: string): ParsedRecoverySecret | null {
+  const normalizedPhrase = normalizeRecoveryPhrase(value);
+  if (validateMnemonic(normalizedPhrase, wordlist)) {
+    return {
+      kind: 'phrase',
+      normalized: normalizedPhrase,
+    };
+  }
+
+  const normalizedCode = normalizeRecoveryCode(value);
+  if (isValidRecoveryCode(normalizedCode)) {
+    return {
+      kind: 'activation_code',
+      normalized: normalizedCode,
+    };
+  }
+
+  return null;
+}
+
+function generateRecoveryCode(): string {
+  const random = crypto.getRandomValues(new Uint8Array(DEFAULT_RECOVERY_CODE_FORMAT.payloadLength));
+  let payload = '';
+  for (let index = 0; index < random.length; index += 1) {
+    payload += RECOVERY_CODE_ALPHABET[random[index]! & 31];
+  }
+  const checksum = computeRecoveryCodeChecksum(payload);
+  return formatRecoveryCode(
+    `${payload}${checksum}`,
+    DEFAULT_RECOVERY_CODE_FORMAT.groupSizes
+  );
+}
+
 function isValidRecoveryPhrase(phrase: string): boolean {
-  return validateMnemonic(normalizeRecoveryPhrase(phrase), wordlist);
+  return parseRecoverySecret(phrase) !== null;
 }
 
 async function deriveKeyFromSecret(secret: string, salt: Uint8Array): Promise<CryptoKey> {
@@ -150,12 +275,16 @@ async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promis
 }
 
 async function deriveKeyFromRecoveryPhrase(recoveryPhrase: string, salt: Uint8Array): Promise<CryptoKey> {
-  const normalizedPhrase = normalizeRecoveryPhrase(recoveryPhrase);
-  if (!isValidRecoveryPhrase(normalizedPhrase)) {
+  const parsed = parseRecoverySecret(recoveryPhrase);
+  if (!parsed) {
     throw new Error('INVALID_RECOVERY_PHRASE');
   }
 
-  return deriveKeyFromSecret(`recovery:${normalizedPhrase}`, salt);
+  if (parsed.kind === 'phrase') {
+    return deriveKeyFromSecret(`recovery:${parsed.normalized}`, salt);
+  }
+
+  return deriveKeyFromSecret(`recovery_code:${parsed.normalized}`, salt);
 }
 
 async function encryptPrivateKeyWithPassword(
@@ -704,7 +833,7 @@ async function restoreFromRecoveryPhrase(
 
 export const keyManager = {
   initializeKeys,
-  generateRecoveryPhrase: () => generateMnemonic(wordlist, 128),
+  generateRecoveryPhrase: () => generateRecoveryCode(),
   validateRecoveryPhrase: isValidRecoveryPhrase,
   generateFreshKeys,
   prepareBackup,

@@ -344,6 +344,19 @@ export const useMessageList = (
     if (String(normalizedConversationId) !== String(conversationId)) {
       return;
     }
+    const localStatus = newMessage.local_status;
+    const localClientId = newMessage.local_client_id || (
+      typeof newMessage.message_id === 'string' && newMessage.message_id.startsWith('local-')
+        ? newMessage.message_id
+        : undefined
+    );
+
+    if (localStatus === 'failed' && localClientId) {
+      setMessages((prev) => prev.filter((message) =>
+        message.message_id !== localClientId && message.local_client_id !== localClientId
+      ));
+      return;
+    }
 
     const normalizedMessage: Message = {
       ...newMessage,
@@ -355,28 +368,36 @@ export const useMessageList = (
       is_deleted: Boolean(newMessage.is_deleted),
       created_at: newMessage.created_at || new Date().toISOString(),
       reactions: newMessage.reactions || {},
+      local_status: localStatus,
+      local_client_id: localClientId,
     };
 
-    const localMsg: LocalMessage = {
-      conversation_id: normalizedMessage.conversation_id,
-      message_id: normalizedMessage.message_id,
-      sender_id: normalizedMessage.sender_id,
-      content: normalizedMessage.content ?? null,
-      message_type: normalizedMessage.message_type,
-      reply_to: normalizedMessage.reply_to,
-      is_edited: normalizedMessage.is_edited,
-      edited_at: normalizedMessage.edited_at,
-      is_deleted: normalizedMessage.is_deleted,
-      created_at: normalizedMessage.created_at,
-      reactions: {},
-      attachments: normalizedMessage.attachments,
-    };
+    const isLocalPendingOnly = normalizedMessage.local_status === 'sending' && Boolean(localClientId);
+    if (!isLocalPendingOnly) {
+      const localMsg: LocalMessage = {
+        conversation_id: normalizedMessage.conversation_id,
+        message_id: normalizedMessage.message_id,
+        sender_id: normalizedMessage.sender_id,
+        content: normalizedMessage.content ?? null,
+        message_type: normalizedMessage.message_type,
+        reply_to: normalizedMessage.reply_to,
+        is_edited: normalizedMessage.is_edited,
+        edited_at: normalizedMessage.edited_at,
+        is_deleted: normalizedMessage.is_deleted,
+        created_at: normalizedMessage.created_at,
+        reactions: {},
+        attachments: normalizedMessage.attachments,
+      };
 
-    messageSync.storeIncomingMessage(localMsg).catch(console.error);
+      messageSync.storeIncomingMessage(localMsg).catch(console.error);
+    }
 
     // Always inject incoming messages so realtime updates are visible without refresh.
     setMessages((prev) => {
-      const merged = [...prev, normalizedMessage];
+      const base = localClientId
+        ? prev.filter((message) => message.message_id !== localClientId && message.local_client_id !== localClientId)
+        : prev;
+      const merged = [...base, normalizedMessage];
       const unique = Array.from(
         new Map(merged.map(m => [m.message_id, m])).values()
       );

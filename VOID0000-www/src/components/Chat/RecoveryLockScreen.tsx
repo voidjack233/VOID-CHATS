@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { KeyRound, LogOut, ShieldAlert } from 'lucide-react';
 
 interface RecoveryLockScreenProps {
-  onRecover: (recoveryPhrase: string) => Promise<void>;
+  onRecover: (recoverySecret: string) => Promise<void>;
   onLogout: () => Promise<void>;
   loading?: boolean;
 }
@@ -12,7 +12,7 @@ export default function RecoveryLockScreen({
   onLogout,
   loading = false,
 }: RecoveryLockScreenProps) {
-  const [recoveryPhrase, setRecoveryPhrase] = useState('');
+  const [recoverySecret, setRecoverySecret] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -21,22 +21,22 @@ export default function RecoveryLockScreen({
     e.preventDefault();
     setError('');
 
-    if (!recoveryPhrase.trim()) {
-      setError('Enter your 12-word recovery phrase.');
+    if (!recoverySecret.trim()) {
+      setError('Enter your recovery key.');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await onRecover(recoveryPhrase);
+      await onRecover(recoverySecret);
     } catch (err) {
       if (err instanceof Error) {
         if (err.message === 'INVALID_RECOVERY_PHRASE') {
-          setError('That recovery phrase is invalid.');
+          setError('That recovery key is invalid.');
         } else if (err.message === 'RECOVERY_NOT_CONFIGURED') {
-          setError('No recovery phrase is configured for this account yet.');
+          setError('No recovery key is configured for this account yet.');
         } else if (err.message === 'RECOVERY_KEY_MISMATCH') {
-          setError('The recovery phrase does not match this account’s active chat identity.');
+          setError('This recovery key does not match this account’s active chat identity.');
         } else {
           setError('Failed to unlock your chats. Try again.');
         }
@@ -68,8 +68,8 @@ export default function RecoveryLockScreen({
             <h1 className="text-2xl font-semibold">Your chats are locked on this device</h1>
             <p className="text-sm text-void-text-muted mt-2">
               The current device cannot unlock your stored chat identity with the available password state.
-              Enter the 12-word recovery phrase to restore the same identity key. If you never configured one,
-              sign out and log in again from a device that still has your original keys.
+              Enter your recovery key to restore the same identity key. Legacy 12-word recovery phrases are still supported.
+              If you never configured one, sign out and log in again from a device that still has your original keys.
             </p>
           </div>
         </div>
@@ -77,14 +77,14 @@ export default function RecoveryLockScreen({
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-void-text mb-2">
-              Recovery Phrase
+              Recovery Key
             </label>
             <textarea
-              value={recoveryPhrase}
-              onChange={(e) => setRecoveryPhrase(e.target.value)}
+              value={recoverySecret}
+              onChange={(e) => setRecoverySecret(e.target.value)}
               rows={3}
               disabled={loading || isSubmitting}
-              placeholder="word1 word2 word3 ..."
+              placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX or legacy 12 words"
               className="w-full rounded-xl border border-void-border bg-gray-900 px-4 py-3 text-sm text-void-text focus:outline-none focus:border-blue-500 resize-none"
             />
           </div>

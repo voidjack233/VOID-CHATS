@@ -67,13 +67,13 @@ const AccountTab = () => {
             >
               <div className="flex items-center justify-between">
                 <div className="text-left">
-                  <p className="text-sm font-medium text-void-text">Recovery Phrase</p>
+                  <p className="text-sm font-medium text-void-text">Recovery Key</p>
                   <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">
                     {keyStatusLoading
                       ? 'Checking recovery status...'
                       : keyStatus === 'SECURE'
-                        ? 'Recovery phrase configured'
-                        : 'Protect your chat identity with a 12-word recovery phrase'}
+                        ? 'Recovery key configured'
+                        : 'Protect your chat identity with a recovery key (legacy 12-word phrases still work)'}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">

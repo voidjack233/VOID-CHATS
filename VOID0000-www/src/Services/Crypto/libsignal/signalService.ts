@@ -1403,6 +1403,15 @@ class SignalService {
         targets.push({ userId, deviceId, libsignalDeviceId, identityKey });
       };
 
+      // Always include the current sender device as a target so sent
+      // messages remain decryptable after hard refresh/reload.
+      pushDevice(
+        input.userId,
+        localIdentity.deviceId,
+        normalizeLibsignalDeviceId(localIdentity.libsignalDeviceId) || null,
+        null
+      );
+
       const [peerDevicesResult, ownDevicesResult] = await Promise.allSettled([
         this.getKnownDevicesForUser(input.peerUserId, { force: forceDirectoryRefresh }),
         this.getKnownDevicesForUser(input.userId, { force: forceDirectoryRefresh }),
@@ -1425,11 +1434,10 @@ class SignalService {
         throw createSignalLockedError('Failed to resolve peer Signal devices');
       }
 
-      // Include other sender devices so history works everywhere.
-      // Skip the current sending device — it already has the plaintext.
+      // Include sender devices so history works everywhere.
       if (ownDevicesResult.status === 'fulfilled') {
         ownDevicesResult.value.forEach((device) => {
-          if (device.device_id && String(device.device_id) !== String(localIdentity.deviceId)) {
+          if (device.device_id) {
             pushDevice(
               input.userId,
               device.device_id,

@@ -237,11 +237,39 @@ export const useMessageInput = ({
         ? JSON.stringify({ url: a.url!, blurhash: a.blurhash })
         : a.url!
       );
+    const shouldCreatePendingMessage = !editingMessage && (trimmed.length > 0 || uploadedUrls.length > 0);
+    const localClientId = shouldCreatePendingMessage
+      ? `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      : null;
+    const optimisticMessage: Message | null = shouldCreatePendingMessage
+      ? {
+          conversation_id: conversation.id,
+          message_id: localClientId as string,
+          sender_id: currentUserId || 'local-user',
+          encrypted_content: null,
+          iv: null,
+          key_version: keyVersion,
+          message_type: 'text',
+          reply_to: replyTo?.message_id || null,
+          attachments: uploadedUrls,
+          is_edited: false,
+          edited_at: null,
+          is_deleted: false,
+          created_at: new Date().toISOString(),
+          content: trimmed || undefined,
+          reactions: {},
+          local_status: 'sending',
+          local_client_id: localClientId as string,
+        }
+      : null;
 
     setSendError('');
     setText('');
     setAttachments([]);
     setSending(true);
+    if (optimisticMessage) {
+      onMessageSent(optimisticMessage);
+    }
 
     try {
       if (editingMessage) {
@@ -273,7 +301,11 @@ export const useMessageInput = ({
           },
           requireSignalForText: conversation.type === 'dm',
         });
-        onMessageSent(msg);
+        onMessageSent(localClientId ? {
+          ...msg,
+          local_status: 'sent',
+          local_client_id: localClientId,
+        } : msg);
         onCancelReply?.();
         if (conversation.type === 'channel' && conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);
@@ -283,7 +315,11 @@ export const useMessageInput = ({
           key_version: keyVersion,
           reply_to: replyTo?.message_id || undefined,
         });
-        onMessageSent(msg);
+        onMessageSent(localClientId ? {
+          ...msg,
+          local_status: 'sent',
+          local_client_id: localClientId,
+        } : msg);
         onCancelReply?.();
         if (conversation.type === 'channel' && conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);
@@ -293,6 +329,13 @@ export const useMessageInput = ({
       console.error('Send failed:', err);
       setText(previousText);
       setAttachments(previousAttachments);
+      if (optimisticMessage && localClientId) {
+        onMessageSent({
+          ...optimisticMessage,
+          local_status: 'failed',
+          local_client_id: localClientId,
+        });
+      }
 
       if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
         setSlowmodeRemaining(err.retry_after_seconds);

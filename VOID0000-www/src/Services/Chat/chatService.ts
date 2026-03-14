@@ -74,6 +74,8 @@ export interface Message {
   created_at: string;
   content?: string;
   reactions?: ReactionMap;
+  local_status?: 'sending' | 'sent' | 'failed';
+  local_client_id?: string;
 }
 
 export interface KeyBackupRecord {
