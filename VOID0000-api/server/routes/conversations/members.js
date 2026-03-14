@@ -5,9 +5,6 @@ import {
   emitConversationUpdate,
   getChildChannelIds,
   getGroupMembership,
-  hasExactDistributionSet,
-  insertGroupKeyDistributions,
-  normalizeDistributions,
   normalizeKeyVersion,
   resolveMembershipConversation,
   uniqueUserIds,
@@ -21,7 +18,6 @@ router.post('/rotate-add', async (req, res) => {
   const actorUserId = req.user.id;
   const { conversationId } = req.params;
   const requestedMembers = uniqueUserIds(req.body?.members);
-  const distributions = normalizeDistributions(req.body?.distributions);
   const newKeyVersion = normalizeKeyVersion(req.body?.new_key_version, 0);
 
   if (requestedMembers.length === 0) {
@@ -30,10 +26,6 @@ router.post('/rotate-add', async (req, res) => {
 
   if (newKeyVersion <= 0) {
     return res.status(400).json({ error: 'new_key_version required' });
-  }
-
-  if (distributions.length === 0) {
-    return res.status(400).json({ error: 'distributions array required' });
   }
 
   let client;
@@ -104,14 +96,6 @@ router.post('/rotate-add', async (req, res) => {
     }
 
     const finalMemberIds = [...currentMemberIds, ...requestedMembers];
-    if (!hasExactDistributionSet(finalMemberIds, distributions)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: 'distributions must exactly match the final member set for the new key version',
-        code: 'INVALID_DISTRIBUTIONS',
-      });
-    }
-
     const childChannelIds = await getChildChannelIds(client, conversation.id);
 
     for (const memberId of requestedMembers) {
@@ -136,8 +120,6 @@ router.post('/rotate-add', async (req, res) => {
         );
       }
     }
-
-    await insertGroupKeyDistributions(client, conversation.id, distributions, newKeyVersion, actorUserId);
 
     await client.query(
       `UPDATE conversations
@@ -185,7 +167,6 @@ router.post('/rotate-remove', async (req, res) => {
   const actorUserId = req.user.id;
   const { conversationId } = req.params;
   const targetUserId = typeof req.body?.target_user_id === 'string' ? req.body.target_user_id.trim() : '';
-  const distributions = normalizeDistributions(req.body?.distributions);
   const newKeyVersion = normalizeKeyVersion(req.body?.new_key_version, 0);
 
   if (!targetUserId) {
@@ -194,10 +175,6 @@ router.post('/rotate-remove', async (req, res) => {
 
   if (newKeyVersion <= 0) {
     return res.status(400).json({ error: 'new_key_version required' });
-  }
-
-  if (distributions.length === 0) {
-    return res.status(400).json({ error: 'distributions array required' });
   }
 
   let client;
@@ -275,14 +252,6 @@ router.post('/rotate-remove', async (req, res) => {
       return res.status(400).json({ error: 'Cannot remove the final group member' });
     }
 
-    if (!hasExactDistributionSet(remainingMemberIds, distributions)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: 'distributions must exactly match the remaining member set for the new key version',
-        code: 'INVALID_DISTRIBUTIONS',
-      });
-    }
-
     await client.query(
       `DELETE FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
@@ -297,8 +266,6 @@ router.post('/rotate-remove', async (req, res) => {
         [channelId, targetUserId]
       );
     }
-
-    await insertGroupKeyDistributions(client, conversation.id, distributions, newKeyVersion, actorUserId);
 
     await client.query(
       `UPDATE conversations

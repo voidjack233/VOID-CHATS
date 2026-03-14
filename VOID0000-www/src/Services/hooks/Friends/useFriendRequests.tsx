@@ -3,6 +3,7 @@ import { API_URL } from '../../config';
 import { ensureCSRFToken } from '../../Auth/authServiceApi'; 
 import { useUser } from '../../Auth/UserContext'; 
 import { gateway } from '../../Gateway/gateway';
+import { signalService } from '../../Crypto/libsignal/signalService';
 
 export interface FriendRequest {
   friendship_id: number;
@@ -94,9 +95,16 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         headers: { 'X-CSRF-Token': csrf || '' },
         credentials: 'include'
       });
+      const data = await res.json().catch(() => null);
       if (res.ok) {
         // Update cache directly
         setIncoming(prev => prev.filter(r => r.friendship_id !== friendshipId));
+
+        const requesterId = data?.friendship?.requester_id;
+        if (user?.id && typeof requesterId === 'string' && requesterId.length > 0) {
+          // Best-effort warmup: register local Signal device and cache peer directory.
+          void signalService.preWarmForDm(user.id, requesterId);
+        }
         return { success: true };
       }
       return { success: false };

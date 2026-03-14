@@ -3,6 +3,7 @@ import { createContext, useContext, useState, useEffect, useRef, ReactNode } fro
 import { authService, fetchWithAuth } from './authServiceApi';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
+import { signalService } from '../Crypto/libsignal/signalService';
 import {
   uploadPublicKey,
   backupKeyToServer,
@@ -289,6 +290,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [user?.id]);
+
+  // Bootstrap Signal device registration/prekeys as soon as a user session
+  // is unlocked, so peers can start prekey messaging without opening a DM first.
+  useEffect(() => {
+    if (!user?.id) return;
+    if (!keyInitResolved || keyStatusLoading || keyStatus === 'LOCKED') return;
+
+    void signalService.bootstrapAccount(user.id);
+  }, [keyInitResolved, keyStatus, keyStatusLoading, user?.id]);
 
   return (
     <UserContext.Provider value={{

@@ -5,9 +5,6 @@ import {
   emitConversationUpdate,
   getChildChannelIds,
   getGroupMembership,
-  hasExactDistributionSet,
-  insertGroupKeyDistributions,
-  normalizeDistributions,
   normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../utils/groupMembership.js';
@@ -221,7 +218,6 @@ router.post('/', async (req, res) => {
 router.post('/requests/:requestId/approve', async (req, res) => {
   const actorUserId = req.user.id;
   const requestId = parseInt(req.params.requestId, 10);
-  const distributions = normalizeDistributions(req.body?.distributions);
   const newKeyVersion = normalizeKeyVersion(req.body?.new_key_version, 0);
 
   if (!Number.isInteger(requestId) || requestId <= 0) {
@@ -230,10 +226,6 @@ router.post('/requests/:requestId/approve', async (req, res) => {
 
   if (newKeyVersion <= 0) {
     return res.status(400).json({ error: 'new_key_version required' });
-  }
-
-  if (distributions.length === 0) {
-    return res.status(400).json({ error: 'distributions array required' });
   }
 
   let client;
@@ -294,14 +286,6 @@ router.post('/requests/:requestId/approve', async (req, res) => {
     }
 
     const finalMemberIds = [...currentMemberIds, joinRequest.requester_user_id];
-    if (!hasExactDistributionSet(finalMemberIds, distributions)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        error: 'distributions must exactly match the final member set for the new key version',
-        code: 'INVALID_DISTRIBUTIONS',
-      });
-    }
-
     const childChannelIds = await getChildChannelIds(client, conversation.id);
 
     await client.query(
@@ -324,8 +308,6 @@ router.post('/requests/:requestId/approve', async (req, res) => {
         [channelId, joinRequest.requester_user_id]
       );
     }
-
-    await insertGroupKeyDistributions(client, conversation.id, distributions, newKeyVersion, actorUserId);
 
     await client.query(
       `UPDATE conversations

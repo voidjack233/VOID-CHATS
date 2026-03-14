@@ -391,6 +391,7 @@ class SignalService {
   private bootstrapRegistrationCheckAt = new Map<string, number>();
   private libsignalStoreByUser = new Map<string, LibSignalProtocolStore>();
   private libsignalBootstrapLocks = new Map<string, Promise<void>>();
+  private peerLibsignalDeviceIdCache = new Map<string, number>();
   private deviceDirectoryCache = new Map<
     string,
     {
@@ -482,6 +483,62 @@ class SignalService {
     localIdentity.libsignalDeviceId = normalized;
     localIdentity.updatedAt = new Date().toISOString();
     await signalStore.putDeviceIdentity(localIdentity);
+  }
+
+  private async resolvePeerLibsignalDeviceId(
+    peerUserId: string,
+    peerDeviceId: string,
+    hintLibsignalDeviceId?: number | null
+  ): Promise<number | null> {
+    const hinted = normalizeLibsignalDeviceId(hintLibsignalDeviceId);
+    if (hinted) {
+      this.peerLibsignalDeviceIdCache.set(`${peerUserId}:${peerDeviceId}`, hinted);
+      return hinted;
+    }
+
+    const cacheKey = `${peerUserId}:${peerDeviceId}`;
+    const cached = normalizeLibsignalDeviceId(this.peerLibsignalDeviceIdCache.get(cacheKey));
+    if (cached) {
+      return cached;
+    }
+
+    const resolveFromDirectory = async (forceRefresh: boolean): Promise<number | null> => {
+      try {
+        const devices = await this.getKnownDevicesForUser(peerUserId, { force: forceRefresh });
+        const matchedDevice = devices.find(
+          (device) => String(device.device_id) === String(peerDeviceId)
+        ) || null;
+        const resolved = extractLibsignalDeviceIdFromRecord(matchedDevice);
+        if (resolved) {
+          this.peerLibsignalDeviceIdCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      } catch {
+        // Best-effort lookup; fallback to next strategy.
+      }
+      return null;
+    };
+
+    let resolved = await resolveFromDirectory(false);
+    if (!resolved) {
+      resolved = await resolveFromDirectory(true);
+    }
+    if (resolved) {
+      return resolved;
+    }
+
+    try {
+      const preKeyBundle = await getSignalPreKeyBundle(peerUserId, peerDeviceId);
+      const bundleDeviceId = extractLibsignalDeviceIdFromRecord(preKeyBundle);
+      if (bundleDeviceId) {
+        this.peerLibsignalDeviceIdCache.set(cacheKey, bundleDeviceId);
+        return bundleDeviceId;
+      }
+    } catch {
+      // Ignore; caller will raise a clear error if unresolved.
+    }
+
+    return null;
   }
 
   private async ensureLibsignalBootstrap(
@@ -903,11 +960,16 @@ class SignalService {
     await this.ensureLibsignalBootstrap(userId, localIdentity);
     const libsignal = await getLibsignalRuntime();
     const protocolStore = this.getLibsignalStore(userId);
+    const resolvedSenderLibsignalDeviceId = await this.resolvePeerLibsignalDeviceId(
+      senderUserId,
+      senderDeviceId,
+      senderLibsignalDeviceId
+    );
     const address = this.createLibsignalAddress(
       libsignal,
       senderUserId,
       senderDeviceId,
-      senderLibsignalDeviceId
+      resolvedSenderLibsignalDeviceId
     );
     const sessionCipher = new libsignal.SessionCipher(protocolStore as any, address);
     const encryptedBytes = base64ToArrayBuffer(payload.ciphertext);
@@ -1260,6 +1322,30 @@ class SignalService {
     }
   }
 
+  /**
+   * Bootstrap the local Signal account state without requiring a DM to be open.
+   * This should be called after login so the user publishes device/prekeys early.
+   */
+  async bootstrapAccount(userId: string): Promise<void> {
+    if (!this.isEnabled()) return;
+
+    try {
+      const localIdentity = await this.ensureLocalDeviceIdentity(userId);
+      if (!localIdentity) return;
+
+      const capabilities = await this.getServerCapabilities();
+      if (!capabilities.supported || collectDmMissingRequirements(capabilities).length > 0) {
+        return;
+      }
+
+      await this.ensureServerBootstrap(userId, localIdentity, capabilities);
+      // Best-effort inbox sync to process any pending sender-key deliveries.
+      void this.syncDeviceInbox(userId);
+    } catch (err) {
+      console.warn('Signal account bootstrap failed:', err);
+    }
+  }
+
   async prepareDmConversationMessage(input: {
     userId: string;
     peerUserId: string;
@@ -1287,68 +1373,87 @@ class SignalService {
     // Keep send-path latency low; background sync is handled by polling too.
     void this.syncDeviceInbox(input.userId);
 
-    const targets: Array<{
-      userId: string;
-      deviceId: string;
-      libsignalDeviceId: number | null;
-      identityKey: string | null;
-    }> = [];
-    const targetSet = new Set<string>();
+    const resolveTargets = async (forceDirectoryRefresh: boolean): Promise<{
+      targets: Array<{
+        userId: string;
+        deviceId: string;
+        libsignalDeviceId: number | null;
+        identityKey: string | null;
+      }>;
+      peerTargetDeviceIds: Set<string>;
+    }> => {
+      const targets: Array<{
+        userId: string;
+        deviceId: string;
+        libsignalDeviceId: number | null;
+        identityKey: string | null;
+      }> = [];
+      const targetSet = new Set<string>();
+      const peerTargetDeviceIds = new Set<string>();
 
-    const pushDevice = (
-      userId: string,
-      deviceId: string,
-      libsignalDeviceId: number | null,
-      identityKey: string | null
-    ) => {
-      const key = `${userId}:${deviceId}`;
-      if (targetSet.has(key)) return;
-      targetSet.add(key);
-      targets.push({ userId, deviceId, libsignalDeviceId, identityKey });
+      const pushDevice = (
+        userId: string,
+        deviceId: string,
+        libsignalDeviceId: number | null,
+        identityKey: string | null
+      ) => {
+        const key = `${userId}:${deviceId}`;
+        if (targetSet.has(key)) return;
+        targetSet.add(key);
+        targets.push({ userId, deviceId, libsignalDeviceId, identityKey });
+      };
+
+      const [peerDevicesResult, ownDevicesResult] = await Promise.allSettled([
+        this.getKnownDevicesForUser(input.peerUserId, { force: forceDirectoryRefresh }),
+        this.getKnownDevicesForUser(input.userId, { force: forceDirectoryRefresh }),
+      ]);
+
+      if (peerDevicesResult.status === 'fulfilled') {
+        peerDevicesResult.value.forEach((device) => {
+          if (device.device_id) {
+            peerTargetDeviceIds.add(String(device.device_id));
+            pushDevice(
+              input.peerUserId,
+              device.device_id,
+              extractLibsignalDeviceIdFromRecord(device),
+              typeof device.identity_key === 'string' ? device.identity_key : null
+            );
+          }
+        });
+      } else {
+        console.warn('Signal DM peer device lookup failed:', peerDevicesResult.reason);
+        throw createSignalLockedError('Failed to resolve peer Signal devices');
+      }
+
+      // Include other sender devices so history works everywhere.
+      // Skip the current sending device — it already has the plaintext.
+      if (ownDevicesResult.status === 'fulfilled') {
+        ownDevicesResult.value.forEach((device) => {
+          if (device.device_id && String(device.device_id) !== String(localIdentity.deviceId)) {
+            pushDevice(
+              input.userId,
+              device.device_id,
+              extractLibsignalDeviceIdFromRecord(device),
+              typeof device.identity_key === 'string' ? device.identity_key : null
+            );
+          }
+        });
+      }
+
+      return { targets, peerTargetDeviceIds };
     };
 
-    const shouldForceDirectoryRefresh = false;
-    const [peerDevicesResult, ownDevicesResult] = await Promise.allSettled([
-      this.getKnownDevicesForUser(input.peerUserId, { force: shouldForceDirectoryRefresh }),
-      this.getKnownDevicesForUser(input.userId, { force: shouldForceDirectoryRefresh }),
-    ]);
-    const peerTargetDeviceIds = new Set<string>();
+    let { targets, peerTargetDeviceIds } = await resolveTargets(false);
 
-    if (peerDevicesResult.status === 'fulfilled') {
-      peerDevicesResult.value.forEach((device) => {
-        if (device.device_id) {
-          peerTargetDeviceIds.add(String(device.device_id));
-          pushDevice(
-            input.peerUserId,
-            device.device_id,
-            extractLibsignalDeviceIdFromRecord(device),
-            typeof device.identity_key === 'string' ? device.identity_key : null
-          );
-        }
-      });
-    } else {
-      console.warn('Signal DM peer device lookup failed:', peerDevicesResult.reason);
-      throw createSignalLockedError('Failed to resolve peer Signal devices');
+    // If the first lookup says "no peer device", force a fresh directory query
+    // to avoid false negatives from short-lived cache staleness.
+    if (!targets.some((target) => String(target.userId) === String(input.peerUserId))) {
+      ({ targets, peerTargetDeviceIds } = await resolveTargets(true));
     }
 
     // Signal-locked DM must always have at least one peer device target.
     if (!targets.some((target) => String(target.userId) === String(input.peerUserId))) {
       throw createSignalLockedError('Peer has no active Signal devices');
-    }
-
-    // Include other sender devices so history works everywhere.
-    // Skip the current sending device — it already has the plaintext.
-    if (ownDevicesResult.status === 'fulfilled') {
-      ownDevicesResult.value.forEach((device) => {
-        if (device.device_id && String(device.device_id) !== String(localIdentity.deviceId)) {
-          pushDevice(
-            input.userId,
-            device.device_id,
-            extractLibsignalDeviceIdFromRecord(device),
-            typeof device.identity_key === 'string' ? device.identity_key : null
-          );
-        }
-      });
     }
 
     if (targets.length === 0) {
@@ -1655,7 +1760,7 @@ class SignalService {
       }
 
       const libsignalSessionRows = await signalStore.listRawMetaByPrefix<{ id?: string }>(
-        `libsignal:session:${input.userId}:${input.peerUserId}.`
+        `libsignal:session:${input.userId}:${input.peerUserId}:`
       );
       if (libsignalSessionRows.length > 0) {
         return {

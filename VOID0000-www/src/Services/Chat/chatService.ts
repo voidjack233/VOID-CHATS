@@ -2,7 +2,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
 import { encryptMessage, decryptMessages } from '../Crypto/messageEncryption';
-import { signalService } from '../Crypto/signal/signalService';
+import { signalService } from '../Crypto/libsignal/signalService';
 
 const API_PREFIX = '/api/conversations';
 const KEY_ROTATION_ENABLED = true;
@@ -107,19 +107,6 @@ export interface ConversationMember {
   display_name: string | null;
   avatar_url: string | null;
   profile_id: string;
-}
-
-export interface GroupKeyDistribution {
-  encrypted_group_key: string;
-  key_version: number;
-  wrapped_by_user_id?: string | null;
-  wrapper_public_key?: string | null;
-}
-
-export interface GroupKeyDistributionPayload {
-  user_id: string;
-  encrypted_group_key: string;
-  wrapper_public_key?: string;
 }
 
 export interface ConversationInviteLink {
@@ -403,72 +390,26 @@ export async function addMembers(
   return data;
 }
 
-async function createGroupKeyDistributions(
-  participantIds: string[],
+async function distributeGroupSenderKeyWithSignal(
+  conversation: Conversation,
   currentUserId: string,
-  roomKey: CryptoKey
-): Promise<GroupKeyDistributionPayload[]> {
-  const distributions: GroupKeyDistributionPayload[] = [];
-  const myPublicKey = await keyManager.getLocalPublicKey(currentUserId);
-
-  for (const targetUserId of [...new Set(participantIds)]) {
-    const targetUserKeys = await getUserPublicKey(targetUserId);
-    const sharedSecret = await keyManager.getSharedSecret(
-      currentUserId,
-      targetUserId,
-      targetUserKeys.public_key
-    );
-
-    const { encrypted, iv } = await keyManager.encryptGroupKeyForUser(roomKey, sharedSecret);
-    distributions.push({
-      user_id: targetUserId,
-      encrypted_group_key: `${iv}.${encrypted}`,
-      ...(myPublicKey ? { wrapper_public_key: myPublicKey } : {}),
-    });
-  }
-
-  return distributions;
-}
-
-/**
- * Best-effort key distribution — skips members whose public keys
- * are unavailable instead of throwing.  Used for background
- * owner-side redistribution only.
- */
-async function createGroupKeyDistributionsBestEffort(
   participantIds: string[],
-  currentUserId: string,
+  keyVersion: number,
   roomKey: CryptoKey
-): Promise<GroupKeyDistributionPayload[]> {
-  const distributions: GroupKeyDistributionPayload[] = [];
-  const myPublicKey = await keyManager.getLocalPublicKey(currentUserId);
-
-  for (const targetUserId of [...new Set(participantIds)]) {
-    try {
-      const targetUserKeys = await getUserPublicKey(targetUserId);
-      const sharedSecret = await keyManager.getSharedSecret(
-        currentUserId,
-        targetUserId,
-        targetUserKeys.public_key
-      );
-
-      const { encrypted, iv } = await keyManager.encryptGroupKeyForUser(roomKey, sharedSecret);
-      distributions.push({
-        user_id: targetUserId,
-        encrypted_group_key: `${iv}.${encrypted}`,
-        ...(myPublicKey ? { wrapper_public_key: myPublicKey } : {}),
-      });
-    } catch {
-      // Member's keys might not be available yet — skip silently
-    }
-  }
-
-  return distributions;
+): Promise<void> {
+  const uniqueParticipants = [...new Set([...participantIds, currentUserId].filter(Boolean))];
+  await signalService.distributeGroupSenderKey({
+    userId: currentUserId,
+    conversation,
+    memberUserIds: uniqueParticipants,
+    keyVersion,
+    groupKey: roomKey,
+  });
 }
 
 /**
  * Owner self-heal: when the owner opens a group on a device that cannot
- * decrypt the existing distributions (e.g. different identity keypair),
+ * access the current sender key material,
  * generate a brand-new room key, distribute it to every member, and
  * return the usable key.  This lets the owner recover without any
  * manual intervention.
@@ -488,12 +429,13 @@ export async function ownerSelfHealGroupKey(
   );
 
   const allParticipants = [...new Set([...memberIds, currentUserId])];
-  const distributions = await createGroupKeyDistributionsBestEffort(allParticipants, currentUserId, roomKey);
-
-  if (distributions.length > 0) {
-    await distributeGroupKey(keyConversationId, distributions, nextVersion);
-  }
-
+  await distributeGroupSenderKeyWithSignal(
+    { ...conversation, id: keyConversationId },
+    currentUserId,
+    allParticipants,
+    nextVersion,
+    roomKey
+  );
   await keyManager.storeGroupKey(keyConversationId, nextVersion, roomKey);
 
   return { key: roomKey, version: nextVersion };
@@ -501,11 +443,8 @@ export async function ownerSelfHealGroupKey(
 
 /**
  * Called in the background after the owner's handshake succeeds.
- * Re-wraps the current group key for every member using fresh
- * shared secrets, ensuring that members whose identity keys changed
- * (or who were added without a distribution) can decrypt.
- *
- * This is idempotent — the server uses ON CONFLICT DO UPDATE.
+ * Re-distributes the current sender key to member devices via Signal
+ * envelopes so lagging devices can catch up.
  */
 export async function ensureGroupKeyDistribution(
   conversation: Conversation,
@@ -523,15 +462,13 @@ export async function ensureGroupKeyDistribution(
   const allParticipants = [...new Set(memberIds)];
   if (allParticipants.length === 0) return;
 
-  const distributions = await createGroupKeyDistributionsBestEffort(
-    allParticipants,
+  await distributeGroupSenderKeyWithSignal(
+    { ...conversation, id: keyConversationId },
     currentUserId,
+    allParticipants,
+    currentVersion,
     groupKey
   );
-
-  if (distributions.length > 0) {
-    await distributeGroupKey(keyConversationId, distributions, currentVersion);
-  }
 }
 
 export async function rotateAddMembers(
@@ -556,23 +493,29 @@ export async function rotateAddMembers(
     ['encrypt', 'decrypt']
   );
 
-  const distributions = await createGroupKeyDistributions(finalMemberIds, currentUserId, roomKey);
   const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-add`, {
     method: 'POST',
     body: JSON.stringify({
       members: additions,
       new_key_version: nextKeyVersion,
-      distributions,
     }),
   });
   const data = await res.json();
   if (!data.success) throw createApiError(data);
+  const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-  await keyManager.storeGroupKey(keyConversationId, nextKeyVersion, roomKey);
+  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
+  await distributeGroupSenderKeyWithSignal(
+    { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+    currentUserId,
+    finalMemberIds,
+    resolvedKeyVersion,
+    roomKey
+  );
 
   return {
     added: data.added || additions,
-    key_version: data.key_version || nextKeyVersion,
+    key_version: resolvedKeyVersion,
   };
 }
 
@@ -601,23 +544,30 @@ export async function rotateRemoveMember(
     ['encrypt', 'decrypt']
   );
 
-  const distributions = await createGroupKeyDistributions(survivors, currentUserId, roomKey);
   const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
     method: 'POST',
     body: JSON.stringify({
       target_user_id: targetUserId,
       new_key_version: nextKeyVersion,
-      distributions,
     }),
   });
   const data = await res.json();
   if (!data.success) throw createApiError(data);
+  const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
   if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
-    await keyManager.storeGroupKey(keyConversationId, nextKeyVersion, roomKey);
+    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
   }
 
-  return { key_version: data.key_version || nextKeyVersion };
+  await distributeGroupSenderKeyWithSignal(
+    { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+    currentUserId,
+    survivors,
+    resolvedKeyVersion,
+    roomKey
+  );
+
+  return { key_version: resolvedKeyVersion };
 }
 
 export async function approveConversationJoinRequest(
@@ -637,22 +587,28 @@ export async function approveConversationJoinRequest(
     ['encrypt', 'decrypt']
   );
 
-  const distributions = await createGroupKeyDistributions(finalMemberIds, currentUserId, roomKey);
   const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
     method: 'POST',
     body: JSON.stringify({
       new_key_version: nextKeyVersion,
-      distributions,
     }),
   });
   const data = await res.json();
   if (!data.success) throw createApiError(data);
+  const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-  await keyManager.storeGroupKey(keyConversationId, nextKeyVersion, roomKey);
+  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
+  await distributeGroupSenderKeyWithSignal(
+    { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+    currentUserId,
+    finalMemberIds,
+    resolvedKeyVersion,
+    roomKey
+  );
 
   return {
     approved_user_id: data.approved_user_id || requesterUserId,
-    key_version: data.key_version || nextKeyVersion,
+    key_version: resolvedKeyVersion,
   };
 }
 
@@ -1078,28 +1034,6 @@ export async function uploadPublicKey(
   if (!data.success) throw new Error(data.error);
 }
 
-export async function getGroupKeys(
-  conversationId: string
-): Promise<GroupKeyDistribution[]> {
-  const res = await fetchWithAuth(`${API_PREFIX}/keys/group/${conversationId}`);
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error);
-  return data.keys;
-}
-
-export async function distributeGroupKey(
-  conversationId: string,
-  distributions: Array<{ user_id: string; encrypted_group_key: string; wrapper_public_key?: string }>,
-  keyVersion: number
-): Promise<void> {
-  const res = await fetchWithAuth(`${API_PREFIX}/keys/group/${conversationId}`, {
-    method: 'POST',
-    body: JSON.stringify({ distributions, key_version: keyVersion }),
-  });
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error);
-}
-
 // ============== Secure Group =============
 export async function createSecureGroup(
   name: string,
@@ -1116,17 +1050,18 @@ export async function createSecureGroup(
     ['encrypt', 'decrypt']
   );
 
-  // 3. Prepare to distribute it to everyone (including yourself!)
-  const allParticipants = [...new Set([...memberIds, currentUserId])];
-  const distributions = await createGroupKeyDistributions(allParticipants, currentUserId, roomKey);
-
-  // 4. Send the locked boxes to the server
-  if (distributions.length > 0) {
-    await distributeGroupKey(conversation.id, distributions, 1);
-  }
-
-  // 5. Save your own copy to IndexedDB
+  // 3. Save your own copy to IndexedDB
   await keyManager.storeGroupKey(conversation.id, 1, roomKey);
+
+  // 4. Distribute the sender key to member devices via Signal envelopes.
+  const allParticipants = [...new Set([...memberIds, currentUserId])];
+  await distributeGroupSenderKeyWithSignal(
+    { ...conversation, current_key_version: 1 },
+    currentUserId,
+    allParticipants,
+    1,
+    roomKey
+  );
 
   return { conversation };
 }
@@ -1151,9 +1086,7 @@ export async function getEncryptionKey(
   const hasRequestedVersion = Number.isInteger(requestedKeyVersion) && (requestedKeyVersion as number) > 0;
   const requestedVersion = hasRequestedVersion ? (requestedKeyVersion as number) : null;
 
-  // Local-first for explicit version lookups:
-  // if we already unlocked this version before, do not fail just because
-  // the server payload omits historical distributions.
+  // Local-first for explicit version lookups.
   if (requestedVersion != null) {
     const cachedRequestedGroupKey = await keyManager.getGroupKey(keyConversationId, requestedVersion);
     if (cachedRequestedGroupKey) {
@@ -1161,84 +1094,25 @@ export async function getEncryptionKey(
     }
   }
 
-  const groupKeys = await getGroupKeys(keyConversationId);
-  if (groupKeys.length === 0) {
-    throw new Error('No group key available — wait for owner to distribute');
-  }
-
-  const sortedKeys = [...groupKeys].sort(
-    (left, right) => normalizeKeyVersion(right.key_version, 0) - normalizeKeyVersion(left.key_version, 0)
-  );
   const targetVersion: number = hasRequestedVersion
     ? (requestedKeyVersion as number)
-    : normalizeKeyVersion(sortedKeys[0]?.key_version, 1);
-  const candidateKeys = sortedKeys.filter(
-    (entry) => normalizeKeyVersion(entry.key_version, 0) === targetVersion
-  );
-
-  if (candidateKeys.length === 0) {
-    throw new Error(`Group key version ${targetVersion} is unavailable`);
-  }
+    : normalizeKeyVersion(conversation.current_key_version, 1);
 
   const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (cachedGroupKey) {
     return { key: cachedGroupKey, version: targetVersion };
   }
 
-  let lastError: Error | null = null;
+  // Signal sender keys arrive asynchronously via device inbox fanout.
+  // Force one sync attempt before failing key resolution.
+  await signalService.syncDeviceInbox(userId);
 
-  // Try every candidate row for this version. This handles APIs that return
-  // multiple distributions for a key version (one row per recipient).
-  for (const candidate of candidateKeys) {
-    const wrapperUserId = candidate.wrapped_by_user_id;
-    if (!wrapperUserId) {
-      lastError = new Error('Cannot decrypt group key without wrapper metadata');
-      continue;
-    }
-
-    const [iv, encryptedBase64] = candidate.encrypted_group_key.split('.');
-    if (!iv || !encryptedBase64) {
-      lastError = new Error('Group key data is corrupted or missing IV');
-      continue;
-    }
-
-    // Use the public key pinned at distribution time if available.
-    // For legacy rows without a pinned key, fall back to fetching from server.
-    let wrapperPublicKeyBase64: string;
-    try {
-      wrapperPublicKeyBase64 = candidate.wrapper_public_key
-        ?? (await getUserPublicKey(wrapperUserId)).public_key;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error('Failed to resolve wrapper public key');
-      continue;
-    }
-
-    // Attempt decryption twice: once with the cached shared secret, and
-    // if that yields an OperationError (stale key material), clear the
-    // cached shared secret and retry with a freshly derived one.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const sharedSecret = await keyManager.getSharedSecret(userId, wrapperUserId, wrapperPublicKeyBase64);
-
-        const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
-        await keyManager.storeGroupKey(keyConversationId, targetVersion, decryptedRoomKey);
-
-        return { key: decryptedRoomKey, version: targetVersion };
-      } catch (err) {
-        const isOperationError = err instanceof DOMException && err.name === 'OperationError';
-        if (attempt === 0 && isOperationError) {
-          // Shared secret cache might be stale — evict it and re-derive.
-          await keyManager.clearSharedSecret(userId, wrapperUserId);
-          continue;
-        }
-        lastError = err instanceof Error ? err : new Error('Unknown group key decrypt error');
-        break;
-      }
-    }
+  const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
+  if (syncedGroupKey) {
+    return { key: syncedGroupKey, version: targetVersion };
   }
 
-  const details = lastError?.message ? `: ${lastError.message}` : '';
-  throw new Error(`Group key version ${targetVersion} is not decryptable for this account${details}`);
+  throw new Error(`No group sender key available for version ${targetVersion}`);
 }
 
 export async function backupKeyToServer(data: {

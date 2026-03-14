@@ -3,6 +3,7 @@ import { API_URL } from '../../config';
 import { ensureCSRFToken, fetchWithAuth } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
+import { signalService } from '../../Crypto/libsignal/signalService';
 
 export interface Friend {
   friendship_id: number;
@@ -137,6 +138,11 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
           },
         ];
       });
+
+      if (user?.id && typeof data?.friend?.id === 'string' && data.friend.id.length > 0) {
+        // Best-effort warmup for both accepter and requester clients.
+        void signalService.preWarmForDm(user.id, data.friend.id);
+      }
     };
 
     // FRIEND_REMOVE: Remove from cache

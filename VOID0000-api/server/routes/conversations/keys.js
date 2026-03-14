@@ -216,158 +216,22 @@ router.post('/', async (req, res) => {
 
 // ==================== GROUP KEYS ====================
 
-// GET /api/conversations/keys/group/:conversationId — get group keys for current user
+// GET /api/conversations/keys/group/:conversationId — deprecated
 router.get('/group/:conversationId', async (req, res) => {
-  const userId = req.user.id;
-  const { conversationId } = req.params;
-
-  try {
-    const resolvedConversation = await findConversationByIdentifier(conversationId);
-    if (!resolvedConversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const memberCheck = await pool.query(
-      `SELECT user_id FROM conversation_members
-       WHERE conversation_id = $1 AND user_id = $2`,
-      [resolvedConversation.id, userId]
-    );
-
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Not a member' });
-    }
-
-    const keyConversationId = await resolveKeyConversationId(conversationId);
-    if (!keyConversationId) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const result = await pool.query(
-      `SELECT encrypted_group_key, key_version, wrapped_by_user_id, wrapper_public_key, created_at
-       FROM group_key_distribution
-       WHERE conversation_id = $1 AND user_id = $2
-       ORDER BY key_version DESC`,
-      [keyConversationId, userId]
-    );
-
-    res.json({ success: true, keys: result.rows });
-  } catch (err) {
-    console.error('Group key GET error:', err);
-    res.status(500).json({ error: 'Failed to fetch group keys' });
-  }
+  return res.status(410).json({
+    success: false,
+    error: 'Legacy group key API removed. Use Signal sender-key distribution endpoints.',
+    code: 'LEGACY_GROUP_KEY_API_REMOVED',
+  });
 });
 
-// POST /api/conversations/keys/group/:conversationId — distribute group key
+// POST /api/conversations/keys/group/:conversationId — deprecated
 router.post('/group/:conversationId', async (req, res) => {
-  const userId = req.user.id;
-  const { conversationId } = req.params;
-  const { distributions, key_version } = req.body;
-  const normalizedKeyVersion = normalizeKeyVersion(key_version, 0);
-
-  if (!Array.isArray(distributions) || distributions.length === 0 || normalizedKeyVersion <= 0) {
-    return res.status(400).json({ error: 'distributions array and key_version required' });
-  }
-
-  try {
-    const resolvedConversation = await findConversationByIdentifier(conversationId);
-    if (!resolvedConversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const keyConversationId = await resolveKeyConversationId(conversationId);
-    if (!keyConversationId) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    const memberCheck = await pool.query(
-      `SELECT role FROM conversation_members
-       WHERE conversation_id = $1 AND user_id = $2`,
-      [keyConversationId, userId]
-    );
-
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'Not a member' });
-    }
-
-    if (memberCheck.rows[0].role !== 'owner') {
-      return res.status(403).json({ error: 'Only the owner can distribute group keys' });
-    }
-
-    let client;
-    try {
-      client = await pool.connect();
-      await client.query('BEGIN');
-      let versionUpdatedConversation = null;
-      let conversationMemberIds = [];
-
-      for (const dist of distributions) {
-        await client.query(
-          `INSERT INTO group_key_distribution (
-             conversation_id,
-             user_id,
-             encrypted_group_key,
-             key_version,
-             wrapped_by_user_id,
-             wrapper_public_key
-           )
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (conversation_id, user_id, key_version)
-           DO UPDATE SET
-             encrypted_group_key = EXCLUDED.encrypted_group_key,
-             wrapped_by_user_id = EXCLUDED.wrapped_by_user_id,
-             wrapper_public_key = EXCLUDED.wrapper_public_key`,
-          [keyConversationId, dist.user_id, dist.encrypted_group_key, normalizedKeyVersion, userId, dist.wrapper_public_key ?? null]
-        );
-      }
-
-      const versionUpdateResult = await client.query(
-        `UPDATE conversations
-         SET current_key_version = $2,
-             updated_at = NOW()
-         WHERE id = $1
-           AND COALESCE(current_key_version, 1) < $2
-         RETURNING id, public_id, type, owner_id, current_key_version`,
-        [keyConversationId, normalizedKeyVersion]
-      );
-
-      versionUpdatedConversation = versionUpdateResult.rows[0] || null;
-
-      if (versionUpdatedConversation) {
-        const membersResult = await client.query(
-          `SELECT user_id
-           FROM conversation_members
-           WHERE conversation_id = $1`,
-          [keyConversationId]
-        );
-        conversationMemberIds = membersResult.rows.map((row) => row.user_id);
-      }
-
-      await client.query('COMMIT');
-
-      if (versionUpdatedConversation) {
-        await emitConversationUpdate(
-          versionUpdatedConversation,
-          conversationMemberIds,
-          normalizeKeyVersion(versionUpdatedConversation.current_key_version, normalizedKeyVersion),
-          conversationMemberIds.length
-        );
-      }
-
-      res.json({
-        success: true,
-        message: 'Group keys distributed',
-        key_version: normalizedKeyVersion,
-      });
-    } catch (err) {
-      if (client) await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      if (client) client.release();
-    }
-  } catch (err) {
-    console.error('Group key distribute error:', err);
-    res.status(500).json({ error: 'Failed to distribute group keys' });
-  }
+  return res.status(410).json({
+    success: false,
+    error: 'Legacy group key API removed. Use Signal sender-key distribution endpoints.',
+    code: 'LEGACY_GROUP_KEY_API_REMOVED',
+  });
 });
 
 export default router;

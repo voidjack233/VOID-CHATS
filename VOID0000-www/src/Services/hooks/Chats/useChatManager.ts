@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution, ownerSelfHealGroupKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
-import { signalService } from '../../Crypto/signal/signalService';
+import { signalService } from '../../Crypto/libsignal/signalService';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 import { messageStore } from '../../Chat/chatStore';
 
@@ -58,6 +58,7 @@ export const useChatManager = (user: any) => {
 
   const isTransientGroupKeyError = (message: string) =>
     message.includes('No group key available') ||
+    message.includes('No group sender key available') ||
     message.includes('is unavailable') ||
     message.includes('not decryptable') ||
     message.includes('OperationError');
@@ -567,6 +568,7 @@ export const useChatManager = (user: any) => {
 
         const isGroupKeyError =
           reason.includes('No group key available') ||
+          reason.includes('No group sender key available') ||
           reason.includes('Group key version') ||
           reason.includes('not decryptable') ||
           reason.includes('OperationError');

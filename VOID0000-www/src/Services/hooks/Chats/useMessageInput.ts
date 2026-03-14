@@ -297,6 +297,12 @@ export const useMessageInput = ({
       if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
         setSlowmodeRemaining(err.retry_after_seconds);
         setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
+      } else if (
+        err?.code === 'SIGNAL_LOCKED_SEND_BLOCKED' &&
+        typeof err?.message === 'string' &&
+        err.message.includes('Peer has no active Signal devices')
+      ) {
+        setSendError('Recipient has not finished secure messaging setup yet. Ask them to open the app once, then retry.');
       } else if (err?.code === 'SIGNAL_LOCKED_SEND_BLOCKED') {
         setSendError('Signal locked mode is enabled, but this DM is not ready yet. Please retry in a moment.');
       } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
