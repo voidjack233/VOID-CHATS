@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
+import { emitConversationUpdate, normalizeKeyVersion } from '../../utils/groupMembership.js';
 
 const router = Router();
 
@@ -242,7 +243,7 @@ router.get('/group/:conversationId', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT encrypted_group_key, key_version, wrapped_by_user_id, created_at
+      `SELECT encrypted_group_key, key_version, wrapped_by_user_id, wrapper_public_key, created_at
        FROM group_key_distribution
        WHERE conversation_id = $1 AND user_id = $2
        ORDER BY key_version DESC`,
@@ -261,8 +262,9 @@ router.post('/group/:conversationId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
   const { distributions, key_version } = req.body;
+  const normalizedKeyVersion = normalizeKeyVersion(key_version, 0);
 
-  if (!Array.isArray(distributions) || distributions.length === 0 || !key_version) {
+  if (!Array.isArray(distributions) || distributions.length === 0 || normalizedKeyVersion <= 0) {
     return res.status(400).json({ error: 'distributions array and key_version required' });
   }
 
@@ -295,6 +297,8 @@ router.post('/group/:conversationId', async (req, res) => {
     try {
       client = await pool.connect();
       await client.query('BEGIN');
+      let versionUpdatedConversation = null;
+      let conversationMemberIds = [];
 
       for (const dist of distributions) {
         await client.query(
@@ -303,20 +307,57 @@ router.post('/group/:conversationId', async (req, res) => {
              user_id,
              encrypted_group_key,
              key_version,
-             wrapped_by_user_id
+             wrapped_by_user_id,
+             wrapper_public_key
            )
-           VALUES ($1, $2, $3, $4, $5)
+           VALUES ($1, $2, $3, $4, $5, $6)
            ON CONFLICT (conversation_id, user_id, key_version)
            DO UPDATE SET
              encrypted_group_key = EXCLUDED.encrypted_group_key,
-             wrapped_by_user_id = EXCLUDED.wrapped_by_user_id`,
-          [keyConversationId, dist.user_id, dist.encrypted_group_key, key_version, userId]
+             wrapped_by_user_id = EXCLUDED.wrapped_by_user_id,
+             wrapper_public_key = EXCLUDED.wrapper_public_key`,
+          [keyConversationId, dist.user_id, dist.encrypted_group_key, normalizedKeyVersion, userId, dist.wrapper_public_key ?? null]
         );
+      }
+
+      const versionUpdateResult = await client.query(
+        `UPDATE conversations
+         SET current_key_version = $2,
+             updated_at = NOW()
+         WHERE id = $1
+           AND COALESCE(current_key_version, 1) < $2
+         RETURNING id, public_id, type, owner_id, current_key_version`,
+        [keyConversationId, normalizedKeyVersion]
+      );
+
+      versionUpdatedConversation = versionUpdateResult.rows[0] || null;
+
+      if (versionUpdatedConversation) {
+        const membersResult = await client.query(
+          `SELECT user_id
+           FROM conversation_members
+           WHERE conversation_id = $1`,
+          [keyConversationId]
+        );
+        conversationMemberIds = membersResult.rows.map((row) => row.user_id);
       }
 
       await client.query('COMMIT');
 
-      res.json({ success: true, message: 'Group keys distributed', key_version });
+      if (versionUpdatedConversation) {
+        await emitConversationUpdate(
+          versionUpdatedConversation,
+          conversationMemberIds,
+          normalizeKeyVersion(versionUpdatedConversation.current_key_version, normalizedKeyVersion),
+          conversationMemberIds.length
+        );
+      }
+
+      res.json({
+        success: true,
+        message: 'Group keys distributed',
+        key_version: normalizedKeyVersion,
+      });
     } catch (err) {
       if (client) await client.query('ROLLBACK');
       throw err;

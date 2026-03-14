@@ -323,6 +323,44 @@ async function initializeKeys(
   // === Path 1: Local keys exist ===
   const stored = await dbGet(`keypair:${userId}`);
   if (stored) {
+    // When password is available, verify local keys match the server backup.
+    // If they diverge (e.g. this device generated fresh keys before a backup
+    // existed on the server), prefer the backup — it is the canonical keypair.
+    if (password) {
+      try {
+        const backup = await callbacks.fetchBackup();
+        if (backup?.key_id && backup.key_id !== stored.keyId) {
+          console.warn('🔑 Local key does not match server backup — restoring canonical keypair');
+          const privateKeyBase64 = await decryptPrivateKeyWithPassword(
+            backup.encrypted_private_key,
+            backup.iv,
+            backup.salt,
+            password
+          );
+
+          const publicKeyBase64 = await derivePublicKeyFromPrivate(privateKeyBase64);
+          const keyId = await generateKeyFingerprint(publicKeyBase64);
+
+          // Clear all cached shared secrets and group keys — they were
+          // derived with the wrong identity keypair.
+          await clearAllKeys();
+
+          await dbPut({
+            id: `keypair:${userId}`,
+            publicKey: publicKeyBase64,
+            privateKey: privateKeyBase64,
+            keyId,
+            createdAt: Date.now(),
+          });
+
+          await callbacks.uploadPublicKey(publicKeyBase64, keyId);
+          return { publicKey: publicKeyBase64, privateKey: await importPrivateKey(privateKeyBase64) };
+        }
+      } catch (err) {
+        console.warn('🔑 Key verification check failed (non-critical):', err);
+      }
+    }
+
     const privateKey = await importPrivateKey(stored.privateKey);
     console.log('🔑 Using existing local keys');
 
@@ -428,9 +466,17 @@ async function ensureBackup(
     const existing = await callbacks.fetchBackup();
     let needsRefresh = !existing;
 
+    // If a backup exists but its key_id differs from the local key, the backup
+    // is authoritative (canonical keypair).  Do NOT overwrite it — initializeKeys
+    // should have already restored from it when the password was available.
+    if (existing?.key_id && existing.key_id !== keyId) {
+      console.warn('🔑 Backup key_id differs from local — skipping to avoid overwriting canonical key');
+      return;
+    }
+
     if (
       existing &&
-      (!existing.encrypted_private_key || !existing.iv || !existing.salt || existing.key_id !== keyId)
+      (!existing.encrypted_private_key || !existing.iv || !existing.salt)
     ) {
       needsRefresh = true;
     }
@@ -671,6 +717,10 @@ export const keyManager = {
   clearAllKeys,
   importPublicKey,
   generateKeyFingerprint,
+  getLocalPublicKey: async (userId: string): Promise<string | null> => {
+    const stored = await dbGet(`keypair:${userId}`);
+    return stored?.publicKey ?? null;
+  },
   clearSharedSecret: async (userId: string, peerId: string): Promise<void> => {
     const db = await openDB();
     return new Promise((resolve) => {

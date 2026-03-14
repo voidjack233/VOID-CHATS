@@ -12,6 +12,7 @@ export interface PendingAttachment {
 }
 
 interface UseMessageInputProps {
+  currentUserId?: string;
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
   keyVersion: number;
@@ -27,6 +28,7 @@ const MAX_ATTACHMENTS = 5;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 export const useMessageInput = ({
+  currentUserId,
   conversation,
   encryptionKey,
   keyVersion,
@@ -248,7 +250,14 @@ export const useMessageInput = ({
           editingMessage.message_id,
           trimmed,
           encryptionKey!,
-          keyVersion
+          keyVersion,
+          {
+            messageType: editingMessage.message_type || null,
+            signal: {
+              userId: currentUserId,
+              peerUserId: conversation.type === 'dm' ? conversation.dm_user_id : undefined,
+            },
+          }
         );
         onEditComplete?.(editingMessage.message_id, trimmed);
         onCancelEdit?.();
@@ -257,6 +266,10 @@ export const useMessageInput = ({
           key_version: keyVersion,
           reply_to: replyTo?.message_id || undefined,
           attachments: uploadedUrls,
+          signal: {
+            userId: currentUserId,
+            peerUserId: conversation.type === 'dm' ? conversation.dm_user_id : undefined,
+          },
         });
         onMessageSent(msg);
         onCancelReply?.();

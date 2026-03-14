@@ -1,8 +1,9 @@
 // src/Services/hooks/Chats/useChatManager.ts
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution } from '../../Chat/chatService';
+import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution, ownerSelfHealGroupKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
+import { signalService } from '../../Crypto/signal/signalService';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 import { messageStore } from '../../Chat/chatStore';
 
@@ -397,6 +398,8 @@ export const useChatManager = (user: any) => {
         delete handshakeCache.current[keyScopeId];
       }
 
+      let resolvedMemberIds: string[] = [];
+
       try {
         let conversationDetails = staleHandshake
           ? null
@@ -415,7 +418,7 @@ export const useChatManager = (user: any) => {
           const res = await fetchWithAuth(`/api/conversations/${lookupId}`);
           const data = await res.json();
 
-          if (ignore) return; 
+          if (ignore) return;
           if (!data.success) throw new Error('Could not load members');
 
           conversationDetails = storeConversationDetails(data.conversation as ConversationDetails);
@@ -465,6 +468,7 @@ export const useChatManager = (user: any) => {
           memberMap[m.user_id] = m;
         });
         setMembers(memberMap);
+        resolvedMemberIds = Object.keys(memberMap);
 
         const peerId = activeConversation.type === 'dm'
           ? (
@@ -510,7 +514,7 @@ export const useChatManager = (user: any) => {
 
         const { key, version } = keyResult;
 
-        if (ignore) return; 
+        if (ignore) return;
 
         if (key) {
           handshakeCache.current[keyScopeId] = {
@@ -527,6 +531,13 @@ export const useChatManager = (user: any) => {
         setEncryptionKey(key);
         setKeyVersion(version);
 
+        // Pre-warm Signal bootstrap for DM conversations so that the
+        // first send doesn't incur the cost of device registration,
+        // capability checks, and peer device lookups.
+        if (activeConversation.type === 'dm' && peerId) {
+          void signalService.preWarmForDm(user.id, peerId);
+        }
+
         // Owner auto-redistribution: re-wrap the current group key for
         // every member using fresh shared secrets.  Fixes stale
         // distributions caused by identity key changes or members added
@@ -540,7 +551,7 @@ export const useChatManager = (user: any) => {
           ensureGroupKeyDistribution(
             ownerConversation,
             user.id,
-            Object.keys(memberMap)
+            resolvedMemberIds
           ).catch(() => {});
         }
       } catch (err: any) {
@@ -554,14 +565,45 @@ export const useChatManager = (user: any) => {
           return;
         }
 
-        if (
+        const isGroupKeyError =
           reason.includes('No group key available') ||
           reason.includes('Group key version') ||
           reason.includes('not decryptable') ||
-          reason.includes('OperationError')
-        ) {
+          reason.includes('OperationError');
+
+        if (isGroupKeyError) {
+          // Owner self-heal: generate a fresh room key and redistribute
+          // to all members so this device can immediately start working.
+          const ownerConversation = activeGroup || activeConversation;
+          if (
+            ownerConversation &&
+            ownerConversation.type !== 'dm' &&
+            ownerConversation.owner_id === user.id &&
+            resolvedMemberIds.length > 0
+          ) {
+            try {
+              const result = await ownerSelfHealGroupKey(
+                ownerConversation,
+                user.id,
+                resolvedMemberIds
+              );
+              if (!ignore) {
+                setEncryptionError(null);
+                setEncryptionKey(result.key);
+                setKeyVersion(result.version);
+                patchConversationInState({
+                  ...ownerConversation,
+                  current_key_version: result.version,
+                });
+              }
+              return;
+            } catch (healErr) {
+              console.error('Owner key self-heal failed:', healErr);
+            }
+          }
+
           setEncryptionError(
-            'Group encryption keys are being refreshed. Ask the group owner to open this conversation, then try again.'
+            'Unable to decrypt group keys'
           );
           return;
         }
@@ -642,18 +684,60 @@ export const useChatManager = (user: any) => {
     return key;
   };
 
-  // --- THE AUTO-HEALER FUNCTION ---
-  // If decryption fails, it wipes the cache and forces a re-fetch
-  const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
-    try {
-      const messageKey = data.encrypted_content
-        ? await resolveMessageKey(data, key)
-        : key;
+  // --- Signal DM decryption (separate from the auto-healer) ---
+  // Signal messages use an entirely different key exchange (device
+  // envelopes) so a failure here must NOT wipe the ECDH handshake
+  // cache or reset encryptionKey — that only causes an infinite
+  // fetch-handshake loop without ever fixing the actual problem.
+  const trySignalDecrypt = async (data: any): Promise<string | null> => {
+    if (
+      !signalService.isSignalMessageType(data.message_type) ||
+      activeConversation?.type !== 'dm' ||
+      !user?.id ||
+      !data.encrypted_content
+    ) {
+      return null; // Not a signal message — let legacy path handle it
+    }
 
+    try {
+      return await signalService.decryptDmConversationMessage({
+        userId: user.id,
+        message: {
+          encrypted_content: data.encrypted_content,
+          message_type: data.message_type,
+        },
+        fallbackKey: encryptionKey || undefined,
+      });
+    } catch (err) {
+      console.warn('Signal DM decryption failed (non-retriable via handshake):', err);
+      // Return a placeholder instead of throwing — the handshake
+      // auto-healer cannot fix signal session issues.
+      return '[unable to decrypt]';
+    }
+  };
+
+  // --- THE AUTO-HEALER FUNCTION ---
+  // If decryption fails, it wipes the cache and forces a re-fetch.
+  // Signal messages are handled separately to avoid triggering the
+  // healer for problems it cannot fix.
+  const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
+    // --- Signal fast-path: never triggers the healer ---
+    const signalContent = await trySignalDecrypt(data);
+    if (signalContent !== null) {
+      if (isUpdate) {
+        setMessageUpdate({ message_id: data.message_id, content: signalContent, is_edited: true, edited_at: data.edited_at });
+      } else {
+        setNewMessage({ ...data, content: signalContent });
+      }
+      return;
+    }
+
+    // --- Legacy AES-GCM path (healer enabled) ---
+    try {
       const content = data.encrypted_content
-        ? await decryptMessage(data.encrypted_content, data.iv, messageKey)
+        ? await decryptMessage(data.encrypted_content, data.iv, await resolveMessageKey(data, key))
         : data.content;
-      
+
       if (isUpdate) {
         setMessageUpdate({ message_id: data.message_id, content, is_edited: true, edited_at: data.edited_at });
       } else {
@@ -1087,6 +1171,11 @@ export const useChatManager = (user: any) => {
     return conversation_public_id || conversation_id;
   };
 
+  const retryHandshake = () => {
+    setEncryptionKey(null);
+    setHandshakeRetryToken((t) => t + 1);
+  };
+
   return {
     members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError,
     typingUsers,
@@ -1094,5 +1183,6 @@ export const useChatManager = (user: any) => {
     setEditingMessage, setReplyTo, setMessageUpdate,
     handleSelectConversation, handleSelectChannel, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,
     handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
+    retryHandshake,
   };
 };

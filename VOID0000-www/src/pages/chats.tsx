@@ -83,6 +83,7 @@ const ChatDashboard = () => {
     handleBackToMe,
     openConversationByIdentifier,
     openGroupByIdentifier,
+    retryHandshake,
   } = useChatManager(user);
 
   const getRouteId = (conversation?: { public_id?: string | null }) => conversation?.public_id || null;
@@ -525,18 +526,7 @@ const ChatDashboard = () => {
                     {getEncryptionHint(encryptionError)}
                   </p>
                   <button
-                    onClick={() => {
-                      if (dmConversationId) {
-                        void openConversationByIdentifier(dmConversationId);
-                        return;
-                      }
-                      if (groupConversationId) {
-                        void openGroupByIdentifier(groupConversationId, channelConversationId || null);
-                        return;
-                      }
-                      const current = activeGroup || activeConversation;
-                      if (current) handleSelectConversation(current);
-                    }}
+                    onClick={retryHandshake}
                     className="px-6 py-2 bg-void-accent-hover hover:bg-void-accent text-white text-xs font-bold rounded-lg transition-all shadow-lg"
                   >
                     Retry Connection
@@ -561,6 +551,7 @@ const ChatDashboard = () => {
                     messageDelete={messageDelete}
                   />
                   <MessageInput
+                    currentUserId={user?.id}
                     conversation={activeConversation}
                     encryptionKey={encryptionKey}
                     keyVersion={keyVersion}

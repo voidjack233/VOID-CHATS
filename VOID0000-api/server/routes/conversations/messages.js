@@ -590,7 +590,7 @@ router.put('/read', async (req, res) => {
 router.put('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
-  const { encrypted_content, iv, key_version } = req.body;
+  const { encrypted_content, iv, key_version, message_type } = req.body;
 
   if (!encrypted_content || !iv) {
     return res.status(400).json({ error: 'encrypted_content and iv are required' });
@@ -623,7 +623,7 @@ router.put('/:messageId', async (req, res) => {
     }
 
     const msgResult = await scylla.execute(
-      `SELECT sender_id, is_deleted FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      `SELECT sender_id, is_deleted, message_type FROM messages WHERE conversation_id = ? AND message_id = ?`,
       [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
@@ -635,6 +635,9 @@ router.put('/:messageId', async (req, res) => {
       return res.status(403).json({ error: 'Can only edit your own messages' });
     }
     if (msg.is_deleted) return res.status(400).json({ error: 'Cannot edit a deleted message' });
+    const nextMessageType = typeof message_type === 'string' && message_type.trim()
+      ? message_type.trim()
+      : (msg.message_type || 'text');
 
     const now = new Date();
     const editId = generateTimeUUID();
@@ -655,12 +658,13 @@ router.put('/:messageId', async (req, res) => {
     );
 
     await scylla.execute(
-      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, is_edited = true, edited_at = ?
+      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, message_type = ?, is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
       [
         encrypted_content,
         iv,
         requestedKeyVersion,
+        nextMessageType,
         now,
         cassandra.types.Uuid.fromString(conversationId),
         cassandra.types.TimeUuid.fromString(messageId),
@@ -675,6 +679,7 @@ router.put('/:messageId', async (req, res) => {
       encrypted_content,
       iv,
       key_version: requestedKeyVersion,
+      message_type: nextMessageType,
       is_edited: true,
       edited_at: now.toISOString(),
     };

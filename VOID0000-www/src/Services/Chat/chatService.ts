@@ -2,6 +2,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
 import { encryptMessage, decryptMessages } from '../Crypto/messageEncryption';
+import { signalService } from '../Crypto/signal/signalService';
 
 const API_PREFIX = '/api/conversations';
 const KEY_ROTATION_ENABLED = true;
@@ -112,11 +113,13 @@ export interface GroupKeyDistribution {
   encrypted_group_key: string;
   key_version: number;
   wrapped_by_user_id?: string | null;
+  wrapper_public_key?: string | null;
 }
 
 export interface GroupKeyDistributionPayload {
   user_id: string;
   encrypted_group_key: string;
+  wrapper_public_key?: string;
 }
 
 export interface ConversationInviteLink {
@@ -241,6 +244,17 @@ function createMessageKeyResolver(
 
     return versionCache.get(targetVersion) as Promise<CryptoKey>;
   };
+}
+
+function canUseSignalDm(context?: MessageDecryptionContext): context is MessageDecryptionContext & {
+  conversation: Conversation;
+  userId: string;
+} {
+  return Boolean(
+    context?.conversation &&
+    context.conversation.type === 'dm' &&
+    context.userId
+  );
 }
 
 // ============== Conversations ==============
@@ -389,6 +403,7 @@ async function createGroupKeyDistributions(
   roomKey: CryptoKey
 ): Promise<GroupKeyDistributionPayload[]> {
   const distributions: GroupKeyDistributionPayload[] = [];
+  const myPublicKey = await keyManager.getLocalPublicKey(currentUserId);
 
   for (const targetUserId of [...new Set(participantIds)]) {
     const targetUserKeys = await getUserPublicKey(targetUserId);
@@ -402,6 +417,7 @@ async function createGroupKeyDistributions(
     distributions.push({
       user_id: targetUserId,
       encrypted_group_key: `${iv}.${encrypted}`,
+      ...(myPublicKey ? { wrapper_public_key: myPublicKey } : {}),
     });
   }
 
@@ -419,6 +435,7 @@ async function createGroupKeyDistributionsBestEffort(
   roomKey: CryptoKey
 ): Promise<GroupKeyDistributionPayload[]> {
   const distributions: GroupKeyDistributionPayload[] = [];
+  const myPublicKey = await keyManager.getLocalPublicKey(currentUserId);
 
   for (const targetUserId of [...new Set(participantIds)]) {
     try {
@@ -433,6 +450,7 @@ async function createGroupKeyDistributionsBestEffort(
       distributions.push({
         user_id: targetUserId,
         encrypted_group_key: `${iv}.${encrypted}`,
+        ...(myPublicKey ? { wrapper_public_key: myPublicKey } : {}),
       });
     } catch {
       // Member's keys might not be available yet — skip silently
@@ -440,6 +458,39 @@ async function createGroupKeyDistributionsBestEffort(
   }
 
   return distributions;
+}
+
+/**
+ * Owner self-heal: when the owner opens a group on a device that cannot
+ * decrypt the existing distributions (e.g. different identity keypair),
+ * generate a brand-new room key, distribute it to every member, and
+ * return the usable key.  This lets the owner recover without any
+ * manual intervention.
+ */
+export async function ownerSelfHealGroupKey(
+  conversation: Conversation,
+  currentUserId: string,
+  memberIds: string[]
+): Promise<{ key: CryptoKey; version: number }> {
+  const keyConversationId = conversation.parent_conversation_id || conversation.id;
+  const nextVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+
+  const roomKey = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  const allParticipants = [...new Set([...memberIds, currentUserId])];
+  const distributions = await createGroupKeyDistributionsBestEffort(allParticipants, currentUserId, roomKey);
+
+  if (distributions.length > 0) {
+    await distributeGroupKey(keyConversationId, distributions, nextVersion);
+  }
+
+  await keyManager.storeGroupKey(keyConversationId, nextVersion, roomKey);
+
+  return { key: roomKey, version: nextVersion };
 }
 
 /**
@@ -722,17 +773,60 @@ export async function sendMessage(
   conversationId: string,
   plaintext: string,
   encryptionKey: CryptoKey,
-  options?: { reply_to?: string; key_version?: number; attachments?: string[]; message_type?: string }
+  options?: {
+    reply_to?: string;
+    key_version?: number;
+    attachments?: string[];
+    message_type?: string;
+    signal?: {
+      userId?: string;
+      peerUserId?: string;
+    };
+  }
 ): Promise<Message> {
-  const { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
+  let { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
+  let keyVersion = options?.key_version || 1;
+  let messageType = options?.message_type || 'text';
+
+  // DM path: prefer Signal payloads when the caller has enough context.
+  // Legacy AES-GCM ciphertext is always embedded as a fallback so the
+  // receiver can decrypt even when Signal session state is out of sync.
+  if (
+    messageType === 'text' &&
+    options?.signal?.userId &&
+    options?.signal?.peerUserId
+  ) {
+    try {
+      // Race Signal preparation against a timeout so sends are never slow.
+      // If Signal takes too long (e.g. cold bootstrap), fall back to legacy.
+      const signalPayload = await Promise.race([
+        signalService.prepareDmConversationMessage({
+          userId: options.signal.userId,
+          peerUserId: options.signal.peerUserId,
+          plaintext,
+          legacyFallback: { encrypted_content, iv },
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
+
+      if (signalPayload) {
+        encrypted_content = signalPayload.encrypted_content;
+        iv = signalPayload.iv;
+        keyVersion = signalPayload.key_version;
+        messageType = signalPayload.message_type;
+      }
+    } catch (err) {
+      console.warn('Signal DM send preparation failed, using legacy payload', err);
+    }
+  }
 
   const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages`, {
     method: 'POST',
     body: JSON.stringify({
       encrypted_content,
       iv,
-      key_version: options?.key_version || 1,
-      message_type: options?.message_type || 'text',
+      key_version: keyVersion,
+      message_type: messageType,
       reply_to: options?.reply_to || null,
       attachments: options?.attachments || [],
     }),
@@ -808,12 +902,66 @@ export async function getMessages(
   if (!data.success) throw new Error(data.error);
 
   const keyResolver = createMessageKeyResolver(encryptionKey, options);
-  const decrypted = await decryptMessages(data.messages, keyResolver || encryptionKey);
+  const sourceMessages = (data.messages || []) as Message[];
+  const decryptedByIndex: Array<Record<string, any> | null> = new Array(sourceMessages.length).fill(null);
 
-  // Preserve reactions from server response onto decrypted messages
-  const messagesWithReactions = decrypted.map((msg: any, i: number) => ({
-    ...msg,
-    reactions: data.messages[i]?.reactions || {},
+  const legacyEntries: Array<{ index: number; message: Message }> = [];
+  const signalEntries: Array<{ index: number; message: Message }> = [];
+
+  sourceMessages.forEach((message, index) => {
+    if (canUseSignalDm(options) && signalService.isSignalMessageType(message.message_type)) {
+      signalEntries.push({ index, message });
+      return;
+    }
+
+    legacyEntries.push({ index, message });
+  });
+
+  if (legacyEntries.length > 0) {
+    const legacyDecrypted = await decryptMessages(
+      legacyEntries.map((entry) => entry.message),
+      keyResolver || encryptionKey
+    );
+
+    legacyEntries.forEach((entry, idx) => {
+      decryptedByIndex[entry.index] = legacyDecrypted[idx] || null;
+    });
+  }
+
+  if (signalEntries.length > 0 && canUseSignalDm(options)) {
+    await Promise.all(signalEntries.map(async (entry) => {
+      const message = entry.message;
+      if (message.is_deleted || !message.encrypted_content) {
+        decryptedByIndex[entry.index] = {
+          ...message,
+          content: message.is_deleted ? '[deleted]' : '[encrypted]',
+        };
+        return;
+      }
+
+      try {
+        const content = await signalService.decryptDmConversationMessage({
+          userId: options.userId,
+          message,
+          fallbackKey: encryptionKey,
+        });
+
+        decryptedByIndex[entry.index] = {
+          ...message,
+          content,
+        };
+      } catch {
+        decryptedByIndex[entry.index] = {
+          ...message,
+          content: '[unable to decrypt]',
+        };
+      }
+    }));
+  }
+
+  const messagesWithReactions = sourceMessages.map((message, index) => ({
+    ...(decryptedByIndex[index] || message),
+    reactions: sourceMessages[index]?.reactions || {},
   }));
 
   return { messages: messagesWithReactions as Message[], has_more: data.has_more };
@@ -824,9 +972,43 @@ export async function editMessage(
   messageId: string,
   newPlaintext: string,
   encryptionKey: CryptoKey,
-  keyVersion?: number
+  keyVersion?: number,
+  options?: {
+    messageType?: string | null;
+    signal?: {
+      userId?: string;
+      peerUserId?: string;
+    };
+  }
 ): Promise<void> {
-  const { encrypted_content, iv } = await encryptMessage(newPlaintext, encryptionKey);
+  let { encrypted_content, iv } = await encryptMessage(newPlaintext, encryptionKey);
+  let payloadMessageType: string | null = options?.messageType || null;
+
+  if (
+    signalService.isSignalMessageType(payloadMessageType) &&
+    options?.signal?.userId &&
+    options?.signal?.peerUserId
+  ) {
+    try {
+      const signalPayload = await Promise.race([
+        signalService.prepareDmConversationMessage({
+          userId: options.signal.userId,
+          peerUserId: options.signal.peerUserId,
+          plaintext: newPlaintext,
+          legacyFallback: { encrypted_content, iv },
+        }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
+
+      if (signalPayload) {
+        encrypted_content = signalPayload.encrypted_content;
+        iv = signalPayload.iv;
+        payloadMessageType = signalPayload.message_type;
+      }
+    } catch (err) {
+      console.warn('Signal DM edit preparation failed, using legacy payload', err);
+    }
+  }
 
   const res = await fetchWithAuth(
     `${API_PREFIX}/${conversationId}/messages/${messageId}`,
@@ -836,6 +1018,7 @@ export async function editMessage(
         encrypted_content,
         iv,
         key_version: keyVersion || 1,
+        ...(payloadMessageType ? { message_type: payloadMessageType } : {}),
       }),
     }
   );
@@ -925,7 +1108,7 @@ export async function getGroupKeys(
 
 export async function distributeGroupKey(
   conversationId: string,
-  distributions: Array<{ user_id: string; encrypted_group_key: string }>,
+  distributions: Array<{ user_id: string; encrypted_group_key: string; wrapper_public_key?: string }>,
   keyVersion: number
 ): Promise<void> {
   const res = await fetchWithAuth(`${API_PREFIX}/keys/group/${conversationId}`, {
@@ -1016,7 +1199,6 @@ export async function getEncryptionKey(
     throw new Error(`Group key version ${targetVersion} is unavailable`);
   }
 
-  // 1. Check if we already unlocked it and saved it to IndexedDB
   const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (cachedGroupKey) {
     return { key: cachedGroupKey, version: targetVersion };
@@ -1024,10 +1206,10 @@ export async function getEncryptionKey(
 
   let lastError: Error | null = null;
 
-  // 2. Try every candidate row for this version. This handles APIs that return
+  // Try every candidate row for this version. This handles APIs that return
   // multiple distributions for a key version (one row per recipient).
   for (const candidate of candidateKeys) {
-    const wrapperUserId = candidate.wrapped_by_user_id || conversation.owner_id;
+    const wrapperUserId = candidate.wrapped_by_user_id;
     if (!wrapperUserId) {
       lastError = new Error('Cannot decrypt group key without wrapper metadata');
       continue;
@@ -1039,13 +1221,23 @@ export async function getEncryptionKey(
       continue;
     }
 
+    // Use the public key pinned at distribution time if available.
+    // For legacy rows without a pinned key, fall back to fetching from server.
+    let wrapperPublicKeyBase64: string;
+    try {
+      wrapperPublicKeyBase64 = candidate.wrapper_public_key
+        ?? (await getUserPublicKey(wrapperUserId)).public_key;
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error('Failed to resolve wrapper public key');
+      continue;
+    }
+
     // Attempt decryption twice: once with the cached shared secret, and
     // if that yields an OperationError (stale key material), clear the
     // cached shared secret and retry with a freshly derived one.
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const wrapperKeyData = await getUserPublicKey(wrapperUserId);
-        const sharedSecret = await keyManager.getSharedSecret(userId, wrapperUserId, wrapperKeyData.public_key);
+        const sharedSecret = await keyManager.getSharedSecret(userId, wrapperUserId, wrapperPublicKeyBase64);
 
         const decryptedRoomKey = await keyManager.decryptGroupKey(encryptedBase64, iv, sharedSecret);
         await keyManager.storeGroupKey(keyConversationId, targetVersion, decryptedRoomKey);
@@ -1054,8 +1246,7 @@ export async function getEncryptionKey(
       } catch (err) {
         const isOperationError = err instanceof DOMException && err.name === 'OperationError';
         if (attempt === 0 && isOperationError) {
-          // Shared secret cache might reference a stale peer public key —
-          // evict it so the next iteration re-derives from the server.
+          // Shared secret cache might be stale — evict it and re-derive.
           await keyManager.clearSharedSecret(userId, wrapperUserId);
           continue;
         }
@@ -1117,6 +1308,25 @@ export async function getMessageById(
     );
     const data = await res.json();
     if (!data.success || !data.message) return null;
+
+    if (canUseSignalDm(options) && signalService.isSignalMessageType(data.message.message_type)) {
+      try {
+        const content = await signalService.decryptDmConversationMessage({
+          userId: options.userId,
+          message: data.message,
+          fallbackKey: encryptionKey,
+        });
+        return {
+          ...data.message,
+          content,
+        } as Message;
+      } catch {
+        return {
+          ...data.message,
+          content: '[unable to decrypt]',
+        } as Message;
+      }
+    }
 
     const keyResolver = createMessageKeyResolver(encryptionKey, options);
     const [decrypted] = await decryptMessages([data.message], keyResolver || encryptionKey);

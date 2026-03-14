@@ -5,6 +5,7 @@ import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 
 interface MessageInputProps {
+  currentUserId?: string;
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
   keyVersion: number;
