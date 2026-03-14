@@ -1,9 +1,12 @@
 import type { Conversation } from '../../Chat/chatService';
 
+export type SignalDmCryptoMode = 'signal_locked';
+
 export interface SignalDeviceIdentityRecord {
   userId: string;
   deviceId: string;
   registrationId: number;
+  libsignalDeviceId?: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -41,10 +44,17 @@ export interface SignalConversationBootstrapInput {
   peerUserId?: string;
 }
 
+export interface SignalDmCryptoModeRecord {
+  userId: string;
+  peerUserId: string;
+  mode: SignalDmCryptoMode;
+  updatedAt: string;
+}
+
 export interface SignalBootstrapResult {
   enabled: boolean;
   ready: boolean;
-  mode: 'legacy' | 'signal';
+  mode: 'signal_locked';
   reason?: string;
   deviceId?: string;
   missingServerRequirements?: string[];
@@ -64,6 +74,10 @@ export interface SignalServerDeviceRecord {
   user_id: string;
   device_id: string;
   registration_id: number;
+  libsignal_device_id?: number;
+  signal_device_id?: number;
+  device_numeric_id?: number;
+  device_number?: number;
   identity_key?: string;
   signed_prekey_id?: number;
   signed_prekey_public_key?: string;
@@ -138,12 +152,9 @@ export interface SignalDmMessagePayload {
   version: number;
   sender_user_id: string;
   sender_device_id: string;
+  sender_libsignal_device_id?: number;
   sent_at: string;
   envelopes: SignalDmMessageEnvelopeEntry[];
-  fallback?: {
-    encrypted_content: string;
-    iv: string;
-  };
 }
 
 export interface SignalPreparedConversationMessage {

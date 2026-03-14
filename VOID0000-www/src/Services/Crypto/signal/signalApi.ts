@@ -16,6 +16,12 @@ interface SignalApiEnvelope<T> {
   device?: T;
 }
 
+type SignalApiError = Error & {
+  code?: string;
+  status?: number;
+  payload?: Record<string, unknown> | null;
+};
+
 export interface RegisterSignalDevicePayload {
   device_id: string;
   registration_id: number;
@@ -38,6 +44,10 @@ export interface UploadOneTimePreKeysPayload {
 export interface SignalPreKeyBundle {
   user_id: string;
   device_id: string;
+  libsignal_device_id?: number;
+  signal_device_id?: number;
+  device_numeric_id?: number;
+  device_number?: number;
   registration_id: number;
   identity_key: string;
   signed_prekey: {
@@ -62,6 +72,9 @@ export interface SignalDeviceInboxItem {
   id: string;
   sender_user_id: string;
   sender_device_id: string;
+  sender_libsignal_device_id?: number;
+  sender_signal_device_id?: number;
+  sender_device_numeric_id?: number;
   recipient_device_id: string;
   type: 'prekey' | 'signal' | 'sender_key';
   ciphertext: string;
@@ -124,19 +137,39 @@ async function parseJsonSafe(response: Response): Promise<Record<string, unknown
   }
 }
 
-function toApiError(payload: Record<string, unknown> | null, fallback: string): Error {
+function toApiError(
+  payload: Record<string, unknown> | null,
+  fallback: string,
+  status?: number
+): SignalApiError {
   const message = typeof payload?.error === 'string'
     ? payload.error
     : typeof payload?.message === 'string'
       ? payload.message
       : fallback;
-  return new Error(message);
+  const error = new Error(message) as SignalApiError;
+  if (status) error.status = status;
+  if (payload) {
+    error.payload = payload;
+    if (typeof payload.code === 'string' && payload.code.length > 0) {
+      error.code = payload.code;
+    }
+  }
+  return error;
 }
 
-async function requireSuccess<T>(response: Response, fallbackError: string): Promise<SignalApiEnvelope<T>> {
+async function requireSuccess<T>(
+  response: Response,
+  fallbackError: string,
+  options?: { notFoundCode?: string }
+): Promise<SignalApiEnvelope<T>> {
   const payload = (await parseJsonSafe(response)) as SignalApiEnvelope<T> | null;
   if (!response.ok || payload?.success === false) {
-    throw toApiError(payload as Record<string, unknown> | null, fallbackError);
+    const error = toApiError(payload as Record<string, unknown> | null, fallbackError, response.status);
+    if (response.status === 404 && options?.notFoundCode) {
+      error.code = options.notFoundCode;
+    }
+    throw error;
   }
   return payload || {};
 }
@@ -189,13 +222,22 @@ export async function fetchSignalCapabilities(): Promise<SignalServerCapabilitie
   return normalized;
 }
 
-export async function registerSignalDevice(payload: RegisterSignalDevicePayload): Promise<void> {
+export async function registerSignalDevice(
+  payload: RegisterSignalDevicePayload
+): Promise<SignalServerDeviceRecord | null> {
   const response = await fetchWithAuth(`${SIGNAL_API_PREFIX}/devices`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 
-  await requireSuccess<void>(response, 'Failed to register signal device');
+  const envelope = await requireSuccess<{
+    device?: SignalServerDeviceRecord;
+  }>(response, 'Failed to register signal device');
+  const directDevice = envelope.device;
+  if (directDevice && typeof directDevice === 'object' && 'device_id' in directDevice) {
+    return directDevice as SignalServerDeviceRecord;
+  }
+  return envelope.data?.device || null;
 }
 
 export async function listSignalDevicesForUser(userId: string): Promise<SignalServerDeviceRecord[]> {
@@ -268,7 +310,9 @@ export async function fetchSignalDeviceInbox(
   const payload = await requireSuccess<{
     items?: SignalDeviceInboxItem[];
     next_cursor?: string | null;
-  }>(response, 'Failed to fetch signal device inbox');
+  }>(response, 'Failed to fetch signal device inbox', {
+    notFoundCode: 'SIGNAL_INBOX_ENDPOINT_NOT_FOUND',
+  });
 
   const data = payload.data || {};
   return {

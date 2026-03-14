@@ -1,5 +1,7 @@
 import type {
   SignalDeviceIdentityRecord,
+  SignalDmCryptoMode,
+  SignalDmCryptoModeRecord,
   SignalDmSessionRecord,
   SignalGroupSenderKeyRecord,
   SignalLocalBootstrapMaterial,
@@ -33,6 +35,10 @@ function buildDmSessionKey(userId: string, peerUserId: string, peerDeviceId: str
 
 function buildInboxCursorKey(userId: string, deviceId: string) {
   return `inbox:${userId}:${deviceId}`;
+}
+
+function buildDmModeKey(userId: string, peerUserId: string) {
+  return `dm_mode:${userId}:${peerUserId}`;
 }
 
 function buildSenderKey(conversationId: string, senderDeviceId: string) {
@@ -89,6 +95,21 @@ async function getMetaRow<T>(id: string): Promise<T | null> {
   return (result as T | undefined) ?? null;
 }
 
+async function getAllMetaRows<T>(): Promise<T[]> {
+  const db = await openDB();
+  const tx = db.transaction(META_STORE, 'readonly');
+  const result = await requestToPromise(tx.objectStore(META_STORE).getAll());
+  await transactionComplete(tx);
+  return (result as T[] | undefined) ?? [];
+}
+
+async function deleteMetaRow(id: string): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(META_STORE, 'readwrite');
+  tx.objectStore(META_STORE).delete(id);
+  await transactionComplete(tx);
+}
+
 async function putSessionRow(row: DmSessionRow): Promise<void> {
   const db = await openDB();
   const tx = db.transaction(SESSION_STORE, 'readwrite');
@@ -110,6 +131,19 @@ async function getAllSessionRows(): Promise<DmSessionRow[]> {
   const result = await requestToPromise(tx.objectStore(SESSION_STORE).getAll());
   await transactionComplete(tx);
   return (result as DmSessionRow[] | undefined) ?? [];
+}
+
+async function deleteSessionRowsByUser(userId: string): Promise<void> {
+  const rows = await getAllSessionRows();
+  const db = await openDB();
+  const tx = db.transaction(SESSION_STORE, 'readwrite');
+  const store = tx.objectStore(SESSION_STORE);
+  rows.forEach((row) => {
+    if (row.userId === userId) {
+      store.delete(row.id);
+    }
+  });
+  await transactionComplete(tx);
 }
 
 async function putSenderKeyRow(row: GroupSenderKeyRow): Promise<void> {
@@ -223,6 +257,10 @@ export const signalStore = {
     return sessions.filter((session) => session.sessionVersion > 0);
   },
 
+  async clearDmSessionsForUser(userId: string): Promise<void> {
+    await deleteSessionRowsByUser(userId);
+  },
+
   async putGroupSenderKey(record: SignalGroupSenderKeyRecord): Promise<void> {
     await putSenderKeyRow({
       id: buildSenderKey(record.conversationId, record.senderDeviceId),
@@ -258,6 +296,42 @@ export const signalStore = {
       cursor,
       updatedAt: new Date().toISOString(),
     });
+  },
+
+  async getDmCryptoMode(userId: string, peerUserId: string): Promise<SignalDmCryptoMode | null> {
+    const row = await getMetaRow<{ mode?: string }>(buildDmModeKey(userId, peerUserId));
+    if (!row) return null;
+    if (row.mode === 'signal_locked') {
+      return 'signal_locked';
+    }
+    return null;
+  },
+
+  async putDmCryptoMode(record: SignalDmCryptoModeRecord): Promise<void> {
+    await putMetaRow({
+      id: buildDmModeKey(record.userId, record.peerUserId),
+      ...record,
+    });
+  },
+
+  async getRawMeta<T>(id: string): Promise<T | null> {
+    return getMetaRow<T>(id);
+  },
+
+  async putRawMeta(id: string, payload: Record<string, unknown>): Promise<void> {
+    await putMetaRow({
+      id,
+      ...payload,
+    });
+  },
+
+  async deleteRawMeta(id: string): Promise<void> {
+    await deleteMetaRow(id);
+  },
+
+  async listRawMetaByPrefix<T>(prefix: string): Promise<T[]> {
+    const rows = await getAllMetaRows<T & { id?: string }>();
+    return rows.filter((row) => typeof row?.id === 'string' && row.id.startsWith(prefix));
   },
 
   async clearAll(): Promise<void> {

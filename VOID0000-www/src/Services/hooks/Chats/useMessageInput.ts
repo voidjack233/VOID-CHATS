@@ -257,6 +257,7 @@ export const useMessageInput = ({
               userId: currentUserId,
               peerUserId: conversation.type === 'dm' ? conversation.dm_user_id : undefined,
             },
+            requireSignal: conversation.type === 'dm',
           }
         );
         onEditComplete?.(editingMessage.message_id, trimmed);
@@ -270,6 +271,7 @@ export const useMessageInput = ({
             userId: currentUserId,
             peerUserId: conversation.type === 'dm' ? conversation.dm_user_id : undefined,
           },
+          requireSignalForText: conversation.type === 'dm',
         });
         onMessageSent(msg);
         onCancelReply?.();
@@ -295,6 +297,8 @@ export const useMessageInput = ({
       if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
         setSlowmodeRemaining(err.retry_after_seconds);
         setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
+      } else if (err?.code === 'SIGNAL_LOCKED_SEND_BLOCKED') {
+        setSendError('Signal locked mode is enabled, but this DM is not ready yet. Please retry in a moment.');
       } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
         setSendError('Encryption keys changed. Please close and reopen this conversation, then try again.');
       } else {

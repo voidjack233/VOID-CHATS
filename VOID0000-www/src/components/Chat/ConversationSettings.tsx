@@ -258,6 +258,20 @@ const ConversationSettings = ({
     !!pendingIconFile ||
     removeCurrentIcon;
   const canManageMembers = isOwner && conversation.type === 'group';
+  const dmPeerUserId = useMemo(() => {
+    if (conversation.type !== 'dm') return null;
+    return (
+      conversation.dm_user_id ||
+      memberList.find((member) => member.user_id !== currentUserId)?.user_id ||
+      null
+    );
+  }, [conversation.type, conversation.dm_user_id, currentUserId, memberList]);
+  const dmModeMeta = {
+    value: 'signal_locked',
+    label: 'Signal Locked',
+    description: 'Signal-only mode is enforced for DMs during migration.',
+  };
+  const dmModeBadgeClassName = 'bg-amber-500/15 text-amber-300 ring-amber-500/30';
 
   const getActorLabel = () => {
     const actor = memberList.find((member) => member.user_id === currentUserId);
@@ -723,8 +737,27 @@ const ConversationSettings = ({
               </div>
             </div>
 
-            <p className="text-sm leading-relaxed text-void-text-muted">
-              Server-style settings only apply to groups for now. DMs keep the simple conversation flow.
+            <div className="space-y-3 rounded-xl border border-void-bg-hover bg-void-bg-main/60 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-void-text">Encryption Mode</p>
+                  <p className="mt-1 text-xs text-void-text-muted">{dmModeMeta.description}</p>
+                </div>
+                <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${dmModeBadgeClassName}`}>
+                  {dmModeMeta.label}
+                </span>
+              </div>
+
+              <div className="rounded-lg border border-void-bg-hover bg-void-bg-sec px-3 py-2 text-sm text-void-text">
+                Message Security: Signal Locked
+              </div>
+              {!dmPeerUserId && (
+                <p className="text-xs text-rose-300">Unable to resolve DM peer identity for this thread.</p>
+              )}
+            </div>
+
+            <p className="text-xs leading-relaxed text-void-text-muted">
+              DM encryption is now Signal-only. Messages will send only when peer device sessions are fully ready.
             </p>
           </div>
         </div>

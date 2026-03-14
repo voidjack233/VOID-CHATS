@@ -20,4 +20,5 @@ VOID0000-api/docs/conversation-e2ee-v2.md
 VOID0000-api/docs/sql/2026-03-12_conversation_invites.sql
 VOID0000-api/docs/sql/2026-03-14_signal_protocol_phase1.sql
 VOID0000-api/docs/sql/2026-03-14_wrapper_public_key.sql
+VOID0000-api/docs/sql/2026-03-15_signal_protocol_phase3_device_ids.sql
 VOID0000-www/.*/

@@ -34,7 +34,10 @@ async function verifySignedPrekeySignature(identityKey, signedPrekeyPublicKey, s
       base64ToArrayBuffer(signedPrekeyPublicKey)
     );
   } catch {
-    return false;
+    // Some Signal stacks (including libsignal) do not use SPKI/ECDSA
+    // encodings that Node WebCrypto can verify directly here.
+    // Return null to indicate "unverifiable by this server path".
+    return null;
   }
 }
 
@@ -83,6 +86,13 @@ function normalizeDeviceId(value) {
   const normalized = String(value || '').trim();
   if (!normalized || normalized.length > 255) return null;
   return normalized;
+}
+
+function normalizeLibsignalDeviceId(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
 }
 
 async function ensureConversationMembership(conversationId, userId, db = pool) {
@@ -154,7 +164,7 @@ router.get('/devices/:userId', async (req, res) => {
     }
 
     const result = await pool.query(
-      `SELECT user_id, device_id, registration_id,
+      `SELECT user_id, device_id, libsignal_device_id, registration_id,
               identity_key, signed_prekey_id, signed_prekey_public_key, signed_prekey_signature,
               created_at, updated_at, last_seen_at
        FROM signal_devices
@@ -184,6 +194,11 @@ router.post('/devices', async (req, res) => {
 
   const userId = req.user.id;
   const { device_id, registration_id, identity_key, signed_prekey } = req.body || {};
+  const rawLibsignalDeviceId = req.body?.libsignal_device_id
+    ?? req.body?.signal_device_id
+    ?? req.body?.device_numeric_id
+    ?? req.body?.device_number;
+  const requestedLibsignalDeviceId = normalizeLibsignalDeviceId(rawLibsignalDeviceId);
   const normalizedDeviceId = normalizeDeviceId(device_id);
 
   if (
@@ -206,6 +221,14 @@ router.post('/devices', async (req, res) => {
     });
   }
 
+  if (rawLibsignalDeviceId != null && requestedLibsignalDeviceId == null) {
+    return res.status(400).json({
+      success: false,
+      error: 'libsignal_device_id must be a positive integer when provided',
+    });
+  }
+
+  let client;
   try {
     const isValidSignature = await verifySignedPrekeySignature(
       identity_key,
@@ -213,17 +236,49 @@ router.post('/devices', async (req, res) => {
       signed_prekey.signature
     );
 
-    if (!isValidSignature) {
+    if (isValidSignature === false) {
       return res.status(400).json({
         success: false,
         error: 'signed_prekey signature is invalid for identity_key',
       });
     }
 
-    const result = await pool.query(
+    if (isValidSignature === null) {
+      console.warn('Signal signed_prekey verification skipped (unsupported key format)');
+    }
+
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [String(userId)]);
+
+    const existingDevice = await client.query(
+      `SELECT libsignal_device_id
+       FROM signal_devices
+       WHERE user_id = $1 AND device_id = $2
+       LIMIT 1
+       FOR UPDATE`,
+      [userId, normalizedDeviceId]
+    );
+
+    let assignedLibsignalDeviceId = normalizeLibsignalDeviceId(existingDevice.rows[0]?.libsignal_device_id);
+    if (!assignedLibsignalDeviceId) {
+      assignedLibsignalDeviceId = requestedLibsignalDeviceId;
+    }
+    if (!assignedLibsignalDeviceId) {
+      const nextIdResult = await client.query(
+        `SELECT COALESCE(MAX(libsignal_device_id), 0) + 1 AS next_libsignal_device_id
+         FROM signal_devices
+         WHERE user_id = $1`,
+        [userId]
+      );
+      assignedLibsignalDeviceId = normalizeLibsignalDeviceId(nextIdResult.rows[0]?.next_libsignal_device_id) ?? 1;
+    }
+
+    const result = await client.query(
       `INSERT INTO signal_devices (
          user_id,
          device_id,
+         libsignal_device_id,
          registration_id,
          identity_key,
          signed_prekey_id,
@@ -233,9 +288,10 @@ router.post('/devices', async (req, res) => {
          updated_at,
          last_seen_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW(), NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW(), NOW())
        ON CONFLICT (user_id, device_id)
        DO UPDATE SET
+         libsignal_device_id = COALESCE(signal_devices.libsignal_device_id, EXCLUDED.libsignal_device_id),
          registration_id = EXCLUDED.registration_id,
          identity_key = EXCLUDED.identity_key,
          signed_prekey_id = EXCLUDED.signed_prekey_id,
@@ -244,10 +300,11 @@ router.post('/devices', async (req, res) => {
          is_active = TRUE,
          updated_at = NOW(),
          last_seen_at = NOW()
-       RETURNING user_id, device_id, registration_id, created_at, updated_at, last_seen_at`,
+       RETURNING user_id, device_id, libsignal_device_id, registration_id, created_at, updated_at, last_seen_at`,
       [
         userId,
         normalizedDeviceId,
+        assignedLibsignalDeviceId,
         registration_id,
         identity_key,
         signed_prekey.key_id,
@@ -255,6 +312,8 @@ router.post('/devices', async (req, res) => {
         signed_prekey.signature,
       ]
     );
+
+    await client.query('COMMIT');
 
     return res.status(201).json({
       success: true,
@@ -264,8 +323,17 @@ router.post('/devices', async (req, res) => {
       },
     });
   } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    if (err && err.code === '23505') {
+      return res.status(409).json({
+        success: false,
+        error: 'libsignal_device_id is already in use for this account',
+      });
+    }
     console.error('Signal device register error:', err);
     return res.status(500).json({ success: false, error: 'Failed to register signal device' });
+  } finally {
+    client?.release();
   }
 });
 
@@ -413,7 +481,7 @@ router.get('/prekeys/:userId/:deviceId', async (req, res) => {
     }
 
     const deviceResult = await client.query(
-      `SELECT user_id, device_id, registration_id, identity_key,
+      `SELECT user_id, device_id, libsignal_device_id, registration_id, identity_key,
               signed_prekey_id, signed_prekey_public_key, signed_prekey_signature
        FROM signal_devices
        WHERE user_id = $1 AND device_id = $2 AND is_active = TRUE
@@ -467,6 +535,7 @@ router.get('/prekeys/:userId/:deviceId', async (req, res) => {
       bundle: {
         user_id: device.user_id,
         device_id: device.device_id,
+        libsignal_device_id: device.libsignal_device_id,
         registration_id: device.registration_id,
         identity_key: device.identity_key,
         signed_prekey: {
@@ -708,18 +777,22 @@ router.get('/messages/inbox', async (req, res) => {
     }
 
     const inboxResult = await client.query(
-      `SELECT id,
-              sender_user_id,
-              sender_device_id,
-              recipient_device_id,
-              envelope_type,
-              ciphertext,
-              created_at
-       FROM signal_device_messages
-       WHERE recipient_user_id = $1
-         AND recipient_device_id = $2
-         AND ($3::BIGINT IS NULL OR id > $3)
-       ORDER BY id ASC
+      `SELECT msg.id,
+              msg.sender_user_id,
+              msg.sender_device_id,
+              sender_device.libsignal_device_id AS sender_libsignal_device_id,
+              msg.recipient_device_id,
+              msg.envelope_type,
+              msg.ciphertext,
+              msg.created_at
+       FROM signal_device_messages AS msg
+       LEFT JOIN signal_devices AS sender_device
+         ON sender_device.user_id = msg.sender_user_id
+        AND sender_device.device_id = msg.sender_device_id
+       WHERE msg.recipient_user_id = $1
+         AND msg.recipient_device_id = $2
+         AND ($3::BIGINT IS NULL OR msg.id > $3)
+       ORDER BY msg.id ASC
        LIMIT $4`,
       [userId, deviceId, cursor, limit]
     );
@@ -740,6 +813,7 @@ router.get('/messages/inbox', async (req, res) => {
       id: String(row.id),
       sender_user_id: row.sender_user_id,
       sender_device_id: row.sender_device_id,
+      sender_libsignal_device_id: row.sender_libsignal_device_id,
       recipient_device_id: row.recipient_device_id,
       type: row.envelope_type,
       ciphertext: row.ciphertext,

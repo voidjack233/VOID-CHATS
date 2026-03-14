@@ -684,19 +684,24 @@ export const useChatManager = (user: any) => {
     return key;
   };
 
-  // --- Signal DM decryption (separate from the auto-healer) ---
-  // Signal messages use an entirely different key exchange (device
-  // envelopes) so a failure here must NOT wipe the ECDH handshake
-  // cache or reset encryptionKey — that only causes an infinite
-  // fetch-handshake loop without ever fixing the actual problem.
+  // --- DM decrypt path (Signal-only) ---
+  // For DMs we never fall back to legacy AES decryption. This avoids
+  // mixed-mode loops and keeps the migration strictly libsignal.
   const trySignalDecrypt = async (data: any): Promise<string | null> => {
-    if (
-      !signalService.isSignalMessageType(data.message_type) ||
-      activeConversation?.type !== 'dm' ||
-      !user?.id ||
-      !data.encrypted_content
-    ) {
-      return null; // Not a signal message — let legacy path handle it
+    if (activeConversation?.type !== 'dm' || !user?.id) {
+      return null;
+    }
+
+    if (data.is_deleted) {
+      return '[deleted]';
+    }
+
+    if (!data.encrypted_content) {
+      return data.content || '[encrypted]';
+    }
+
+    if (!signalService.isSignalMessageType(data.message_type)) {
+      return '[legacy message unavailable]';
     }
 
     try {
@@ -706,22 +711,19 @@ export const useChatManager = (user: any) => {
           encrypted_content: data.encrypted_content,
           message_type: data.message_type,
         },
-        fallbackKey: encryptionKey || undefined,
       });
     } catch (err) {
-      console.warn('Signal DM decryption failed (non-retriable via handshake):', err);
-      // Return a placeholder instead of throwing — the handshake
-      // auto-healer cannot fix signal session issues.
+      console.warn('Signal DM decryption failed:', err);
       return '[unable to decrypt]';
     }
   };
 
   // --- THE AUTO-HEALER FUNCTION ---
   // If decryption fails, it wipes the cache and forces a re-fetch.
-  // Signal messages are handled separately to avoid triggering the
+  // DM signal messages are handled separately to avoid triggering the
   // healer for problems it cannot fix.
   const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
-    // --- Signal fast-path: never triggers the healer ---
+    // --- DM fast-path: never triggers the healer ---
     const signalContent = await trySignalDecrypt(data);
     if (signalContent !== null) {
       if (isUpdate) {

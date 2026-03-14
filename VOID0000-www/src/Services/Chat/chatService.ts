@@ -186,6 +186,12 @@ function createApiError(data: any): Error & Record<string, any> {
   return error;
 }
 
+function createSignalLockedSendError(message: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = 'SIGNAL_LOCKED_SEND_BLOCKED';
+  return error;
+}
+
 function normalizeKeyVersion(value: unknown, fallback = 1): number {
   if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
     return value;
@@ -782,42 +788,34 @@ export async function sendMessage(
       userId?: string;
       peerUserId?: string;
     };
+    requireSignalForText?: boolean;
   }
 ): Promise<Message> {
   let { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
   let keyVersion = options?.key_version || 1;
   let messageType = options?.message_type || 'text';
 
-  // DM path: prefer Signal payloads when the caller has enough context.
-  // Legacy AES-GCM ciphertext is always embedded as a fallback so the
-  // receiver can decrypt even when Signal session state is out of sync.
-  if (
-    messageType === 'text' &&
-    options?.signal?.userId &&
-    options?.signal?.peerUserId
-  ) {
-    try {
-      // Race Signal preparation against a timeout so sends are never slow.
-      // If Signal takes too long (e.g. cold bootstrap), fall back to legacy.
-      const signalPayload = await Promise.race([
-        signalService.prepareDmConversationMessage({
-          userId: options.signal.userId,
-          peerUserId: options.signal.peerUserId,
-          plaintext,
-          legacyFallback: { encrypted_content, iv },
-        }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
-      ]);
+  const shouldUseSignalForText = messageType === 'text' && (
+    options?.requireSignalForText ||
+    (options?.signal?.userId && options?.signal?.peerUserId)
+  );
 
-      if (signalPayload) {
-        encrypted_content = signalPayload.encrypted_content;
-        iv = signalPayload.iv;
-        keyVersion = signalPayload.key_version;
-        messageType = signalPayload.message_type;
-      }
-    } catch (err) {
-      console.warn('Signal DM send preparation failed, using legacy payload', err);
+  if (shouldUseSignalForText) {
+    if (!options?.signal?.userId || !options?.signal?.peerUserId) {
+      throw createSignalLockedSendError('Signal context is required for DM text messages');
     }
+
+    const signalPayload = await signalService.prepareDmConversationMessage({
+      userId: options.signal.userId,
+      peerUserId: options.signal.peerUserId,
+      plaintext,
+      mode: 'signal_locked',
+    });
+
+    encrypted_content = signalPayload.encrypted_content;
+    iv = signalPayload.iv;
+    keyVersion = signalPayload.key_version;
+    messageType = signalPayload.message_type;
   }
 
   const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages`, {
@@ -905,58 +903,47 @@ export async function getMessages(
   const sourceMessages = (data.messages || []) as Message[];
   const decryptedByIndex: Array<Record<string, any> | null> = new Array(sourceMessages.length).fill(null);
 
-  const legacyEntries: Array<{ index: number; message: Message }> = [];
-  const signalEntries: Array<{ index: number; message: Message }> = [];
-
-  sourceMessages.forEach((message, index) => {
-    if (canUseSignalDm(options) && signalService.isSignalMessageType(message.message_type)) {
-      signalEntries.push({ index, message });
-      return;
-    }
-
-    legacyEntries.push({ index, message });
-  });
-
-  if (legacyEntries.length > 0) {
-    const legacyDecrypted = await decryptMessages(
-      legacyEntries.map((entry) => entry.message),
-      keyResolver || encryptionKey
-    );
-
-    legacyEntries.forEach((entry, idx) => {
-      decryptedByIndex[entry.index] = legacyDecrypted[idx] || null;
-    });
-  }
-
-  if (signalEntries.length > 0 && canUseSignalDm(options)) {
-    await Promise.all(signalEntries.map(async (entry) => {
-      const message = entry.message;
+  if (canUseSignalDm(options)) {
+    const signalUserId = options.userId;
+    await Promise.all(sourceMessages.map(async (message, index) => {
       if (message.is_deleted || !message.encrypted_content) {
-        decryptedByIndex[entry.index] = {
+        decryptedByIndex[index] = {
           ...message,
-          content: message.is_deleted ? '[deleted]' : '[encrypted]',
+          content: message.is_deleted ? '[deleted]' : (message.content ?? '[encrypted]'),
+        };
+        return;
+      }
+
+      if (!signalService.isSignalMessageType(message.message_type)) {
+        decryptedByIndex[index] = {
+          ...message,
+          content: '[legacy message unavailable]',
         };
         return;
       }
 
       try {
         const content = await signalService.decryptDmConversationMessage({
-          userId: options.userId,
+          userId: signalUserId,
           message,
-          fallbackKey: encryptionKey,
         });
 
-        decryptedByIndex[entry.index] = {
+        decryptedByIndex[index] = {
           ...message,
           content,
         };
       } catch {
-        decryptedByIndex[entry.index] = {
+        decryptedByIndex[index] = {
           ...message,
           content: '[unable to decrypt]',
         };
       }
     }));
+  } else {
+    const decrypted = await decryptMessages(sourceMessages, keyResolver || encryptionKey);
+    decrypted.forEach((message, index) => {
+      decryptedByIndex[index] = message || null;
+    });
   }
 
   const messagesWithReactions = sourceMessages.map((message, index) => ({
@@ -979,35 +966,29 @@ export async function editMessage(
       userId?: string;
       peerUserId?: string;
     };
+    requireSignal?: boolean;
   }
 ): Promise<void> {
   let { encrypted_content, iv } = await encryptMessage(newPlaintext, encryptionKey);
   let payloadMessageType: string | null = options?.messageType || null;
 
-  if (
-    signalService.isSignalMessageType(payloadMessageType) &&
-    options?.signal?.userId &&
-    options?.signal?.peerUserId
-  ) {
-    try {
-      const signalPayload = await Promise.race([
-        signalService.prepareDmConversationMessage({
-          userId: options.signal.userId,
-          peerUserId: options.signal.peerUserId,
-          plaintext: newPlaintext,
-          legacyFallback: { encrypted_content, iv },
-        }),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
-      ]);
+  const shouldUseSignal = options?.requireSignal || signalService.isSignalMessageType(payloadMessageType);
 
-      if (signalPayload) {
-        encrypted_content = signalPayload.encrypted_content;
-        iv = signalPayload.iv;
-        payloadMessageType = signalPayload.message_type;
-      }
-    } catch (err) {
-      console.warn('Signal DM edit preparation failed, using legacy payload', err);
+  if (shouldUseSignal) {
+    if (!options?.signal?.userId || !options?.signal?.peerUserId) {
+      throw createSignalLockedSendError('Signal context is required for DM edits');
     }
+
+    const signalPayload = await signalService.prepareDmConversationMessage({
+      userId: options.signal.userId,
+      peerUserId: options.signal.peerUserId,
+      plaintext: newPlaintext,
+      mode: 'signal_locked',
+    });
+
+    encrypted_content = signalPayload.encrypted_content;
+    iv = signalPayload.iv;
+    payloadMessageType = signalPayload.message_type;
   }
 
   const res = await fetchWithAuth(
@@ -1309,12 +1290,25 @@ export async function getMessageById(
     const data = await res.json();
     if (!data.success || !data.message) return null;
 
-    if (canUseSignalDm(options) && signalService.isSignalMessageType(data.message.message_type)) {
+    if (canUseSignalDm(options)) {
+      if (data.message.is_deleted || !data.message.encrypted_content) {
+        return {
+          ...data.message,
+          content: data.message.is_deleted ? '[deleted]' : (data.message.content ?? '[encrypted]'),
+        } as Message;
+      }
+
+      if (!signalService.isSignalMessageType(data.message.message_type)) {
+        return {
+          ...data.message,
+          content: '[legacy message unavailable]',
+        } as Message;
+      }
+
       try {
         const content = await signalService.decryptDmConversationMessage({
           userId: options.userId,
           message: data.message,
-          fallbackKey: encryptionKey,
         });
         return {
           ...data.message,
