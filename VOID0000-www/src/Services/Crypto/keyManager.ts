@@ -828,4 +828,34 @@ export const keyManager = {
       ? crypto.subtle.importKey('raw', base64ToArrayBuffer(stored.key), { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt'])
       : null;
   },
+  /**
+   * Scan IndexedDB for any key belonging to a conversation, regardless of version.
+   * Returns the highest-versioned key found, or null if none exist.
+   */
+  findAnyGroupKey: async (id: string): Promise<{ key: CryptoKey; version: number } | null> => {
+    const db = await openDB();
+    const all: Array<{ id: string; key: string; version: number }> = await new Promise((resolve, reject) => {
+      const tx = db.transaction(KEY_STORE, 'readonly');
+      const store = tx.objectStore(KEY_STORE);
+      const request = store.getAll();
+      request.onsuccess = () => resolve((request.result ?? []) as any[]);
+      request.onerror = () => reject(request.error);
+    });
+
+    const prefix = `group:${id}:`;
+    const matches = all
+      .filter((r) => r.id?.startsWith(prefix) && r.key)
+      .sort((a, b) => (b.version ?? 0) - (a.version ?? 0));
+
+    const best = matches[0];
+    if (!best) return null;
+    const key = await crypto.subtle.importKey(
+      'raw',
+      base64ToArrayBuffer(best.key),
+      { name: 'AES-GCM', length: 256 },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    return { key, version: best.version };
+  },
 };

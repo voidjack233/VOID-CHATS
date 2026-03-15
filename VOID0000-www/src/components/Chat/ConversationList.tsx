@@ -85,9 +85,11 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     const handleConversationUpdate = (data: any) => {
       const updated = data?.conversation as Conversation | undefined;
       if (!updated) return;
-      setConversations((prev) =>
-        prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
-      );
+      setConversations((prev) => {
+        const exists = prev.some((c) => c.id === updated.id);
+        if (!exists) return [updated, ...prev];
+        return prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c));
+      });
     };
 
     const handleMemberLeave = (data: any) => {

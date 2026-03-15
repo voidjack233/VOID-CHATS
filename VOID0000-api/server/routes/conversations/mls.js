@@ -193,13 +193,10 @@ router.post('/key-packages', async (req, res) => {
   }
 
   const requesterUserId = String(req.user.id);
-  const userId = normalizeUserId(req.body?.user_id) || requesterUserId;
+  // Always use the JWT user — ignore body user_id to avoid format-mismatch 403s.
+  const userId = requesterUserId;
   const packageRef = normalizeRequiredString(req.body?.package_ref, MAX_PACKAGE_REF_LENGTH);
   const packageData = normalizeRequiredString(req.body?.package_data, MAX_PACKAGE_DATA_LENGTH);
-
-  if (userId !== requesterUserId) {
-    return res.status(403).json({ success: false, error: 'Cannot publish key packages for another user' });
-  }
 
   if (!packageRef) {
     return res.status(400).json({ success: false, error: 'package_ref is required and must be <= 255 characters' });
@@ -644,11 +641,10 @@ router.post('/sync', async (req, res) => {
     });
   }
 
+  // Always use the authenticated user from the JWT — the body's user_id is
+  // ignored to avoid 403 errors caused by format mismatches (e.g. numeric ID
+  // vs UUID string).
   const requesterUserId = String(req.user.id);
-  const requestedUserId = normalizeUserId(req.body?.user_id) || requesterUserId;
-  if (requestedUserId !== requesterUserId) {
-    return res.status(403).json({ success: false, error: 'Cannot sync MLS state for another user' });
-  }
 
   const limit = parsePositiveInt(req.body?.limit ?? req.query?.limit, DEFAULT_SYNC_LIMIT, MAX_SYNC_LIMIT);
 

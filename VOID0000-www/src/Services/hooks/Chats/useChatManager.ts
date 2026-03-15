@@ -40,6 +40,7 @@ export const useChatManager = (user: any) => {
   const conversationDetailsCache = useRef<Record<string, ConversationDetails>>({});
   const pendingMessages = useRef<any[]>([]);
   const lastActiveChannelRef = useRef<{ id: string; public_id?: string | null } | null>(null);
+  const groupKeyRetryCount = useRef(0);
 
   const normalizeRequiredVersion = (value: unknown): number | null => {
     if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
@@ -140,6 +141,7 @@ export const useChatManager = (user: any) => {
     setMessageUpdate(null);
     setMessageDelete(null);
     pendingMessages.current = [];
+    groupKeyRetryCount.current = 0;
   };
 
   const matchesConversationIdentifier = (conversation: Conversation | null, identifier?: string | null) => {
@@ -385,6 +387,12 @@ export const useChatManager = (user: any) => {
         delete handshakeCache.current[keyScopeId];
       }
 
+      // Ensure key packages are published early so the owner's distribution
+      // pass can add us to the MLS group even on the very first open.
+      if (activeConversation.type !== 'dm') {
+        void chatCryptoProtocolService.bootstrapAccount(user.id);
+      }
+
       let resolvedMemberIds: string[] = [];
 
       try {
@@ -523,15 +531,14 @@ export const useChatManager = (user: any) => {
           void chatCryptoProtocolService.preWarmForDm(user.id, peerId);
         }
 
-        // Owner auto-redistribution: re-wrap the current group key for
-        // every member using fresh shared secrets.  Fixes stale
-        // distributions caused by identity key changes or members added
-        // without a distribution.  Fire-and-forget — never blocks the UI.
+        // Auto-redistribution: any member who already has the MLS group
+        // state can add missing members and fan out welcomes/commits.
+        // This ensures new members get keys as soon as ANY existing member
+        // opens the conversation — not just the owner.
         const ownerConversation = activeGroup || activeConversation;
         if (
           ownerConversation &&
-          ownerConversation.type !== 'dm' &&
-          ownerConversation.owner_id === user.id
+          ownerConversation.type !== 'dm'
         ) {
           ensureGroupKeyDistribution(
             ownerConversation,
@@ -611,6 +618,31 @@ export const useChatManager = (user: any) => {
             } catch (healErr) {
               console.error('Owner key self-heal failed:', healErr);
             }
+          }
+
+          // Non-owner group member: bootstrap our key packages so the owner
+          // can add us to the MLS group on their next distribution pass, then
+          // schedule an automatic retry (up to 6 attempts ≈ 30s).
+          if (
+            ownerConversation &&
+            ownerConversation.type !== 'dm' &&
+            ownerConversation.owner_id !== user.id &&
+            groupKeyRetryCount.current < 6
+          ) {
+            groupKeyRetryCount.current += 1;
+            void chatCryptoProtocolService.bootstrapAccount(user.id);
+            if (!ignore) {
+              setEncryptionError(null);
+              // Auto-retry after a short delay — the owner's
+              // ensureGroupKeyDistribution will create a welcome for us
+              // once our key packages are available.
+              setTimeout(() => {
+                if (!ignore) {
+                  setHandshakeRetryToken((t) => t + 1);
+                }
+              }, 5000);
+            }
+            return;
           }
 
           setEncryptionError(

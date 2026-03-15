@@ -242,11 +242,7 @@ router.post('/', authenticateUser, async (req, res) => {
     return res.status(400).json({ error: 'Name is required (max 100 characters)' });
   }
 
-  if (type === 'group' && (!Array.isArray(members) || members.length === 0)) {
-    return res.status(400).json({ error: 'At least one member required' });
-  }
-
-  if (type === 'group' && members.length > 50) {
+  if (type === 'group' && Array.isArray(members) && members.length > 50) {
     return res.status(400).json({ error: 'Maximum 50 members on creation' });
   }
 

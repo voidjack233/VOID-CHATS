@@ -553,8 +553,6 @@ export async function ensureGroupKeyDistribution(
   currentUserId: string,
   memberIds: string[]
 ): Promise<void> {
-  if (conversation.owner_id !== currentUserId) return;
-
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
 
   const allParticipants = [...new Set(memberIds)];
@@ -1115,6 +1113,15 @@ export async function getEncryptionKey(
   const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (syncedGroupKey) {
     return { key: syncedGroupKey, version: targetVersion };
+  }
+
+  // Fallback: the MLS epoch may have drifted from the server's current_key_version.
+  // Scan for any key stored under a different version for this conversation.
+  const fallback = await keyManager.findAnyGroupKey(keyConversationId);
+  if (fallback) {
+    // Alias the found key under the target version so future lookups hit directly.
+    await keyManager.storeGroupKey(keyConversationId, targetVersion, fallback.key);
+    return { key: fallback.key, version: targetVersion };
   }
 
   throw new Error(`No group sender key available for version ${targetVersion}`);

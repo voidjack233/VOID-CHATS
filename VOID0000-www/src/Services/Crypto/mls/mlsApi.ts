@@ -434,9 +434,12 @@ function normalizeInboxSyncPayload(raw: unknown, userId: string): MlsInboxSyncPa
 }
 
 export async function syncMlsInbox(userId: string): Promise<MlsInboxSyncPayload> {
+  // Don't send user_id in the body — the server derives it from the JWT.
+  // Sending it caused 403 errors when String(jwt.id) !== body.user_id due
+  // to format differences (e.g. numeric vs UUID string).
   const response = await fetchWithAuth(`${MLS_API_PREFIX}/sync`, {
     method: 'POST',
-    body: JSON.stringify({ user_id: userId }),
+    body: JSON.stringify({}),
   });
 
   if (response.status === 404 || !response.ok) {

@@ -1,69 +1,37 @@
 // src/components/Chat/GroupCreateModal.tsx
-import { useState, useEffect } from 'react';
-import { X, Check } from 'lucide-react';
-import { fetchWithAuth } from '../../../Services/Auth/authServiceApi';
-import { createSecureGroup } from '../../../Services/Chat/chatService';
-import { FriendSelectSkeleton } from '../../common/Skeleton';
-import UserAvatar from '../../common/UserAvatar';
-
-interface Friend {
-  id: string;
-  username: string;
-  display_name: string | null;
-  avatar_url: string | null;
-}
+import { useState, useRef } from 'react';
+import { X, Camera } from 'lucide-react';
+import { createSecureGroup, uploadConversationIcon } from '../../../Services/Chat/chatService';
 
 interface GroupCreateModalProps {
   onClose: () => void;
   onCreated: (conversationId: string) => void;
-  currentUserId: string; // <-- ADDED THIS to pass to the secure creator
+  currentUserId: string;
 }
 
 const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModalProps) => {
   const [name, setName] = useState('');
-  const [friends, setFriends] = useState<Friend[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
+  const [iconPreview, setIconPreview] = useState<string | null>(null);
+  const [iconData, setIconData] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    loadFriends();
-  }, []);
-
-  const loadFriends = async () => {
-    try {
-      const res = await fetchWithAuth('/api/friends');
-      const data = await res.json();
-      if (data.success) {
-        setFriends(data.friends || []);
-      }
-    } catch (err) {
-      console.error('Failed to load friends:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const toggleFriend = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const result = ev.target?.result as string;
+      setIconPreview(result);
+      setIconData(result);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleCreate = async () => {
     if (!name.trim()) {
-      setError('Name is required');
-      return;
-    }
-    if (selected.size === 0) {
-      setError('Select at least one member');
+      setError('Group name is required');
       return;
     }
 
@@ -71,13 +39,16 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
     setError('');
 
     try {
-      // Use our new Master function that handles the DB and the Crypto!
-      const { conversation } = await createSecureGroup(
-        name.trim(), 
-        Array.from(selected), 
-        currentUserId
-      );
-      
+      const { conversation } = await createSecureGroup(name.trim(), [], currentUserId);
+
+      if (iconData) {
+        try {
+          await uploadConversationIcon(conversation.id, iconData);
+        } catch {
+          // Icon upload failure is non-fatal
+        }
+      }
+
       onCreated(conversation.id);
       onClose();
     } catch (err: any) {
@@ -87,9 +58,11 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
     }
   };
 
+  const initial = name.trim() ? name.trim().charAt(0).toUpperCase() : null;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-void-bg-sec rounded-xl w-full max-w-md mx-4 shadow-2xl border border-void-border">
+      <div className="bg-void-bg-sec rounded-xl w-full max-w-sm mx-4 shadow-2xl border border-void-border">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-void-border">
           <h2 className="text-lg font-bold text-void-text">Create Secure Group</h2>
@@ -98,7 +71,37 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
           </button>
         </div>
 
-        <div className="p-4 space-y-4">
+        <div className="p-5 space-y-5">
+          {/* Avatar preview + upload */}
+          <div className="flex flex-col items-center gap-3">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="relative group w-20 h-20 rounded-full overflow-hidden shrink-0 focus:outline-none"
+              title="Upload group photo"
+            >
+              {iconPreview ? (
+                <img src={iconPreview} className="w-full h-full object-cover" alt="" />
+              ) : (
+                <div className="w-full h-full bg-void-accent/15 text-void-accent flex items-center justify-center text-2xl font-bold">
+                  {initial ?? <Camera className="w-7 h-7 opacity-40" />}
+                </div>
+              )}
+              {/* Overlay on hover */}
+              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <Camera className="w-5 h-5 text-white" />
+              </div>
+            </button>
+            <p className="text-xs text-void-text-muted">Optional group photo</p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handlePhotoChange}
+            />
+          </div>
+
           {/* Name */}
           <div>
             <label className="text-sm text-void-text-muted mb-1 block">Group Name</label>
@@ -110,46 +113,6 @@ const GroupCreateModal = ({ onClose, onCreated, currentUserId }: GroupCreateModa
               maxLength={100}
               className="w-full bg-void-bg-hover text-void-text rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-void-text-muted"
             />
-          </div>
-
-          {/* Friend selection */}
-          <div>
-            <label className="text-sm text-void-text-muted mb-1 block">
-              Add friends ({selected.size} selected)
-            </label>
-            <div className="max-h-48 overflow-y-auto space-y-1 bg-void-bg-main/50 rounded-lg p-2">
-              {loading ? (
-                <FriendSelectSkeleton />
-              ) : friends.length === 0 ? (
-                <p className="text-center text-void-text-muted text-sm py-4">No friends yet</p>
-              ) : (
-                friends.map((friend) => (
-                  <button
-                    key={friend.id}
-                    onClick={() => toggleFriend(friend.id)}
-                    className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
-                      selected.has(friend.id)
-                        ? 'bg-indigo-500/20 text-white'
-                        : 'hover:bg-void-bg-hover text-void-text'
-                    }`}
-                  >
-                    <UserAvatar
-                      src={friend.avatar_url}
-                      displayName={friend.display_name}
-                      username={friend.username}
-                      className="w-8 h-8 rounded-full"
-                      fallbackClassName="text-xs"
-                    />
-                    <span className="flex-1 text-sm text-left truncate">
-                      {friend.display_name || friend.username}
-                    </span>
-                    {selected.has(friend.id) && (
-                      <Check className="w-4 h-4 text-indigo-400" />
-                    )}
-                  </button>
-                ))
-              )}
-            </div>
           </div>
 
           {error && <p className="text-red-400 text-sm">{error}</p>}

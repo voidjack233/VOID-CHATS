@@ -370,6 +370,7 @@ class MlsService {
     userId: string;
     conversation: Conversation;
     memberUserIds: string[];
+    _retried?: boolean;
   }): Promise<MlsDistributeKeyResult> {
     await this.bootstrapAccount(input.userId);
 
@@ -380,6 +381,13 @@ class MlsService {
     const otherMembers = desiredMembers.filter((id) => id !== input.userId);
 
     const existingState = await loadGroupState(conversationId);
+
+    // Only the group creator (or first member) should create a new MLS group.
+    // Non-owners who don't yet have group state must wait for a welcome.
+    if (!existingState && input.conversation.owner_id !== input.userId) {
+      throw new Error('MLS group state not available — waiting for welcome');
+    }
+
     let newState: ClientState;
     let welcomePayload: string | null = null;
     let commitPayload: string | null = null;
@@ -409,15 +417,23 @@ class MlsService {
         buildClientConfig()
       );
 
-      if (otherMembers.length > 0) {
-        const addProposals = await this.buildAddProposals(otherMembers);
+      {
+        const addProposals = otherMembers.length > 0
+          ? await this.buildAddProposals(otherMembers)
+          : [];
+
+        // Always create a commit — even with no proposals — so the epoch
+        // advances to 1 (matching the backend's current_key_version = 1) and
+        // the resulting state gets its own key copies (the zero-out below
+        // would otherwise corrupt a shared signaturePrivateKey reference).
+        const commitResult = await createCommit(
+          { state, cipherSuite: impl },
+          { extraProposals: addProposals, ratchetTreeExtension: addProposals.length > 0 }
+        );
+        commitResult.consumed.forEach(zeroOutUint8Array);
+        state = commitResult.newState;
+
         if (addProposals.length > 0) {
-          const commitResult = await createCommit(
-            { state, cipherSuite: impl },
-            { extraProposals: addProposals, ratchetTreeExtension: true }
-          );
-          commitResult.consumed.forEach(zeroOutUint8Array);
-          state = commitResult.newState;
           if (commitResult.welcome) {
             welcomePayload = bytesToBase64(
               encodeMlsMessage({ welcome: commitResult.welcome, wireformat: 'mls_welcome', version: 'mls10' })
@@ -440,6 +456,16 @@ class MlsService {
       const toAdd = desiredMembers.filter((id) => !currentMembers.includes(id));
       const toRemove = currentMembers.filter((id) => !desiredMembers.includes(id));
 
+      // No-op: if the MLS group already has the right members, return the
+      // current key without creating a commit.  Empty commits advance the
+      // epoch and cause version drift between MLS epoch and the server's
+      // current_key_version, which breaks key resolution for new members.
+      if (toAdd.length === 0 && toRemove.length === 0) {
+        const result = await deriveGroupAesKey(existingState, conversationId, impl);
+        await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+        return result;
+      }
+
       const proposals: Proposal[] = [];
 
       if (toAdd.length > 0) {
@@ -455,26 +481,43 @@ class MlsService {
         }
       }
 
-      const commitResult = await createCommit(
-        { state: existingState, cipherSuite: impl },
-        { extraProposals: proposals, ratchetTreeExtension: toAdd.length > 0 }
-      );
-      commitResult.consumed.forEach(zeroOutUint8Array);
-      newState = commitResult.newState;
-
-      if (commitResult.welcome && toAdd.length > 0) {
-        welcomePayload = bytesToBase64(
-          encodeMlsMessage({ welcome: commitResult.welcome, wireformat: 'mls_welcome', version: 'mls10' })
+      try {
+        const commitResult = await createCommit(
+          { state: existingState, cipherSuite: impl },
+          { extraProposals: proposals, ratchetTreeExtension: toAdd.length > 0 }
         );
-      }
-      commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+        commitResult.consumed.forEach(zeroOutUint8Array);
+        newState = commitResult.newState;
 
-      // Existing members (excluding self) receive the commit to advance their epoch
-      existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
+        if (commitResult.welcome && toAdd.length > 0) {
+          welcomePayload = bytesToBase64(
+            encodeMlsMessage({ welcome: commitResult.welcome, wireformat: 'mls_welcome', version: 'mls10' })
+          );
+        }
+        commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+
+        // Existing members (excluding self) receive the commit to advance their epoch
+        existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
+      } catch (commitErr) {
+        // Corrupted group state (e.g. zeroed-out signing key).  Delete it
+        // and recreate the group from scratch so the conversation recovers.
+        if (input._retried) throw commitErr;
+        console.warn('[MLS] Commit failed — recreating group:', commitErr);
+        await mlsStore.deleteGroupState(conversationId);
+        return this.distributeGroupSenderKey({ ...input, _retried: true });
+      }
     }
 
     // ── Persist new group state (local IndexedDB only — contains private keys) ──
     await saveGroupState(conversationId, newState);
+
+    // ── Derive and cache AES-256-GCM key immediately after state is saved ──────
+    // This must happen before the HTTP fan-out calls so that concurrent callers
+    // (e.g. setupConversation re-triggered by a WebSocket CONVERSATION_UPDATE
+    // arriving before the rotate-remove HTTP response) can find the new key in
+    // IndexedDB during their retry window instead of falling into ownerSelfHeal.
+    const result = await deriveGroupAesKey(newState, conversationId, impl);
+    await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
 
     // ── Send welcome messages to new members ──────────────────────────────────
     if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
@@ -498,10 +541,6 @@ class MlsService {
         epoch: Number(newState.groupContext.epoch) - 1,
       }]);
     }
-
-    // ── Derive AES-256-GCM key from MLS epoch exporter ─────────────────────────
-    const result = await deriveGroupAesKey(newState, conversationId, impl);
-    await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
 
     return result;
   }
@@ -653,6 +692,11 @@ class MlsService {
         await saveGroupState(conversationId, joinedState);
         const result = await deriveGroupAesKey(joinedState, conversationId, impl);
         await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+        // Also store under version 1 so the key is discoverable even when the
+        // MLS epoch has drifted from the server's current_key_version.
+        if (result.keyVersion !== 1) {
+          await keyManager.storeGroupKey(conversationId, 1, result.key);
+        }
         await mlsStore.markKeyPackageConsumed(userId, kpRecord.packageRef);
         return true;
       } catch {
