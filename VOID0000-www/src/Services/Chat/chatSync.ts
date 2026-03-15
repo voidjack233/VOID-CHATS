@@ -126,6 +126,39 @@ class MessageSync {
         attachments: msg.attachments,
       }));
 
+      // Protect locally-cached plaintext from being overwritten by failed re-decryptions.
+      // Signal Protocol messages can only be decrypted once (ratchet advances), so re-fetching
+      // from the server after a hard refresh will fail decryption for already-seen messages.
+      const PLACEHOLDER_CONTENTS = new Set([
+        '[unable to decrypt]',
+        '[legacy message unavailable]',
+        '[encrypted]',
+      ]);
+
+      const staleIndexes: number[] = [];
+      localMsgs.forEach((msg, i) => {
+        if (msg.content && PLACEHOLDER_CONTENTS.has(msg.content)) {
+          staleIndexes.push(i);
+        }
+      });
+
+      if (staleIndexes.length > 0) {
+        const existingLookups = await Promise.all(
+          staleIndexes.map((i) => {
+            const msg = localMsgs[i]!;
+            return messageStore.getMessage(msg.conversation_id, msg.message_id);
+          })
+        );
+
+        for (let j = 0; j < existingLookups.length; j++) {
+          const existing = existingLookups[j];
+          const idx = staleIndexes[j]!;
+          if (existing?.content && !PLACEHOLDER_CONTENTS.has(existing.content)) {
+            localMsgs[idx] = { ...localMsgs[idx]!, content: existing.content };
+          }
+        }
+      }
+
       await messageStore.putMessages(localMsgs);
 
       const cachedIds = new Set(cached.messages.map((m) => m.message_id));
