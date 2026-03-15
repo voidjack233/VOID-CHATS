@@ -1,7 +1,7 @@
 // src/Services/Chat/chatService.ts
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
-import { encryptMessage, decryptMessage, decryptMessages } from '../Crypto/messageEncryption';
+import { encryptMessage, decryptMessages } from '../Crypto/messageEncryption';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 
 const API_PREFIX = '/api/conversations';
@@ -95,12 +95,14 @@ export interface KeyBackupRecord {
   recovery_salt?: string | null;
   recovery_key_id?: string | null;
   recovery_configured_at?: string | null;
+  mls_state_encrypted?: string | null;
+  mls_state_iv?: string | null;
+  mls_state_salt?: string | null;
 }
 
 export interface MessageDecryptionContext {
   conversation?: Conversation;
   userId?: string;
-  peerUserId?: string;
   currentKeyVersion?: number;
 }
 
@@ -298,7 +300,7 @@ function createMessageKeyResolver(
   fallbackKey: CryptoKey,
   context?: MessageDecryptionContext
 ) {
-  if (!context?.conversation || !context.userId || context.conversation.type === 'dm') {
+  if (!context?.conversation || !context.userId) {
     return null;
   }
 
@@ -315,7 +317,6 @@ function createMessageKeyResolver(
         getEncryptionKey(
           context.userId as string,
           context.conversation as Conversation,
-          context.peerUserId,
           targetVersion
         ).then(({ key }) => key)
       );
@@ -323,15 +324,6 @@ function createMessageKeyResolver(
 
     return versionCache.get(targetVersion) as Promise<CryptoKey>;
   };
-}
-
-function canUseDmConversation(context?: MessageDecryptionContext): context is MessageDecryptionContext & {
-  conversation: Conversation;
-} {
-  return Boolean(
-    context?.conversation &&
-    context.conversation.type === 'dm'
-  );
 }
 
 // ============== Conversations ==============
@@ -477,18 +469,15 @@ export async function addMembers(
 async function distributeGroupSenderKeyWithProtocol(
   conversation: Conversation,
   currentUserId: string,
-  participantIds: string[],
-  keyVersion: number,
-  roomKey: CryptoKey
-): Promise<void> {
+  participantIds: string[]
+): Promise<{ key: CryptoKey; version: number }> {
   const uniqueParticipants = [...new Set([...participantIds, currentUserId].filter(Boolean))];
-  await chatCryptoProtocolService.distributeGroupKey({
+  const result = await chatCryptoProtocolService.distributeGroupKey({
     userId: currentUserId,
     conversation,
     memberUserIds: uniqueParticipants,
-    keyVersion,
-    groupKey: roomKey,
   });
+  return { key: result.key, version: result.keyVersion };
 }
 
 /**
@@ -504,25 +493,15 @@ export async function ownerSelfHealGroupKey(
   memberIds: string[]
 ): Promise<{ key: CryptoKey; version: number }> {
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
-  const nextVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
-
-  const roomKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
 
   const allParticipants = [...new Set([...memberIds, currentUserId])];
-  await distributeGroupSenderKeyWithProtocol(
+  const { key, version } = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId },
     currentUserId,
-    allParticipants,
-    nextVersion,
-    roomKey
+    allParticipants
   );
-  await keyManager.storeGroupKey(keyConversationId, nextVersion, roomKey);
 
-  return { key: roomKey, version: nextVersion };
+  return { key, version };
 }
 
 /**
@@ -538,10 +517,6 @@ export async function ensureGroupKeyDistribution(
   if (conversation.owner_id !== currentUserId) return;
 
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
-  const currentVersion = normalizeKeyVersion(conversation.current_key_version, 1);
-
-  const groupKey = await keyManager.getGroupKey(keyConversationId, currentVersion);
-  if (!groupKey) return;
 
   const allParticipants = [...new Set(memberIds)];
   if (allParticipants.length === 0) return;
@@ -549,9 +524,7 @@ export async function ensureGroupKeyDistribution(
   await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId },
     currentUserId,
-    allParticipants,
-    currentVersion,
-    groupKey
+    allParticipants
   );
 }
 
@@ -571,11 +544,6 @@ export async function rotateAddMembers(
 
   const finalMemberIds = [...new Set([...currentMemberIds, ...additions, currentUserId])];
   const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
-  const roomKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
 
   const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-add`, {
     method: 'POST',
@@ -588,14 +556,12 @@ export async function rotateAddMembers(
   if (!data.success) throw createApiError(data);
   const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
-  await distributeGroupSenderKeyWithProtocol(
+  const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
     currentUserId,
-    finalMemberIds,
-    resolvedKeyVersion,
-    roomKey
+    finalMemberIds
   );
+  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
 
   return {
     added: data.added || additions,
@@ -622,11 +588,6 @@ export async function rotateRemoveMember(
   }
 
   const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
-  const roomKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
 
   const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
     method: 'POST',
@@ -639,17 +600,15 @@ export async function rotateRemoveMember(
   if (!data.success) throw createApiError(data);
   const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-  if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
-    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
-  }
-
-  await distributeGroupSenderKeyWithProtocol(
+  const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
     currentUserId,
-    survivors,
-    resolvedKeyVersion,
-    roomKey
+    survivors
   );
+
+  if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
+    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+  }
 
   return { key_version: resolvedKeyVersion };
 }
@@ -665,11 +624,6 @@ export async function approveConversationJoinRequest(
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
   const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
   const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
-  const roomKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
 
   const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
     method: 'POST',
@@ -681,14 +635,12 @@ export async function approveConversationJoinRequest(
   if (!data.success) throw createApiError(data);
   const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
-  await distributeGroupSenderKeyWithProtocol(
+  const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
     currentUserId,
-    finalMemberIds,
-    resolvedKeyVersion,
-    roomKey
+    finalMemberIds
   );
+  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
 
   return {
     approved_user_id: data.approved_user_id || requesterUserId,
@@ -957,44 +909,10 @@ export async function getMessages(
   });
   const decryptedByIndex: Array<Record<string, any> | null> = new Array(sourceMessages.length).fill(null);
 
-  if (canUseDmConversation(options)) {
-    await Promise.all(sourceMessages.map(async (message, index) => {
-      if (message.is_deleted || !message.encrypted_content) {
-        decryptedByIndex[index] = {
-          ...message,
-          content: message.is_deleted ? '[deleted]' : (message.content ?? '[encrypted]'),
-        };
-        return;
-      }
-
-      if (!message.iv) {
-        decryptedByIndex[index] = {
-          ...message,
-          content: '[encrypted]',
-        };
-        return;
-      }
-
-      try {
-        const content = await decryptMessage(message.encrypted_content, message.iv, encryptionKey);
-
-        decryptedByIndex[index] = {
-          ...message,
-          content,
-        };
-      } catch {
-        decryptedByIndex[index] = {
-          ...message,
-          content: '[unable to decrypt]',
-        };
-      }
-    }));
-  } else {
-    const decrypted = await decryptMessages(sourceMessages, keyResolver || encryptionKey);
-    decrypted.forEach((message, index) => {
-      decryptedByIndex[index] = message || null;
-    });
-  }
+  const decrypted = await decryptMessages(sourceMessages, keyResolver || encryptionKey);
+  decrypted.forEach((message, index) => {
+    decryptedByIndex[index] = message || null;
+  });
 
   const messagesWithReactions = sourceMessages.map((message, index) => ({
     ...(decryptedByIndex[index] || message),
@@ -1087,15 +1005,6 @@ export async function toggleReaction(
 
 // ============== Keys ==============
 
-export async function getUserPublicKey(
-  userId: string
-): Promise<{ public_key: string; key_id: string }> {
-  const res = await fetchWithAuth(`${API_PREFIX}/keys/${userId}`);
-  const data = await res.json();
-  if (!data.success) throw new Error(data.error);
-  return data.key;
-}
-
 export async function uploadPublicKey(
   publicKey: string,
   keyId: string
@@ -1117,25 +1026,16 @@ export async function createSecureGroup(
   // 1. Create the basic group in Postgres
   const { conversation } = await createConversation('group', name, memberIds);
 
-  // 2. Generate a brand new Room Key (AES-256-GCM)
-  const roomKey = await crypto.subtle.generateKey(
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
-
-  // 3. Save your own copy to IndexedDB
-  await keyManager.storeGroupKey(conversation.id, 1, roomKey);
-
-  // 4. Distribute the sender key to member devices via the active protocol.
+  // 2. Create MLS group, add members, and derive the epoch key.
   const allParticipants = [...new Set([...memberIds, currentUserId])];
-  await distributeGroupSenderKeyWithProtocol(
+  const { key: mlsKey, version } = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, current_key_version: 1 },
     currentUserId,
-    allParticipants,
-    1,
-    roomKey
+    allParticipants
   );
+
+  // 3. Save local copy for immediate use.
+  await keyManager.storeGroupKey(conversation.id, version, mlsKey);
 
   return { conversation };
 }
@@ -1145,17 +1045,9 @@ export async function createSecureGroup(
 export async function getEncryptionKey(
   userId: string,
   conversation: Conversation,
-  peerUserId?: string,
   requestedKeyVersion?: number
 ): Promise<{ key: CryptoKey; version: number }> {
-  // --- 1-ON-1 DM LOGIC ---
-  if (conversation.type === 'dm' && peerUserId) {
-    const peerKey = await getUserPublicKey(peerUserId);
-    const sharedKey = await keyManager.getSharedSecret(userId, peerUserId, peerKey.public_key);
-    return { key: sharedKey, version: 1 };
-  }
-
-  // --- GROUP CHAT LOGIC ---
+  // --- GROUP / DM LOGIC (MLS for all conversation types) ---
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
   const hasRequestedVersion = Number.isInteger(requestedKeyVersion) && (requestedKeyVersion as number) > 0;
   const requestedVersion = hasRequestedVersion ? (requestedKeyVersion as number) : null;
@@ -1194,6 +1086,9 @@ export async function backupKeyToServer(data: {
   iv: string;
   salt: string;
   key_id: string;
+  mls_state_encrypted?: string;
+  mls_state_iv?: string;
+  mls_state_salt?: string;
 }): Promise<void> {
   const res = await fetchWithAuth('/api/conversations/keys/backup', {
     method: 'POST',
@@ -1243,35 +1138,6 @@ export async function getMessageById(
       protocol: cryptoMetadata.protocol,
       protocol_version: cryptoMetadata.protocol_version,
     };
-
-    if (canUseDmConversation(options)) {
-      if (normalizedMessage.is_deleted || !normalizedMessage.encrypted_content) {
-        return {
-          ...normalizedMessage,
-          content: normalizedMessage.is_deleted ? '[deleted]' : (normalizedMessage.content ?? '[encrypted]'),
-        } as Message;
-      }
-
-      if (!normalizedMessage.iv) {
-        return {
-          ...normalizedMessage,
-          content: '[encrypted]',
-        } as Message;
-      }
-
-      try {
-        const content = await decryptMessage(normalizedMessage.encrypted_content, normalizedMessage.iv, encryptionKey);
-        return {
-          ...normalizedMessage,
-          content,
-        } as Message;
-      } catch {
-        return {
-          ...normalizedMessage,
-          content: '[unable to decrypt]',
-        } as Message;
-      }
-    }
 
     const keyResolver = createMessageKeyResolver(encryptionKey, options);
     const [decrypted] = await decryptMessages([normalizedMessage], keyResolver || encryptionKey);

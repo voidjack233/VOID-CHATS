@@ -76,16 +76,6 @@ async function exportKey(key: CryptoKey, isPublic: boolean): Promise<string> {
   return arrayBufferToBase64(exported);
 }
 
-async function importPublicKey(base64Key: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'spki',
-    base64ToArrayBuffer(base64Key),
-    { name: 'ECDH', namedCurve: 'P-256' },
-    true,
-    []
-  );
-}
-
 async function importPrivateKey(base64Key: string): Promise<CryptoKey> {
   return crypto.subtle.importKey(
     'pkcs8',
@@ -638,76 +628,43 @@ async function ensureBackup(
   }
 }
 
-// ============== Shared Secrets ==============
+// ============== Generic Payload Encryption ==============
 
-async function deriveSharedKey(privateKey: CryptoKey, publicKey: CryptoKey): Promise<CryptoKey> {
-  return crypto.subtle.deriveKey(
-    { name: 'ECDH', public: publicKey },
-    privateKey,
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt']
-  );
-}
-
-async function getSharedSecret(userId: string, peerId: string, peerPubKeyBase64: string): Promise<CryptoKey> {
-  const cacheKey = `shared:${userId}:${peerId}`;
-  const cached = await dbGet(cacheKey);
-
-  if (cached && cached.peerPubKey === peerPubKeyBase64) {
-    return crypto.subtle.importKey(
-      'raw',
-      base64ToArrayBuffer(cached.sharedKey),
-      { name: 'AES-GCM', length: 256 },
-      true,
-      ['encrypt', 'decrypt']
-    );
-  }
-
-  const stored = await dbGet(`keypair:${userId}`);
-  if (!stored) throw new Error('Identity keys missing');
-
-  const priv = await importPrivateKey(stored.privateKey);
-  const pub = await importPublicKey(peerPubKeyBase64);
-  const sharedKey = await deriveSharedKey(priv, pub);
-
-  const exportedShared = await crypto.subtle.exportKey('raw', sharedKey);
-  await dbPut({
-    id: cacheKey,
-    sharedKey: arrayBufferToBase64(exportedShared),
-    peerId,
-    peerPubKey: peerPubKeyBase64,
-    createdAt: Date.now(),
-  });
-
-  return sharedKey;
-}
-
-// ============== Group Key Distribution ==============
-
-async function encryptGroupKeyForUser(groupKey: CryptoKey, sharedKey: CryptoKey) {
-  const raw = await crypto.subtle.exportKey('raw', groupKey);
+async function encryptDataWithPassword(
+  data: unknown,
+  password: string
+): Promise<{ encrypted: string; iv: string; salt: string }> {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
   const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrappingKey = await deriveKeyFromPassword(password, salt);
+  const encoder = new TextEncoder();
   const encrypted = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
-    sharedKey,
-    raw
+    wrappingKey,
+    encoder.encode(JSON.stringify(data))
   );
-
   return {
     encrypted: arrayBufferToBase64(encrypted),
     iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+    salt: arrayBufferToBase64(salt.buffer as ArrayBuffer),
   };
 }
 
-async function decryptGroupKey(encryptedKey: string, iv: string, sharedKey: CryptoKey): Promise<CryptoKey> {
-  const dec = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: base64ToArrayBuffer(iv) },
-    sharedKey,
-    base64ToArrayBuffer(encryptedKey)
+async function decryptDataWithPassword(
+  encryptedBase64: string,
+  ivBase64: string,
+  saltBase64: string,
+  password: string
+): Promise<unknown> {
+  const salt = new Uint8Array(base64ToArrayBuffer(saltBase64));
+  const iv = base64ToArrayBuffer(ivBase64);
+  const wrappingKey = await deriveKeyFromPassword(password, salt);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    wrappingKey,
+    base64ToArrayBuffer(encryptedBase64)
   );
-
-  return crypto.subtle.importKey('raw', dec, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
 // ============== Cleanup ==============
@@ -840,24 +797,26 @@ export const keyManager = {
   prepareRecoveryBackup,
   reEncryptBackup,
   restoreFromRecoveryPhrase,
-  getSharedSecret,
-  encryptGroupKeyForUser,
-  decryptGroupKey,
   clearAllKeys,
-  importPublicKey,
   generateKeyFingerprint,
-  getLocalPublicKey: async (userId: string): Promise<string | null> => {
-    const stored = await dbGet(`keypair:${userId}`);
-    return stored?.publicKey ?? null;
-  },
-  clearSharedSecret: async (userId: string, peerId: string): Promise<void> => {
+  encryptDataWithPassword,
+  decryptDataWithPassword,
+  exportGroupKeys: async (): Promise<Array<{ id: string; version: number; key: string }>> => {
     const db = await openDB();
-    return new Promise((resolve) => {
-      const tx = db.transaction(KEY_STORE, 'readwrite');
-      tx.objectStore(KEY_STORE).delete(`shared:${userId}:${peerId}`);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(KEY_STORE, 'readonly');
+      const request = tx.objectStore(KEY_STORE).getAll();
+      request.onsuccess = () => {
+        const all = (request.result ?? []) as Array<{ id: string; key: string; version: number }>;
+        resolve(all.filter((r) => r.id?.startsWith('group:')));
+      };
+      request.onerror = () => reject(request.error);
     });
+  },
+  importGroupKeys: async (keys: Array<{ id: string; version: number; key: string }>): Promise<void> => {
+    for (const entry of keys) {
+      await dbPut(entry);
+    }
   },
   storeGroupKey: async (id: string, v: number, key: CryptoKey) => {
     const raw = await crypto.subtle.exportKey('raw', key);

@@ -288,7 +288,7 @@ const ConversationSettings = ({
         ...targetConversation,
         current_key_version: keyVersion,
       };
-      const { key } = await getEncryptionKey(currentUserId, keyConversation, undefined, keyVersion);
+      const { key } = await getEncryptionKey(currentUserId, keyConversation, keyVersion);
       const message = await sendMessage(targetConversation.id, text, key, {
         key_version: keyVersion,
         message_type: 'system',

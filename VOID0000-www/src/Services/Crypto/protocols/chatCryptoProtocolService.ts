@@ -1,4 +1,5 @@
 import type { Conversation } from '../../Chat/chatService';
+import type { MlsDistributeKeyResult } from '../mls/mlsTypes';
 import { mlsService } from '../mls/mlsService';
 
 export type ChatSupportedProtocol = 'mls';
@@ -7,8 +8,6 @@ export interface DistributeGroupKeyInput {
   userId: string;
   conversation: Conversation;
   memberUserIds: string[];
-  keyVersion: number;
-  groupKey: CryptoKey;
 }
 
 export interface ChatCryptoProtocolService {
@@ -20,7 +19,7 @@ export interface ChatCryptoProtocolService {
   preWarmForDm(userId: string, peerUserId: string): Promise<void>;
   syncInbox(userId: string): Promise<void>;
   isDmMessageType(messageType: string | null | undefined): boolean;
-  distributeGroupKey(input: DistributeGroupKeyInput): Promise<void>;
+  distributeGroupKey(input: DistributeGroupKeyInput): Promise<MlsDistributeKeyResult>;
 }
 
 class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
@@ -51,13 +50,11 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
     return mlsService.isMlsMessageType(messageType);
   }
 
-  async distributeGroupKey(input: DistributeGroupKeyInput): Promise<void> {
-    await mlsService.distributeGroupSenderKey({
+  async distributeGroupKey(input: DistributeGroupKeyInput): Promise<MlsDistributeKeyResult> {
+    return mlsService.distributeGroupSenderKey({
       userId: input.userId,
       conversation: input.conversation,
       memberUserIds: input.memberUserIds,
-      keyVersion: input.keyVersion,
-      groupKey: input.groupKey,
     });
   }
 }

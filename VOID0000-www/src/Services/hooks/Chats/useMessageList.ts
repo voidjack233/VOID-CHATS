@@ -255,8 +255,7 @@ export const useMessageList = (
             syncLimit: INITIAL_FETCH_SIZE,
             conversation: decryptionConversation,
             userId,
-            peerUserId,
-            currentKeyVersion,
+              currentKeyVersion,
           }
         );
 
@@ -521,7 +520,6 @@ export const useMessageList = (
           limit: FETCH_SIZE,
           conversation: decryptionConversation,
           userId,
-          peerUserId,
           currentKeyVersion,
         });
         const localMsgs = toLocalMessages(serverResult.messages);
@@ -545,8 +543,7 @@ export const useMessageList = (
             limit: FETCH_SIZE,
             conversation: decryptionConversation,
             userId,
-            peerUserId,
-            currentKeyVersion,
+              currentKeyVersion,
           });
           const localMsgs = toLocalMessages(serverResult.messages);
           if (localMsgs.length > 0) {
@@ -603,7 +600,6 @@ export const useMessageList = (
           limit: FETCH_SIZE,
           conversation: decryptionConversation,
           userId,
-          peerUserId,
           currentKeyVersion,
         });
         const localMsgs = toLocalMessages(serverResult.messages);
@@ -704,8 +700,7 @@ export const useMessageList = (
             getMessageById(conversationId, replyToId, encryptionKey, {
               conversation: decryptionConversation,
               userId,
-              peerUserId,
-              currentKeyVersion,
+                  currentKeyVersion,
             })
               .then((msg: any) => {
                 if (ignore) return;

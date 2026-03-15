@@ -20,13 +20,13 @@ import Redis from 'ioredis';
 
 const POSTGRES_TABLES = [
   // Order matters — child tables first to avoid FK violations
-  'signal_device_messages',
-  'signal_one_time_prekeys',
-  'signal_devices',
+  'mls_commit_messages',
+  'mls_welcome_messages',
+  'mls_group_states',
+  'mls_key_packages',
   'conversation_join_requests',
   'conversation_invite_links',
   'conversation_key_rotations',
-  'group_key_distribution',
   'conversation_members',
   'conversation_categories',
   'dm_pairs',

@@ -314,6 +314,58 @@ router.post('/group-states', async (req, res) => {
   }
 });
 
+// GET /api/conversations/mls/key-packages/:userId — claim one available key package (atomic)
+router.get('/key-packages/:userId', async (req, res) => {
+  const capabilities = resolveCapabilities();
+  if (!isEnabledFor(capabilities, 'key_packages')) {
+    return notEnabled(res, 'key_packages');
+  }
+
+  const requesterUserId = String(req.user.id);
+  const targetUserId = normalizeUserId(req.params.userId);
+  if (!targetUserId) {
+    return res.status(400).json({ success: false, error: 'userId param is required' });
+  }
+
+  let client;
+  try {
+    await ensureSchema();
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const result = await client.query(
+      `UPDATE mls_key_packages
+       SET consumed_at = NOW()
+       WHERE id = (
+         SELECT id FROM mls_key_packages
+         WHERE user_id = $1::UUID
+           AND published_at IS NOT NULL
+           AND consumed_at IS NULL
+         ORDER BY created_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING user_id::text AS user_id, package_ref, package_data, published_at`,
+      [targetUserId]
+    );
+
+    await client.query('COMMIT');
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'No key packages available for this user', code: 'NO_KEY_PACKAGE' });
+    }
+
+    void requesterUserId; // requester is authenticated; key is HPKE-encrypted to recipient
+    return res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('MLS key package claim error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to claim MLS key package' });
+  } finally {
+    client?.release();
+  }
+});
+
 // POST /api/conversations/mls/welcomes
 router.post('/welcomes', async (req, res) => {
   const capabilities = resolveCapabilities();
@@ -343,11 +395,6 @@ router.post('/welcomes', async (req, res) => {
         item?.conversation_id ?? item?.conversationId,
         128
       );
-
-      if (userId !== requesterUserId) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ success: false, error: 'Cannot insert welcomes for another user' });
-      }
 
       if (!welcomeRef || !payload) {
         await client.query('ROLLBACK');

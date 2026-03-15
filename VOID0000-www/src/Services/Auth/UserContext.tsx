@@ -4,6 +4,8 @@ import { authService, fetchWithAuth } from './authServiceApi';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
+import { mlsStore } from '../Crypto/mls/mlsStore';
+import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
 import {
   uploadPublicKey,
   backupKeyToServer,
@@ -11,6 +13,50 @@ import {
   fetchKeyBackup,
   type KeyBackupRecord,
 } from '../Chat/chatService';
+
+async function buildMlsBackupFields(
+  userId: string,
+  password: string
+): Promise<{ mls_state_encrypted: string; mls_state_iv: string; mls_state_salt: string } | null> {
+  try {
+    const mlsData = await mlsStore.exportForBackup(userId);
+    const groupKeys = await keyManager.exportGroupKeys();
+    const payload: MlsBackupData = { ...mlsData, groupKeys };
+    const { encrypted, iv, salt } = await keyManager.encryptDataWithPassword(payload, password);
+    return { mls_state_encrypted: encrypted, mls_state_iv: iv, mls_state_salt: salt };
+  } catch (err) {
+    console.warn('🔑 MLS state export failed (non-critical):', err);
+    return null;
+  }
+}
+
+async function restoreMlsStateFromBackup(
+  userId: string,
+  backup: KeyBackupRecord,
+  password: string
+): Promise<void> {
+  if (!backup.mls_state_encrypted || !backup.mls_state_iv || !backup.mls_state_salt) return;
+
+  try {
+    const existing = await mlsStore.getAccountState(userId);
+    if (existing) return; // Already have local MLS state — no need to restore
+
+    const payload = await keyManager.decryptDataWithPassword(
+      backup.mls_state_encrypted,
+      backup.mls_state_iv,
+      backup.mls_state_salt,
+      password
+    ) as MlsBackupData;
+
+    await mlsStore.importFromBackup(payload);
+    if (payload.groupKeys?.length) {
+      await keyManager.importGroupKeys(payload.groupKeys);
+    }
+    console.log('🔑 MLS state restored from backup');
+  } catch (err) {
+    console.warn('🔑 MLS state restore failed (non-critical):', err);
+  }
+}
 
 export interface User {
   id: string;
@@ -261,6 +307,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
           if (!cancelled) {
             setKeyStatus(resolveKeyStatusFromBackup(backup));
           }
+          // Restore MLS state on a new device if the backup contains it
+          if (password && backup) {
+            await restoreMlsStateFromBackup(userId, backup, password);
+          }
         } catch (err) {
           console.error('Failed to inspect key backup status:', err);
           if (!cancelled) {
@@ -291,13 +341,26 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
   }, [user?.id]);
 
-  // Bootstrap chat crypto account state as soon as a user session is unlocked,
-  // so DM setup can proceed without requiring an initial conversation open.
+  // Bootstrap MLS account state, then refresh the backup so a new device
+  // gets an up-to-date MLS state blob on its next login.
   useEffect(() => {
     if (!user?.id) return;
     if (!keyInitResolved || keyStatusLoading || keyStatus === 'LOCKED') return;
 
-    void chatCryptoProtocolService.bootstrapAccount(user.id);
+    const userId = user.id;
+    const password = loginPasswordRef.current;
+
+    chatCryptoProtocolService.bootstrapAccount(userId).then(async () => {
+      if (!password) return; // Can't encrypt without password — skip backup
+      try {
+        const keyBackup = await keyManager.prepareBackup(userId, password);
+        const mlsFields = await buildMlsBackupFields(userId, password);
+        await backupKeyToServer({ ...keyBackup, ...mlsFields });
+        console.log('🔑 MLS state backed up');
+      } catch (err) {
+        console.warn('🔑 MLS backup failed (non-critical):', err);
+      }
+    }).catch(() => {});
   }, [keyInitResolved, keyStatus, keyStatusLoading, user?.id]);
 
   return (

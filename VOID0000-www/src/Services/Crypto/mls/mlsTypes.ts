@@ -20,9 +20,16 @@ export interface MlsKeyPackageRecord {
   userId: string;
   packageRef: string;
   packageData: string;
+  /** Base64-encoded JSON of the PrivateKeyPackage — never sent to server */
+  privateData?: string | null;
   createdAt: string;
   publishedAt?: string | null;
   consumedAt?: string | null;
+}
+
+export interface MlsDistributeKeyResult {
+  key: CryptoKey;
+  keyVersion: number;
 }
 
 export interface MlsWelcomeRecord {
@@ -123,6 +130,15 @@ export interface MlsInboxSyncPayload {
   groupStates: MlsSyncGroupStateUpdate[];
   welcomes: MlsSyncWelcomeUpdate[];
   commits: MlsSyncCommitUpdate[];
+}
+
+export interface MlsBackupData {
+  version: 1;
+  exportedAt: string;
+  accounts: MlsAccountStateRecord[];
+  groups: MlsGroupStateRecord[];
+  keyPackages: MlsKeyPackageRecord[];
+  groupKeys: Array<{ id: string; version: number; key: string }>;
 }
 
 export interface MlsInboxSyncResult {

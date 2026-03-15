@@ -1,5 +1,6 @@
 import type {
   MlsAccountStateRecord,
+  MlsBackupData,
   MlsCommitRecord,
   MlsGroupStateRecord,
   MlsKeyPackageRecord,
@@ -7,7 +8,7 @@ import type {
 } from './mlsTypes';
 
 const DB_NAME = 'void_mls';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const ACCOUNT_STORE = 'accounts';
 const GROUP_STORE = 'groups';
 const KEY_PACKAGE_STORE = 'key_packages';
@@ -150,6 +151,10 @@ export const mlsStore = {
     });
   },
 
+  async getKeyPackage(userId: string, packageRef: string): Promise<MlsKeyPackageRecord | null> {
+    return getRow<MlsKeyPackageRecord>(KEY_PACKAGE_STORE, buildKeyPackageKey(userId, packageRef));
+  },
+
   async listKeyPackages(userId: string): Promise<MlsKeyPackageRecord[]> {
     const rows = await getAllRows<MlsKeyPackageRecord & { id?: string }>(KEY_PACKAGE_STORE);
     return rows.filter((row) => row.userId === userId);
@@ -243,6 +248,31 @@ export const mlsStore = {
       ...existing,
       appliedAt: new Date().toISOString(),
     });
+  },
+
+  async exportForBackup(userId: string): Promise<Omit<MlsBackupData, 'groupKeys'>> {
+    const accountState = await this.getAccountState(userId);
+    const groups = await this.listGroupStates();
+    const keyPackages = await this.listKeyPackages(userId);
+    return {
+      version: 1 as const,
+      exportedAt: new Date().toISOString(),
+      accounts: accountState ? [accountState] : [],
+      groups,
+      keyPackages,
+    };
+  },
+
+  async importFromBackup(data: Omit<MlsBackupData, 'groupKeys'>): Promise<void> {
+    for (const account of data.accounts) {
+      await this.putAccountState(account);
+    }
+    for (const group of data.groups) {
+      await this.putGroupState(group);
+    }
+    for (const kp of data.keyPackages) {
+      await this.putKeyPackage(kp);
+    }
   },
 
   async clearAll(): Promise<void> {

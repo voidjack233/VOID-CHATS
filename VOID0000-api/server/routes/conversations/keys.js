@@ -27,22 +27,37 @@ function hasEncryptedKeyPayload(payload) {
 
 // ==================== KEY BACKUP (must be before /:userId) ====================
 
-// POST /api/conversations/keys/backup — store encrypted private key backup
+// POST /api/conversations/keys/backup — store encrypted private key backup (+ optional MLS state)
 router.post('/backup', async (req, res) => {
   const userId = req.user.id;
-  const { encrypted_private_key, iv, salt, key_id } = req.body;
+  const { encrypted_private_key, iv, salt, key_id, mls_state_encrypted, mls_state_iv, mls_state_salt } = req.body;
 
   if (!encrypted_private_key || !iv || !salt || !key_id) {
     return res.status(400).json({ error: 'encrypted_private_key, iv, salt, and key_id required' });
   }
 
+  const hasMlsState = mls_state_encrypted && mls_state_iv && mls_state_salt;
+
   try {
     await pool.query(
-      `INSERT INTO user_key_backups (user_id, encrypted_private_key, iv, salt, key_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO user_key_backups (user_id, encrypted_private_key, iv, salt, key_id, mls_state_encrypted, mls_state_iv, mls_state_salt)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (user_id)
-       DO UPDATE SET encrypted_private_key = $2, iv = $3, salt = $4, key_id = $5, updated_at = NOW()`,
-      [userId, encrypted_private_key, iv, salt, key_id]
+       DO UPDATE SET
+         encrypted_private_key = $2,
+         iv = $3,
+         salt = $4,
+         key_id = $5,
+         mls_state_encrypted = COALESCE($6, user_key_backups.mls_state_encrypted),
+         mls_state_iv         = COALESCE($7, user_key_backups.mls_state_iv),
+         mls_state_salt       = COALESCE($8, user_key_backups.mls_state_salt),
+         updated_at = NOW()`,
+      [
+        userId, encrypted_private_key, iv, salt, key_id,
+        hasMlsState ? mls_state_encrypted : null,
+        hasMlsState ? mls_state_iv : null,
+        hasMlsState ? mls_state_salt : null,
+      ]
     );
 
     res.json({ success: true, message: 'Key backup stored' });
@@ -60,6 +75,7 @@ router.get('/backup', async (req, res) => {
     const result = await pool.query(
       `SELECT encrypted_private_key, iv, salt, key_id, created_at
              , recovery_encrypted_private_key, recovery_iv, recovery_salt, recovery_key_id, recovery_configured_at
+             , mls_state_encrypted, mls_state_iv, mls_state_salt
        FROM user_key_backups
        WHERE user_id = $1`,
       [userId]
@@ -220,7 +236,7 @@ router.post('/', async (req, res) => {
 router.get('/group/:conversationId', async (req, res) => {
   return res.status(410).json({
     success: false,
-    error: 'Legacy group key API removed. Use Signal sender-key distribution endpoints.',
+    error: 'Legacy group key API removed. Use MLS distribution endpoints.',
     code: 'LEGACY_GROUP_KEY_API_REMOVED',
   });
 });
@@ -229,7 +245,7 @@ router.get('/group/:conversationId', async (req, res) => {
 router.post('/group/:conversationId', async (req, res) => {
   return res.status(410).json({
     success: false,
-    error: 'Legacy group key API removed. Use Signal sender-key distribution endpoints.',
+    error: 'Legacy group key API removed. Use MLS distribution endpoints.',
     code: 'LEGACY_GROUP_KEY_API_REMOVED',
   });
 });

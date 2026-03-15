@@ -205,20 +205,6 @@ export const useChatManager = (user: any) => {
     return !!cachedConversation?.members?.length;
   };
 
-  const getPeerIdForConversation = (conversation: Conversation) => {
-    if (conversation.type !== 'dm') return undefined;
-
-    const cachedConversation =
-      getCachedConversationDetails(conversation.id)
-      || getCachedConversationDetails(conversation.public_id)
-      || null;
-
-    return conversation.dm_user_id
-      || cachedConversation?.dm_user_id
-      || cachedConversation?.members?.find((member) => member.user_id !== user?.id)?.user_id
-      || undefined;
-  };
-
   const storeConversationDetails = (conversation: ConversationDetails) => {
     const cacheEntry: ConversationDetails = {
       ...conversation,
@@ -491,7 +477,6 @@ export const useChatManager = (user: any) => {
             keyResult = await getEncryptionKey(
               user.id,
               keyLookupConversation,
-              peerId,
               requiredGroupVersion || undefined
             );
             lastKeyError = null;
@@ -651,7 +636,6 @@ export const useChatManager = (user: any) => {
     const { key, version } = await getEncryptionKey(
       user.id,
       keyLookupConversation,
-      getPeerIdForConversation(activeConversation),
       requestedVersion
     );
 

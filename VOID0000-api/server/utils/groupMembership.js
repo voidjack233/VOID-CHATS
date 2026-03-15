@@ -16,35 +16,6 @@ export function uniqueUserIds(values = []) {
   )];
 }
 
-export function normalizeDistributions(distributions) {
-  if (!Array.isArray(distributions)) return [];
-
-  return distributions
-    .filter((entry) => entry && typeof entry === 'object')
-    .map((entry) => ({
-      user_id: typeof entry.user_id === 'string' ? entry.user_id.trim() : '',
-      encrypted_group_key: typeof entry.encrypted_group_key === 'string'
-        ? entry.encrypted_group_key.trim()
-        : '',
-    }))
-    .filter((entry) => entry.user_id && entry.encrypted_group_key);
-}
-
-export function hasExactDistributionSet(expectedUserIds, distributions) {
-  if (expectedUserIds.length !== distributions.length) {
-    return false;
-  }
-
-  const expected = new Set(expectedUserIds);
-  const actual = new Set(distributions.map((entry) => entry.user_id));
-
-  if (expected.size !== actual.size) {
-    return false;
-  }
-
-  return expectedUserIds.every((userId) => actual.has(userId));
-}
-
 export async function getChildChannelIds(db, conversationId) {
   const result = await db.query(
     `SELECT id FROM conversations WHERE parent_conversation_id = $1`,
@@ -101,26 +72,6 @@ export async function validateFriendships(db, requesterId, memberIds) {
   }
 
   return null;
-}
-
-export async function insertGroupKeyDistributions(db, conversationId, distributions, keyVersion, wrappedByUserId) {
-  for (const distribution of distributions) {
-    await db.query(
-      `INSERT INTO group_key_distribution (
-         conversation_id,
-         user_id,
-         encrypted_group_key,
-         key_version,
-         wrapped_by_user_id
-       )
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (conversation_id, user_id, key_version)
-       DO UPDATE SET
-         encrypted_group_key = EXCLUDED.encrypted_group_key,
-         wrapped_by_user_id = EXCLUDED.wrapped_by_user_id`,
-      [conversationId, distribution.user_id, distribution.encrypted_group_key, keyVersion, wrappedByUserId]
-    );
-  }
 }
 
 export async function emitConversationUpdate(conversation, memberIds, currentKeyVersion, memberCount) {
