@@ -15,6 +15,7 @@ import {
   MESSAGE_CACHE_LIMIT,
   MESSAGE_INITIAL_PAGE_SIZE,
   MESSAGE_PAGE_SIZE,
+  MESSAGE_PREFETCH_SIZE,
 } from '../../Chat/chatConstants';
 
 const INITIAL_FETCH_SIZE = MESSAGE_INITIAL_PAGE_SIZE;
@@ -25,9 +26,23 @@ const MESSAGE_LIST_BASE_INDEX = 100000;
 interface ConversationWindowSnapshot {
   loadedCount: number;
   hasOlder: boolean;
+  topVisibleMessageId?: string; // used to restore scroll position on re-open
 }
 
 const conversationWindowCache = new Map<string, ConversationWindowSnapshot>();
+
+/**
+ * Called by MessageView before switching away from a conversation.
+ * Saves the top-visible message ID so we can restore the scroll position on return.
+ */
+export const saveConversationScrollPosition = (conversationId: string, messageId: string) => {
+  const existing = conversationWindowCache.get(conversationId);
+  conversationWindowCache.set(conversationId, {
+    loadedCount: existing?.loadedCount ?? 0,
+    hasOlder: existing?.hasOlder ?? false,
+    topVisibleMessageId: messageId,
+  });
+};
 
 interface MessageUpdate {
   message_id: string;
@@ -187,6 +202,15 @@ export const useMessageList = (
   const fetchingReplies = useRef<Set<string>>(new Set());
   const messagesRef = useRef<Message[]>([]);
   const prefetchingOlderRef = useRef(false);
+  // Prevents firing the post-load background prefetch more than once per conversation load.
+  const prefetchedAfterLoadRef = useRef(false);
+
+  // The message ID to scroll to when this conversation reopens (from previous session).
+  // Read once per conversation mount from the module-level cache.
+  const initialScrollToMessageId = useMemo(
+    () => conversationWindowCache.get(conversationId)?.topVisibleMessageId ?? null,
+    [conversationId]
+  );
 
   // Track which conversation we last loaded so we can distinguish between
   // a genuine conversation switch (needs full reset) and a key rotation
@@ -197,6 +221,7 @@ export const useMessageList = (
     setReplyCache({});
     fetchingReplies.current.clear();
     prefetchingOlderRef.current = false;
+    prefetchedAfterLoadRef.current = false;
   }, [conversationId]);
 
   useEffect(() => {
@@ -483,6 +508,9 @@ export const useMessageList = (
   const loadOlderPage = useCallback(async (options?: { silent?: boolean; forceServer?: boolean }) => {
     const isSilent = options?.silent === true;
     const forceServer = options?.forceServer === true;
+    // Use a larger page for silent background fetches so we build a bigger local buffer.
+    const fetchSize = isSilent ? MESSAGE_PREFETCH_SIZE : FETCH_SIZE;
+
     if (
       !encryptionKey ||
       loadingOlder ||
@@ -510,14 +538,14 @@ export const useMessageList = (
       if (forceServer) {
         const localResult = await messageSync.readLocal(conversationId, {
           before: oldest.message_id,
-          limit: FETCH_SIZE,
+          limit: fetchSize,
         });
         const localUI = sortMessages(localResult.messages.map(toUIMessage));
         applyOlderMessages(localUI, seamBreakBeforeId);
 
         const serverResult = await getMessages(conversationId, encryptionKey, {
           before: oldest.message_id,
-          limit: FETCH_SIZE,
+          limit: fetchSize,
           conversation: decryptionConversation,
           userId,
           currentKeyVersion,
@@ -528,19 +556,19 @@ export const useMessageList = (
         }
         result = {
           messages: mergeLocalMessages(localResult.messages, localMsgs),
-          has_more: localResult.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+          has_more: localResult.has_more || serverResult.has_more || serverResult.messages.length >= fetchSize,
         };
       } else {
         // Try local first
         result = await messageSync.readLocal(conversationId, {
           before: oldest.message_id,
-          limit: FETCH_SIZE,
+          limit: fetchSize,
         });
 
-        if (result.messages.length < FETCH_SIZE || !result.has_more || hasUndecryptableMessage(result.messages)) {
+        if (result.messages.length < fetchSize || !result.has_more || hasUndecryptableMessage(result.messages)) {
           const serverResult = await getMessages(conversationId, encryptionKey, {
             before: oldest.message_id,
-            limit: FETCH_SIZE,
+            limit: fetchSize,
             conversation: decryptionConversation,
             userId,
               currentKeyVersion,
@@ -551,7 +579,7 @@ export const useMessageList = (
           }
           result = {
             messages: mergeLocalMessages(result.messages, localMsgs),
-            has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+            has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= fetchSize,
           };
         }
       }
@@ -577,6 +605,26 @@ export const useMessageList = (
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
+  }, [loadOlderPage]);
+
+  // ============== Background Prefetch (WhatsApp-style lazy async) ==============
+  // After the initial load completes and there are older messages, silently prefetch
+  // the next older page into IndexedDB so that the first scroll-up is instant.
+  useEffect(() => {
+    if (loading || !hasOlder || !encryptionKey || prefetchedAfterLoadRef.current) return;
+    prefetchedAfterLoadRef.current = true;
+
+    const timer = window.setTimeout(() => {
+      void loadOlderPage({ silent: true });
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, hasOlder, encryptionKey]);
+
+  // Public handle for MessageView's velocity-based prefetch trigger.
+  const prefetchOlder = useCallback(() => {
+    void loadOlderPage({ silent: true, forceServer: false });
   }, [loadOlderPage]);
 
   // ============== Load Newer (Scroll Down) ==============
@@ -754,5 +802,8 @@ export const useMessageList = (
     jumpToPresent,
     loadOlder,
     loadNewer,
+    // Lazy-async additions
+    prefetchOlder,
+    initialScrollToMessageId,
   };
 };

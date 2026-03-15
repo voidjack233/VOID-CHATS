@@ -1,6 +1,6 @@
 // src/Services/hooks/Chats/useChatManager.ts
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution, ownerSelfHealGroupKey } from '../../Chat/chatService';
+import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution, ownerSelfHealGroupKey, bootstrapDmKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
@@ -558,6 +558,31 @@ export const useChatManager = (user: any) => {
           reason.includes('OperationError');
 
         if (isGroupKeyError) {
+          // DM bootstrap: no MLS group exists yet for this conversation.
+          // Create one now (with the peer if they have key packages, solo
+          // otherwise). The peer joins automatically via syncInbox welcome
+          // when they next come online.
+          if (activeConversation?.type === 'dm') {
+            const dmPeerId =
+              activeConversation.dm_user_id ||
+              resolvedMemberIds.find((id) => id !== user.id);
+            try {
+              const result = await bootstrapDmKey(
+                activeConversation,
+                user.id,
+                dmPeerId
+              );
+              if (!ignore) {
+                setEncryptionError(null);
+                setEncryptionKey(result.key);
+                setKeyVersion(result.version);
+              }
+              return;
+            } catch (dmBootstrapErr) {
+              console.error('DM key bootstrap failed:', dmBootstrapErr);
+            }
+          }
+
           // Owner self-heal: generate a fresh room key and redistribute
           // to all members so this device can immediately start working.
           const ownerConversation = activeGroup || activeConversation;

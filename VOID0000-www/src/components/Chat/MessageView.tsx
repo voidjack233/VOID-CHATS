@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } fr
 import { createPortal } from 'react-dom';
 import { Virtuoso, VirtuosoHandle, ListRange, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
 import { Pencil, Trash2, Reply, CornerUpRight, Smile, Image, ArrowDown, X, Download, ChevronLeft, ChevronRight, Copy, Forward } from 'lucide-react';
-import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
+import { useMessageList, saveConversationScrollPosition } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
 import { Message, Conversation, ConversationMember, parseAttachments } from '../../Services/Chat/chatService';
@@ -140,6 +140,8 @@ const MessageView = ({
     jumpToPresent,
     loadOlder,
     loadNewer,
+    prefetchOlder,
+    initialScrollToMessageId,
   } = useMessageList(
     conversation,
     user?.id,
@@ -164,6 +166,12 @@ const MessageView = ({
   const scrollerRef = useRef<HTMLElement | null>(null);
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
+  // Lazy-async: scroll position memory
+  const prevConversationIdRef = useRef<string | null>(null);
+  const lastVisibleTopMessageIdRef = useRef<string | null>(null);
+  const scrollRestoredRef = useRef(false);
+  // Lazy-async: velocity-based prefetch
+  const scrollVelocityRef = useRef({ time: 0, top: 0 });
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
   const [scrollSeekExitTick, setScrollSeekExitTick] = useState(0);
@@ -181,6 +189,16 @@ const MessageView = ({
   }, []);
 
   useLayoutEffect(() => {
+    // Save scroll position for the conversation we're leaving.
+    if (prevConversationIdRef.current && prevConversationIdRef.current !== conversation.id) {
+      if (lastVisibleTopMessageIdRef.current) {
+        saveConversationScrollPosition(prevConversationIdRef.current, lastVisibleTopMessageIdRef.current);
+      }
+    }
+    prevConversationIdRef.current = conversation.id;
+    lastVisibleTopMessageIdRef.current = null;
+    scrollRestoredRef.current = false;
+
     canLoadOlderRef.current = true;
     lastOlderTriggerMessageIdRef.current = null;
     lastRangeStartIndexRef.current = null;
@@ -225,6 +243,55 @@ const MessageView = ({
     });
   }, [jumpToPresent]);
 
+  // ============== Scroll Position Restoration ==============
+  // After initial messages load, scroll to the last known top-visible message
+  // so the user lands exactly where they left off (WhatsApp-style nav).
+  useEffect(() => {
+    if (
+      !initialScrollToMessageId ||
+      loading ||
+      visualMessages.length === 0 ||
+      scrollRestoredRef.current
+    ) return;
+
+    const targetIdx = visualMessages.findIndex((m) => m.message_id === initialScrollToMessageId);
+    // If the message isn't in the loaded window, stay at bottom (graceful fallback).
+    if (targetIdx < 0) return;
+    // If it's the last message, we're already at the present — no action needed.
+    if (targetIdx === visualMessages.length - 1) return;
+
+    scrollRestoredRef.current = true;
+    // Stop Virtuoso from snapping to the bottom so our restore takes effect.
+    keepPinnedOnOpenRef.current = false;
+
+    requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndex + targetIdx,
+        align: 'start',
+        behavior: 'auto',
+      });
+    });
+  }, [initialScrollToMessageId, loading, visualMessages, firstItemIndex]);
+
+  // ============== Velocity-Based Prefetch ==============
+  // When the user scrolls upward fast, kick off a silent prefetch before they
+  // reach the top so older messages are already in the local store when needed.
+  const handleVirtuosoScroll = useCallback((event: React.UIEvent<HTMLElement>) => {
+    const now = Date.now();
+    const top = (event.target as HTMLElement).scrollTop;
+    const dt = now - scrollVelocityRef.current.time;
+
+    if (dt > 0 && dt < 200) {
+      const velocity = (top - scrollVelocityRef.current.top) / dt; // px/ms, negative = scrolling up
+      // > 1.5 px/ms upward (≈ 1500 px/s) — aggressive prefetch
+      if (velocity < -1.5 && !topLoadLockedRef.current) {
+        void prefetchOlder();
+      }
+    }
+
+    scrollVelocityRef.current = { time: now, top };
+  }, [prefetchOlder]);
+
   const triggerOlderLoad = useCallback(() => {
     if (prefetchingOlder) {
       pendingStartReachedRef.current = true;
@@ -266,6 +333,12 @@ const MessageView = ({
 
     const relativeStartIndex = range.startIndex - firstItemIndex;
 
+    // Keep track of the top-visible message so we can save it when switching conversations.
+    const topMsg = visualMessages[Math.max(0, relativeStartIndex)];
+    if (topMsg) {
+      lastVisibleTopMessageIdRef.current = topMsg.message_id;
+    }
+
     if (relativeStartIndex > 6) {
       topLoadLockedRef.current = false;
       lastOlderTriggerMessageIdRef.current = null;
@@ -280,7 +353,7 @@ const MessageView = ({
     ) {
       triggerOlderLoad();
     }
-  }, [firstItemIndex, prefetchingOlder, triggerOlderLoad]);
+  }, [firstItemIndex, prefetchingOlder, triggerOlderLoad, visualMessages]);
 
   const scrollSeekConfiguration = useMemo(() => ({
     enter: (velocity: number) => {
@@ -903,6 +976,7 @@ const MessageView = ({
         increaseViewportBy={{ top: topRenderBufferPx, bottom: bottomRenderBufferPx }}
         minOverscanItemCount={{ top: 8, bottom: 4 }}
         scrollSeekConfiguration={scrollSeekConfiguration}
+        onScroll={handleVirtuosoScroll}
         startReached={handleStartReached}
         rangeChanged={handleRangeChanged}
         followOutput={(isAtBottom) => {

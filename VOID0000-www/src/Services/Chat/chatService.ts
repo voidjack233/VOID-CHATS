@@ -505,6 +505,45 @@ export async function ownerSelfHealGroupKey(
 }
 
 /**
+ * Bootstrap a DM conversation's MLS group from scratch.
+ *
+ * Called when `getEncryptionKey` fails for a fresh DM because no local group
+ * state exists yet.  Creates the group with the sender as the initiator and
+ * includes the peer if they have published key packages.  If the peer is
+ * offline / has not published packages yet the group is created solo — the peer
+ * joins automatically when both sides are online and `syncInbox` processes the
+ * pending welcome.
+ *
+ * DMs always use key_version=1 on the backend.  MLS epoch-0 solo groups produce
+ * keyVersion=0, so we normalise the stored version to 1 so that `getEncryptionKey`
+ * (which always targets version 1 for DMs) can find the key immediately.
+ */
+export async function bootstrapDmKey(
+  conversation: Conversation,
+  currentUserId: string,
+  peerUserId: string | undefined
+): Promise<{ key: CryptoKey; version: number }> {
+  const participantIds = peerUserId
+    ? [currentUserId, peerUserId]
+    : [currentUserId];
+
+  const result = await distributeGroupSenderKeyWithProtocol(
+    { ...conversation, id: conversation.id },
+    currentUserId,
+    participantIds
+  );
+
+  // MLS epoch-0 solo group → keyVersion=0, but the backend/protocol convention
+  // for DMs is always version 1.  Alias the key so lookups succeed.
+  if (result.version !== 1) {
+    await keyManager.storeGroupKey(conversation.id, 1, result.key);
+    return { key: result.key, version: 1 };
+  }
+
+  return result;
+}
+
+/**
  * Called in the background after the owner's handshake succeeds.
  * Re-distributes the current sender key to member devices via the
  * active crypto protocol so lagging devices can catch up.
