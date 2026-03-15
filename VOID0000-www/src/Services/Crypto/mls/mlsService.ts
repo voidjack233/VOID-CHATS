@@ -198,9 +198,13 @@ function normalizeConversationKeyId(conversation: Conversation): string {
 
 // ─── MlsService ───────────────────────────────────────────────────────────────
 
+const BOOTSTRAP_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+const SYNC_COOLDOWN_MS = 30 * 1000; // 30 seconds
+
 class MlsService {
   private serverCapabilitiesPromise: Promise<MlsServerCapabilities> | null = null;
   private readonly minimumKeyPackages = 3;
+  private readonly syncInboxPromises = new Map<string, Promise<MlsInboxSyncResult>>();
 
   isEnabled(): boolean {
     return true;
@@ -298,35 +302,45 @@ class MlsService {
   }
 
   /**
-   * Fetch a peer's published key package from the server and build an MLS Add proposal.
+   * Fetch peers' published key packages in parallel and build MLS Add proposals.
    */
   private async buildAddProposals(userIds: string[]): Promise<Proposal[]> {
-    const proposals: Proposal[] = [];
-    for (const userId of userIds) {
-      try {
-        const kpData = await fetchUserKeyPackage(userId);
-        if (!kpData) continue;
-        const kpBytes = base64ToBytes(kpData.package_data);
-        const decoded = decodeMlsMessage(kpBytes, 0);
-        if (!decoded) continue;
-        const [msg] = decoded;
-        if (msg.wireformat !== 'mls_key_package') continue;
-        proposals.push({ proposalType: 'add', add: { keyPackage: msg.keyPackage } });
-      } catch {
-        // Skip unavailable peers — they can be added later
-      }
-    }
-    return proposals;
+    const results = await Promise.all(
+      userIds.map(async (userId): Promise<Proposal | null> => {
+        try {
+          const kpData = await fetchUserKeyPackage(userId);
+          if (!kpData) return null;
+          const kpBytes = base64ToBytes(kpData.package_data);
+          const decoded = decodeMlsMessage(kpBytes, 0);
+          if (!decoded) return null;
+          const [msg] = decoded;
+          if (msg.wireformat !== 'mls_key_package') return null;
+          return { proposalType: 'add', add: { keyPackage: msg.keyPackage } };
+        } catch {
+          return null; // Skip unavailable peers — they can be added later
+        }
+      })
+    );
+    return results.filter((p): p is Proposal => p !== null);
   }
 
-  async bootstrapAccount(userId: string): Promise<void> {
+  async bootstrapAccount(userId: string, force = false): Promise<void> {
     const capabilities = await this.getServerCapabilities();
     if (!capabilities.supported) return;
-    await this.ensureAccountState(userId);
+    const account = await this.ensureAccountState(userId);
+    if (!force && account.lastBootstrappedAt) {
+      const elapsed = Date.now() - Date.parse(account.lastBootstrappedAt);
+      if (elapsed < BOOTSTRAP_COOLDOWN_MS) return;
+    }
     if (capabilities.keyPackages) {
       await this.ensureLocalKeyPackages(userId);
       await this.publishPendingKeyPackages(userId);
     }
+    await mlsStore.putAccountState({
+      ...account,
+      lastBootstrappedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   async bootstrapConversation(input: MlsConversationBootstrapInput): Promise<MlsBootstrapResult> {
@@ -493,6 +507,18 @@ class MlsService {
   }
 
   async syncInbox(userId: string): Promise<MlsInboxSyncResult> {
+    // Deduplicate: if a sync is already in-flight for this user, reuse it.
+    const inflight = this.syncInboxPromises.get(userId);
+    if (inflight) return inflight;
+
+    const promise = this._syncInboxWork(userId).finally(() => {
+      this.syncInboxPromises.delete(userId);
+    });
+    this.syncInboxPromises.set(userId, promise);
+    return promise;
+  }
+
+  private async _syncInboxWork(userId: string): Promise<MlsInboxSyncResult> {
     const capabilities = await this.getServerCapabilities();
     if (!capabilities.supported) {
       return {
@@ -509,12 +535,29 @@ class MlsService {
       };
     }
 
-    const account = await this.ensureAccountState(userId);
-    let publishedKeyPackages = 0;
+    // Publish key packages via bootstrapAccount (respects 5-min cooldown).
+    await this.bootstrapAccount(userId);
 
-    if (capabilities.keyPackages) {
-      await this.ensureLocalKeyPackages(userId);
-      publishedKeyPackages = await this.publishPendingKeyPackages(userId);
+    const account = await this.ensureAccountState(userId);
+    const publishedKeyPackages = 0;
+
+    // Short-circuit the heavy server sync if we synced recently.
+    if (account.lastSyncedAt) {
+      const elapsed = Date.now() - Date.parse(account.lastSyncedAt);
+      if (elapsed < SYNC_COOLDOWN_MS) {
+        return {
+          publishedKeyPackages,
+          uploadedGroupStates: 0,
+          uploadedWelcomes: 0,
+          uploadedCommits: 0,
+          syncedKeyPackages: 0,
+          syncedGroupStates: 0,
+          syncedWelcomes: 0,
+          syncedCommits: 0,
+          acknowledgedWelcomes: 0,
+          acknowledgedCommits: 0,
+        };
+      }
     }
 
     const payload = await syncMlsInbox(userId);
@@ -540,19 +583,23 @@ class MlsService {
       }
     }
 
-    // Acknowledge consumed welcomes on the server
+    // Acknowledge consumed welcomes in parallel
     let ackCount = 0;
-    if (capabilities.welcomeInbox) {
-      for (const welcome of acknowledgedWelcomes) {
-        const ok = await consumeMlsWelcome(welcome.welcomeRef);
-        if (ok) {
-          await mlsStore.markWelcomeConsumed(welcome.userId, welcome.welcomeRef);
-          ackCount += 1;
-        }
-      }
+    if (capabilities.welcomeInbox && acknowledgedWelcomes.length > 0) {
+      const ackResults = await Promise.all(
+        acknowledgedWelcomes.map(async (welcome) => {
+          const ok = await consumeMlsWelcome(welcome.welcomeRef);
+          if (ok) {
+            await mlsStore.markWelcomeConsumed(welcome.userId, welcome.welcomeRef);
+          }
+          return ok;
+        })
+      );
+      ackCount = ackResults.filter(Boolean).length;
     }
 
-    await mlsStore.putAccountState({ ...account, updatedAt: new Date().toISOString() });
+    const now = new Date().toISOString();
+    await mlsStore.putAccountState({ ...account, lastSyncedAt: now, updatedAt: now });
 
     return {
       publishedKeyPackages,

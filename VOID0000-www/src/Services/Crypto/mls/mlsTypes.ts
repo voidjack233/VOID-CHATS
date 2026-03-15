@@ -5,6 +5,8 @@ export interface MlsAccountStateRecord {
   clientId: string;
   createdAt: string;
   updatedAt: string;
+  lastBootstrappedAt?: string | null;
+  lastSyncedAt?: string | null;
 }
 
 export interface MlsGroupStateRecord {
