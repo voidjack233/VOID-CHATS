@@ -1166,19 +1166,41 @@ export const useChatManager = (user: any) => {
         };
       }
 
-      const nextChannels = (prev.channels || []).map((channel) =>
+      const existingChannels = prev.channels || [];
+      const isExistingChannel = existingChannels.some((channel) =>
         matchesConversationIdentifier(channel, conversationIdentifier)
-          ? (hasPatchChanges(channel) ? { ...channel, ...updatedConversation } : channel)
-          : channel
       );
 
-      const didChange = nextChannels.some((channel, index) => channel !== (prev.channels || [])[index]);
-      if (!didChange) return prev;
+      if (isExistingChannel) {
+        const nextChannels = existingChannels.map((channel) =>
+          matchesConversationIdentifier(channel, conversationIdentifier)
+            ? (hasPatchChanges(channel) ? { ...channel, ...updatedConversation } : channel)
+            : channel
+        );
 
-      return {
-        ...prev,
-        channels: nextChannels,
-      };
+        const didChange = nextChannels.some((channel, index) => channel !== existingChannels[index]);
+        if (!didChange) return prev;
+
+        return {
+          ...prev,
+          channels: nextChannels,
+        };
+      }
+
+      // New channel belonging to this group — append it
+      const isNewChannel =
+        updatedConversation.type === 'channel' &&
+        (matchesConversationIdentifier(prev, updatedConversation.parent_conversation_id) ||
+          matchesConversationIdentifier(prev, updatedConversation.parent_public_id));
+
+      if (isNewChannel) {
+        return {
+          ...prev,
+          channels: [...existingChannels, updatedConversation],
+        };
+      }
+
+      return prev;
     });
 
     setActiveConversation((prev) => {

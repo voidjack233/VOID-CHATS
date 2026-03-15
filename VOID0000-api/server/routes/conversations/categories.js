@@ -6,6 +6,8 @@ import {
   normalizeCategory,
   resolveGroupConversation,
 } from '../../utils/conversationCategories.js';
+import { EVENTS } from '../../gateway/index.js';
+import { sendLiveEventToUser } from '../../gateway/client.js';
 
 const router = Router({ mergeParams: true });
 
@@ -85,9 +87,30 @@ router.post('/', async (req, res) => {
       [groupConversation.id, trimmedName, nextPosition]
     );
 
+    const category = normalizeCategory(insertResult.rows[0]);
+
+    // Broadcast to all group members so the new category appears in real time
+    const memberResult = await pool.query(
+      `SELECT user_id FROM conversation_members WHERE conversation_id = $1`,
+      [groupConversation.id]
+    );
+    memberResult.rows.forEach(({ user_id }) => {
+      if (user_id !== userId) {
+        sendLiveEventToUser(user_id, EVENTS.CONVERSATION_UPDATE, {
+          conversation: {
+            id: groupConversation.id,
+            public_id: groupConversation.public_id ? String(groupConversation.public_id) : null,
+            type: 'group',
+            updated_at: new Date().toISOString(),
+            _new_category: category,
+          },
+        });
+      }
+    });
+
     res.status(201).json({
       success: true,
-      category: normalizeCategory(insertResult.rows[0]),
+      category,
     });
   } catch (err) {
     console.error('Conversation categories POST error:', err);

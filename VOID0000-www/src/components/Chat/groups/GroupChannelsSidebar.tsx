@@ -6,6 +6,7 @@ import {
   createConversationCategory,
   getConversationCategories,
 } from '../../../Services/Chat/chatService';
+import { gateway } from '../../../Services/Gateway/gateway';
 import CreateCategoryModal from './CreateCategoryModal';
 import GroupChannelCategory from './GroupChannelCategory';
 import GroupChannelListItem from './GroupChannelListItem';
@@ -70,6 +71,30 @@ export default function GroupChannelsSidebar({
       ignore = true;
     };
   }, [conversation.id]);
+
+  // Listen for real-time category additions from other members
+  useEffect(() => {
+    const handleConversationUpdate = (data: any) => {
+      const updated = data?.conversation;
+      if (!updated) return;
+
+      const matchesGroup =
+        updated.id === conversation.id ||
+        (updated.public_id && updated.public_id === (conversation.public_id || conversation.id));
+
+      if (matchesGroup && updated._new_category) {
+        setCategories((prev) => {
+          if (prev.some((c) => c.id === updated._new_category.id)) return prev;
+          return [...prev, updated._new_category];
+        });
+      }
+    };
+
+    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
+    return () => {
+      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
+    };
+  }, [conversation.id, conversation.public_id]);
 
   const customCategories = useMemo(
     () =>

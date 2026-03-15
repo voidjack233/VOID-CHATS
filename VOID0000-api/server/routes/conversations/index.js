@@ -329,13 +329,26 @@ router.post('/', authenticateUser, async (req, res) => {
       );
 
       await client.query('COMMIT');
+
+      const channelPayload = {
+        ...channel,
+        public_id: channel.public_id ? String(channel.public_id) : null,
+        parent_public_id: parent.public_id ? String(parent.public_id) : null,
+      };
+
+      // Broadcast the new channel to all parent group members so it appears in real time
+      const parentMemberIds = await getConversationMemberIds(parent.id);
+      parentMemberIds.forEach((memberId) => {
+        if (memberId !== userId) {
+          sendLiveEventToUser(memberId, EVENTS.CONVERSATION_UPDATE, {
+            conversation: channelPayload,
+          });
+        }
+      });
+
       return res.status(201).json({
         success: true,
-        conversation: {
-          ...channel,
-          public_id: channel.public_id ? String(channel.public_id) : null,
-          parent_public_id: parent.public_id ? String(parent.public_id) : null,
-        },
+        conversation: channelPayload,
       });
     }
 
