@@ -1,7 +1,7 @@
 // src/components/Chat/ConversationList.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Hash as HashIcon, MessageCircle, Users, Plus, Search } from 'lucide-react';
-import { getConversations, Conversation } from '../../Services/Chat/chatService';
+import { getConversations, getConversation, Conversation } from '../../Services/Chat/chatService';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
 import { gateway } from '../../Services/Gateway/gateway';
@@ -15,14 +15,35 @@ interface ConversationListProps {
   filter: 'dm' | 'group';
   friends: any[];
   refreshTrigger?: number;
+  bumpConversationId?: string | null;
 }
 
-const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, refreshTrigger }: ConversationListProps) => {
+const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, refreshTrigger, bumpConversationId }: ConversationListProps) => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const knownIdsRef = useRef<Set<string>>(new Set());
   
   const { getPresence } = usePresence();
+
+  // Keep ref in sync
+  useEffect(() => {
+    knownIdsRef.current = new Set(conversations.map((c) => c.id));
+  }, [conversations]);
+
+  // Move a conversation to the top when the parent signals a sent message
+  useEffect(() => {
+    if (!bumpConversationId) return;
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === bumpConversationId);
+      if (idx <= 0) return prev;
+      const next = [...prev];
+      const moved = next.splice(idx, 1)[0] as Conversation;
+      next.unshift(moved);
+      return next;
+    });
+  }, [bumpConversationId]);
+
 
   // Initial load
   useEffect(() => {
@@ -34,22 +55,64 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     if (refreshTrigger) loadConversations();
   }, [refreshTrigger]);
 
-  // Listen for WebSocket events
+  // Listen for WebSocket events — patch local state instead of refetching
   useEffect(() => {
-    const handleRefresh = () => {
-      loadConversations();
+    const handleMessageCreate = async (data: any) => {
+      const conversationId = data?.conversation_id;
+      if (!conversationId) return;
+
+      if (knownIdsRef.current.has(conversationId)) {
+        // Existing conversation — move it to the top
+        setConversations((prev) => {
+          const idx = prev.findIndex((c) => c.id === conversationId);
+          if (idx <= 0) return prev; // already first or not found
+          const next = [...prev];
+          const moved = next.splice(idx, 1)[0] as Conversation;
+          next.unshift(moved);
+          return next;
+        });
+      } else {
+        // New conversation — fetch just this one and prepend it
+        try {
+          const { conversation } = await getConversation(conversationId);
+          setConversations((prev) =>
+            prev.some((c) => c.id === conversationId) ? prev : [conversation, ...prev]
+          );
+        } catch {}
+      }
     };
-    
-    gateway.on('MESSAGE_CREATE', handleRefresh);
-    gateway.on('REACTION_ADD', handleRefresh);
-    gateway.on('CONVERSATION_UPDATE', handleRefresh);
-    gateway.on('MEMBER_LEAVE', handleRefresh);
-    
+
+    const handleConversationUpdate = (data: any) => {
+      const updated = data?.conversation as Conversation | undefined;
+      if (!updated) return;
+      setConversations((prev) =>
+        prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
+      );
+    };
+
+    const handleMemberLeave = (data: any) => {
+      const conversationId = data?.conversation_id;
+      const userId = data?.user_id || data?.member_user_id || data?.target_user_id || null;
+      if (!conversationId) return;
+      setConversations((prev) =>
+        prev
+          .filter((c) => !(c.id === conversationId && userId == null))
+          .map((c) =>
+            c.id === conversationId
+              ? { ...c, member_count: Math.max(0, (c.member_count ?? 1) - 1) }
+              : c
+          )
+      );
+    };
+
+    gateway.on('MESSAGE_CREATE', handleMessageCreate);
+    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
+    gateway.on('MEMBER_LEAVE', handleMemberLeave);
+
     return () => {
-      gateway.off('MESSAGE_CREATE', handleRefresh);
-      gateway.off('REACTION_ADD', handleRefresh);
-      gateway.off('CONVERSATION_UPDATE', handleRefresh);
-      gateway.off('MEMBER_LEAVE', handleRefresh);
+      gateway.off('MESSAGE_CREATE', handleMessageCreate);
+      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
+      gateway.off('MEMBER_LEAVE', handleMemberLeave);
     };
   }, []);
 

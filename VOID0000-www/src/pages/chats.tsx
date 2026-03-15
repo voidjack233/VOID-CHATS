@@ -52,6 +52,7 @@ const ChatDashboard = () => {
   const [chatFilter, setChatFilter] = useState<'dm' | 'group'>('dm');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(true);
   const [convRefresh, setConvRefresh] = useState(0);
+  const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [showCreateChannel, setShowCreateChannel] = useState(false);
   const [createChannelInitialCategoryId, setCreateChannelInitialCategoryId] = useState<string | null>(null);
@@ -465,6 +466,7 @@ const ChatDashboard = () => {
             filter={chatFilter}
             friends={friends}
             refreshTrigger={convRefresh}
+            bumpConversationId={lastSentConversationId}
           />
         </div>
 
@@ -555,9 +557,9 @@ const ChatDashboard = () => {
                     conversation={activeConversation}
                     encryptionKey={encryptionKey}
                     keyVersion={keyVersion}
-                    onMessageSent={(...args) => {
-                      handleMessageSent(...args);
-                      setConvRefresh((n) => n + 1);
+                    onMessageSent={(msg) => {
+                      handleMessageSent(msg);
+                      if (activeConversation?.id) setLastSentConversationId(activeConversation.id);
                     }}
                     editingMessage={editingMessage}
                     onCancelEdit={() => setEditingMessage(null)}
