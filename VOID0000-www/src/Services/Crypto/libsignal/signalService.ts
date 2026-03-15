@@ -1541,6 +1541,8 @@ class SignalService {
       iv: SIGNAL_PROTOCOL_MARKER,
       key_version: 1,
       message_type: 'signal_text',
+      protocol: 'signal',
+      protocol_version: 1,
     };
   }
 

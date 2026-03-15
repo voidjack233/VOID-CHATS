@@ -5,7 +5,8 @@
 //
 // Schema:
 //   messages: { conversation_id, message_id, sender_id, content, message_type,
-//               reply_to, is_edited, edited_at, is_deleted, created_at, reactions }
+//               reply_to, is_edited, edited_at, is_deleted, created_at, reactions,
+//               protocol, protocol_version }
 //   sync_cursors: { conversation_id, last_message_id, last_synced_at }
 //   conversations_meta: { conversation_id, encryption_key_hash, last_opened_at }
 
@@ -27,6 +28,8 @@ export interface LocalMessage {
   created_at: string;
   reactions: Record<string, string[]>;
   attachments?: string[];
+  protocol?: 'legacy_aes' | 'mls' | null;
+  protocol_version?: number | null;
 }
 
 export interface SyncCursor {

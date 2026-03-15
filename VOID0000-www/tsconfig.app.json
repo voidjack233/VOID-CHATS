@@ -17,5 +17,6 @@
     "outDir": "dist",
     "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/Services/Crypto/libsignal/**"]
 }

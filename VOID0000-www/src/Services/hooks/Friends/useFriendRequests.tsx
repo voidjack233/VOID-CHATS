@@ -3,7 +3,7 @@ import { API_URL } from '../../config';
 import { ensureCSRFToken } from '../../Auth/authServiceApi'; 
 import { useUser } from '../../Auth/UserContext'; 
 import { gateway } from '../../Gateway/gateway';
-import { signalService } from '../../Crypto/libsignal/signalService';
+import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 
 export interface FriendRequest {
   friendship_id: number;
@@ -102,8 +102,8 @@ export function FriendProvider({ children }: { children: ReactNode }) {
 
         const requesterId = data?.friendship?.requester_id;
         if (user?.id && typeof requesterId === 'string' && requesterId.length > 0) {
-          // Best-effort warmup: register local Signal device and cache peer directory.
-          void signalService.preWarmForDm(user.id, requesterId);
+          // Best-effort warmup for DM crypto bootstrap.
+          void chatCryptoProtocolService.preWarmForDm(user.id, requesterId);
         }
         return { success: true };
       }

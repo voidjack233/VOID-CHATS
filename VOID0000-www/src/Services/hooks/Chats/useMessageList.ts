@@ -1,7 +1,14 @@
 // src/Services/hooks/Chats/useMessageList.ts
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { deleteMessage, getMessageById, getMessages, Message, type Conversation } from '../../Chat/chatService';
+import {
+  deleteMessage,
+  getMessageById,
+  getMessages,
+  resolveMessageCryptoMetadata,
+  Message,
+  type Conversation,
+} from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
 import {
@@ -50,6 +57,8 @@ function toUIMessage(local: LocalMessage): Message {
     content: local.content ?? undefined,
     reactions: local.reactions || {},
     attachments: local.attachments,
+    protocol: local.protocol ?? null,
+    protocol_version: local.protocol_version ?? null,
   };
 }
 
@@ -75,20 +84,25 @@ const hasUndecryptableMessage = (messages: Array<{ content?: string | null }>) =
   messages.some((message) => isUndecryptableContent(message.content));
 
 const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
-  msgs.map((msg) => ({
-    conversation_id: msg.conversation_id,
-    message_id: msg.message_id,
-    sender_id: msg.sender_id,
-    content: msg.content ?? null,
-    message_type: msg.message_type,
-    reply_to: msg.reply_to,
-    is_edited: msg.is_edited,
-    edited_at: msg.edited_at,
-    is_deleted: msg.is_deleted,
-    created_at: msg.created_at,
-    reactions: (msg as any).reactions || {},
-    attachments: msg.attachments,
-  }));
+  msgs.map((msg) => {
+    const cryptoMetadata = resolveMessageCryptoMetadata(msg);
+    return {
+      conversation_id: msg.conversation_id,
+      message_id: msg.message_id,
+      sender_id: msg.sender_id,
+      content: msg.content ?? null,
+      message_type: msg.message_type,
+      reply_to: msg.reply_to,
+      is_edited: msg.is_edited,
+      edited_at: msg.edited_at,
+      is_deleted: msg.is_deleted,
+      created_at: msg.created_at,
+      reactions: (msg as any).reactions || {},
+      attachments: msg.attachments,
+      protocol: cryptoMetadata.protocol,
+      protocol_version: cryptoMetadata.protocol_version,
+    };
+  });
 
 const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] =>
   sortLocalMessages(
@@ -358,16 +372,19 @@ export const useMessageList = (
       return;
     }
 
+    const cryptoMetadata = resolveMessageCryptoMetadata(newMessage);
     const normalizedMessage: Message = {
       ...newMessage,
       conversation_id: normalizedConversationId,
-      message_type: newMessage.message_type || 'text',
+      message_type: newMessage.message_type || 'mls_application',
       reply_to: newMessage.reply_to ?? null,
       is_edited: Boolean(newMessage.is_edited),
       edited_at: newMessage.edited_at ?? null,
       is_deleted: Boolean(newMessage.is_deleted),
       created_at: newMessage.created_at || new Date().toISOString(),
       reactions: newMessage.reactions || {},
+      protocol: cryptoMetadata.protocol,
+      protocol_version: cryptoMetadata.protocol_version,
       local_status: localStatus,
       local_client_id: localClientId,
     };
@@ -387,6 +404,8 @@ export const useMessageList = (
         created_at: normalizedMessage.created_at,
         reactions: {},
         attachments: normalizedMessage.attachments,
+        protocol: normalizedMessage.protocol ?? null,
+        protocol_version: normalizedMessage.protocol_version ?? null,
       };
 
       messageSync.storeIncomingMessage(localMsg).catch(console.error);

@@ -26,6 +26,7 @@ interface UseMessageInputProps {
 
 const MAX_ATTACHMENTS = 5;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MLS_MESSAGE_TYPE = 'mls_application';
 
 export const useMessageInput = ({
   currentUserId,
@@ -249,7 +250,9 @@ export const useMessageInput = ({
           encrypted_content: null,
           iv: null,
           key_version: keyVersion,
-          message_type: 'text',
+          message_type: MLS_MESSAGE_TYPE,
+          protocol: 'mls',
+          protocol_version: 1,
           reply_to: replyTo?.message_id || null,
           attachments: uploadedUrls,
           is_edited: false,
@@ -281,11 +284,6 @@ export const useMessageInput = ({
           keyVersion,
           {
             messageType: editingMessage.message_type || null,
-            signal: {
-              userId: currentUserId,
-              peerUserId: conversation.type === 'dm' ? conversation.dm_user_id : undefined,
-            },
-            requireSignal: conversation.type === 'dm',
           }
         );
         onEditComplete?.(editingMessage.message_id, trimmed);
@@ -293,13 +291,9 @@ export const useMessageInput = ({
       } else if (trimmed) {
         const msg = await sendMessage(conversation.id, trimmed, encryptionKey!, {
           key_version: keyVersion,
+          message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
           attachments: uploadedUrls,
-          signal: {
-            userId: currentUserId,
-            peerUserId: conversation.type === 'dm' ? conversation.dm_user_id : undefined,
-          },
-          requireSignalForText: conversation.type === 'dm',
         });
         onMessageSent(localClientId ? {
           ...msg,
@@ -313,6 +307,7 @@ export const useMessageInput = ({
       } else if (uploadedUrls.length > 0) {
         const msg = await sendImageOnlyMessage(conversation.id, uploadedUrls, {
           key_version: keyVersion,
+          message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
         });
         onMessageSent(localClientId ? {
@@ -340,14 +335,6 @@ export const useMessageInput = ({
       if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
         setSlowmodeRemaining(err.retry_after_seconds);
         setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
-      } else if (
-        err?.code === 'SIGNAL_LOCKED_SEND_BLOCKED' &&
-        typeof err?.message === 'string' &&
-        err.message.includes('Peer has no active Signal devices')
-      ) {
-        setSendError('Recipient has not finished secure messaging setup yet. Ask them to open the app once, then retry.');
-      } else if (err?.code === 'SIGNAL_LOCKED_SEND_BLOCKED') {
-        setSendError('Signal locked mode is enabled, but this DM is not ready yet. Please retry in a moment.');
       } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
         setSendError('Encryption keys changed. Please close and reopen this conversation, then try again.');
       } else {

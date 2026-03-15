@@ -162,4 +162,6 @@ export interface SignalPreparedConversationMessage {
   iv: string;
   key_version: number;
   message_type: string;
+  protocol?: 'signal';
+  protocol_version?: number;
 }

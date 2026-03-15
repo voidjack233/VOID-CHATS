@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Conversation, Message, getEncryptionKey, getOrCreateDM, ensureGroupKeyDistribution, ownerSelfHealGroupKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
-import { signalService } from '../../Crypto/libsignal/signalService';
+import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 import { messageStore } from '../../Chat/chatStore';
 
@@ -532,11 +532,10 @@ export const useChatManager = (user: any) => {
         setEncryptionKey(key);
         setKeyVersion(version);
 
-        // Pre-warm Signal bootstrap for DM conversations so that the
-        // first send doesn't incur the cost of device registration,
-        // capability checks, and peer device lookups.
+        // Pre-warm DM crypto bootstrap so that first send doesn't
+        // incur setup and capability-check latency.
         if (activeConversation.type === 'dm' && peerId) {
-          void signalService.preWarmForDm(user.id, peerId);
+          void chatCryptoProtocolService.preWarmForDm(user.id, peerId);
         }
 
         // Owner auto-redistribution: re-wrap the current group key for
@@ -686,11 +685,10 @@ export const useChatManager = (user: any) => {
     return key;
   };
 
-  // --- DM decrypt path (Signal-only) ---
-  // For DMs we never fall back to legacy AES decryption. This avoids
-  // mixed-mode loops and keeps the migration strictly libsignal.
-  const trySignalDecrypt = async (data: any): Promise<string | null> => {
-    if (activeConversation?.type !== 'dm' || !user?.id) {
+  // --- DM decrypt path ---
+  // DMs use MLS-tagged payloads encrypted with the conversation key.
+  const tryDmDecrypt = async (data: any, key: CryptoKey): Promise<string | null> => {
+    if (activeConversation?.type !== 'dm') {
       return null;
     }
 
@@ -702,36 +700,30 @@ export const useChatManager = (user: any) => {
       return data.content || '[encrypted]';
     }
 
-    if (!signalService.isSignalMessageType(data.message_type)) {
-      return '[legacy message unavailable]';
+    if (!data.iv) {
+      return '[encrypted]';
     }
 
     try {
-      return await signalService.decryptDmConversationMessage({
-        userId: user.id,
-        message: {
-          encrypted_content: data.encrypted_content,
-          message_type: data.message_type,
-        },
-      });
+      return await decryptMessage(data.encrypted_content, data.iv, key);
     } catch (err) {
-      console.warn('Signal DM decryption failed:', err);
+      console.warn('DM decryption failed:', err);
       return '[unable to decrypt]';
     }
   };
 
   // --- THE AUTO-HEALER FUNCTION ---
   // If decryption fails, it wipes the cache and forces a re-fetch.
-  // DM signal messages are handled separately to avoid triggering the
+  // DM messages are handled separately to avoid triggering the
   // healer for problems it cannot fix.
   const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
     // --- DM fast-path: never triggers the healer ---
-    const signalContent = await trySignalDecrypt(data);
-    if (signalContent !== null) {
+    const dmContent = await tryDmDecrypt(data, key);
+    if (dmContent !== null) {
       if (isUpdate) {
-        setMessageUpdate({ message_id: data.message_id, content: signalContent, is_edited: true, edited_at: data.edited_at });
+        setMessageUpdate({ message_id: data.message_id, content: dmContent, is_edited: true, edited_at: data.edited_at });
       } else {
-        setNewMessage({ ...data, content: signalContent });
+        setNewMessage({ ...data, content: dmContent });
       }
       return;
     }

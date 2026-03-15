@@ -1,11 +1,13 @@
 // src/Services/Chat/chatService.ts
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
-import { encryptMessage, decryptMessages } from '../Crypto/messageEncryption';
-import { signalService } from '../Crypto/libsignal/signalService';
+import { encryptMessage, decryptMessage, decryptMessages } from '../Crypto/messageEncryption';
+import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 
 const API_PREFIX = '/api/conversations';
 const KEY_ROTATION_ENABLED = true;
+const DEFAULT_MLS_MESSAGE_TYPE = 'mls_application';
+const MLS_ROLLOUT_DATE_MS = Date.parse('2026-03-15T00:00:00.000Z');
 
 // ============== Types ==============
 
@@ -57,6 +59,8 @@ export function parseAttachments(raws?: string[]): Attachment[] {
   return (raws || []).map(parseAttachment);
 }
 
+export type MessageCryptoProtocol = 'legacy_aes' | 'mls';
+
 export interface Message {
   conversation_id: string;
   conversation_public_id?: string | null;
@@ -74,6 +78,8 @@ export interface Message {
   created_at: string;
   content?: string;
   reactions?: ReactionMap;
+  protocol?: MessageCryptoProtocol | null;
+  protocol_version?: number | null;
   local_status?: 'sending' | 'sent' | 'failed';
   local_client_id?: string;
 }
@@ -175,12 +181,6 @@ function createApiError(data: any): Error & Record<string, any> {
   return error;
 }
 
-function createSignalLockedSendError(message: string): Error & { code: string } {
-  const error = new Error(message) as Error & { code: string };
-  error.code = 'SIGNAL_LOCKED_SEND_BLOCKED';
-  return error;
-}
-
 function normalizeKeyVersion(value: unknown, fallback = 1): number {
   if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
     return value;
@@ -200,6 +200,90 @@ function ensureKeyRotationEnabled() {
   if (!KEY_ROTATION_ENABLED) {
     throw new Error('Membership updates are temporarily paused while encrypted key delivery is stabilized.');
   }
+}
+
+function normalizeMessageProtocol(value: unknown): MessageCryptoProtocol | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'mls') return 'mls';
+  if (normalized === 'legacy_aes' || normalized === 'legacy' || normalized === 'aes' || normalized === 'aes_gcm') {
+    return 'legacy_aes';
+  }
+  return null;
+}
+
+function normalizeProtocolVersion(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function inferMessageProtocol(
+  messageType: string | null | undefined,
+  createdAt?: string | null
+): MessageCryptoProtocol | null {
+  const normalizedType = typeof messageType === 'string'
+    ? messageType.trim().toLowerCase()
+    : '';
+
+  if (normalizedType === 'mls_application') {
+    return 'mls';
+  }
+
+  if (chatCryptoProtocolService.isDmMessageType(messageType)) {
+    return 'mls';
+  }
+
+  // Keep explicit historical message types on legacy classification.
+  if (normalizedType === 'signal_text') {
+    return 'legacy_aes';
+  }
+
+  // Only classify "text" as legacy when it predates MLS rollout.
+  if (normalizedType === 'text' && createdAt) {
+    const createdAtMs = Date.parse(createdAt);
+    if (Number.isFinite(createdAtMs) && createdAtMs < MLS_ROLLOUT_DATE_MS) {
+      return 'legacy_aes';
+    }
+  }
+
+  // MLS is now the default protocol for all other message types.
+  return 'mls';
+}
+
+export function resolveMessageCryptoMetadata(message: {
+  message_type?: string | null;
+  created_at?: string | null;
+  iv?: string | null;
+  protocol?: unknown;
+  protocol_version?: unknown;
+}): { protocol: MessageCryptoProtocol | null; protocol_version: number | null } {
+  const explicitProtocol = normalizeMessageProtocol(message.protocol);
+  const protocol = explicitProtocol || inferMessageProtocol(message.message_type, message.created_at);
+  const explicitVersion = normalizeProtocolVersion(message.protocol_version);
+
+  if (explicitVersion != null) {
+    return { protocol, protocol_version: explicitVersion };
+  }
+
+  if (protocol === 'mls') {
+    return { protocol, protocol_version: chatCryptoProtocolService.protocolVersion };
+  }
+
+  if (protocol === 'legacy_aes') {
+    return { protocol, protocol_version: 1 };
+  }
+
+  return { protocol, protocol_version: null };
 }
 
 type VersionedDecryptableMessage = {
@@ -241,14 +325,12 @@ function createMessageKeyResolver(
   };
 }
 
-function canUseSignalDm(context?: MessageDecryptionContext): context is MessageDecryptionContext & {
+function canUseDmConversation(context?: MessageDecryptionContext): context is MessageDecryptionContext & {
   conversation: Conversation;
-  userId: string;
 } {
   return Boolean(
     context?.conversation &&
-    context.conversation.type === 'dm' &&
-    context.userId
+    context.conversation.type === 'dm'
   );
 }
 
@@ -392,7 +474,7 @@ export async function addMembers(
   return data;
 }
 
-async function distributeGroupSenderKeyWithSignal(
+async function distributeGroupSenderKeyWithProtocol(
   conversation: Conversation,
   currentUserId: string,
   participantIds: string[],
@@ -400,7 +482,7 @@ async function distributeGroupSenderKeyWithSignal(
   roomKey: CryptoKey
 ): Promise<void> {
   const uniqueParticipants = [...new Set([...participantIds, currentUserId].filter(Boolean))];
-  await signalService.distributeGroupSenderKey({
+  await chatCryptoProtocolService.distributeGroupKey({
     userId: currentUserId,
     conversation,
     memberUserIds: uniqueParticipants,
@@ -431,7 +513,7 @@ export async function ownerSelfHealGroupKey(
   );
 
   const allParticipants = [...new Set([...memberIds, currentUserId])];
-  await distributeGroupSenderKeyWithSignal(
+  await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId },
     currentUserId,
     allParticipants,
@@ -445,8 +527,8 @@ export async function ownerSelfHealGroupKey(
 
 /**
  * Called in the background after the owner's handshake succeeds.
- * Re-distributes the current sender key to member devices via Signal
- * envelopes so lagging devices can catch up.
+ * Re-distributes the current sender key to member devices via the
+ * active crypto protocol so lagging devices can catch up.
  */
 export async function ensureGroupKeyDistribution(
   conversation: Conversation,
@@ -464,7 +546,7 @@ export async function ensureGroupKeyDistribution(
   const allParticipants = [...new Set(memberIds)];
   if (allParticipants.length === 0) return;
 
-  await distributeGroupSenderKeyWithSignal(
+  await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId },
     currentUserId,
     allParticipants,
@@ -507,7 +589,7 @@ export async function rotateAddMembers(
   const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
   await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
-  await distributeGroupSenderKeyWithSignal(
+  await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
     currentUserId,
     finalMemberIds,
@@ -561,7 +643,7 @@ export async function rotateRemoveMember(
     await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
   }
 
-  await distributeGroupSenderKeyWithSignal(
+  await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
     currentUserId,
     survivors,
@@ -600,7 +682,7 @@ export async function approveConversationJoinRequest(
   const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
   await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, roomKey);
-  await distributeGroupSenderKeyWithSignal(
+  await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
     currentUserId,
     finalMemberIds,
@@ -742,39 +824,13 @@ export async function sendMessage(
     key_version?: number;
     attachments?: string[];
     message_type?: string;
-    signal?: {
-      userId?: string;
-      peerUserId?: string;
-    };
-    requireSignalForText?: boolean;
   }
 ): Promise<Message> {
   let { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
   let keyVersion = options?.key_version || 1;
-  let messageType = options?.message_type || 'text';
-
-  const shouldUseSignalForText = messageType === 'text' && (
-    options?.requireSignalForText ||
-    (options?.signal?.userId && options?.signal?.peerUserId)
-  );
-
-  if (shouldUseSignalForText) {
-    if (!options?.signal?.userId || !options?.signal?.peerUserId) {
-      throw createSignalLockedSendError('Signal context is required for DM text messages');
-    }
-
-    const signalPayload = await signalService.prepareDmConversationMessage({
-      userId: options.signal.userId,
-      peerUserId: options.signal.peerUserId,
-      plaintext,
-      mode: 'signal_locked',
-    });
-
-    encrypted_content = signalPayload.encrypted_content;
-    iv = signalPayload.iv;
-    keyVersion = signalPayload.key_version;
-    messageType = signalPayload.message_type;
-  }
+  let messageType = options?.message_type || DEFAULT_MLS_MESSAGE_TYPE;
+  const protocol: MessageCryptoProtocol = 'mls';
+  const protocolVersion: number = chatCryptoProtocolService.protocolVersion;
 
   const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages`, {
     method: 'POST',
@@ -783,6 +839,8 @@ export async function sendMessage(
       iv,
       key_version: keyVersion,
       message_type: messageType,
+      ...(protocol ? { protocol } : {}),
+      ...(protocolVersion ? { protocol_version: protocolVersion } : {}),
       reply_to: options?.reply_to || null,
       attachments: options?.attachments || [],
     }),
@@ -791,19 +849,39 @@ export async function sendMessage(
   const data = await res.json();
   if (!data.success) throw createApiError(data);
 
-  return { ...data.message, content: plaintext };
+  const cryptoMetadata = resolveMessageCryptoMetadata({
+    ...data.message,
+    message_type: messageType,
+    iv,
+    protocol,
+    protocol_version: protocolVersion,
+  });
+
+  return {
+    ...data.message,
+    content: plaintext,
+    protocol: cryptoMetadata.protocol,
+    protocol_version: cryptoMetadata.protocol_version,
+  };
 }
 
 export async function sendImageOnlyMessage(
   conversationId: string,
   attachments: string[],
-  options?: { reply_to?: string; key_version?: number }
+  options?: { reply_to?: string; key_version?: number; message_type?: string }
 ): Promise<Message> {
+  const messageType = options?.message_type || DEFAULT_MLS_MESSAGE_TYPE;
+  const protocol: MessageCryptoProtocol = 'mls';
+  const protocolVersion: number = chatCryptoProtocolService.protocolVersion;
+
   const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages`, {
     method: 'POST',
     body: JSON.stringify({
       attachments,
       key_version: options?.key_version || 1,
+      message_type: messageType,
+      protocol,
+      protocol_version: protocolVersion,
       reply_to: options?.reply_to || null,
     }),
   });
@@ -811,7 +889,18 @@ export async function sendImageOnlyMessage(
   const data = await res.json();
   if (!data.success) throw createApiError(data);
 
-  return { ...data.message, attachments };
+  const cryptoMetadata = resolveMessageCryptoMetadata({
+    ...data.message,
+    message_type: messageType,
+    protocol,
+    protocol_version: protocolVersion,
+  });
+  return {
+    ...data.message,
+    attachments,
+    protocol: cryptoMetadata.protocol,
+    protocol_version: cryptoMetadata.protocol_version,
+  };
 }
 
 export async function sendTypingStart(
@@ -858,11 +947,17 @@ export async function getMessages(
   if (!data.success) throw new Error(data.error);
 
   const keyResolver = createMessageKeyResolver(encryptionKey, options);
-  const sourceMessages = (data.messages || []) as Message[];
+  const sourceMessages = ((data.messages || []) as Message[]).map((message) => {
+    const cryptoMetadata = resolveMessageCryptoMetadata(message);
+    return {
+      ...message,
+      protocol: cryptoMetadata.protocol,
+      protocol_version: cryptoMetadata.protocol_version,
+    };
+  });
   const decryptedByIndex: Array<Record<string, any> | null> = new Array(sourceMessages.length).fill(null);
 
-  if (canUseSignalDm(options)) {
-    const signalUserId = options.userId;
+  if (canUseDmConversation(options)) {
     await Promise.all(sourceMessages.map(async (message, index) => {
       if (message.is_deleted || !message.encrypted_content) {
         decryptedByIndex[index] = {
@@ -872,19 +967,16 @@ export async function getMessages(
         return;
       }
 
-      if (!signalService.isSignalMessageType(message.message_type)) {
+      if (!message.iv) {
         decryptedByIndex[index] = {
           ...message,
-          content: '[legacy message unavailable]',
+          content: '[encrypted]',
         };
         return;
       }
 
       try {
-        const content = await signalService.decryptDmConversationMessage({
-          userId: signalUserId,
-          message,
-        });
+        const content = await decryptMessage(message.encrypted_content, message.iv, encryptionKey);
 
         decryptedByIndex[index] = {
           ...message,
@@ -920,34 +1012,12 @@ export async function editMessage(
   keyVersion?: number,
   options?: {
     messageType?: string | null;
-    signal?: {
-      userId?: string;
-      peerUserId?: string;
-    };
-    requireSignal?: boolean;
   }
 ): Promise<void> {
   let { encrypted_content, iv } = await encryptMessage(newPlaintext, encryptionKey);
-  let payloadMessageType: string | null = options?.messageType || null;
-
-  const shouldUseSignal = options?.requireSignal || signalService.isSignalMessageType(payloadMessageType);
-
-  if (shouldUseSignal) {
-    if (!options?.signal?.userId || !options?.signal?.peerUserId) {
-      throw createSignalLockedSendError('Signal context is required for DM edits');
-    }
-
-    const signalPayload = await signalService.prepareDmConversationMessage({
-      userId: options.signal.userId,
-      peerUserId: options.signal.peerUserId,
-      plaintext: newPlaintext,
-      mode: 'signal_locked',
-    });
-
-    encrypted_content = signalPayload.encrypted_content;
-    iv = signalPayload.iv;
-    payloadMessageType = signalPayload.message_type;
-  }
+  let payloadMessageType: string = options?.messageType || DEFAULT_MLS_MESSAGE_TYPE;
+  const protocol: MessageCryptoProtocol = 'mls';
+  const protocolVersion: number = chatCryptoProtocolService.protocolVersion;
 
   const res = await fetchWithAuth(
     `${API_PREFIX}/${conversationId}/messages/${messageId}`,
@@ -957,7 +1027,9 @@ export async function editMessage(
         encrypted_content,
         iv,
         key_version: keyVersion || 1,
-        ...(payloadMessageType ? { message_type: payloadMessageType } : {}),
+        message_type: payloadMessageType,
+        protocol,
+        protocol_version: protocolVersion,
       }),
     }
   );
@@ -1055,9 +1127,9 @@ export async function createSecureGroup(
   // 3. Save your own copy to IndexedDB
   await keyManager.storeGroupKey(conversation.id, 1, roomKey);
 
-  // 4. Distribute the sender key to member devices via Signal envelopes.
+  // 4. Distribute the sender key to member devices via the active protocol.
   const allParticipants = [...new Set([...memberIds, currentUserId])];
-  await distributeGroupSenderKeyWithSignal(
+  await distributeGroupSenderKeyWithProtocol(
     { ...conversation, current_key_version: 1 },
     currentUserId,
     allParticipants,
@@ -1105,9 +1177,9 @@ export async function getEncryptionKey(
     return { key: cachedGroupKey, version: targetVersion };
   }
 
-  // Signal sender keys arrive asynchronously via device inbox fanout.
+  // Protocol inbox updates may arrive asynchronously via fanout.
   // Force one sync attempt before failing key resolution.
-  await signalService.syncDeviceInbox(userId);
+  await chatCryptoProtocolService.syncInbox(userId);
 
   const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (syncedGroupKey) {
@@ -1165,42 +1237,49 @@ export async function getMessageById(
     );
     const data = await res.json();
     if (!data.success || !data.message) return null;
+    const cryptoMetadata = resolveMessageCryptoMetadata(data.message);
+    const normalizedMessage: Message = {
+      ...data.message,
+      protocol: cryptoMetadata.protocol,
+      protocol_version: cryptoMetadata.protocol_version,
+    };
 
-    if (canUseSignalDm(options)) {
-      if (data.message.is_deleted || !data.message.encrypted_content) {
+    if (canUseDmConversation(options)) {
+      if (normalizedMessage.is_deleted || !normalizedMessage.encrypted_content) {
         return {
-          ...data.message,
-          content: data.message.is_deleted ? '[deleted]' : (data.message.content ?? '[encrypted]'),
+          ...normalizedMessage,
+          content: normalizedMessage.is_deleted ? '[deleted]' : (normalizedMessage.content ?? '[encrypted]'),
         } as Message;
       }
 
-      if (!signalService.isSignalMessageType(data.message.message_type)) {
+      if (!normalizedMessage.iv) {
         return {
-          ...data.message,
-          content: '[legacy message unavailable]',
+          ...normalizedMessage,
+          content: '[encrypted]',
         } as Message;
       }
 
       try {
-        const content = await signalService.decryptDmConversationMessage({
-          userId: options.userId,
-          message: data.message,
-        });
+        const content = await decryptMessage(normalizedMessage.encrypted_content, normalizedMessage.iv, encryptionKey);
         return {
-          ...data.message,
+          ...normalizedMessage,
           content,
         } as Message;
       } catch {
         return {
-          ...data.message,
+          ...normalizedMessage,
           content: '[unable to decrypt]',
         } as Message;
       }
     }
 
     const keyResolver = createMessageKeyResolver(encryptionKey, options);
-    const [decrypted] = await decryptMessages([data.message], keyResolver || encryptionKey);
-    return decrypted as Message;
+    const [decrypted] = await decryptMessages([normalizedMessage], keyResolver || encryptionKey);
+    return {
+      ...(decrypted as Message),
+      protocol: cryptoMetadata.protocol,
+      protocol_version: cryptoMetadata.protocol_version,
+    } as Message;
   } catch (err) {
     console.error('Failed to fetch single message:', err);
     return null;

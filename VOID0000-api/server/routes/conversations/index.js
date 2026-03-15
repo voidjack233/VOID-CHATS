@@ -21,6 +21,7 @@ import reactionsRouter from './reactions.js';
 import batchReactionsRouter from './batchReactions.js';
 import keysRouter from './keys.js';
 import signalRouter from './signal.js';
+import mlsRouter from './mls.js';
 import attachmentsRouter from './attachments.js';
 import categoriesRouter from './categories.js';
 import invitesRouter from './invites.js';
@@ -47,6 +48,7 @@ const ICON_MAGIC_BYTES = {
 
 router.use('/dm', authenticateUser, dmRouter);
 router.use('/signal', authenticateUser, signalRouter);
+router.use('/mls', authenticateUser, mlsRouter);
 router.use('/invite-links', inviteLinksRouter);
 router.use('/:conversationId/invites', authenticateUser, invitesRouter);
 router.use('/:conversationId/members', authenticateUser, membersRouter);

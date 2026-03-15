@@ -7,7 +7,11 @@
 // - handleEdit / handleDelete: apply mutations to the local store
 
 import { messageStore, LocalMessage } from './chatStore';
-import { getMessages, type MessageDecryptionContext } from './chatService';
+import {
+  getMessages,
+  resolveMessageCryptoMetadata,
+  type MessageDecryptionContext,
+} from './chatService';
 import { MESSAGE_PAGE_SIZE } from './chatConstants';
 
 interface SyncResult {
@@ -111,24 +115,29 @@ class MessageSync {
         return { newMessages: [], hasMore };
       }
 
-      const localMsgs: LocalMessage[] = serverMsgs.map((msg) => ({
-        conversation_id: msg.conversation_id,
-        message_id: msg.message_id,
-        sender_id: msg.sender_id,
-        content: msg.content ?? null,
-        message_type: msg.message_type,
-        reply_to: msg.reply_to,
-        is_edited: msg.is_edited,
-        edited_at: msg.edited_at,
-        is_deleted: msg.is_deleted,
-        created_at: msg.created_at,
-        reactions: (msg as any).reactions || {},
-        attachments: msg.attachments,
-      }));
+      const localMsgs: LocalMessage[] = serverMsgs.map((msg) => {
+        const cryptoMetadata = resolveMessageCryptoMetadata(msg);
+        return {
+          conversation_id: msg.conversation_id,
+          message_id: msg.message_id,
+          sender_id: msg.sender_id,
+          content: msg.content ?? null,
+          message_type: msg.message_type,
+          reply_to: msg.reply_to,
+          is_edited: msg.is_edited,
+          edited_at: msg.edited_at,
+          is_deleted: msg.is_deleted,
+          created_at: msg.created_at,
+          reactions: (msg as any).reactions || {},
+          attachments: msg.attachments,
+          protocol: cryptoMetadata.protocol,
+          protocol_version: cryptoMetadata.protocol_version,
+        };
+      });
 
       // Protect locally-cached plaintext from being overwritten by failed re-decryptions.
-      // Signal Protocol messages can only be decrypted once (ratchet advances), so re-fetching
-      // from the server after a hard refresh will fail decryption for already-seen messages.
+      // During protocol transitions, old payloads may no longer decrypt after a reload.
+      // Preserve locally-readable plaintext when a freshly fetched message yields placeholders.
       const PLACEHOLDER_CONTENTS = new Set([
         '[unable to decrypt]',
         '[legacy message unavailable]',

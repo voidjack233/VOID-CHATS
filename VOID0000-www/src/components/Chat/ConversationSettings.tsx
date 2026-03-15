@@ -267,9 +267,9 @@ const ConversationSettings = ({
     );
   }, [conversation.type, conversation.dm_user_id, currentUserId, memberList]);
   const dmModeMeta = {
-    value: 'signal_locked',
-    label: 'Signal Locked',
-    description: 'Signal-only mode is enforced for DMs during migration.',
+    value: 'mls',
+    label: 'MLS',
+    description: 'MLS mode is enforced for DMs.',
   };
   const dmModeBadgeClassName = 'bg-amber-500/15 text-amber-300 ring-amber-500/30';
 
@@ -749,7 +749,7 @@ const ConversationSettings = ({
               </div>
 
               <div className="rounded-lg border border-void-bg-hover bg-void-bg-sec px-3 py-2 text-sm text-void-text">
-                Message Security: Signal Locked
+                Message Security: MLS
               </div>
               {!dmPeerUserId && (
                 <p className="text-xs text-rose-300">Unable to resolve DM peer identity for this thread.</p>
@@ -757,7 +757,7 @@ const ConversationSettings = ({
             </div>
 
             <p className="text-xs leading-relaxed text-void-text-muted">
-              DM encryption is now Signal-only. Messages will send only when peer device sessions are fully ready.
+              DMs are now routed through the MLS protocol layer.
             </p>
           </div>
         </div>
