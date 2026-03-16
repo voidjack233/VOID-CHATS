@@ -82,14 +82,33 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
       }
     };
 
-    const handleConversationUpdate = (data: any) => {
+    const handleConversationUpdate = async (data: any) => {
       const updated = data?.conversation as Conversation | undefined;
       if (!updated) return;
-      setConversations((prev) => {
-        const exists = prev.some((c) => c.id === updated.id);
-        if (!exists) return [updated, ...prev];
-        return prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c));
-      });
+
+      const alreadyKnown = knownIdsRef.current.has(updated.id);
+
+      if (alreadyKnown) {
+        // Existing conversation — merge the partial update in place
+        setConversations((prev) =>
+          prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
+        );
+      } else {
+        // New conversation (e.g. just approved into a group).
+        // The broadcast payload is partial (no name/icon), so fetch the
+        // full conversation before adding it to the list.
+        try {
+          const { conversation } = await getConversation(updated.public_id || updated.id);
+          setConversations((prev) =>
+            prev.some((c) => c.id === conversation.id) ? prev : [conversation, ...prev]
+          );
+        } catch {
+          // Fallback: use the partial payload so the entry at least appears
+          setConversations((prev) =>
+            prev.some((c) => c.id === updated.id) ? prev : [updated, ...prev]
+          );
+        }
+      }
     };
 
     const handleMemberLeave = (data: any) => {
