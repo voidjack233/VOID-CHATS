@@ -99,8 +99,14 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         // full conversation before adding it to the list.
         try {
           const { conversation } = await getConversation(updated.public_id || updated.id);
+          // The single-conversation endpoint doesn't compute member_count;
+          // derive it from the members array when it's missing or zero.
+          const hydrated: Conversation = {
+            ...conversation,
+            member_count: conversation.member_count || (conversation as any).members?.length || updated.member_count || 0,
+          };
           setConversations((prev) =>
-            prev.some((c) => c.id === conversation.id) ? prev : [conversation, ...prev]
+            prev.some((c) => c.id === hydrated.id) ? prev : [hydrated, ...prev]
           );
         } catch {
           // Fallback: use the partial payload so the entry at least appears

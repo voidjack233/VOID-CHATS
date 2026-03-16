@@ -461,6 +461,7 @@ router.get('/:conversationId', authenticateUser, async (req, res) => {
 
     const result = await pool.query(
       `SELECT c.*, parent.public_id AS parent_public_id,
+              (SELECT COUNT(*) FROM conversation_members WHERE conversation_id = c.id) AS member_count,
               json_agg(json_build_object(
                 'user_id', cm.user_id,
                 'role', cm.role,
