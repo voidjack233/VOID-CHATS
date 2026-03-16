@@ -1107,8 +1107,8 @@ export async function getEncryptionKey(
   }
 
   // Protocol inbox updates may arrive asynchronously via fanout.
-  // Force one sync attempt before failing key resolution.
-  await chatCryptoProtocolService.syncInbox(userId);
+  // Force one sync attempt (bypass cooldown) before failing key resolution.
+  await chatCryptoProtocolService.syncInbox(userId, true);
 
   const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (syncedGroupKey) {

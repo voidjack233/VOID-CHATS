@@ -159,7 +159,7 @@ async function deriveGroupAesKey(
   );
   const key = await crypto.subtle.importKey(
     'raw',
-    keyBytes,
+    keyBytes.buffer as ArrayBuffer,
     { name: 'AES-GCM', length: 256 },
     true,
     ['encrypt', 'decrypt']
@@ -382,11 +382,12 @@ class MlsService {
 
     const existingState = await loadGroupState(conversationId);
 
-    // Only the group creator (or first member) should create a new MLS group.
-    // Non-owners who don't yet have group state must wait for a welcome.
-    if (!existingState && input.conversation.owner_id !== input.userId) {
-      throw new Error('MLS group state not available — waiting for welcome');
-    }
+    // When no local MLS state exists, any conversation member may bootstrap
+    // a fresh group.  This covers:
+    //  • DMs where owner_id is null (either participant can initiate)
+    //  • New-device logins where the member has no local state
+    // The freshly-created group sends welcomes to all other members so they
+    // converge on the new epoch automatically via syncInbox.
 
     let newState: ClientState;
     let welcomePayload: string | null = null;
@@ -463,6 +464,7 @@ class MlsService {
       if (toAdd.length === 0 && toRemove.length === 0) {
         const result = await deriveGroupAesKey(existingState, conversationId, impl);
         await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+        window.dispatchEvent(new Event('void:group-key-changed'));
         return result;
       }
 
@@ -518,6 +520,7 @@ class MlsService {
     // IndexedDB during their retry window instead of falling into ownerSelfHeal.
     const result = await deriveGroupAesKey(newState, conversationId, impl);
     await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+    window.dispatchEvent(new Event('void:group-key-changed'));
 
     // ── Send welcome messages to new members ──────────────────────────────────
     if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
@@ -545,19 +548,19 @@ class MlsService {
     return result;
   }
 
-  async syncInbox(userId: string): Promise<MlsInboxSyncResult> {
+  async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
     // Deduplicate: if a sync is already in-flight for this user, reuse it.
     const inflight = this.syncInboxPromises.get(userId);
     if (inflight) return inflight;
 
-    const promise = this._syncInboxWork(userId).finally(() => {
+    const promise = this._syncInboxWork(userId, force).finally(() => {
       this.syncInboxPromises.delete(userId);
     });
     this.syncInboxPromises.set(userId, promise);
     return promise;
   }
 
-  private async _syncInboxWork(userId: string): Promise<MlsInboxSyncResult> {
+  private async _syncInboxWork(userId: string, force = false): Promise<MlsInboxSyncResult> {
     const capabilities = await this.getServerCapabilities();
     if (!capabilities.supported) {
       return {
@@ -581,7 +584,7 @@ class MlsService {
     const publishedKeyPackages = 0;
 
     // Short-circuit the heavy server sync if we synced recently.
-    if (account.lastSyncedAt) {
+    if (!force && account.lastSyncedAt) {
       const elapsed = Date.now() - Date.parse(account.lastSyncedAt);
       if (elapsed < SYNC_COOLDOWN_MS) {
         return {
@@ -697,6 +700,7 @@ class MlsService {
         if (result.keyVersion !== 1) {
           await keyManager.storeGroupKey(conversationId, 1, result.key);
         }
+        window.dispatchEvent(new Event('void:group-key-changed'));
         await mlsStore.markKeyPackageConsumed(userId, kpRecord.packageRef);
         return true;
       } catch {
@@ -737,6 +741,7 @@ class MlsService {
     await saveGroupState(commit.conversationId, newState);
     const keyResult = await deriveGroupAesKey(newState, commit.conversationId, impl);
     await keyManager.storeGroupKey(commit.conversationId, keyResult.keyVersion, keyResult.key);
+    window.dispatchEvent(new Event('void:group-key-changed'));
     await mlsStore.markCommitApplied(commit.conversationId, commit.commitRef);
 
     return true;

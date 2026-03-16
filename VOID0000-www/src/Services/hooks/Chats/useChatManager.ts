@@ -590,13 +590,13 @@ export const useChatManager = (user: any) => {
             }
           }
 
-          // Owner self-heal: generate a fresh room key and redistribute
-          // to all members so this device can immediately start working.
+          // Member self-heal: any member (owner or not) who lacks local MLS
+          // state can create a fresh group and redistribute keys to everyone.
+          // This handles new-device logins where IndexedDB is empty.
           const ownerConversation = activeGroup || activeConversation;
           if (
             ownerConversation &&
             ownerConversation.type !== 'dm' &&
-            ownerConversation.owner_id === user.id &&
             resolvedMemberIds.length > 0
           ) {
             try {
@@ -616,33 +616,8 @@ export const useChatManager = (user: any) => {
               }
               return;
             } catch (healErr) {
-              console.error('Owner key self-heal failed:', healErr);
+              console.error('Member key self-heal failed:', healErr);
             }
-          }
-
-          // Non-owner group member: bootstrap our key packages so the owner
-          // can add us to the MLS group on their next distribution pass, then
-          // schedule an automatic retry (up to 6 attempts ≈ 30s).
-          if (
-            ownerConversation &&
-            ownerConversation.type !== 'dm' &&
-            ownerConversation.owner_id !== user.id &&
-            groupKeyRetryCount.current < 6
-          ) {
-            groupKeyRetryCount.current += 1;
-            void chatCryptoProtocolService.bootstrapAccount(user.id);
-            if (!ignore) {
-              setEncryptionError(null);
-              // Auto-retry after a short delay — the owner's
-              // ensureGroupKeyDistribution will create a welcome for us
-              // once our key packages are available.
-              setTimeout(() => {
-                if (!ignore) {
-                  setHandshakeRetryToken((t) => t + 1);
-                }
-              }, 5000);
-            }
-            return;
           }
 
           setEncryptionError(

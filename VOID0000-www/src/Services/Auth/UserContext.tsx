@@ -58,6 +58,22 @@ async function restoreMlsStateFromBackup(
   }
 }
 
+let backupTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleGroupKeyBackup(userId: string, password: string): void {
+  if (backupTimer) clearTimeout(backupTimer);
+  backupTimer = setTimeout(async () => {
+    backupTimer = null;
+    try {
+      const keyBackup = await keyManager.prepareBackup(userId, password);
+      const mlsFields = await buildMlsBackupFields(userId, password);
+      await backupKeyToServer({ ...keyBackup, ...mlsFields });
+    } catch {
+      // Non-critical — backup will retry on next key change
+    }
+  }, 5000);
+}
+
 export interface User {
   id: string;
   email: string;
@@ -356,11 +372,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
         const keyBackup = await keyManager.prepareBackup(userId, password);
         const mlsFields = await buildMlsBackupFields(userId, password);
         await backupKeyToServer({ ...keyBackup, ...mlsFields });
-        console.log('🔑 MLS state backed up');
-      } catch (err) {
-        console.warn('🔑 MLS backup failed (non-critical):', err);
+      } catch {
+        // Non-critical — event-driven backup will catch future changes
       }
     }).catch(() => {});
+
+    // Incrementally back up group keys whenever they change during the session.
+    const onKeyChanged = () => {
+      if (loginPasswordRef.current && user?.id) {
+        scheduleGroupKeyBackup(user.id, loginPasswordRef.current);
+      }
+    };
+    window.addEventListener('void:group-key-changed', onKeyChanged);
+    return () => window.removeEventListener('void:group-key-changed', onKeyChanged);
   }, [keyInitResolved, keyStatus, keyStatusLoading, user?.id]);
 
   return (
