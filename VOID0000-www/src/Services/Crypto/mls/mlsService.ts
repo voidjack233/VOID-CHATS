@@ -394,6 +394,10 @@ class MlsService {
     let commitPayload: string | null = null;
     let newMembersForWelcome: string[] = [];
     let existingPeers: string[] = [];
+    // Deferred cleanup: zero-out ephemeral key package private keys AFTER
+    // the group state has been persisted, so we don't corrupt shared
+    // Uint8Array references that ts-mls keeps inside the ClientState.
+    let deferredKeyCleanup: PrivateKeyPackage | null = null;
 
     if (!existingState) {
       // ── Create new MLS group ──────────────────────────────────────────────────
@@ -424,9 +428,10 @@ class MlsService {
           : [];
 
         // Always create a commit — even with no proposals — so the epoch
-        // advances to 1 (matching the backend's current_key_version = 1) and
-        // the resulting state gets its own key copies (the zero-out below
-        // would otherwise corrupt a shared signaturePrivateKey reference).
+        // advances to 1 (matching the backend's current_key_version = 1).
+        // NOTE: ts-mls may share Uint8Array references for private keys
+        // between the input and output states — the ephemeral key package
+        // cleanup is deferred until after saveGroupState to avoid corruption.
         const commitResult = await createCommit(
           { state, cipherSuite: impl },
           { extraProposals: addProposals, ratchetTreeExtension: addProposals.length > 0 }
@@ -447,10 +452,8 @@ class MlsService {
 
       newState = state;
 
-      // Clean up ephemeral key package private keys
-      zeroOutUint8Array(myKp.privatePackage.initPrivateKey);
-      zeroOutUint8Array(myKp.privatePackage.hpkePrivateKey);
-      zeroOutUint8Array(myKp.privatePackage.signaturePrivateKey);
+      // Defer cleanup until after saveGroupState — see deferredKeyCleanup comment above.
+      deferredKeyCleanup = myKp.privatePackage;
     } else {
       // ── Update existing group (add/remove members, advance epoch) ─────────────
       const currentMembers = getMemberUserIds(existingState);
@@ -512,6 +515,14 @@ class MlsService {
 
     // ── Persist new group state (local IndexedDB only — contains private keys) ──
     await saveGroupState(conversationId, newState);
+
+    // Now that the state bytes are safely persisted, zero out the ephemeral
+    // key package private keys so they don't linger in memory.
+    if (deferredKeyCleanup) {
+      zeroOutUint8Array(deferredKeyCleanup.initPrivateKey);
+      zeroOutUint8Array(deferredKeyCleanup.hpkePrivateKey);
+      zeroOutUint8Array(deferredKeyCleanup.signaturePrivateKey);
+    }
 
     // ── Derive and cache AES-256-GCM key immediately after state is saved ──────
     // This must happen before the HTTP fan-out calls so that concurrent callers
