@@ -21,6 +21,7 @@ import FriendsView from '../components/common/Friends/FriendsView';
 import AddFriend from '../components/common/Friends/AddFriend';
 import { gateway } from '../Services/Gateway/gateway';
 import { Conversation } from '../Services/Chat/chatService';
+import { matchesConversationIdentifier } from '../Services/Chat/utils/conversationUtils';
 import { useUser } from '../Services/Auth/UserContext';
 import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
 import UserAvatar from '../components/common/UserAvatar';
@@ -105,14 +106,6 @@ const ChatDashboard = () => {
     return channelRouteId
       ? `/chats/${groupRouteId}/${channelRouteId}`
       : `/chats/${groupRouteId}`;
-  };
-
-  const matchesConversationIdentifier = (
-    conversation?: { id?: string; public_id?: string | null } | null,
-    identifier?: string | null
-  ) => {
-    if (!conversation || !identifier) return false;
-    return conversation.id === identifier || conversation.public_id === identifier;
   };
 
   useEffect(() => {
