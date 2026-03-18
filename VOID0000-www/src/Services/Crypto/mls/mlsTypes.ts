@@ -32,6 +32,8 @@ export interface MlsKeyPackageRecord {
 export interface MlsDistributeKeyResult {
   key: CryptoKey;
   keyVersion: number;
+  includedMemberUserIds: string[];
+  missingMemberUserIds: string[];
 }
 
 export interface MlsWelcomeRecord {

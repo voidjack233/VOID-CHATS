@@ -470,14 +470,24 @@ async function distributeGroupSenderKeyWithProtocol(
   conversation: Conversation,
   currentUserId: string,
   participantIds: string[]
-): Promise<{ key: CryptoKey; version: number }> {
+): Promise<{
+  key: CryptoKey;
+  version: number;
+  includedMemberUserIds: string[];
+  missingMemberUserIds: string[];
+}> {
   const uniqueParticipants = [...new Set([...participantIds, currentUserId].filter(Boolean))];
   const result = await chatCryptoProtocolService.distributeGroupKey({
     userId: currentUserId,
     conversation,
     memberUserIds: uniqueParticipants,
   });
-  return { key: result.key, version: result.keyVersion };
+  return {
+    key: result.key,
+    version: result.keyVersion,
+    includedMemberUserIds: result.includedMemberUserIds,
+    missingMemberUserIds: result.missingMemberUserIds,
+  };
 }
 
 /**
@@ -509,10 +519,9 @@ export async function ownerSelfHealGroupKey(
  *
  * Called when `getEncryptionKey` fails for a fresh DM because no local group
  * state exists yet.  Creates the group with the sender as the initiator and
- * includes the peer if they have published key packages.  If the peer is
- * offline / has not published packages yet the group is created solo — the peer
- * joins automatically when both sides are online and `syncInbox` processes the
- * pending welcome.
+ * includes the peer immediately. If the peer has not published MLS key
+ * packages yet, bootstrap is rejected so we do not create a sender-only DM key
+ * that the other side can never use for history decryption.
  *
  * DMs always use key_version=1 on the backend.  MLS epoch-0 solo groups produce
  * keyVersion=0, so we normalise the stored version to 1 so that `getEncryptionKey`
@@ -523,15 +532,32 @@ export async function bootstrapDmKey(
   currentUserId: string,
   peerUserId: string | undefined
 ): Promise<{ key: CryptoKey; version: number }> {
-  const participantIds = peerUserId
-    ? [currentUserId, peerUserId]
-    : [currentUserId];
+  if (!peerUserId) {
+    throw new Error('DM peer could not be resolved for secure bootstrap');
+  }
+
+  const participantIds = [currentUserId, peerUserId];
+
+  console.log('[DM_BOOTSTRAP] attempting secure DM bootstrap', {
+    conversation_id: conversation.id,
+    current_user_id: currentUserId,
+    peer_user_id: peerUserId,
+  });
 
   const result = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: conversation.id },
     currentUserId,
     participantIds
   );
+
+  if (!result.includedMemberUserIds.includes(peerUserId)) {
+    console.warn('[DM_BOOTSTRAP] peer was not included in DM bootstrap', {
+      conversation_id: conversation.id,
+      included_member_user_ids: result.includedMemberUserIds,
+      missing_member_user_ids: result.missingMemberUserIds,
+    });
+    throw new Error('DM peer device is not ready for secure chat yet');
+  }
 
   // MLS epoch-0 solo group → keyVersion=0, but the backend/protocol convention
   // for DMs is always version 1.  Alias the key so lookups succeed.
@@ -1108,10 +1134,12 @@ export async function getEncryptionKey(
 
   // Protocol inbox updates may arrive asynchronously via fanout.
   // Force one sync attempt (bypass cooldown) before failing key resolution.
+  console.log('[KEY_RESOLVE] local miss — forcing syncInbox', { conversation_id: keyConversationId, targetVersion });
   await chatCryptoProtocolService.syncInbox(userId, true);
 
   const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (syncedGroupKey) {
+    console.log('[KEY_RESOLVE] syncInbox resolved key', { conversation_id: keyConversationId, targetVersion });
     return { key: syncedGroupKey, version: targetVersion };
   }
 
@@ -1119,6 +1147,12 @@ export async function getEncryptionKey(
   // Scan for any key stored under a different version for this conversation.
   const fallback = await keyManager.findAnyGroupKey(keyConversationId);
   if (fallback) {
+    console.warn('[KEY_RESOLVE] version-alias fallback', {
+      conversation_id: keyConversationId,
+      found_version: fallback.version,
+      target_version: targetVersion,
+      versions_match: fallback.version === targetVersion,
+    });
     // Alias the found key under the target version so future lookups hit directly.
     await keyManager.storeGroupKey(keyConversationId, targetVersion, fallback.key);
     return { key: fallback.key, version: targetVersion };

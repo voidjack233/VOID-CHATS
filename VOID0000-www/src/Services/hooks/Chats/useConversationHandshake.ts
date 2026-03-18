@@ -190,8 +190,20 @@ export const useConversationHandshake = ({
       const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
       const keyLookupConversation = getKeyLookupConversation(activeConversation);
 
+      console.log('[HANDSHAKE] starting conversation handshake', {
+        conversation_id: activeConversation.id,
+        conversation_type: activeConversation.type,
+        required_group_version: requiredGroupVersion,
+        key_scope_id: keyScopeId,
+      });
+
       const cached = getHandshakeEntry(keyScopeId);
       if (cached && (!requiredGroupVersion || cached.version === requiredGroupVersion)) {
+        console.log('[HANDSHAKE] using cached handshake entry', {
+          conversation_id: activeConversation.id,
+          key_scope_id: keyScopeId,
+          key_version: cached.version,
+        });
         setEncryptionError(null);
         setMembers(cached.members);
         setEncryptionKey(cached.key);
@@ -201,6 +213,12 @@ export const useConversationHandshake = ({
 
       const staleHandshake = cached && requiredGroupVersion && cached.version !== requiredGroupVersion;
       if (staleHandshake) {
+        console.warn('[HANDSHAKE] evicting stale cached handshake', {
+          conversation_id: activeConversation.id,
+          key_scope_id: keyScopeId,
+          cached_version: cached.version,
+          required_group_version: requiredGroupVersion,
+        });
         deleteHandshakeEntry(keyScopeId);
       }
 
@@ -302,6 +320,12 @@ export const useConversationHandshake = ({
 
         for (let attempt = 0; attempt < 3; attempt += 1) {
           try {
+            console.log('[HANDSHAKE] resolving encryption key', {
+              conversation_id: activeConversation.id,
+              conversation_type: activeConversation.type,
+              attempt: attempt + 1,
+              requested_version: requiredGroupVersion || null,
+            });
             keyResult = await getEncryptionKey(
               user.id,
               keyLookupConversation,
@@ -329,6 +353,12 @@ export const useConversationHandshake = ({
         const { key, version } = keyResult;
 
         if (ignore) return;
+
+        console.log('[HANDSHAKE] resolved encryption key', {
+          conversation_id: activeConversation.id,
+          conversation_type: activeConversation.type,
+          key_version: version,
+        });
 
         if (key) {
           setHandshakeEntry(keyScopeId, {
@@ -363,7 +393,11 @@ export const useConversationHandshake = ({
         }
       } catch (err: any) {
         if (ignore) return;
-        console.error('Handshake Error:', err);
+        console.error('[HANDSHAKE] failed', {
+          conversation_id: activeConversation?.id,
+          conversation_type: activeConversation?.type,
+          error: err instanceof Error ? err.message : String(err || ''),
+        });
         setEncryptionKey(null);
         const reason = err instanceof Error ? err.message : String(err || '');
 
@@ -381,14 +415,18 @@ export const useConversationHandshake = ({
 
         if (isGroupKeyError) {
           // DM bootstrap: no MLS group exists yet for this conversation.
-          // Create one now (with the peer if they have key packages, solo
-          // otherwise). The peer joins automatically via syncInbox welcome
-          // when they next come online.
+          // Create one now only when the peer can actually be included.
+          // This avoids generating sender-only DM keys that break history
+          // decryption for the other side on a fresh device.
           if (activeConversation?.type === 'dm') {
             const dmPeerId =
               activeConversation.dm_user_id ||
               resolvedMemberIds.find((id) => id !== user.id);
             try {
+              console.log('[DM_BOOTSTRAP] starting fallback bootstrap from handshake', {
+                conversation_id: activeConversation.id,
+                peer_user_id: dmPeerId || null,
+              });
               const result = await bootstrapDmKey(activeConversation, user.id, dmPeerId);
               if (!ignore) {
                 setEncryptionError(null);
@@ -397,7 +435,19 @@ export const useConversationHandshake = ({
               }
               return;
             } catch (dmBootstrapErr) {
-              console.error('DM key bootstrap failed:', dmBootstrapErr);
+              const dmBootstrapReason =
+                dmBootstrapErr instanceof Error
+                  ? dmBootstrapErr.message
+                  : String(dmBootstrapErr || '');
+              console.error('[DM_BOOTSTRAP] handshake fallback failed', {
+                conversation_id: activeConversation.id,
+                peer_user_id: dmPeerId || null,
+                error: dmBootstrapReason,
+              });
+              if (dmBootstrapReason.includes('DM peer device is not ready')) {
+                setEncryptionError('The other device is still preparing secure chat. Retry in a moment.');
+                return;
+              }
             }
           }
 
@@ -411,6 +461,11 @@ export const useConversationHandshake = ({
             resolvedMemberIds.length > 0
           ) {
             try {
+              console.log('[GROUP_SELF_HEAL] attempting group key recovery', {
+                conversation_id: ownerConversation.id,
+                requested_member_ids: resolvedMemberIds,
+                current_key_version: ownerConversation.current_key_version ?? null,
+              });
               const result = await ownerSelfHealGroupKey(
                 ownerConversation,
                 user.id,
@@ -425,9 +480,16 @@ export const useConversationHandshake = ({
                   current_key_version: result.version,
                 });
               }
+              console.log('[GROUP_SELF_HEAL] group key recovery succeeded', {
+                conversation_id: ownerConversation.id,
+                key_version: result.version,
+              });
               return;
             } catch (healErr) {
-              console.error('Member key self-heal failed:', healErr);
+              console.error('[GROUP_SELF_HEAL] group key recovery failed', {
+                conversation_id: ownerConversation.id,
+                error: healErr instanceof Error ? healErr.message : String(healErr || ''),
+              });
             }
           }
 

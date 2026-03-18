@@ -18,6 +18,7 @@ import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { getHandshakeEntry, setHandshakeEntry, deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
+import { keyManager } from '../../Crypto/keyManager';
 
 interface UseMessageStreamParams {
   activeConversation: Conversation | null;
@@ -122,7 +123,9 @@ export const useMessageStream = ({
 
   // DM decrypt path.
   // DMs use MLS-tagged payloads encrypted with the conversation key.
-  // This path never triggers the auto-healer.
+  // Returns null on failure so attemptDecryption's auto-healer can run.
+  // Previously returned '[unable to decrypt]' which was treated as a
+  // successful decrypt (non-null) and permanently bypassed recovery.
   const tryDmDecrypt = async (data: any, key: CryptoKey): Promise<string | null> => {
     if (activeConversation?.type !== 'dm') {
       return null;
@@ -143,16 +146,21 @@ export const useMessageStream = ({
     try {
       return await decryptMessage(data.encrypted_content, data.iv, key);
     } catch (err) {
-      console.warn('DM decryption failed:', err);
-      return '[unable to decrypt]';
+      // Return null — not '[unable to decrypt]' — so the healer in
+      // attemptDecryption wipes the cache and re-runs syncInbox.
+      console.warn('[DM_DECRYPT] key mismatch, routing to healer', {
+        conversation_id: data.conversation_id,
+        sender_id: data.sender_id,
+        key_version: data.key_version,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
     }
   };
 
   // Auto-healer: if decryption fails, wipes the cache and forces a re-fetch.
-  // DM messages are handled via tryDmDecrypt above to avoid triggering the
-  // healer for problems it cannot fix.
+  // tryDmDecrypt returns null on failure so DM failures also reach the healer.
   const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
-    // DM fast-path: never triggers the healer
     const dmContent = await tryDmDecrypt(data, key);
     if (dmContent !== null) {
       if (isUpdate) {
@@ -184,7 +192,13 @@ export const useMessageStream = ({
         setNewMessage({ ...data, content });
       }
     } catch (err) {
-      console.warn('Decryption failed! Keys might be stale. Auto-refreshing...', err);
+      console.warn('[DECRYPT_HEALER] activating — wiping cache and retrying handshake', {
+        conversation_id: activeConversation?.id,
+        conversation_type: activeConversation?.type,
+        key_version: (data as any)?.key_version,
+        sender_id: (data as any)?.sender_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
 
       // Wipe the memory cache so the handshake runs fresh
       const keyScopeId = getConversationKeyScopeId(activeConversation);
@@ -208,6 +222,17 @@ export const useMessageStream = ({
           deleteConversationDetails(identifier);
         });
 
+      // For DMs: delete the wrong IndexedDB key so getEncryptionKey falls
+      // through to syncInbox on the next attempt instead of returning the
+      // locally-bootstrapped key that short-circuits recovery.
+      if (activeConversation?.type === 'dm' && keyScopeId) {
+        void keyManager.deleteGroupKey(keyScopeId, keyVersion).catch(() => {});
+        console.log('[DECRYPT_HEALER] deleted stale DM group key from IndexedDB', {
+          keyScopeId,
+          keyVersion,
+        });
+      }
+
       // Explicit retry token guarantees the handshake effect runs again.
       retryHandshake();
 
@@ -229,6 +254,10 @@ export const useMessageStream = ({
     if (!encryptionKey || !activeConversation?.id || pendingMessages.current.length === 0) return;
 
     const flush = async () => {
+      console.log('[DECRYPT_FLUSH] draining pending messages', {
+        count: pendingMessages.current.length,
+        conversation_id: activeConversation?.id,
+      });
       const toProcess = [...pendingMessages.current];
       pendingMessages.current = [];
 

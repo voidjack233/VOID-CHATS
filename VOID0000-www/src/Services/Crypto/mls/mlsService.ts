@@ -42,6 +42,7 @@ import {
   ingestMlsWelcomes,
   publishMlsKeyPackage,
   syncMlsInbox,
+  upsertMlsGroupStates,
 } from './mlsApi';
 import { mlsStore } from './mlsStore';
 import type {
@@ -52,6 +53,7 @@ import type {
   MlsInboxSyncResult,
   MlsServerCapabilities,
   MlsSyncCommitUpdate,
+  MlsSyncGroupStateUpdate,
   MlsSyncWelcomeUpdate,
 } from './mlsTypes';
 
@@ -148,7 +150,7 @@ async function deriveGroupAesKey(
   state: ClientState,
   conversationId: string,
   impl: CiphersuiteImpl
-): Promise<MlsDistributeKeyResult> {
+): Promise<Pick<MlsDistributeKeyResult, 'key' | 'keyVersion'>> {
   const contextBytes = new TextEncoder().encode(conversationId);
   const keyBytes = await mlsExporter(
     state.keySchedule.exporterSecret,
@@ -201,6 +203,17 @@ function normalizeConversationKeyId(conversation: Conversation): string {
 const BOOTSTRAP_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 const SYNC_COOLDOWN_MS = 30 * 1000; // 30 seconds
 
+interface AddProposalBuildResult {
+  proposals: Proposal[];
+  addedUserIds: string[];
+  missingUserIds: string[];
+}
+
+interface PersistGroupStateOptions {
+  source: string;
+  upload?: boolean;
+}
+
 class MlsService {
   private serverCapabilitiesPromise: Promise<MlsServerCapabilities> | null = null;
   private readonly minimumKeyPackages = 3;
@@ -226,6 +239,125 @@ class MlsService {
       }));
     }
     return this.serverCapabilitiesPromise;
+  }
+
+  private async uploadGroupStateRecord(
+    record: Pick<MlsSyncGroupStateUpdate, 'conversationId' | 'groupId' | 'epoch' | 'stateBlob'>,
+    source: string,
+  ): Promise<number> {
+    const capabilities = await this.getServerCapabilities();
+    if (!capabilities.groupState) {
+      return 0;
+    }
+
+    console.log('[MLS_GROUP_STATE] uploading group state', {
+      conversation_id: record.conversationId,
+      epoch: record.epoch,
+      source,
+    });
+
+    try {
+      const uploaded = await upsertMlsGroupStates([record]);
+      console.log('[MLS_GROUP_STATE] uploaded group state', {
+        conversation_id: record.conversationId,
+        epoch: record.epoch,
+        source,
+        uploaded_items: uploaded,
+      });
+      return uploaded;
+    } catch (err) {
+      console.warn('[MLS_GROUP_STATE] upload failed', {
+        conversation_id: record.conversationId,
+        epoch: record.epoch,
+        source,
+        error: err instanceof Error ? err.message : String(err || ''),
+      });
+      return 0;
+    }
+  }
+
+  private async persistGroupState(
+    conversationId: string,
+    state: ClientState,
+    options: PersistGroupStateOptions,
+  ): Promise<void> {
+    await saveGroupState(conversationId, state);
+
+    if (options.upload === false) {
+      return;
+    }
+
+    const record = await mlsStore.getGroupState(conversationId);
+    if (!record) {
+      return;
+    }
+
+    await this.uploadGroupStateRecord({
+      conversationId: record.conversationId,
+      groupId: record.groupId,
+      epoch: record.epoch,
+      stateBlob: record.stateBlob,
+    }, options.source);
+  }
+
+  private async cacheDerivedGroupKey(
+    conversationId: string,
+    state: ClientState,
+    impl: CiphersuiteImpl,
+    options?: { aliasVersionOne?: boolean },
+  ): Promise<Pick<MlsDistributeKeyResult, 'key' | 'keyVersion'>> {
+    const result = await deriveGroupAesKey(state, conversationId, impl);
+    await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+    if (options?.aliasVersionOne && result.keyVersion !== 1) {
+      await keyManager.storeGroupKey(conversationId, 1, result.key);
+    }
+    window.dispatchEvent(new Event('void:group-key-changed'));
+    return result;
+  }
+
+  private async importSyncedGroupState(
+    update: MlsSyncGroupStateUpdate,
+    impl: CiphersuiteImpl,
+  ): Promise<boolean> {
+    const existing = await mlsStore.getGroupState(update.conversationId);
+    if (existing && Number(existing.epoch) > Number(update.epoch)) {
+      console.log('[MLS_GROUP_STATE] skipping stale synced group state', {
+        conversation_id: update.conversationId,
+        local_epoch: existing.epoch,
+        incoming_epoch: update.epoch,
+      });
+      return false;
+    }
+
+    try {
+      const stateBytes = base64ToBytes(update.stateBlob);
+      const decoded = decodeGroupState(stateBytes, 0);
+      if (!decoded) {
+        throw new Error('Unable to decode synced group state');
+      }
+
+      const [decodedState] = decoded;
+      const state: ClientState = { ...decodedState, clientConfig: buildClientConfig() };
+      await this.persistGroupState(update.conversationId, state, {
+        source: 'sync_import',
+        upload: false,
+      });
+      const keyResult = await this.cacheDerivedGroupKey(update.conversationId, state, impl);
+      console.log('[MLS_GROUP_STATE] imported synced group state', {
+        conversation_id: update.conversationId,
+        incoming_epoch: update.epoch,
+        previous_local_epoch: existing?.epoch ?? null,
+        key_version: keyResult.keyVersion,
+      });
+      return true;
+    } catch (err) {
+      console.warn('[MLS_GROUP_STATE] sync import failed', {
+        conversation_id: update.conversationId,
+        incoming_epoch: update.epoch,
+        error: err instanceof Error ? err.message : String(err || ''),
+      });
+      return false;
+    }
   }
 
   private async ensureAccountState(userId: string): Promise<MlsAccountStateRecord> {
@@ -304,24 +436,48 @@ class MlsService {
   /**
    * Fetch peers' published key packages in parallel and build MLS Add proposals.
    */
-  private async buildAddProposals(userIds: string[]): Promise<Proposal[]> {
+  private async buildAddProposals(userIds: string[]): Promise<AddProposalBuildResult> {
     const results = await Promise.all(
-      userIds.map(async (userId): Promise<Proposal | null> => {
+      userIds.map(async (userId): Promise<{ proposal: Proposal | null; userId: string }> => {
         try {
           const kpData = await fetchUserKeyPackage(userId);
-          if (!kpData) return null;
+          if (!kpData) return { proposal: null, userId };
           const kpBytes = base64ToBytes(kpData.package_data);
           const decoded = decodeMlsMessage(kpBytes, 0);
-          if (!decoded) return null;
+          if (!decoded) return { proposal: null, userId };
           const [msg] = decoded;
-          if (msg.wireformat !== 'mls_key_package') return null;
-          return { proposalType: 'add', add: { keyPackage: msg.keyPackage } };
+          if (msg.wireformat !== 'mls_key_package') {
+            return { proposal: null, userId };
+          }
+          return {
+            proposal: { proposalType: 'add', add: { keyPackage: msg.keyPackage } },
+            userId,
+          };
         } catch {
-          return null; // Skip unavailable peers — they can be added later
+          return { proposal: null, userId }; // Skip unavailable peers — they can be added later
         }
       })
     );
-    return results.filter((p): p is Proposal => p !== null);
+
+    const proposals: Proposal[] = [];
+    const addedUserIds: string[] = [];
+    const missingUserIds: string[] = [];
+
+    results.forEach(({ proposal, userId }) => {
+      if (proposal) {
+        proposals.push(proposal);
+        addedUserIds.push(userId);
+        return;
+      }
+
+      missingUserIds.push(userId);
+    });
+
+    return {
+      proposals,
+      addedUserIds,
+      missingUserIds,
+    };
   }
 
   async bootstrapAccount(userId: string, force = false): Promise<void> {
@@ -332,10 +488,16 @@ class MlsService {
       const elapsed = Date.now() - Date.parse(account.lastBootstrappedAt);
       if (elapsed < BOOTSTRAP_COOLDOWN_MS) return;
     }
+    let publishedKeyPackages = 0;
     if (capabilities.keyPackages) {
       await this.ensureLocalKeyPackages(userId);
-      await this.publishPendingKeyPackages(userId);
+      publishedKeyPackages = await this.publishPendingKeyPackages(userId);
     }
+    console.log('[MLS_BOOTSTRAP] account ready', {
+      user_id: userId,
+      forced: force,
+      published_key_packages: publishedKeyPackages,
+    });
     await mlsStore.putAccountState({
       ...account,
       lastBootstrappedAt: new Date().toISOString(),
@@ -379,8 +541,17 @@ class MlsService {
     const impl = await getImpl();
     const desiredMembers = [...new Set([...input.memberUserIds, input.userId].filter(Boolean))];
     const otherMembers = desiredMembers.filter((id) => id !== input.userId);
+    const isDmConversation = input.conversation.type === 'dm';
+    let missingMemberUserIds: string[] = [];
 
     const existingState = await loadGroupState(conversationId);
+
+    console.log('[MLS_DISTRIBUTE] start', {
+      conversation_id: conversationId,
+      conversation_type: input.conversation.type,
+      requested_member_user_ids: desiredMembers,
+      has_existing_state: Boolean(existingState),
+    });
 
     // When no local MLS state exists, any conversation member may bootstrap
     // a fresh group.  This covers:
@@ -401,6 +572,10 @@ class MlsService {
 
     if (!existingState) {
       // ── Create new MLS group ──────────────────────────────────────────────────
+      if (isDmConversation && otherMembers.length === 0) {
+        throw new Error('DM peer could not be resolved for secure bootstrap');
+      }
+
       const myCredential: CredentialBasic = {
         credentialType: 'basic',
         identity: new TextEncoder().encode(input.userId),
@@ -423,9 +598,20 @@ class MlsService {
       );
 
       {
-        const addProposals = otherMembers.length > 0
+        const addProposalResult = otherMembers.length > 0
           ? await this.buildAddProposals(otherMembers)
-          : [];
+          : { proposals: [], addedUserIds: [], missingUserIds: [] };
+        const addProposals = addProposalResult.proposals;
+        missingMemberUserIds = addProposalResult.missingUserIds;
+
+        if (isDmConversation && missingMemberUserIds.length > 0) {
+          console.warn('[DM_BOOTSTRAP] peer key package unavailable during initial bootstrap', {
+            conversation_id: conversationId,
+            user_id: input.userId,
+            missing_member_user_ids: missingMemberUserIds,
+          });
+          throw new Error('DM peer device is not ready for secure chat yet');
+        }
 
         // Always create a commit — even with no proposals — so the epoch
         // advances to 1 (matching the backend's current_key_version = 1).
@@ -446,7 +632,7 @@ class MlsService {
             );
           }
           commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
-          newMembersForWelcome = otherMembers;
+          newMembersForWelcome = addProposalResult.addedUserIds;
         }
       }
 
@@ -460,6 +646,22 @@ class MlsService {
       const toAdd = desiredMembers.filter((id) => !currentMembers.includes(id));
       const toRemove = currentMembers.filter((id) => !desiredMembers.includes(id));
 
+      if (isDmConversation && toAdd.length > 0) {
+        console.warn('[DM_BOOTSTRAP] refusing late DM membership change to preserve version-1 history', {
+          conversation_id: conversationId,
+          current_member_user_ids: currentMembers,
+          missing_member_user_ids: toAdd,
+        });
+        const result = await deriveGroupAesKey(existingState, conversationId, impl);
+        await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+        window.dispatchEvent(new Event('void:group-key-changed'));
+        return {
+          ...result,
+          includedMemberUserIds: currentMembers,
+          missingMemberUserIds: toAdd,
+        };
+      }
+
       // No-op: if the MLS group already has the right members, return the
       // current key without creating a commit.  Empty commits advance the
       // epoch and cause version drift between MLS epoch and the server's
@@ -468,15 +670,37 @@ class MlsService {
         const result = await deriveGroupAesKey(existingState, conversationId, impl);
         await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
         window.dispatchEvent(new Event('void:group-key-changed'));
-        return result;
+        return {
+          ...result,
+          includedMemberUserIds: currentMembers,
+          missingMemberUserIds: [],
+        };
       }
 
       const proposals: Proposal[] = [];
 
       if (toAdd.length > 0) {
-        const addProposals = await this.buildAddProposals(toAdd);
-        proposals.push(...addProposals);
-        newMembersForWelcome = toAdd;
+        const addProposalResult = await this.buildAddProposals(toAdd);
+        proposals.push(...addProposalResult.proposals);
+        newMembersForWelcome = addProposalResult.addedUserIds;
+        missingMemberUserIds = addProposalResult.missingUserIds;
+      }
+
+      if (toAdd.length > 0 && proposals.length === 0 && toRemove.length === 0) {
+        console.warn('[MLS_DISTRIBUTE] additions requested but no peer key packages were available; skipping commit', {
+          conversation_id: conversationId,
+          conversation_type: input.conversation.type,
+          requested_add_user_ids: toAdd,
+          missing_member_user_ids: missingMemberUserIds,
+        });
+        const result = await deriveGroupAesKey(existingState, conversationId, impl);
+        await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
+        window.dispatchEvent(new Event('void:group-key-changed'));
+        return {
+          ...result,
+          includedMemberUserIds: currentMembers,
+          missingMemberUserIds,
+        };
       }
 
       for (const removeId of toRemove) {
@@ -514,7 +738,9 @@ class MlsService {
     }
 
     // ── Persist new group state (local IndexedDB only — contains private keys) ──
-    await saveGroupState(conversationId, newState);
+    await this.persistGroupState(conversationId, newState, {
+      source: existingState ? 'distribute_update' : 'distribute_bootstrap',
+    });
 
     // Now that the state bytes are safely persisted, zero out the ephemeral
     // key package private keys so they don't linger in memory.
@@ -529,13 +755,16 @@ class MlsService {
     // (e.g. setupConversation re-triggered by a WebSocket CONVERSATION_UPDATE
     // arriving before the rotate-remove HTTP response) can find the new key in
     // IndexedDB during their retry window instead of falling into ownerSelfHeal.
-    const result = await deriveGroupAesKey(newState, conversationId, impl);
-    await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
-    window.dispatchEvent(new Event('void:group-key-changed'));
+    const result = await this.cacheDerivedGroupKey(conversationId, newState, impl);
 
     // ── Send welcome messages to new members ──────────────────────────────────
     if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
       const welcomeRef = crypto.randomUUID();
+      console.log('[MLS_WELCOME] ingesting welcome payload', {
+        conversation_id: conversationId,
+        welcome_ref: welcomeRef,
+        recipient_user_ids: newMembersForWelcome,
+      });
       await ingestMlsWelcomes(
         newMembersForWelcome.map((memberId) => ({
           userId: memberId,
@@ -548,6 +777,10 @@ class MlsService {
 
     // ── Fan-out commit to existing peers so they can advance their epoch ───────
     if (capabilities.commitFanout && commitPayload && existingPeers.length > 0) {
+      console.log('[MLS_COMMIT] fanout commit payload', {
+        conversation_id: conversationId,
+        peer_user_ids: existingPeers,
+      });
       await ingestMlsCommits([{
         conversationId,
         commitRef: crypto.randomUUID(),
@@ -556,7 +789,11 @@ class MlsService {
       }]);
     }
 
-    return result;
+    return {
+      ...result,
+      includedMemberUserIds: getMemberUserIds(newState),
+      missingMemberUserIds,
+    };
   }
 
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
@@ -614,7 +851,22 @@ class MlsService {
     }
 
     const payload = await syncMlsInbox(userId);
+    console.log('[MLS_SYNC] inbox payload received', {
+      user_id: userId,
+      forced: force,
+      key_packages: payload.keyPackages.length,
+      group_states: payload.groupStates.length,
+      welcomes: payload.welcomes.length,
+      commits: payload.commits.length,
+    });
     const impl = await getImpl();
+
+    // Import durable group state snapshots before processing commits so a
+    // new device can recover the current epoch even after welcomes were
+    // already consumed elsewhere.
+    for (const groupState of payload.groupStates) {
+      await this.importSyncedGroupState(groupState, impl);
+    }
 
     // Process incoming welcomes (join new groups)
     const acknowledgedWelcomes: MlsSyncWelcomeUpdate[] = [];
@@ -703,22 +955,30 @@ class MlsService {
           impl,
         );
 
-        await saveGroupState(conversationId, joinedState);
-        const result = await deriveGroupAesKey(joinedState, conversationId, impl);
-        await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
-        // Also store under version 1 so the key is discoverable even when the
-        // MLS epoch has drifted from the server's current_key_version.
-        if (result.keyVersion !== 1) {
-          await keyManager.storeGroupKey(conversationId, 1, result.key);
-        }
-        window.dispatchEvent(new Event('void:group-key-changed'));
+        await this.persistGroupState(conversationId, joinedState, {
+          source: 'welcome_join',
+        });
+        const result = await this.cacheDerivedGroupKey(conversationId, joinedState, impl, {
+          aliasVersionOne: true,
+        });
         await mlsStore.markKeyPackageConsumed(userId, kpRecord.packageRef);
+        console.log('[MLS_WELCOME] processed welcome', {
+          user_id: userId,
+          conversation_id: conversationId,
+          welcome_ref: welcome.welcomeRef,
+          key_version: result.keyVersion,
+        });
         return true;
       } catch {
         // Key package didn't match — try the next one
       }
     }
 
+    console.warn('[MLS_WELCOME] no matching key package for welcome', {
+      user_id: userId,
+      conversation_id: conversationId,
+      welcome_ref: welcome.welcomeRef,
+    });
     return false;
   }
 
@@ -749,11 +1009,16 @@ class MlsService {
       return false;
     }
 
-    await saveGroupState(commit.conversationId, newState);
-    const keyResult = await deriveGroupAesKey(newState, commit.conversationId, impl);
-    await keyManager.storeGroupKey(commit.conversationId, keyResult.keyVersion, keyResult.key);
-    window.dispatchEvent(new Event('void:group-key-changed'));
+    await this.persistGroupState(commit.conversationId, newState, {
+      source: 'commit_apply',
+    });
+    const keyResult = await this.cacheDerivedGroupKey(commit.conversationId, newState, impl);
     await mlsStore.markCommitApplied(commit.conversationId, commit.commitRef);
+    console.log('[MLS_COMMIT] applied commit', {
+      conversation_id: commit.conversationId,
+      commit_ref: commit.commitRef,
+      key_version: keyResult.keyVersion,
+    });
 
     return true;
   }

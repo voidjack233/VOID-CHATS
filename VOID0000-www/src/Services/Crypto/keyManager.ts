@@ -822,6 +822,15 @@ export const keyManager = {
     const raw = await crypto.subtle.exportKey('raw', key);
     await dbPut({ id: `group:${id}:${v}`, key: arrayBufferToBase64(raw), version: v });
   },
+  deleteGroupKey: async (id: string, v: number): Promise<void> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(KEY_STORE, 'readwrite');
+      tx.objectStore(KEY_STORE).delete(`group:${id}:${v}`);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  },
   getGroupKey: async (id: string, v: number) => {
     const stored = await dbGet(`group:${id}:${v}`);
     return stored

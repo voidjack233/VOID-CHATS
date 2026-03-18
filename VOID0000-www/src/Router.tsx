@@ -7,6 +7,7 @@ import { FriendProvider } from './Services/hooks/Friends/useFriendRequests';
 import { PresenceProvider } from './Services/hooks/Friends/usePresence';
 import { FriendsProvider } from './Services/hooks/Friends';
 import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTheme';
+import { useVersionCheck } from './Services/hooks/common/useVersionCheck';
 
 // Lazy-loaded pages
 const Auth = lazy(() => import('./pages/Auth'));
@@ -42,6 +43,8 @@ const PageLoader = () => (
 );
 
 export default function Router() {
+  useVersionCheck();
+
   useEffect(() => {
     const handleContextMenu = (event: MouseEvent) => {
       event.preventDefault();

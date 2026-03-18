@@ -4,6 +4,7 @@ import { authService, fetchWithAuth } from './authServiceApi';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
+import { upsertMlsGroupStates } from '../Crypto/mls/mlsApi';
 import { mlsStore } from '../Crypto/mls/mlsStore';
 import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
 import {
@@ -13,6 +14,38 @@ import {
   fetchKeyBackup,
   type KeyBackupRecord,
 } from '../Chat/chatService';
+
+type MlsRestoreOutcome = 'skipped' | 'already_local' | 'restored' | 'failed';
+type MlsRecoveryGateReason = 'password_required' | 'restore_failed' | 'sync_import_missing';
+
+interface MlsRecoveryGateState {
+  active: boolean;
+  pending: boolean;
+  reason: MlsRecoveryGateReason | null;
+}
+
+function hasMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
+  return Boolean(
+    backup?.mls_state_encrypted &&
+    backup.mls_state_iv &&
+    backup.mls_state_salt
+  );
+}
+
+async function inspectLocalMlsChatState(): Promise<{
+  groupStateCount: number;
+  groupKeyCount: number;
+}> {
+  const [groups, groupKeys] = await Promise.all([
+    mlsStore.listGroupStates(),
+    keyManager.exportGroupKeys(),
+  ]);
+
+  return {
+    groupStateCount: groups.length,
+    groupKeyCount: groupKeys.length,
+  };
+}
 
 async function buildMlsBackupFields(
   userId: string,
@@ -34,17 +67,26 @@ async function restoreMlsStateFromBackup(
   userId: string,
   backup: KeyBackupRecord,
   password: string
-): Promise<void> {
-  if (!backup.mls_state_encrypted || !backup.mls_state_iv || !backup.mls_state_salt) return;
+): Promise<MlsRestoreOutcome> {
+  if (!hasMlsBackupPayload(backup)) {
+    return 'skipped';
+  }
 
   try {
-    const existing = await mlsStore.getAccountState(userId);
-    if (existing) return; // Already have local MLS state — no need to restore
+    const existingAccount = await mlsStore.getAccountState(userId);
+    const existingGroups = await mlsStore.listGroupStates();
+    if (existingAccount && existingGroups.length > 0) {
+      console.log('[MLS_RESTORE] local MLS state already present', {
+        user_id: userId,
+        existing_group_states: existingGroups.length,
+      });
+      return 'already_local';
+    }
 
     const payload = await keyManager.decryptDataWithPassword(
-      backup.mls_state_encrypted,
-      backup.mls_state_iv,
-      backup.mls_state_salt,
+      backup.mls_state_encrypted!,
+      backup.mls_state_iv!,
+      backup.mls_state_salt!,
       password
     ) as MlsBackupData;
 
@@ -52,9 +94,48 @@ async function restoreMlsStateFromBackup(
     if (payload.groupKeys?.length) {
       await keyManager.importGroupKeys(payload.groupKeys);
     }
-    console.log('🔑 MLS state restored from backup');
+
+    if (payload.groups.length > 0) {
+      try {
+        console.log('[MLS_GROUP_STATE] uploading restored backup group states', {
+          user_id: userId,
+          group_state_count: payload.groups.length,
+        });
+        const uploaded = await upsertMlsGroupStates(
+          payload.groups.map((group) => ({
+            conversationId: group.conversationId,
+            groupId: group.groupId,
+            epoch: group.epoch,
+            stateBlob: group.stateBlob,
+          }))
+        );
+        console.log('[MLS_GROUP_STATE] uploaded restored backup group states', {
+          user_id: userId,
+          group_state_count: payload.groups.length,
+          uploaded_items: uploaded,
+        });
+      } catch (err) {
+        console.warn('[MLS_GROUP_STATE] backup group state upload failed', {
+          user_id: userId,
+          group_state_count: payload.groups.length,
+          error: err instanceof Error ? err.message : String(err || ''),
+        });
+      }
+    }
+
+    console.log('[MLS_RESTORE] restored MLS state from backup', {
+      user_id: userId,
+      group_state_count: payload.groups.length,
+      group_key_count: payload.groupKeys?.length || 0,
+      key_package_count: payload.keyPackages.length,
+    });
+    return 'restored';
   } catch (err) {
-    console.warn('🔑 MLS state restore failed (non-critical):', err);
+    console.warn('[MLS_RESTORE] restore failed', {
+      user_id: userId,
+      error: err instanceof Error ? err.message : String(err || ''),
+    });
+    return 'failed';
   }
 }
 
@@ -89,6 +170,7 @@ interface UserContextType {
   loading: boolean;
   keyStatus: KeyStatus;
   keyStatusLoading: boolean;
+  mlsRecoveryGate: MlsRecoveryGateState;
   isLoggingOut: boolean;
   setUser: (user: User | null) => void;
   refreshUser: () => Promise<void>;
@@ -111,12 +193,43 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [keyStatus, setKeyStatus] = useState<KeyStatus>('UNINITIALIZED');
   const [keyStatusLoading, setKeyStatusLoading] = useState(false);
   const [keyInitResolved, setKeyInitResolved] = useState(false);
+  const [mlsRecoveryGate, setMlsRecoveryGate] = useState<MlsRecoveryGateState>({
+    active: false,
+    pending: false,
+    reason: null,
+  });
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const loginPasswordRef = useRef<string | null>(null);
 
   const setLoginPassword = (password: string) => {
     loginPasswordRef.current = password;
+  };
+
+  const clearMlsRecoveryGate = () => {
+    setMlsRecoveryGate({ active: false, pending: false, reason: null });
+  };
+
+  const activateMlsRecoveryGate = (
+    reason: MlsRecoveryGateReason,
+    metadata: Record<string, unknown>
+  ) => {
+    console.warn('[MLS_RECOVERY_GATE] activated', {
+      reason,
+      ...metadata,
+    });
+    setMlsRecoveryGate({ active: true, pending: false, reason });
+  };
+
+  const markMlsRecoveryPending = (
+    reason: Extract<MlsRecoveryGateReason, 'sync_import_missing'>,
+    metadata: Record<string, unknown>
+  ) => {
+    console.log('[MLS_RECOVERY_GATE] pending', {
+      reason,
+      ...metadata,
+    });
+    setMlsRecoveryGate({ active: false, pending: true, reason });
   };
 
   const resolveKeyStatusFromBackup = (backup: KeyBackupRecord | null): KeyStatus => {
@@ -204,6 +317,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     loginPasswordRef.current = null;
     setKeyStatus('UNINITIALIZED');
     setKeyStatusLoading(false);
+    clearMlsRecoveryGate();
     try {
       await authService.logout();
     } finally {
@@ -284,6 +398,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       setKeyStatus('UNINITIALIZED');
       setKeyStatusLoading(false);
       setKeyInitResolved(false);
+      clearMlsRecoveryGate();
       return;
     }
 
@@ -291,13 +406,13 @@ export function UserProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (keyStatus === 'LOCKED') {
+    if (keyStatus === 'LOCKED' || mlsRecoveryGate.active) {
       gateway.disconnect();
       return;
     }
     gateway.connect(user.id);
     return () => { gateway.disconnect(); };
-  }, [keyInitResolved, keyStatus, keyStatusLoading, user?.id]);
+  }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
 
   // Initialize encryption keys
   useEffect(() => {
@@ -313,6 +428,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     setKeyInitResolved(false);
     setKeyStatusLoading(true);
+    clearMlsRecoveryGate();
 
     keyManager.initializeKeys(userId, password, callbacks)
       .then(async () => {
@@ -320,12 +436,65 @@ export function UserProvider({ children }: { children: ReactNode }) {
         console.log('🔑 Encryption keys ready');
         try {
           const backup = await callbacks.fetchBackup();
+          const hasMlsBackup = hasMlsBackupPayload(backup);
+          let restoreOutcome: MlsRestoreOutcome = 'skipped';
           if (!cancelled) {
             setKeyStatus(resolveKeyStatusFromBackup(backup));
           }
-          // Restore MLS state on a new device if the backup contains it
+
+          // Restore MLS state on a new device if the backup contains it.
           if (password && backup) {
-            await restoreMlsStateFromBackup(userId, backup, password);
+            restoreOutcome = await restoreMlsStateFromBackup(userId, backup, password);
+          }
+
+          const syncResult = await chatCryptoProtocolService.syncInbox(userId, true);
+          const localChatState = await inspectLocalMlsChatState();
+          const hasLocalChatState =
+            localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
+          const hasRecoverableServerState =
+            hasMlsBackup ||
+            syncResult.syncedGroupStates > 0 ||
+            syncResult.syncedWelcomes > 0 ||
+            syncResult.syncedCommits > 0;
+
+          console.log('[MLS_RESTORE] recovery inspection complete', {
+            user_id: userId,
+            has_password: Boolean(password),
+            has_mls_backup: hasMlsBackup,
+            restore_outcome: restoreOutcome,
+            synced_group_states: syncResult.syncedGroupStates,
+            synced_welcomes: syncResult.syncedWelcomes,
+            synced_commits: syncResult.syncedCommits,
+            local_group_states: localChatState.groupStateCount,
+            local_group_keys: localChatState.groupKeyCount,
+          });
+
+          if (!cancelled && hasRecoverableServerState && !hasLocalChatState) {
+            if (!password && hasMlsBackup) {
+              activateMlsRecoveryGate('password_required', {
+                user_id: userId,
+                has_mls_backup: hasMlsBackup,
+                synced_group_states: syncResult.syncedGroupStates,
+                synced_welcomes: syncResult.syncedWelcomes,
+                synced_commits: syncResult.syncedCommits,
+              });
+            } else if (restoreOutcome === 'failed') {
+              activateMlsRecoveryGate('restore_failed', {
+                user_id: userId,
+                has_mls_backup: hasMlsBackup,
+                synced_group_states: syncResult.syncedGroupStates,
+                synced_welcomes: syncResult.syncedWelcomes,
+                synced_commits: syncResult.syncedCommits,
+              });
+            } else {
+              markMlsRecoveryPending('sync_import_missing', {
+                user_id: userId,
+                has_mls_backup: hasMlsBackup,
+                synced_group_states: syncResult.syncedGroupStates,
+                synced_welcomes: syncResult.syncedWelcomes,
+                synced_commits: syncResult.syncedCommits,
+              });
+            }
           }
         } catch (err) {
           console.error('Failed to inspect key backup status:', err);
@@ -361,7 +530,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   // gets an up-to-date MLS state blob on its next login.
   useEffect(() => {
     if (!user?.id) return;
-    if (!keyInitResolved || keyStatusLoading || keyStatus === 'LOCKED') return;
+    if (!keyInitResolved || keyStatusLoading || keyStatus === 'LOCKED' || mlsRecoveryGate.active) return;
 
     const userId = user.id;
     const password = loginPasswordRef.current;
@@ -385,7 +554,74 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener('void:group-key-changed', onKeyChanged);
     return () => window.removeEventListener('void:group-key-changed', onKeyChanged);
-  }, [keyInitResolved, keyStatus, keyStatusLoading, user?.id]);
+  }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || !mlsRecoveryGate.pending) return;
+    if (keyStatusLoading || keyStatus === 'LOCKED') return;
+
+    let cancelled = false;
+    let retryTimer: number | null = null;
+
+    const clearRetryTimer = () => {
+      if (retryTimer != null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+    };
+
+    const inspectRecoveryState = async (source: 'retry_loop' | 'group_key_changed') => {
+      try {
+        const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
+        const localChatState = await inspectLocalMlsChatState();
+        const hasLocalChatState =
+          localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
+
+        console.log('[MLS_RECOVERY_GATE] pending recheck', {
+          user_id: user.id,
+          source,
+          synced_group_states: syncResult.syncedGroupStates,
+          synced_welcomes: syncResult.syncedWelcomes,
+          synced_commits: syncResult.syncedCommits,
+          local_group_states: localChatState.groupStateCount,
+          local_group_keys: localChatState.groupKeyCount,
+        });
+
+        if (!cancelled && hasLocalChatState) {
+          clearMlsRecoveryGate();
+          return;
+        }
+      } catch (err) {
+        console.warn('[MLS_RECOVERY_GATE] pending recheck failed', {
+          user_id: user.id,
+          source,
+          error: err instanceof Error ? err.message : String(err || ''),
+        });
+      }
+
+      if (!cancelled && source === 'retry_loop') {
+        clearRetryTimer();
+        retryTimer = window.setTimeout(() => {
+          void inspectRecoveryState('retry_loop');
+        }, 2500);
+      }
+    };
+
+    const onGroupKeyChanged = () => {
+      void inspectRecoveryState('group_key_changed');
+    };
+
+    retryTimer = window.setTimeout(() => {
+      void inspectRecoveryState('retry_loop');
+    }, 1500);
+    window.addEventListener('void:group-key-changed', onGroupKeyChanged);
+
+    return () => {
+      cancelled = true;
+      clearRetryTimer();
+      window.removeEventListener('void:group-key-changed', onGroupKeyChanged);
+    };
+  }, [keyStatus, keyStatusLoading, mlsRecoveryGate.pending, user?.id]);
 
   return (
     <UserContext.Provider value={{
@@ -393,6 +629,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       loading,
       keyStatus,
       keyStatusLoading,
+      mlsRecoveryGate,
       isLoggingOut,
       setUser,
       refreshUser,

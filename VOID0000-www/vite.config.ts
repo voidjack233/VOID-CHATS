@@ -1,14 +1,35 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig, loadEnv, type PluginOption } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 
+function emitBuildVersionPlugin(buildVersion: string): PluginOption {
+  return {
+    name: 'emit-build-version',
+    generateBundle(this: { emitFile: (file: { type: 'asset'; fileName: string; source: string }) => void }) {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify(
+          {
+            version: buildVersion,
+            builtAt: new Date(Number(buildVersion)).toISOString(),
+          },
+          null,
+          2
+        ),
+      })
+    },
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
+  const buildVersion = Date.now().toString()
   return {
     base: '/',
-    plugins: [react(), tailwindcss()],
+    plugins: [emitBuildVersionPlugin(buildVersion), react(), tailwindcss()],
     define: {
-      __BUILD_VERSION__: JSON.stringify(Date.now().toString()),
+      __BUILD_VERSION__: JSON.stringify(buildVersion),
     },
     server: {
       allowedHosts: true,

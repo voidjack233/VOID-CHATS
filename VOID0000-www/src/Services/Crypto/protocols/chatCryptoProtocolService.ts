@@ -1,5 +1,5 @@
 import type { Conversation } from '../../Chat/chatService';
-import type { MlsDistributeKeyResult } from '../mls/mlsTypes';
+import type { MlsDistributeKeyResult, MlsInboxSyncResult } from '../mls/mlsTypes';
 import { mlsService } from '../mls/mlsService';
 
 export type ChatSupportedProtocol = 'mls';
@@ -17,7 +17,7 @@ export interface ChatCryptoProtocolService {
   isProtocolEnabled(protocol: ChatSupportedProtocol): boolean;
   bootstrapAccount(userId: string): Promise<void>;
   preWarmForDm(userId: string, peerUserId: string): Promise<void>;
-  syncInbox(userId: string, force?: boolean): Promise<void>;
+  syncInbox(userId: string, force?: boolean): Promise<MlsInboxSyncResult>;
   isDmMessageType(messageType: string | null | undefined): boolean;
   distributeGroupKey(input: DistributeGroupKeyInput): Promise<MlsDistributeKeyResult>;
 }
@@ -42,8 +42,8 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
     await mlsService.bootstrapAccount(userId);
   }
 
-  async syncInbox(userId: string, force = false): Promise<void> {
-    await mlsService.syncInbox(userId, force);
+  async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
+    return mlsService.syncInbox(userId, force);
   }
 
   isDmMessageType(messageType: string | null | undefined): boolean {

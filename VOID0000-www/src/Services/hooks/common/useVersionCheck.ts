@@ -1,76 +1,166 @@
 import { useEffect, useRef } from 'react';
 
-/**
- * Detects stale client bundles and forces a reload.
- *
- * How it works:
- * - Sends HEAD request to /index.html on visibility change
- * - Stores the ETag/Last-Modified from first load as baseline
- * - If it changes → new deploy happened → hard reload
- *
- * No API endpoint needed. Works because Vite generates unique
- * script filenames every build, so index.html always changes.
- */
+const VERSION_ENDPOINT = '/version.json';
+const CHECK_COOLDOWN_MS = 5 * 60 * 1000;
+const RELOAD_DEDUP_WINDOW_MS = 60 * 1000;
+const RELOAD_VERSION_KEY = 'void_last_version_reload_target';
+const RELOAD_TIME_KEY = 'void_last_version_reload_at';
+
+interface BuildVersionPayload {
+  version?: string;
+  builtAt?: string;
+}
+
+async function unregisterUnexpectedServiceWorkers(): Promise<void> {
+  if (!('serviceWorker' in navigator)) return;
+
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    if (registrations.length === 0) return;
+
+    console.warn('[APP_VERSION] unregistering unexpected service workers', {
+      count: registrations.length,
+      scopes: registrations.map((registration) => registration.scope),
+    });
+
+    await Promise.all(registrations.map((registration) => registration.unregister()));
+  } catch (error) {
+    console.warn('[APP_VERSION] failed to inspect service worker registrations', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function shouldSkipReload(serverVersion: string): boolean {
+  try {
+    const lastReloadTarget = sessionStorage.getItem(RELOAD_VERSION_KEY);
+    const lastReloadAt = Number(sessionStorage.getItem(RELOAD_TIME_KEY) || '0');
+
+    return (
+      lastReloadTarget === serverVersion &&
+      Date.now() - lastReloadAt < RELOAD_DEDUP_WINDOW_MS
+    );
+  } catch {
+    return false;
+  }
+}
+
+function markReload(serverVersion: string): void {
+  try {
+    sessionStorage.setItem(RELOAD_VERSION_KEY, serverVersion);
+    sessionStorage.setItem(RELOAD_TIME_KEY, String(Date.now()));
+  } catch {
+    // Non-critical.
+  }
+}
+
 export const useVersionCheck = () => {
-  const knownETag = useRef<string | null>(null);
   const isCheckingRef = useRef(false);
   const lastCheckRef = useRef(0);
-  const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
-
-  const checkVersion = async () => {
-    if (isCheckingRef.current) return;
-
-    const now = Date.now();
-    if (now - lastCheckRef.current < COOLDOWN_MS) return;
-    lastCheckRef.current = now;
-
-    isCheckingRef.current = true;
-
-    try {
-      // HEAD request — no body, just headers
-      const res = await fetch('/?_v=' + Date.now(), {
-        method: 'HEAD',
-        cache: 'no-store',
-      });
-
-      if (!res.ok) return;
-
-      // Use ETag or Last-Modified as version fingerprint
-      const fingerprint =
-        res.headers.get('etag') ||
-        res.headers.get('last-modified') ||
-        null;
-
-      if (!fingerprint) return;
-
-      if (knownETag.current === null) {
-        // First check — store baseline
-        knownETag.current = fingerprint;
-      } else if (fingerprint !== knownETag.current) {
-        console.log('🔄 New build detected, reloading...');
-        window.location.reload();
-      }
-    } catch {
-      // Network error — don't reload
-    } finally {
-      isCheckingRef.current = false;
-    }
-  };
+  const isReloadingRef = useRef(false);
 
   useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        checkVersion();
+    const win = window as Window & {
+      __VOID_BUILD_VERSION__?: string;
+    };
+
+    win.__VOID_BUILD_VERSION__ = __BUILD_VERSION__;
+    console.info('[APP_VERSION] running build', {
+      version: __BUILD_VERSION__,
+    });
+  }, []);
+
+  useEffect(() => {
+    void unregisterUnexpectedServiceWorkers();
+
+    if (import.meta.env.DEV) {
+      return;
+    }
+
+    const checkVersion = async (reason: 'mount' | 'visible' | 'interval') => {
+      if (isCheckingRef.current || isReloadingRef.current) return;
+
+      const now = Date.now();
+      if (reason !== 'mount' && now - lastCheckRef.current < CHECK_COOLDOWN_MS) {
+        return;
+      }
+      lastCheckRef.current = now;
+      isCheckingRef.current = true;
+
+      try {
+        const response = await fetch(`${VERSION_ENDPOINT}?ts=${Date.now()}`, {
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          console.warn('[APP_VERSION] version check request failed', {
+            status: response.status,
+            reason,
+          });
+          return;
+        }
+
+        const payload = (await response.json()) as BuildVersionPayload;
+        const serverVersion = typeof payload.version === 'string' ? payload.version : null;
+
+        if (!serverVersion) {
+          console.warn('[APP_VERSION] version payload missing build version', {
+            reason,
+            payload,
+          });
+          return;
+        }
+
+        if (serverVersion === __BUILD_VERSION__) {
+          return;
+        }
+
+        if (shouldSkipReload(serverVersion)) {
+          console.warn('[APP_VERSION] stale build detected again; skipping duplicate reload', {
+            current_version: __BUILD_VERSION__,
+            server_version: serverVersion,
+            reason,
+          });
+          return;
+        }
+
+        isReloadingRef.current = true;
+        markReload(serverVersion);
+        console.warn('[APP_VERSION] stale build detected, reloading application', {
+          current_version: __BUILD_VERSION__,
+          server_version: serverVersion,
+          built_at: payload.builtAt || null,
+          reason,
+        });
+        window.location.reload();
+      } catch (error) {
+        console.warn('[APP_VERSION] version check failed', {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        isCheckingRef.current = false;
       }
     };
 
-    document.addEventListener('visibilitychange', handleVisibility);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void checkVersion('visible');
+      }
+    };
 
-    // Store baseline on mount
-    checkVersion();
+    void checkVersion('mount');
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void checkVersion('interval');
+      }
+    }, CHECK_COOLDOWN_MS);
 
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.clearInterval(intervalId);
     };
   }, []);
 };

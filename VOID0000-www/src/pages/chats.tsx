@@ -39,7 +39,14 @@ const ChatDashboard = () => {
     channelConversationId?: string;
   }>();
   const { loading, user } = useAuth();
-  const { keyStatus, keyStatusLoading, isLoggingOut, unlockWithRecoveryPhrase, logout } = useUser();
+  const {
+    keyStatus,
+    keyStatusLoading,
+    mlsRecoveryGate,
+    isLoggingOut,
+    unlockWithRecoveryPhrase,
+    logout,
+  } = useUser();
 
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
 
@@ -274,6 +281,10 @@ const ChatDashboard = () => {
   };
 
   const getEncryptionHint = (error: string) => {
+    if (mlsRecoveryGate.pending) {
+      return 'This device is still preparing secure chat. Messages will appear once recovery finishes.';
+    }
+
     if (
       error.includes('private keys') ||
       error.includes('not available')
@@ -285,7 +296,42 @@ const ChatDashboard = () => {
       return 'This account does not have a usable group key yet. Ask the group owner to resend key distribution for your account.';
     }
 
-    return 'The other user needs to initialize their encryption keys. Ask them to log in to secure this conversation.';
+    if (error.includes('preparing secure chat')) {
+      return 'Secure chat is still preparing for this conversation. Retry in a moment.';
+    }
+
+    return 'Secure chat is not ready for this conversation yet. Retry in a moment.';
+  };
+
+  const getMlsRecoveryGateCopy = () => {
+    if (mlsRecoveryGate.pending) {
+      return {
+        title: 'Preparing secure chat',
+        body:
+          'This device is still restoring MLS conversation state in the background. Chats will open automatically once secure recovery becomes usable.',
+      };
+    }
+
+    switch (mlsRecoveryGate.reason) {
+      case 'password_required':
+        return {
+          title: 'Secure chat recovery needs your password',
+          body:
+            'This device restored your sign-in state, but it still does not have the MLS conversation state needed to decrypt existing chats. Sign out and log in again with your account password on this device so secure chat recovery can complete. Recovery-key unlock currently restores identity only.',
+        };
+      case 'restore_failed':
+        return {
+          title: 'Secure chat recovery did not complete',
+          body:
+            'The server has MLS recovery data for this account, but this device could not restore it cleanly. Sign out and log in again with your latest password. If that still fails, use a device that can still read your chats before continuing here.',
+        };
+      default:
+        return {
+          title: 'Secure chat recovery is incomplete',
+          body:
+            'The server reported MLS recovery data for this account, but this device still has no usable conversation state. Do not continue in chat on this device yet. Sign out and log in again with your password so secure chat recovery can retry.',
+        };
+    }
   };
 
   if (loading || keyStatusLoading || isLoggingOut) {
@@ -293,6 +339,66 @@ const ChatDashboard = () => {
       <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
         <div className="text-void-text text-lg font-medium">
           {isLoggingOut ? 'Signing you out...' : 'Preparing your secure chat session...'}
+        </div>
+      </div>
+    );
+  }
+
+  if (mlsRecoveryGate.pending) {
+    const gateCopy = getMlsRecoveryGateCopy();
+    return (
+      <div className="min-h-screen bg-void-bg-main text-void-text flex items-center justify-center p-6">
+        <div className="w-full max-w-xl bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl p-8 space-y-6">
+          <div className="space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
+              <ShieldAlert className="w-6 h-6 text-blue-400" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-semibold">{gateCopy.title}</h1>
+              <p className="text-sm text-void-text-muted mt-2">
+                {gateCopy.body}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 text-sm text-void-text-muted">
+            <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            <span>Continuing MLS recovery checks in the background...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (mlsRecoveryGate.active) {
+    const gateCopy = getMlsRecoveryGateCopy();
+    return (
+      <div className="min-h-screen bg-void-bg-main text-void-text flex items-center justify-center p-6">
+        <div className="w-full max-w-xl bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl p-8 space-y-6">
+          <div className="space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+              <ShieldAlert className="w-6 h-6 text-amber-400" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-semibold">{gateCopy.title}</h1>
+              <p className="text-sm text-void-text-muted mt-2">
+                {gateCopy.body}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={async () => {
+                await logout();
+                navigate('/auth', { replace: true });
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-border bg-gray-900 text-void-text px-4 py-3 font-medium"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </div>
     );
