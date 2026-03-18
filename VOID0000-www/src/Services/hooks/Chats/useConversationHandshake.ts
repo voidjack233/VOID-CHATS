@@ -68,6 +68,7 @@ export const useConversationHandshake = ({
   const [keyVersion, setKeyVersion] = useState(1);
   const [encryptionError, setEncryptionError] = useState<string | null>(null);
   const [handshakeRetryToken, setHandshakeRetryToken] = useState(0);
+  const preparingRetryAttemptsRef = useRef<Record<string, number>>({});
 
   // Callback refs: keep the latest callbacks without adding them to the
   // handshake effect's dep array, which would trigger spurious re-runs.
@@ -182,6 +183,7 @@ export const useConversationHandshake = ({
   // Handshake setup
   useEffect(() => {
     let ignore = false;
+    let scheduledPrepareRetry: number | null = null;
 
     const setupConversation = async () => {
       if (!activeConversation || !user?.id) return;
@@ -189,6 +191,7 @@ export const useConversationHandshake = ({
       const keyScopeId = getConversationKeyScopeId(activeConversation) || activeConversation.id;
       const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
       const keyLookupConversation = getKeyLookupConversation(activeConversation);
+      const preparingRetryKey = `${keyScopeId}:${requiredGroupVersion || 'none'}`;
 
       console.log('[HANDSHAKE] starting conversation handshake', {
         conversation_id: activeConversation.id,
@@ -301,6 +304,14 @@ export const useConversationHandshake = ({
         });
         setMembers(memberMap);
         resolvedMemberIds = Object.keys(memberMap);
+        const ownerConversation = activeGroup || activeConversation;
+        const currentUserRole =
+          memberMap[user.id]?.role ||
+          ownerConversation?.role ||
+          null;
+        const canMutateGroupMembership =
+          ownerConversation?.type !== 'dm' &&
+          currentUserRole === 'owner';
 
         const peerId =
           activeConversation.type === 'dm'
@@ -359,6 +370,7 @@ export const useConversationHandshake = ({
           conversation_type: activeConversation.type,
           key_version: version,
         });
+        delete preparingRetryAttemptsRef.current[preparingRetryKey];
 
         if (key) {
           setHandshakeEntry(keyScopeId, {
@@ -385,11 +397,17 @@ export const useConversationHandshake = ({
         // state can add missing members and fan out welcomes/commits.
         // This ensures new members get keys as soon as ANY existing member
         // opens the conversation — not just the owner.
-        const ownerConversation = activeGroup || activeConversation;
-        if (ownerConversation && ownerConversation.type !== 'dm') {
+        if (ownerConversation && ownerConversation.type !== 'dm' && canMutateGroupMembership) {
           ensureGroupKeyDistribution(ownerConversation, user.id, resolvedMemberIds).catch(
             () => {},
           );
+        } else if (ownerConversation && ownerConversation.type !== 'dm') {
+          console.log('[GROUP_DISTRIBUTION] skipping automatic redistribution on non-owner device', {
+            conversation_id: ownerConversation.id,
+            current_user_id: user.id,
+            current_user_role: currentUserRole,
+            required_group_version: requiredGroupVersion ?? null,
+          });
         }
       } catch (err: any) {
         if (ignore) return;
@@ -455,10 +473,15 @@ export const useConversationHandshake = ({
           // state can create a fresh group and redistribute keys to everyone.
           // This handles new-device logins where IndexedDB is empty.
           const ownerConversation = activeGroup || activeConversation;
+          const currentUserRole = ownerConversation?.role || null;
+          const canMutateGroupMembership =
+            ownerConversation?.type !== 'dm' &&
+            currentUserRole === 'owner';
           if (
             ownerConversation &&
             ownerConversation.type !== 'dm' &&
-            resolvedMemberIds.length > 0
+            resolvedMemberIds.length > 0 &&
+            canMutateGroupMembership
           ) {
             try {
               console.log('[GROUP_SELF_HEAL] attempting group key recovery', {
@@ -493,6 +516,54 @@ export const useConversationHandshake = ({
             }
           }
 
+          if (
+            ownerConversation &&
+            ownerConversation.type !== 'dm' &&
+            !canMutateGroupMembership
+          ) {
+            const nextAttempt = (preparingRetryAttemptsRef.current[preparingRetryKey] || 0) + 1;
+            preparingRetryAttemptsRef.current[preparingRetryKey] = nextAttempt;
+            console.log('[GROUP_SELF_HEAL] skipping owner self-heal on non-owner device', {
+              conversation_id: ownerConversation.id,
+              current_user_id: user.id,
+              current_user_role: currentUserRole,
+              required_group_version: requiredGroupVersion ?? null,
+              preparing_retry_attempt: nextAttempt,
+            });
+            if (nextAttempt <= 3) {
+              const retryDelayMs = 1200 * nextAttempt;
+              scheduledPrepareRetry = window.setTimeout(() => {
+                void chatCryptoProtocolService.syncInbox(user.id, true)
+                  .then((syncResult) => {
+                    console.log('[GROUP_PREPARE] background retry after rejoin', {
+                      conversation_id: ownerConversation.id,
+                      required_group_version: requiredGroupVersion ?? null,
+                      attempt: nextAttempt,
+                      retry_delay_ms: retryDelayMs,
+                      synced_group_states: syncResult.syncedGroupStates,
+                      synced_welcomes: syncResult.syncedWelcomes,
+                      synced_commits: syncResult.syncedCommits,
+                    });
+                  })
+                  .catch((retryErr) => {
+                    console.warn('[GROUP_PREPARE] background retry sync failed', {
+                      conversation_id: ownerConversation.id,
+                      required_group_version: requiredGroupVersion ?? null,
+                      attempt: nextAttempt,
+                      error: retryErr instanceof Error ? retryErr.message : String(retryErr || ''),
+                    });
+                  })
+                  .finally(() => {
+                    if (!ignore) {
+                      retryHandshake();
+                    }
+                  });
+              }, retryDelayMs);
+            }
+            setEncryptionError('Secure chat is still preparing for this conversation. Retry in a moment.');
+            return;
+          }
+
           setEncryptionError('Unable to decrypt group keys');
           return;
         }
@@ -504,6 +575,9 @@ export const useConversationHandshake = ({
     setupConversation();
     return () => {
       ignore = true;
+      if (scheduledPrepareRetry != null) {
+        window.clearTimeout(scheduledPrepareRetry);
+      }
     };
   }, [
     activeConversation?.id,

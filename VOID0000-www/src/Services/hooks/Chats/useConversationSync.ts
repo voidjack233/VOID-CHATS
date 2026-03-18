@@ -18,6 +18,8 @@ import { messageStore } from '../../Chat/chatStore';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
 import { deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
 import { matchesConversationIdentifier, pickInitialChannel } from '../../Chat/utils/conversationUtils';
+import { keyManager } from '../../Crypto/keyManager';
+import { mlsStore } from '../../Crypto/mls/mlsStore';
 
 interface UseConversationSyncParams {
   activeConversation: Conversation | null;
@@ -188,6 +190,12 @@ export const useConversationSync = ({
         deleteConversationDetails(id);
       });
 
+      console.log('[MLS_MEMBER_REMOVE] clearing local conversation caches after removal', {
+        conversation_id: conversationId,
+        conversation_public_id: conversationPublicId,
+        affected_user_id: affectedUserId || user.id,
+      });
+
       // Clear the local IndexedDB message cache for this conversation
       // (and its channels if it was a group) so the user won't see
       // pre-kick messages if they rejoin.
@@ -197,12 +205,28 @@ export const useConversationSync = ({
           messageStore.clearConversation(channel.id).catch(() => {});
           if (channel.public_id) {
             deleteHandshakeEntry(channel.public_id);
-            deleteConversationDetails(channel.public_id);
+          deleteConversationDetails(channel.public_id);
           }
           deleteHandshakeEntry(channel.id);
           deleteConversationDetails(channel.id);
         });
       }
+
+      void (async () => {
+        try {
+          const deletedKeyVersions = await keyManager.deleteAllGroupKeys(conversationId);
+          await mlsStore.deleteGroupState(conversationId);
+          console.log('[MLS_MEMBER_REMOVE] cleared local MLS state after removal', {
+            conversation_id: conversationId,
+            deleted_group_key_versions: deletedKeyVersions,
+          });
+        } catch (err) {
+          console.warn('[MLS_MEMBER_REMOVE] failed to clear local MLS state after removal', {
+            conversation_id: conversationId,
+            error: err instanceof Error ? err.message : String(err || ''),
+          });
+        }
+      })();
 
       if (
         matchesConversationIdentifier(activeConversation, conversationId) ||

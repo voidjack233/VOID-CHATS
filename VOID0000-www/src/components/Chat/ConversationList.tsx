@@ -132,14 +132,23 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
       );
     };
 
+    const handleGatewayResync = () => {
+      console.log('[WS_RESYNC] refreshing conversation list after gateway resume/ready');
+      void loadConversations();
+    };
+
     gateway.on('MESSAGE_CREATE', handleMessageCreate);
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     gateway.on('MEMBER_LEAVE', handleMemberLeave);
+    gateway.on('READY', handleGatewayResync);
+    gateway.on('RESUMED', handleGatewayResync);
 
     return () => {
       gateway.off('MESSAGE_CREATE', handleMessageCreate);
       gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
       gateway.off('MEMBER_LEAVE', handleMemberLeave);
+      gateway.off('READY', handleGatewayResync);
+      gateway.off('RESUMED', handleGatewayResync);
     };
   }, []);
 

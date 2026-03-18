@@ -276,8 +276,14 @@ router.post('/', async (req, res) => {
     };
 
     const members = await getConversationMembers(conversationId);
+    console.log('[WS_FANOUT] MESSAGE_CREATE', {
+      conversation_id: conversationId,
+      sender_id: userId,
+      recipient_count: members.length,
+      includes_sender_sessions: true,
+    });
     members.forEach((memberId) => {
-      if (memberId !== userId) sendLiveEventToUser(memberId, 'MESSAGE_CREATE', message);
+      sendLiveEventToUser(memberId, 'MESSAGE_CREATE', message);
     });
 
     res.status(201).json({ success: true, message });
@@ -685,8 +691,14 @@ router.put('/:messageId', async (req, res) => {
     };
 
     const members = await getConversationMembers(conversationId);
+    console.log('[WS_FANOUT] MESSAGE_UPDATE', {
+      conversation_id: conversationId,
+      sender_id: userId,
+      recipient_count: members.length,
+      includes_sender_sessions: true,
+    });
     members.forEach((memberId) => {
-      if (memberId !== userId) sendLiveEventToUser(memberId, 'MESSAGE_UPDATE', update);
+      sendLiveEventToUser(memberId, 'MESSAGE_UPDATE', update);
     });
 
     res.json({ success: true, ...update });
@@ -737,8 +749,14 @@ router.delete('/:messageId', async (req, res) => {
     };
 
     const members = await getConversationMembers(conversationId);
+    console.log('[WS_FANOUT] MESSAGE_DELETE', {
+      conversation_id: conversationId,
+      sender_id: userId,
+      recipient_count: members.length,
+      includes_sender_sessions: true,
+    });
     members.forEach((memberId) => {
-      if (memberId !== userId) sendLiveEventToUser(memberId, 'MESSAGE_DELETE', deletion);
+      sendLiveEventToUser(memberId, 'MESSAGE_DELETE', deletion);
     });
 
     res.json({ success: true, message: 'Message deleted' });

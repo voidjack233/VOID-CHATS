@@ -831,6 +831,28 @@ export const keyManager = {
       tx.onerror = () => reject(tx.error);
     });
   },
+  deleteAllGroupKeys: async (id: string): Promise<number> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(KEY_STORE, 'readwrite');
+      const store = tx.objectStore(KEY_STORE);
+      const request = store.getAllKeys();
+      let deleted = 0;
+
+      request.onsuccess = () => {
+        const prefix = `group:${id}:`;
+        const keys = (request.result ?? []).filter((key): key is string =>
+          typeof key === 'string' && key.startsWith(prefix)
+        );
+        deleted = keys.length;
+        keys.forEach((key) => store.delete(key));
+      };
+      request.onerror = () => reject(request.error);
+      tx.oncomplete = () => resolve(deleted);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  },
   getGroupKey: async (id: string, v: number) => {
     const stored = await dbGet(`group:${id}:${v}`);
     return stored

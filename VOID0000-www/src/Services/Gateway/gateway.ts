@@ -83,6 +83,11 @@ class Gateway {
     window.addEventListener('online', this.handleOnline);
 
     const wsUrl = this.resolveGatewayUrl();
+    console.log('[GATEWAY] connecting', {
+      user_id: userId,
+      resumable: this.canResume && Boolean(this.sessionId),
+      client_instance_id: this.clientInstanceId,
+    });
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -130,12 +135,25 @@ class Gateway {
         return;
       }
 
+      if (event.code === 4007) {
+        console.log('[GATEWAY] session resume rejected, reconnecting with fresh identify');
+        this.invalidateSession();
+        this.cleanup();
+        this.scheduleReconnect();
+        return;
+      }
+
       // Mark session as resumable (normal disconnect, not auth failure)
       if (this.sessionId && this.lastSequence > 0) {
         this.canResume = true;
       }
 
-      console.log('Gateway closed:', event.code);
+      console.log('[GATEWAY] closed', {
+        code: event.code,
+        can_resume: this.canResume,
+        last_sequence: this.lastSequence,
+        session_id: this.sessionId,
+      });
       this.cleanup();
       this.scheduleReconnect();
     };
@@ -160,8 +178,13 @@ class Gateway {
 
         // Try resume if we have a valid session, otherwise identify fresh
         if (this.canResume && this.sessionId) {
+          console.log('[GATEWAY] hello received, attempting resume', {
+            session_id: this.sessionId,
+            last_sequence: this.lastSequence,
+          });
           this.resume();
         } else {
+          console.log('[GATEWAY] hello received, identifying fresh');
           this.identify();
         }
         break;
@@ -174,6 +197,7 @@ class Gateway {
       case OP.RESUMED:
         console.log(`Session resumed, ${d.replayed} events replayed`);
         this.canResume = false;
+        this.emit('RESUMED', d);
         break;
 
       case OP.EVENT:
@@ -295,6 +319,10 @@ class Gateway {
     this.lastSequence = 0;
     this.sessionId = null;
     this.canResume = false;
+    console.log('[GATEWAY] identify', {
+      user_id: this.userId,
+      client_instance_id: this.clientInstanceId,
+    });
     this.send({
       op: OP.IDENTIFY,
       d: {
@@ -305,7 +333,10 @@ class Gateway {
   }
 
   private resume() {
-    console.log(`Resuming session ${this.sessionId} from seq ${this.lastSequence}`);
+    console.log('[GATEWAY] resume', {
+      session_id: this.sessionId,
+      last_sequence: this.lastSequence,
+    });
     this.send({
       op: OP.RESUME,
       d: {
@@ -332,12 +363,12 @@ class Gateway {
         this.missedHeartbeatAcks += 1;
 
         if (this.missedHeartbeatAcks >= 2) {
-          console.log('Missed two heartbeat ACKs, reconnecting websocket');
+          console.log('[GATEWAY] missed two heartbeat ACKs, reconnecting websocket');
           this.ws?.close();
           return;
         }
 
-        console.log('Missed heartbeat ACK, tolerating one miss before reconnect');
+        console.log('[GATEWAY] missed heartbeat ACK, tolerating one miss before reconnect');
       }
 
       this.waitingForAck = true;

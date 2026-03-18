@@ -11,6 +11,7 @@ import {
 } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
+import { gateway } from '../../Gateway/gateway';
 import {
   MESSAGE_CACHE_LIMIT,
   MESSAGE_INITIAL_PAGE_SIZE,
@@ -688,6 +689,85 @@ export const useMessageList = (
       setLoadingNewer(false);
     }
   }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
+
+  const reconcileRecentMessages = useCallback(async (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
+    if (!encryptionKey) return;
+
+    const newest = messagesRef.current[messagesRef.current.length - 1];
+    if (!newest) return;
+
+    console.log('[WS_RESYNC] reconciling active conversation after reconnect/visibility', {
+      conversation_id: conversationId,
+      source,
+      after_message_id: newest.message_id,
+    });
+
+    try {
+      const serverResult = await getMessages(conversationId, encryptionKey, {
+        after: newest.message_id,
+        limit: FETCH_SIZE,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion,
+      });
+
+      if (serverResult.messages.length === 0) {
+        return;
+      }
+
+      const localMsgs = toLocalMessages(serverResult.messages);
+      if (localMsgs.length > 0) {
+        await messageStore.putMessages(localMsgs);
+      }
+
+      const newerUI = sortMessages(serverResult.messages);
+      setMessages((prev) => {
+        const merged = [...prev, ...newerUI];
+        const unique = Array.from(
+          new Map(merged.map((message) => [message.message_id, message])).values()
+        );
+        return trimMessages(unique, 'old');
+      });
+      setHasNewer(serverResult.has_more || serverResult.messages.length >= FETCH_SIZE);
+      setIsAtPresent(!(serverResult.has_more || serverResult.messages.length >= FETCH_SIZE));
+      onMessagesLoaded?.(newerUI);
+    } catch (err) {
+      console.error('Failed to reconcile missed messages after reconnect:', err);
+    }
+  }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, onMessagesLoaded, userId]);
+
+  useEffect(() => {
+    if (!encryptionKey) return;
+
+    let lastResyncAt = 0;
+
+    const runResync = (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
+      const now = Date.now();
+      if (now - lastResyncAt < 1500) {
+        return;
+      }
+      lastResyncAt = now;
+      void reconcileRecentMessages(source);
+    };
+
+    const handleReady = () => runResync('gateway_ready');
+    const handleResumed = () => runResync('gateway_resumed');
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        runResync('tab_visible');
+      }
+    };
+
+    gateway.on('READY', handleReady);
+    gateway.on('RESUMED', handleResumed);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      gateway.off('READY', handleReady);
+      gateway.off('RESUMED', handleResumed);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [encryptionKey, reconcileRecentMessages]);
 
   // ============== Jump to Present ==============
   const jumpToPresent = useCallback(async () => {
