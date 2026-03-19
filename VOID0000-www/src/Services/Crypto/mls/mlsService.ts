@@ -987,7 +987,15 @@ class MlsService {
     impl: CiphersuiteImpl
   ): Promise<boolean> {
     const state = await loadGroupState(commit.conversationId);
-    if (!state) return false;
+    if (!state) {
+      console.log('[MLS_COMMIT] skipping commit without local group state', {
+        conversation_id: commit.conversationId,
+        commit_ref: commit.commitRef,
+        commit_epoch: commit.epoch ?? null,
+      });
+      return false;
+    }
+    const localEpoch = Number(state.groupContext.epoch);
 
     const commitBytes = base64ToBytes(commit.payload);
     const decoded = decodeMlsMessage(commitBytes, 0);
@@ -996,17 +1004,28 @@ class MlsService {
 
     let newState: ClientState;
 
-    if (msg.wireformat === 'mls_private_message') {
-      const result = await processPrivateMessage(state, msg.privateMessage, emptyPskIndex, impl, acceptAll);
-      result.consumed.forEach(zeroOutUint8Array);
-      if (result.kind !== 'newState') return false;
-      newState = result.newState;
-    } else if (msg.wireformat === 'mls_public_message') {
-      const result = await processPublicMessage(state, msg.publicMessage, emptyPskIndex, impl, acceptAll);
-      result.consumed.forEach(zeroOutUint8Array);
-      newState = result.newState;
-    } else {
-      return false;
+    try {
+      if (msg.wireformat === 'mls_private_message') {
+        const result = await processPrivateMessage(state, msg.privateMessage, emptyPskIndex, impl, acceptAll);
+        result.consumed.forEach(zeroOutUint8Array);
+        if (result.kind !== 'newState') return false;
+        newState = result.newState;
+      } else if (msg.wireformat === 'mls_public_message') {
+        const result = await processPublicMessage(state, msg.publicMessage, emptyPskIndex, impl, acceptAll);
+        result.consumed.forEach(zeroOutUint8Array);
+        newState = result.newState;
+      } else {
+        return false;
+      }
+    } catch (err) {
+      console.warn('[MLS_COMMIT] commit apply failed', {
+        conversation_id: commit.conversationId,
+        commit_ref: commit.commitRef,
+        commit_epoch: commit.epoch ?? null,
+        local_epoch: localEpoch,
+        error: err instanceof Error ? err.message : String(err || ''),
+      });
+      throw err;
     }
 
     await this.persistGroupState(commit.conversationId, newState, {

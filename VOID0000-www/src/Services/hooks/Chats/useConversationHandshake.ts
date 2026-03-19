@@ -201,11 +201,17 @@ export const useConversationHandshake = ({
       });
 
       const cached = getHandshakeEntry(keyScopeId);
-      if (cached && (!requiredGroupVersion || cached.version === requiredGroupVersion)) {
+      const cachedSatisfiesRequiredVersion =
+        !requiredGroupVersion ||
+        (activeConversation.type === 'dm'
+          ? cached?.version === requiredGroupVersion
+          : (cached?.version ?? 0) >= requiredGroupVersion);
+      if (cached && cachedSatisfiesRequiredVersion) {
         console.log('[HANDSHAKE] using cached handshake entry', {
           conversation_id: activeConversation.id,
           key_scope_id: keyScopeId,
           key_version: cached.version,
+          required_group_version: requiredGroupVersion ?? null,
         });
         setEncryptionError(null);
         setMembers(cached.members);
@@ -214,7 +220,14 @@ export const useConversationHandshake = ({
         return;
       }
 
-      const staleHandshake = cached && requiredGroupVersion && cached.version !== requiredGroupVersion;
+      const staleHandshake =
+        !!cached &&
+        !!requiredGroupVersion &&
+        (
+          activeConversation.type === 'dm'
+            ? cached.version !== requiredGroupVersion
+            : cached.version < requiredGroupVersion
+        );
       if (staleHandshake) {
         console.warn('[HANDSHAKE] evicting stale cached handshake', {
           conversation_id: activeConversation.id,
@@ -302,6 +315,9 @@ export const useConversationHandshake = ({
         hydratedMembers.forEach((m: any) => {
           memberMap[m.user_id] = m;
         });
+        const joinedKeyVersionFloor = normalizeRequiredVersion(
+          memberMap[user.id]?.joined_key_version ?? null,
+        );
         setMembers(memberMap);
         resolvedMemberIds = Object.keys(memberMap);
         const ownerConversation = activeGroup || activeConversation;
@@ -328,6 +344,17 @@ export const useConversationHandshake = ({
 
         let keyResult: { key: CryptoKey; version: number } | null = null;
         let lastKeyError: Error | null = null;
+        const acceptsNewerGroupVersion = activeConversation.type !== 'dm';
+
+        console.log('[HANDSHAKE] derived group version requirement', {
+          conversation_id: activeConversation.id,
+          conversation_type: activeConversation.type,
+          current_key_version: activeConversation.current_key_version ?? null,
+          active_group_key_version: activeGroup?.current_key_version ?? null,
+          joined_key_version_floor: joinedKeyVersionFloor,
+          required_group_version: requiredGroupVersion ?? null,
+          accepts_newer_group_version: acceptsNewerGroupVersion,
+        });
 
         for (let attempt = 0; attempt < 3; attempt += 1) {
           try {
@@ -336,11 +363,15 @@ export const useConversationHandshake = ({
               conversation_type: activeConversation.type,
               attempt: attempt + 1,
               requested_version: requiredGroupVersion || null,
+              joined_key_version_floor: joinedKeyVersionFloor,
             });
             keyResult = await getEncryptionKey(
               user.id,
               keyLookupConversation,
               requiredGroupVersion || undefined,
+              {
+                allowNewerGroupVersion: acceptsNewerGroupVersion,
+              },
             );
             lastKeyError = null;
             break;
@@ -369,8 +400,26 @@ export const useConversationHandshake = ({
           conversation_id: activeConversation.id,
           conversation_type: activeConversation.type,
           key_version: version,
+          required_group_version: requiredGroupVersion ?? null,
         });
         delete preparingRetryAttemptsRef.current[preparingRetryKey];
+
+        if (
+          ownerConversation &&
+          ownerConversation.type !== 'dm' &&
+          requiredGroupVersion &&
+          version > requiredGroupVersion
+        ) {
+          console.log('[HANDSHAKE] accepted newer group version than conversation metadata', {
+            conversation_id: ownerConversation.id,
+            required_group_version: requiredGroupVersion,
+            resolved_group_version: version,
+          });
+          onPatchConversationRef.current({
+            ...ownerConversation,
+            current_key_version: version,
+          });
+        }
 
         if (key) {
           setHandshakeEntry(keyScopeId, {

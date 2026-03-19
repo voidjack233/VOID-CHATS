@@ -287,11 +287,34 @@ router.post('/group-states', async (req, res) => {
            epoch = EXCLUDED.epoch,
            state_blob = EXCLUDED.state_blob,
            updated_at = NOW()
+         WHERE mls_group_states.epoch IS NULL
+            OR EXCLUDED.epoch >= mls_group_states.epoch
          RETURNING conversation_id::text AS conversation_id, group_id, epoch, updated_at`,
         [resolved.conversationId, groupId, epoch, stateBlob]
       );
 
-      upserted.push(result.rows[0]);
+      if (result.rows[0]) {
+        upserted.push(result.rows[0]);
+        continue;
+      }
+
+      const existing = await client.query(
+        `SELECT conversation_id::text AS conversation_id, group_id, epoch, updated_at
+         FROM mls_group_states
+         WHERE conversation_id = $1::UUID
+         LIMIT 1`,
+        [resolved.conversationId]
+      );
+
+      if (existing.rows[0]) {
+        console.log('[MLS_GROUP_STATE] ignoring stale upload', {
+          conversation_id: resolved.conversationId,
+          requester_user_id: requesterUserId,
+          incoming_epoch: epoch,
+          stored_epoch: existing.rows[0].epoch,
+        });
+        upserted.push(existing.rows[0]);
+      }
     }
 
     await client.query('COMMIT');
@@ -677,6 +700,7 @@ router.post('/sync', async (req, res) => {
              JOIN conversation_members cm
                ON cm.conversation_id = gs.conversation_id
              WHERE cm.user_id = $1::UUID
+               AND gs.epoch >= COALESCE(cm.joined_key_version, 1)
              ORDER BY gs.updated_at DESC
              LIMIT $2`,
             [requesterUserId, limit]
@@ -709,6 +733,10 @@ router.post('/sync', async (req, res) => {
                ON cm.conversation_id = commits.conversation_id
              WHERE cm.user_id = $1::UUID
                AND commits.applied_at IS NULL
+               AND (
+                 commits.epoch IS NULL
+                 OR commits.epoch >= GREATEST(COALESCE(cm.joined_key_version, 1) - 1, 1)
+               )
              ORDER BY commits.received_at ASC
              LIMIT $2`,
             [requesterUserId, limit]

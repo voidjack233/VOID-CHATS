@@ -1108,12 +1108,17 @@ export async function createSecureGroup(
 export async function getEncryptionKey(
   userId: string,
   conversation: Conversation,
-  requestedKeyVersion?: number
+  requestedKeyVersion?: number,
+  options?: {
+    allowNewerGroupVersion?: boolean;
+  },
 ): Promise<{ key: CryptoKey; version: number }> {
   // --- GROUP / DM LOGIC (MLS for all conversation types) ---
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
   const hasRequestedVersion = Number.isInteger(requestedKeyVersion) && (requestedKeyVersion as number) > 0;
   const requestedVersion = hasRequestedVersion ? (requestedKeyVersion as number) : null;
+  const allowNewerGroupVersion =
+    conversation.type !== 'dm' && options?.allowNewerGroupVersion === true;
 
   // Local-first for explicit version lookups.
   if (requestedVersion != null) {
@@ -1141,6 +1146,19 @@ export async function getEncryptionKey(
   if (syncedGroupKey) {
     console.log('[KEY_RESOLVE] syncInbox resolved key', { conversation_id: keyConversationId, targetVersion });
     return { key: syncedGroupKey, version: targetVersion };
+  }
+
+  if (allowNewerGroupVersion) {
+    const newerGroupKey = await keyManager.findAnyGroupKey(keyConversationId);
+    if (newerGroupKey && newerGroupKey.version > targetVersion) {
+      console.log('[KEY_RESOLVE] accepting newer synced group version', {
+        conversation_id: keyConversationId,
+        conversation_type: conversation.type,
+        target_version: targetVersion,
+        accepted_version: newerGroupKey.version,
+      });
+      return { key: newerGroupKey.key, version: newerGroupKey.version };
+    }
   }
 
   // Fallback: the MLS epoch may have drifted from the server's current_key_version.
