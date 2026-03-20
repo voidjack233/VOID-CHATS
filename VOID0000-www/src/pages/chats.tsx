@@ -92,7 +92,6 @@ const ChatDashboard = () => {
     handleBackToMe,
     openConversationByIdentifier,
     openGroupByIdentifier,
-    retryHandshake,
   } = useChatManager(user);
 
   const getRouteId = (conversation?: { public_id?: string | null }) => conversation?.public_id || null;

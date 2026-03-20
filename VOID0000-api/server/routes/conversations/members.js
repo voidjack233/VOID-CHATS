@@ -169,6 +169,133 @@ router.post('/rotate-add', async (req, res) => {
   }
 });
 
+// POST /api/conversations/:conversationId/members/rotate-add/rollback — revert
+// a failed add/re-add when MLS distribution never completed.
+router.post('/rotate-add/rollback', async (req, res) => {
+  const actorUserId = req.user.id;
+  const { conversationId } = req.params;
+  const requestedMembers = uniqueUserIds(req.body?.members);
+  const failedKeyVersion = normalizeKeyVersion(req.body?.failed_key_version, 0);
+
+  if (requestedMembers.length === 0) {
+    return res.status(400).json({ error: 'Members array required' });
+  }
+
+  if (failedKeyVersion <= 0) {
+    return res.status(400).json({ error: 'failed_key_version required' });
+  }
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const conversation = await resolveMembershipConversation(client, conversationId);
+    if (!conversation) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    if (conversation.type !== 'group') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Rotated membership changes are only supported for groups' });
+    }
+
+    const membership = await getGroupMembership(client, conversation.id, actorUserId);
+    if (!membership) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Not a member' });
+    }
+
+    if (membership.role !== 'owner') {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Only the owner can roll back failed member adds' });
+    }
+
+    const lockedVersionResult = await client.query(
+      'SELECT current_key_version FROM conversations WHERE id = $1 FOR UPDATE',
+      [conversation.id]
+    );
+    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
+    if (currentKeyVersion !== failedKeyVersion) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Cannot roll back key version ${failedKeyVersion}; conversation is now at ${currentKeyVersion}`,
+        code: 'ROLLBACK_NOT_POSSIBLE',
+        current_key_version: currentKeyVersion,
+      });
+    }
+
+    const addedMembersResult = await client.query(
+      `SELECT user_id::text AS user_id
+       FROM conversation_members
+       WHERE conversation_id = $1
+         AND user_id = ANY($2::UUID[])
+         AND joined_key_version = $3`,
+      [conversation.id, requestedMembers, failedKeyVersion]
+    );
+
+    if (addedMembersResult.rows.length !== requestedMembers.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Requested members no longer match the failed add operation',
+        code: 'ROLLBACK_NOT_POSSIBLE',
+      });
+    }
+
+    const childChannelIds = await getChildChannelIds(client, conversation.id);
+
+    await client.query(
+      `DELETE FROM conversation_members
+       WHERE conversation_id = $1
+         AND user_id = ANY($2::UUID[])
+         AND joined_key_version = $3`,
+      [conversation.id, requestedMembers, failedKeyVersion]
+    );
+
+    for (const channelId of childChannelIds) {
+      await client.query(
+        `DELETE FROM conversation_members
+         WHERE conversation_id = $1
+           AND user_id = ANY($2::UUID[])`,
+        [channelId, requestedMembers]
+      );
+    }
+
+    await client.query(
+      `DELETE FROM conversation_key_rotations
+       WHERE conversation_id = $1
+         AND new_key_version = $2
+         AND reason = 'member_add'
+         AND affected_user_id = ANY($3::UUID[])`,
+      [conversation.id, failedKeyVersion, requestedMembers]
+    );
+
+    await client.query(
+      `UPDATE conversations
+       SET current_key_version = $2,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [conversation.id, failedKeyVersion - 1]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      rolled_back: requestedMembers,
+      key_version: failedKeyVersion - 1,
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Rotate-add rollback error:', err);
+    res.status(500).json({ error: 'Failed to roll back member add' });
+  } finally {
+    client?.release();
+  }
+});
+
 // POST /api/conversations/:conversationId/members/rotate-remove — remove member with key rotation
 router.post('/rotate-remove', async (req, res) => {
   const actorUserId = req.user.id;

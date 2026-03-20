@@ -704,37 +704,21 @@ class MlsService {
         missingMemberUserIds = addProposalResult.missingUserIds;
       }
 
-      if (toAdd.length > 0 && proposals.length === 0 && toRemove.length === 0) {
-        console.error('[MLS_DISTRIBUTE] additions requested but no peer key packages were available — new members will NOT receive a welcome', {
+      if (toAdd.length > 0 && missingMemberUserIds.length > 0 && toRemove.length === 0) {
+        console.error('[MLS_DISTRIBUTE] refusing add/re-add without claimable peer key packages', {
           conversation_id: conversationId,
           conversation_type: input.conversation.type,
           requested_add_user_ids: toAdd,
+          added_member_user_ids: newMembersForWelcome,
           missing_member_user_ids: missingMemberUserIds,
           server_key_version: input.conversation.current_key_version ?? null,
           mls_epoch: Number(existingState.groupContext.epoch),
         });
-        // Do NOT skip the commit for group add operations — the server already
-        // bumped current_key_version.  Skipping the commit causes epoch drift:
-        // the owner stores the OLD epoch's key under the NEW server version,
-        // making it impossible for anyone to derive the correct key.
-        // Instead, create an empty commit to advance the epoch, keeping it in
-        // sync with the server version.  The missing members will recover via
-        // group state import on their next syncInbox.
-        try {
-          const commitResult = await createCommit(
-            { state: existingState, cipherSuite: impl },
-            { extraProposals: [], ratchetTreeExtension: false }
-          );
-          commitResult.consumed.forEach(zeroOutUint8Array);
-          newState = commitResult.newState;
-          commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
-          existingPeers = currentMembers.filter((id) => id !== input.userId);
-        } catch (commitErr) {
-          if (input._retried) throw commitErr;
-          console.warn('[MLS] Commit failed — recreating group:', commitErr);
-          await mlsStore.deleteGroupState(conversationId);
-          return this.distributeGroupSenderKey({ ...input, _retried: true });
-        }
+        const error = new Error('One or more members are not ready for secure group add yet') as Error & {
+          code?: string;
+        };
+        error.code = 'MLS_ADD_KEY_PACKAGE_MISSING';
+        throw error;
       } else {
         for (const removeId of toRemove) {
           const leafIdx = findLeafIndex(existingState, removeId);

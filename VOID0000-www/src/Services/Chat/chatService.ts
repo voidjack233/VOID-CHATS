@@ -200,6 +200,21 @@ function createApiError(data: any): Error & Record<string, any> {
   return error;
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error || 'Request failed');
+}
+
+function isRollbackableMlsAddFailure(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return (error as { code?: unknown }).code === 'MLS_ADD_KEY_PACKAGE_MISSING';
+  }
+
+  return getErrorMessage(error).includes('not ready for secure group add yet');
+}
+
 function normalizeKeyVersion(value: unknown, fallback = 1): number {
   if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
     return value;
@@ -257,6 +272,44 @@ async function notifyMembershipUpdate(keyConversationId: string): Promise<void> 
     });
   } catch {
     // Best-effort: if this fails, members discover the change on next sync.
+  }
+}
+
+async function rollbackFailedRotateAdd(
+  keyConversationId: string,
+  memberIds: string[],
+  failedKeyVersion: number,
+): Promise<void> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-add/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({
+      members: memberIds,
+      failed_key_version: failedKeyVersion,
+    }),
+  });
+  const data = await res.json();
+  if (!data.success) {
+    throw createApiError(data);
+  }
+}
+
+async function rollbackFailedApproval(
+  keyConversationId: string,
+  requestId: number,
+  failedKeyVersion: number,
+): Promise<void> {
+  const res = await fetchWithAuth(
+    `${API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/rollback-approval`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        failed_key_version: failedKeyVersion,
+      }),
+    }
+  );
+  const data = await res.json();
+  if (!data.success) {
+    throw createApiError(data);
   }
 }
 
@@ -679,11 +732,27 @@ export function rotateAddMembers(
     if (!data.success) throw createApiError(data);
     const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-    const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-      { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
-      currentUserId,
-      finalMemberIds
-    );
+    let mlsKey: CryptoKey;
+    try {
+      ({ key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+        { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+        currentUserId,
+        finalMemberIds
+      ));
+    } catch (error) {
+      if (!isRollbackableMlsAddFailure(error)) {
+        throw error;
+      }
+
+      const rollbackNotice = 'Server membership was rolled back.';
+      try {
+        await rollbackFailedRotateAdd(keyConversationId, additions, resolvedKeyVersion);
+      } catch (rollbackError) {
+        throw new Error(`${getErrorMessage(error)} Server membership rollback failed; manual cleanup required. ${getErrorMessage(rollbackError)}`);
+      }
+
+      throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
+    }
     await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
     await notifyMembershipUpdate(keyConversationId);
 
@@ -766,11 +835,27 @@ export function approveConversationJoinRequest(
     if (!data.success) throw createApiError(data);
     const resolvedKeyVersion = data.key_version || nextKeyVersion;
 
-    const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-      { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
-      currentUserId,
-      finalMemberIds
-    );
+    let mlsKey: CryptoKey;
+    try {
+      ({ key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+        { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+        currentUserId,
+        finalMemberIds
+      ));
+    } catch (error) {
+      if (!isRollbackableMlsAddFailure(error)) {
+        throw error;
+      }
+
+      const rollbackNotice = 'Server membership was rolled back.';
+      try {
+        await rollbackFailedApproval(keyConversationId, requestId, resolvedKeyVersion);
+      } catch (rollbackError) {
+        throw new Error(`${getErrorMessage(error)} Server membership rollback failed; manual cleanup required. ${getErrorMessage(rollbackError)}`);
+      }
+
+      throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
+    }
     await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
     await notifyMembershipUpdate(keyConversationId);
 

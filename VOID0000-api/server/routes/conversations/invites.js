@@ -376,6 +376,158 @@ router.post('/requests/:requestId/approve', async (req, res) => {
   }
 });
 
+// POST /api/conversations/:conversationId/invites/requests/:requestId/rollback-approval
+// Revert an approval when MLS add/welcome failed before secure membership completed.
+router.post('/requests/:requestId/rollback-approval', async (req, res) => {
+  const actorUserId = req.user.id;
+  const requestId = parseInt(req.params.requestId, 10);
+  const failedKeyVersion = normalizeKeyVersion(req.body?.failed_key_version, 0);
+
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    return res.status(400).json({ error: 'Valid requestId required' });
+  }
+
+  if (failedKeyVersion <= 0) {
+    return res.status(400).json({ error: 'failed_key_version required' });
+  }
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const { conversation, error } = await ensureOwnerConversation(client, req.params.conversationId, actorUserId);
+    if (error) {
+      await client.query('ROLLBACK');
+      return res.status(error.status).json(error.body);
+    }
+
+    const lockedVersionResult = await client.query(
+      'SELECT current_key_version FROM conversations WHERE id = $1 FOR UPDATE',
+      [conversation.id]
+    );
+    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
+    if (currentKeyVersion !== failedKeyVersion) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Cannot roll back key version ${failedKeyVersion}; conversation is now at ${currentKeyVersion}`,
+        code: 'ROLLBACK_NOT_POSSIBLE',
+        current_key_version: currentKeyVersion,
+      });
+    }
+
+    const requestResult = await client.query(
+      `SELECT id, requester_user_id, invite_link_id, status
+       FROM conversation_join_requests
+       WHERE id = $1 AND conversation_id = $2
+       LIMIT 1`,
+      [requestId, conversation.id]
+    );
+
+    if (requestResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Join request not found' });
+    }
+
+    const joinRequest = requestResult.rows[0];
+    if (joinRequest.status !== 'approved') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Join request is no longer approved',
+        code: 'ROLLBACK_NOT_POSSIBLE',
+      });
+    }
+
+    const memberResult = await client.query(
+      `SELECT 1
+       FROM conversation_members
+       WHERE conversation_id = $1
+         AND user_id = $2
+         AND joined_key_version = $3
+       LIMIT 1`,
+      [conversation.id, joinRequest.requester_user_id, failedKeyVersion]
+    );
+
+    if (memberResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Approved member no longer matches the failed add operation',
+        code: 'ROLLBACK_NOT_POSSIBLE',
+      });
+    }
+
+    const childChannelIds = await getChildChannelIds(client, conversation.id);
+
+    await client.query(
+      `DELETE FROM conversation_members
+       WHERE conversation_id = $1
+         AND user_id = $2
+         AND joined_key_version = $3`,
+      [conversation.id, joinRequest.requester_user_id, failedKeyVersion]
+    );
+
+    for (const channelId of childChannelIds) {
+      await client.query(
+        `DELETE FROM conversation_members
+         WHERE conversation_id = $1
+           AND user_id = $2`,
+        [channelId, joinRequest.requester_user_id]
+      );
+    }
+
+    await client.query(
+      `DELETE FROM conversation_key_rotations
+       WHERE conversation_id = $1
+         AND new_key_version = $2
+         AND reason = 'invite_accept'
+         AND affected_user_id = $3`,
+      [conversation.id, failedKeyVersion, joinRequest.requester_user_id]
+    );
+
+    await client.query(
+      `UPDATE conversations
+       SET current_key_version = $2,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [conversation.id, failedKeyVersion - 1]
+    );
+
+    await client.query(
+      `UPDATE conversation_join_requests
+       SET status = 'pending',
+           resolved_at = NULL,
+           resolved_by_user_id = NULL
+       WHERE id = $1`,
+      [joinRequest.id]
+    );
+
+    if (joinRequest.invite_link_id) {
+      await client.query(
+        `UPDATE conversation_invite_links
+         SET use_count = GREATEST(use_count - 1, 0)
+         WHERE id = $1`,
+        [joinRequest.invite_link_id]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      requester_user_id: joinRequest.requester_user_id,
+      key_version: failedKeyVersion - 1,
+      request_status: 'pending',
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Rollback approval error:', err);
+    res.status(500).json({ error: 'Failed to roll back join approval' });
+  } finally {
+    client?.release();
+  }
+});
+
 router.post('/requests/:requestId/decline', async (req, res) => {
   const actorUserId = req.user.id;
   const requestId = parseInt(req.params.requestId, 10);
