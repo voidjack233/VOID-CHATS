@@ -245,6 +245,7 @@ export const useConversationHandshake = ({
       }
 
       let resolvedMemberIds: string[] = [];
+      let fetchedUserRole: string | null = null;
 
       try {
         let conversationDetails = staleHandshake
@@ -320,9 +321,10 @@ export const useConversationHandshake = ({
         );
         setMembers(memberMap);
         resolvedMemberIds = Object.keys(memberMap);
+        fetchedUserRole = memberMap[user.id]?.role || null;
         const ownerConversation = activeGroup || activeConversation;
         const currentUserRole =
-          memberMap[user.id]?.role ||
+          fetchedUserRole ||
           ownerConversation?.role ||
           null;
         const canMutateGroupMembership =
@@ -522,7 +524,7 @@ export const useConversationHandshake = ({
           // state can create a fresh group and redistribute keys to everyone.
           // This handles new-device logins where IndexedDB is empty.
           const ownerConversation = activeGroup || activeConversation;
-          const currentUserRole = ownerConversation?.role || null;
+          const currentUserRole = fetchedUserRole || ownerConversation?.role || null;
           const canMutateGroupMembership =
             ownerConversation?.type !== 'dm' &&
             currentUserRole === 'owner';

@@ -623,15 +623,9 @@ const ChatDashboard = () => {
                 <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-void-bg-sec/50">
                   <ShieldAlert className="w-12 h-12 text-orange-400 mb-4 opacity-80" />
                   <p className="text-sm font-semibold text-void-text mb-2">{encryptionError}</p>
-                  <p className="text-xs text-void-text-muted mb-6 max-w-xs">
+                  <p className="text-xs text-void-text-muted max-w-xs">
                     {getEncryptionHint(encryptionError)}
                   </p>
-                  <button
-                    onClick={retryHandshake}
-                    className="px-6 py-2 bg-void-accent-hover hover:bg-void-accent text-white text-xs font-bold rounded-lg transition-all shadow-lg"
-                  >
-                    Retry Connection
-                  </button>
                 </div>
               ) : (
                 <>

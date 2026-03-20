@@ -705,53 +705,69 @@ class MlsService {
       }
 
       if (toAdd.length > 0 && proposals.length === 0 && toRemove.length === 0) {
-        console.warn('[MLS_DISTRIBUTE] additions requested but no peer key packages were available; skipping commit', {
+        console.error('[MLS_DISTRIBUTE] additions requested but no peer key packages were available — new members will NOT receive a welcome', {
           conversation_id: conversationId,
           conversation_type: input.conversation.type,
           requested_add_user_ids: toAdd,
           missing_member_user_ids: missingMemberUserIds,
+          server_key_version: input.conversation.current_key_version ?? null,
+          mls_epoch: Number(existingState.groupContext.epoch),
         });
-        const result = await deriveGroupAesKey(existingState, conversationId, impl);
-        await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
-        window.dispatchEvent(new Event('void:group-key-changed'));
-        return {
-          ...result,
-          includedMemberUserIds: currentMembers,
-          missingMemberUserIds,
-        };
-      }
-
-      for (const removeId of toRemove) {
-        const leafIdx = findLeafIndex(existingState, removeId);
-        if (leafIdx !== null) {
-          proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
-        }
-      }
-
-      try {
-        const commitResult = await createCommit(
-          { state: existingState, cipherSuite: impl },
-          { extraProposals: proposals, ratchetTreeExtension: toAdd.length > 0 }
-        );
-        commitResult.consumed.forEach(zeroOutUint8Array);
-        newState = commitResult.newState;
-
-        if (commitResult.welcome && toAdd.length > 0) {
-          welcomePayload = bytesToBase64(
-            encodeMlsMessage({ welcome: commitResult.welcome, wireformat: 'mls_welcome', version: 'mls10' })
+        // Do NOT skip the commit for group add operations — the server already
+        // bumped current_key_version.  Skipping the commit causes epoch drift:
+        // the owner stores the OLD epoch's key under the NEW server version,
+        // making it impossible for anyone to derive the correct key.
+        // Instead, create an empty commit to advance the epoch, keeping it in
+        // sync with the server version.  The missing members will recover via
+        // group state import on their next syncInbox.
+        try {
+          const commitResult = await createCommit(
+            { state: existingState, cipherSuite: impl },
+            { extraProposals: [], ratchetTreeExtension: false }
           );
+          commitResult.consumed.forEach(zeroOutUint8Array);
+          newState = commitResult.newState;
+          commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+          existingPeers = currentMembers.filter((id) => id !== input.userId);
+        } catch (commitErr) {
+          if (input._retried) throw commitErr;
+          console.warn('[MLS] Commit failed — recreating group:', commitErr);
+          await mlsStore.deleteGroupState(conversationId);
+          return this.distributeGroupSenderKey({ ...input, _retried: true });
         }
-        commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+      } else {
+        for (const removeId of toRemove) {
+          const leafIdx = findLeafIndex(existingState, removeId);
+          if (leafIdx !== null) {
+            proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
+          }
+        }
 
-        // Existing members (excluding self) receive the commit to advance their epoch
-        existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
-      } catch (commitErr) {
-        // Corrupted group state (e.g. zeroed-out signing key).  Delete it
-        // and recreate the group from scratch so the conversation recovers.
-        if (input._retried) throw commitErr;
-        console.warn('[MLS] Commit failed — recreating group:', commitErr);
-        await mlsStore.deleteGroupState(conversationId);
-        return this.distributeGroupSenderKey({ ...input, _retried: true });
+        try {
+          const commitResult = await createCommit(
+            { state: existingState, cipherSuite: impl },
+            { extraProposals: proposals, ratchetTreeExtension: toAdd.length > 0 }
+          );
+          commitResult.consumed.forEach(zeroOutUint8Array);
+          newState = commitResult.newState;
+
+          if (commitResult.welcome && toAdd.length > 0) {
+            welcomePayload = bytesToBase64(
+              encodeMlsMessage({ welcome: commitResult.welcome, wireformat: 'mls_welcome', version: 'mls10' })
+            );
+          }
+          commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+
+          // Existing members (excluding self) receive the commit to advance their epoch
+          existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
+        } catch (commitErr) {
+          // Corrupted group state (e.g. zeroed-out signing key).  Delete it
+          // and recreate the group from scratch so the conversation recovers.
+          if (input._retried) throw commitErr;
+          console.warn('[MLS] Commit failed — recreating group:', commitErr);
+          await mlsStore.deleteGroupState(conversationId);
+          return this.distributeGroupSenderKey({ ...input, _retried: true });
+        }
       }
     }
 
@@ -783,14 +799,32 @@ class MlsService {
         welcome_ref: welcomeRef,
         recipient_user_ids: newMembersForWelcome,
       });
-      await ingestMlsWelcomes(
-        newMembersForWelcome.map((memberId) => ({
-          userId: memberId,
-          welcomeRef,
-          payload: welcomePayload!,
-          conversationId,
-        }))
-      );
+      try {
+        await ingestMlsWelcomes(
+          newMembersForWelcome.map((memberId) => ({
+            userId: memberId,
+            welcomeRef,
+            payload: welcomePayload!,
+            conversationId,
+          }))
+        );
+      } catch (welcomeErr) {
+        // One retry — the welcome is the ONLY artifact that lets new members
+        // join the MLS group.  If this also fails the error propagates so the
+        // caller knows the membership was created but MLS delivery failed.
+        console.warn('[MLS_WELCOME] first upload attempt failed, retrying once', {
+          conversation_id: conversationId,
+          error: welcomeErr instanceof Error ? welcomeErr.message : String(welcomeErr || ''),
+        });
+        await ingestMlsWelcomes(
+          newMembersForWelcome.map((memberId) => ({
+            userId: memberId,
+            welcomeRef: crypto.randomUUID(),
+            payload: welcomePayload!,
+            conversationId,
+          }))
+        );
+      }
     }
 
     // ── Fan-out commit to existing peers so they can advance their epoch ───────

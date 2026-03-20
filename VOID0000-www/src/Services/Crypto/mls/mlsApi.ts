@@ -262,12 +262,23 @@ export async function ingestMlsWelcomes(items: MlsUploadWelcomeInput[]): Promise
   });
 
   if (response.status === 404 || !response.ok) {
-    return 0;
+    console.error('[MLS_WELCOME_UPLOAD] welcome ingest failed', {
+      status: response.status,
+      recipient_count: items.length,
+      conversation_id: items[0]?.conversationId ?? null,
+    });
+    throw new Error(`Welcome upload failed (HTTP ${response.status})`);
   }
 
   const payload = (await parseJsonSafe(response)) as MlsApiEnvelope<unknown> | null;
   if (!payload) return items.length;
-  if (payload.success === false) return 0;
+  if (payload.success === false) {
+    console.error('[MLS_WELCOME_UPLOAD] welcome ingest rejected by server', {
+      recipient_count: items.length,
+      conversation_id: items[0]?.conversationId ?? null,
+    });
+    throw new Error('Welcome upload rejected by server');
+  }
   const count = resolveBatchCount(payload);
   return count > 0 ? count : items.length;
 }
