@@ -950,6 +950,29 @@ export async function sendMessage(
   };
 }
 
+export async function sendSystemEvent(
+  conversationId: string,
+  content: string,
+  keyVersion: number
+): Promise<Message> {
+  const res = await fetchWithAuth(`${API_PREFIX}/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      content,
+      key_version: keyVersion,
+      message_type: 'system',
+    }),
+  });
+
+  const data = await res.json();
+  if (!data.success) throw createApiError(data);
+
+  return {
+    ...data.message,
+    content,
+  };
+}
+
 export async function sendImageOnlyMessage(
   conversationId: string,
   attachments: string[],

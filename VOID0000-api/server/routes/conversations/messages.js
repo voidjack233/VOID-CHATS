@@ -163,13 +163,17 @@ async function batchFetchReactions(conversationId, messageIds, currentUserId) {
 router.post('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier } = req.params;
-  const { encrypted_content, iv, key_version, message_type, reply_to, attachments } = req.body;
+  const { encrypted_content, iv, key_version, message_type, reply_to, attachments, content } = req.body;
 
-  if (!encrypted_content && !iv && (!attachments || attachments.length === 0)) {
-    return res.status(400).json({ error: 'encrypted_content/iv or attachments required' });
-  }
-  if ((encrypted_content || iv) && (!encrypted_content || !iv)) {
-    return res.status(400).json({ error: 'encrypted_content and iv must both be present' });
+  const isPlaintextSystem = message_type === 'system' && typeof content === 'string' && content.trim().length > 0;
+
+  if (!isPlaintextSystem) {
+    if (!encrypted_content && !iv && (!attachments || attachments.length === 0)) {
+      return res.status(400).json({ error: 'encrypted_content/iv or attachments required' });
+    }
+    if ((encrypted_content || iv) && (!encrypted_content || !iv)) {
+      return res.status(400).json({ error: 'encrypted_content and iv must both be present' });
+    }
   }
 
   if (attachments !== undefined) {
@@ -230,6 +234,9 @@ router.post('/', async (req, res) => {
     const now = new Date();
     const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
 
+    const storedContent = isPlaintextSystem ? content.trim() : (encrypted_content || null);
+    const storedIv = isPlaintextSystem ? null : (iv || null);
+
     await scylla.execute(
       `INSERT INTO messages (
         conversation_id, message_id, sender_id, encrypted_content, iv,
@@ -239,8 +246,8 @@ router.post('/', async (req, res) => {
         cassandra.types.Uuid.fromString(conversationId),
         messageId,
         cassandra.types.Uuid.fromString(userId),
-        encrypted_content || null,
-        iv || null,
+        storedContent,
+        storedIv,
         requestedKeyVersion,
         message_type || 'text',
         reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null,
@@ -264,8 +271,8 @@ router.post('/', async (req, res) => {
       conversation_public_id: conversationPublic,
       message_id: messageId.toString(),
       sender_id: userId,
-      encrypted_content: encrypted_content || null,
-      iv: iv || null,
+      encrypted_content: storedContent,
+      iv: storedIv,
       key_version: requestedKeyVersion,
       message_type: message_type || 'text',
       reply_to: reply_to || null,
@@ -273,6 +280,7 @@ router.post('/', async (req, res) => {
       is_edited: false,
       is_deleted: false,
       created_at: now.toISOString(),
+      ...(isPlaintextSystem ? { content: storedContent } : {}),
     };
 
     const members = await getConversationMembers(conversationId);

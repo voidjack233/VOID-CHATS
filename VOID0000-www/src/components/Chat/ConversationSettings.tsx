@@ -13,8 +13,7 @@ import {
   removeConversationIcon,
   rotateRemoveMember,
   revokeConversationInviteLink,
-  sendMessage,
-  getEncryptionKey,
+  sendSystemEvent,
   updateConversation,
   updateMemberRole,
   uploadConversationIcon,
@@ -284,15 +283,7 @@ const ConversationSettings = ({
   ) => {
     try {
       const targetConversation = activeChannel || conversation;
-      const keyConversation: Conversation = {
-        ...targetConversation,
-        current_key_version: keyVersion,
-      };
-      const { key } = await getEncryptionKey(currentUserId, keyConversation, keyVersion);
-      const message = await sendMessage(targetConversation.id, text, key, {
-        key_version: keyVersion,
-        message_type: 'system',
-      });
+      const message = await sendSystemEvent(targetConversation.id, text, keyVersion);
       onMessageCreated?.(message);
     } catch (error) {
       console.warn('Failed to post membership system message:', error);

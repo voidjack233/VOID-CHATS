@@ -161,6 +161,16 @@ export const useMessageStream = ({
   // Auto-healer: if decryption fails, wipes the cache and forces a re-fetch.
   // tryDmDecrypt returns null on failure so DM failures also reach the healer.
   const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
+    if (data.message_type === 'system' && !data.iv) {
+      const content = data.content || data.encrypted_content || 'System event';
+      if (isUpdate) {
+        setMessageUpdate({ message_id: data.message_id, content, is_edited: true, edited_at: data.edited_at });
+      } else {
+        setNewMessage({ ...data, content });
+      }
+      return;
+    }
+
     const dmContent = await tryDmDecrypt(data, key);
     if (dmContent !== null) {
       if (isUpdate) {

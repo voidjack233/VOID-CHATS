@@ -57,6 +57,10 @@ export async function decryptMessages(
 ): Promise<Array<{ content: string; [key: string]: any }>> {
   const results = await Promise.all(
     messages.map(async (msg) => {
+      if (msg.message_type === 'system' && !msg.iv && msg.encrypted_content) {
+        return { ...msg, content: msg.encrypted_content };
+      }
+
       if (msg.is_deleted || !msg.encrypted_content || !msg.iv) {
         return { ...msg, content: msg.is_deleted ? '[deleted]' : '[encrypted]' };
       }
