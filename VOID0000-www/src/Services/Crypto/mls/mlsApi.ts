@@ -390,6 +390,12 @@ function normalizeSyncWelcomes(raw: unknown, userId: string): MlsSyncWelcomeUpda
     if (!welcomeRef || !payload) return [];
     const conversationId = pickString(obj, ['conversation_id', 'conversationId']);
     const receivedAt = pickString(obj, ['received_at', 'receivedAt']);
+    const joinedKeyVersionFloor = pickNumber(obj, [
+      'joined_key_version_floor',
+      'joinedKeyVersionFloor',
+      'joined_key_version',
+      'joinedKeyVersion',
+    ]);
     const rowUserId = pickString(obj, ['user_id', 'userId']) || userId;
     return [{
       userId: rowUserId,
@@ -397,6 +403,7 @@ function normalizeSyncWelcomes(raw: unknown, userId: string): MlsSyncWelcomeUpda
       payload,
       conversationId,
       receivedAt,
+      joinedKeyVersionFloor,
     }];
   });
 }

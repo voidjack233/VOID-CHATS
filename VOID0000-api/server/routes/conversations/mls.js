@@ -743,14 +743,20 @@ router.post('/sync', async (req, res) => {
         : Promise.resolve({ rows: [] }),
       isEnabledFor(capabilities, 'welcome_inbox')
         ? pool.query(
-            `SELECT user_id::text AS user_id,
-                    welcome_ref,
-                    payload,
-                    conversation_id::text AS conversation_id,
-                    received_at
-             FROM mls_welcome_messages
-             WHERE user_id = $1::UUID
-               AND consumed_at IS NULL
+            `SELECT welcomes.user_id::text AS user_id,
+                    welcomes.welcome_ref,
+                    welcomes.payload,
+                    welcomes.conversation_id::text AS conversation_id,
+                    welcomes.received_at,
+                    COALESCE(cm.joined_key_version, 1) AS joined_key_version_floor
+             FROM mls_welcome_messages AS welcomes
+             JOIN conversation_members cm
+               ON cm.conversation_id = welcomes.conversation_id
+              AND cm.user_id = welcomes.user_id
+             WHERE welcomes.user_id = $1::UUID
+               AND welcomes.consumed_at IS NULL
+               AND welcomes.conversation_id IS NOT NULL
+               AND welcomes.received_at >= cm.joined_at
              ORDER BY received_at ASC
              LIMIT $2`,
             [requesterUserId, limit]

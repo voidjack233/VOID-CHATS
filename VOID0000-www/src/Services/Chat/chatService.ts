@@ -209,10 +209,18 @@ function getErrorMessage(error: unknown): string {
 
 function isRollbackableMlsAddFailure(error: unknown): boolean {
   if (error && typeof error === 'object' && 'code' in error) {
-    return (error as { code?: unknown }).code === 'MLS_ADD_KEY_PACKAGE_MISSING';
+    return (
+      (error as { code?: unknown }).code === 'MLS_ADD_KEY_PACKAGE_MISSING' ||
+      (error as { code?: unknown }).code === 'MLS_DISTRIBUTE_SYNC_REQUIRED'
+    );
   }
 
-  return getErrorMessage(error).includes('not ready for secure group add yet');
+  const message = getErrorMessage(error);
+  return (
+    message.includes('not ready for secure group add yet') ||
+    message.includes('Local MLS state is behind the server') ||
+    message.includes('Local MLS state could not apply this membership change')
+  );
 }
 
 function normalizeKeyVersion(value: unknown, fallback = 1): number {

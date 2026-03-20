@@ -199,6 +199,27 @@ function normalizeConversationKeyId(conversation: Conversation): string {
   return conversation.parent_conversation_id || conversation.id;
 }
 
+function normalizePositiveVersion(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function createMlsError(message: string, code: string): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  return error;
+}
+
 // ─── MlsService ───────────────────────────────────────────────────────────────
 
 const BOOTSTRAP_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
@@ -543,16 +564,64 @@ class MlsService {
     const desiredMembers = [...new Set([...input.memberUserIds, input.userId].filter(Boolean))];
     const otherMembers = desiredMembers.filter((id) => id !== input.userId);
     const isDmConversation = input.conversation.type === 'dm';
+    const requiredServerVersion = normalizePositiveVersion(input.conversation.current_key_version);
     let missingMemberUserIds: string[] = [];
 
-    const existingState = await loadGroupState(conversationId);
+    let existingState = await loadGroupState(conversationId);
 
     console.log('[MLS_DISTRIBUTE] start', {
       conversation_id: conversationId,
       conversation_type: input.conversation.type,
       requested_member_user_ids: desiredMembers,
+      required_server_version: requiredServerVersion,
       has_existing_state: Boolean(existingState),
     });
+
+    if (!isDmConversation && requiredServerVersion != null) {
+      const ensureFreshLineage = async (reason: string): Promise<void> => {
+        const localEpochBeforeSync = existingState ? Number(existingState.groupContext.epoch) : null;
+        console.warn('[MLS_DISTRIBUTE] forcing sync before local membership distribution', {
+          conversation_id: conversationId,
+          reason,
+          required_server_version: requiredServerVersion,
+          local_epoch: localEpochBeforeSync,
+        });
+
+        try {
+          await this.syncInbox(input.userId, true);
+        } catch (syncErr) {
+          console.warn('[MLS_DISTRIBUTE] sync before distribution failed', {
+            conversation_id: conversationId,
+            reason,
+            required_server_version: requiredServerVersion,
+            local_epoch: localEpochBeforeSync,
+            error: syncErr instanceof Error ? syncErr.message : String(syncErr || ''),
+          });
+        }
+
+        existingState = await loadGroupState(conversationId);
+        const localEpochAfterSync = existingState ? Number(existingState.groupContext.epoch) : null;
+        const hasUsableLineage =
+          existingState != null &&
+          requiredServerVersion <= (localEpochAfterSync ?? 0) + 1;
+
+        if (!hasUsableLineage) {
+          throw createMlsError(
+            'Local MLS state is behind the server. Sync latest durable group state before retrying this membership change.',
+            'MLS_DISTRIBUTE_SYNC_REQUIRED',
+          );
+        }
+      };
+
+      if (!existingState && requiredServerVersion > 1) {
+        await ensureFreshLineage('missing_local_state_for_advanced_server_version');
+      } else if (existingState) {
+        const localEpoch = Number(existingState.groupContext.epoch);
+        if (requiredServerVersion > localEpoch + 1) {
+          await ensureFreshLineage('local_lineage_behind_server_version');
+        }
+      }
+    }
 
     // When no local MLS state exists, any conversation member may bootstrap
     // a fresh group.  This covers:
@@ -714,11 +783,10 @@ class MlsService {
           server_key_version: input.conversation.current_key_version ?? null,
           mls_epoch: Number(existingState.groupContext.epoch),
         });
-        const error = new Error('One or more members are not ready for secure group add yet') as Error & {
-          code?: string;
-        };
-        error.code = 'MLS_ADD_KEY_PACKAGE_MISSING';
-        throw error;
+        throw createMlsError(
+          'One or more members are not ready for secure group add yet',
+          'MLS_ADD_KEY_PACKAGE_MISSING',
+        );
       } else {
         for (const removeId of toRemove) {
           const leafIdx = findLeafIndex(existingState, removeId);
@@ -745,12 +813,26 @@ class MlsService {
           // Existing members (excluding self) receive the commit to advance their epoch
           existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
         } catch (commitErr) {
-          // Corrupted group state (e.g. zeroed-out signing key).  Delete it
-          // and recreate the group from scratch so the conversation recovers.
-          if (input._retried) throw commitErr;
-          console.warn('[MLS] Commit failed — recreating group:', commitErr);
-          await mlsStore.deleteGroupState(conversationId);
-          return this.distributeGroupSenderKey({ ...input, _retried: true });
+          console.warn('[MLS] Existing-group commit failed — refusing bootstrap fallback', {
+            conversation_id: conversationId,
+            required_server_version: requiredServerVersion,
+            local_epoch: Number(existingState.groupContext.epoch),
+            error: commitErr instanceof Error ? commitErr.message : String(commitErr || ''),
+          });
+          try {
+            await this.syncInbox(input.userId, true);
+          } catch (syncErr) {
+            console.warn('[MLS_DISTRIBUTE] sync after commit failure failed', {
+              conversation_id: conversationId,
+              required_server_version: requiredServerVersion,
+              local_epoch: Number(existingState.groupContext.epoch),
+              error: syncErr instanceof Error ? syncErr.message : String(syncErr || ''),
+            });
+          }
+          throw createMlsError(
+            'Local MLS state could not apply this membership change. Sync latest durable group state before retrying.',
+            'MLS_DISTRIBUTE_SYNC_REQUIRED',
+          );
         }
       }
     }
@@ -963,6 +1045,12 @@ class MlsService {
   ): Promise<boolean> {
     const conversationId = welcome.conversationId;
     if (!conversationId) return false;
+    const joinedKeyVersionFloor =
+      typeof welcome.joinedKeyVersionFloor === 'number' &&
+      Number.isInteger(welcome.joinedKeyVersionFloor) &&
+      welcome.joinedKeyVersionFloor > 0
+        ? welcome.joinedKeyVersionFloor
+        : null;
 
     const welcomeBytes = base64ToBytes(welcome.payload);
     const decoded = decodeMlsMessage(welcomeBytes, 0);
@@ -990,6 +1078,21 @@ class MlsService {
           emptyPskIndex,
           impl,
         );
+
+        const derivedKey = await deriveGroupAesKey(joinedState, conversationId, impl);
+        if (
+          joinedKeyVersionFloor != null &&
+          derivedKey.keyVersion < joinedKeyVersionFloor
+        ) {
+          console.warn('[MLS_WELCOME] rejecting stale welcome below current membership floor', {
+            user_id: userId,
+            conversation_id: conversationId,
+            welcome_ref: welcome.welcomeRef,
+            welcome_key_version: derivedKey.keyVersion,
+            joined_key_version_floor: joinedKeyVersionFloor,
+          });
+          return true;
+        }
 
         await this.persistGroupState(conversationId, joinedState, {
           source: 'welcome_join',

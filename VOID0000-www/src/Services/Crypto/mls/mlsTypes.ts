@@ -98,6 +98,7 @@ export interface MlsSyncWelcomeUpdate {
   payload: string;
   conversationId?: string | null;
   receivedAt?: string | null;
+  joinedKeyVersionFloor?: number | null;
 }
 
 export interface MlsSyncCommitUpdate {
