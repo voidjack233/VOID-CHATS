@@ -165,6 +165,21 @@ export async function fetchMlsCapabilities(): Promise<MlsServerCapabilities> {
   return normalized;
 }
 
+export async function checkKeyPackageAvailability(userId: string): Promise<boolean> {
+  try {
+    const response = await fetchWithAuth(
+      `${MLS_API_PREFIX}/key-packages/${encodeURIComponent(userId)}/check`
+    );
+    if (!response.ok) return false;
+    const payload = (await parseJsonSafe(response)) as MlsApiEnvelope<unknown> | null;
+    const data = asObject(pickEnvelopeData(payload));
+    if (!data) return false;
+    return data.available === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchUserKeyPackage(
   userId: string
 ): Promise<{ package_ref: string; package_data: string } | null> {

@@ -259,7 +259,13 @@ router.post('/requests/:requestId/approve', async (req, res) => {
       return res.status(409).json({ error: 'Join request is no longer pending' });
     }
 
-    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+    // Lock the conversation row to serialize concurrent membership changes
+    // across all devices/tabs/admins for this conversation.
+    const lockedVersionResult = await client.query(
+      'SELECT current_key_version FROM conversations WHERE id = $1 FOR UPDATE',
+      [conversation.id]
+    );
+    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
     if (newKeyVersion !== currentKeyVersion + 1) {
       await client.query('ROLLBACK');
       return res.status(409).json({
@@ -350,7 +356,11 @@ router.post('/requests/:requestId/approve', async (req, res) => {
 
     await client.query('COMMIT');
 
-    await emitConversationUpdate(conversation, finalMemberIds, newKeyVersion, finalMemberIds.length);
+    // NOTE: emitConversationUpdate is deliberately NOT called here.
+    // The client triggers the broadcast AFTER uploading durable MLS
+    // recovery artifacts (group state, welcomes, commits) via
+    // POST /members/emit-update, so other devices only learn about
+    // the new version once they can actually recover it.
 
     res.json({
       success: true,

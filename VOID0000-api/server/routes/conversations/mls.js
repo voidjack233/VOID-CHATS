@@ -334,6 +334,41 @@ router.post('/group-states', async (req, res) => {
   }
 });
 
+// GET /api/conversations/mls/key-packages/:userId/check — non-consuming availability check
+router.get('/key-packages/:userId/check', async (req, res) => {
+  const capabilities = resolveCapabilities();
+  if (!isEnabledFor(capabilities, 'key_packages')) {
+    return notEnabled(res, 'key_packages');
+  }
+
+  const targetUserId = normalizeUserId(req.params.userId);
+  if (!targetUserId) {
+    return res.status(400).json({ success: false, error: 'userId param is required' });
+  }
+
+  try {
+    await ensureSchema();
+
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS available_count
+       FROM mls_key_packages
+       WHERE user_id = $1::UUID
+         AND published_at IS NOT NULL
+         AND consumed_at IS NULL`,
+      [targetUserId]
+    );
+
+    const count = result.rows[0]?.available_count || 0;
+    return res.json({
+      success: true,
+      data: { available: count > 0, count },
+    });
+  } catch (err) {
+    console.error('MLS key package check error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to check MLS key package availability' });
+  }
+});
+
 // GET /api/conversations/mls/key-packages/:userId — claim one available key package (atomic)
 router.get('/key-packages/:userId', async (req, res) => {
   const capabilities = resolveCapabilities();

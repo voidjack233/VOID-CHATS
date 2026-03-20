@@ -56,7 +56,13 @@ router.post('/rotate-add', async (req, res) => {
       return res.status(403).json({ error: 'Only the owner can add members during key rotation' });
     }
 
-    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+    // Lock the conversation row to serialize concurrent membership changes
+    // across all devices/tabs/admins for this conversation.
+    const lockedVersionResult = await client.query(
+      'SELECT current_key_version FROM conversations WHERE id = $1 FOR UPDATE',
+      [conversation.id]
+    );
+    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
     if (newKeyVersion !== currentKeyVersion + 1) {
       await client.query('ROLLBACK');
       return res.status(409).json({
@@ -146,7 +152,8 @@ router.post('/rotate-add', async (req, res) => {
 
     await client.query('COMMIT');
 
-    await emitConversationUpdate(conversation, finalMemberIds, newKeyVersion, finalMemberIds.length);
+    // NOTE: emitConversationUpdate deferred to client-triggered
+    // POST /members/emit-update after MLS artifacts are uploaded.
 
     res.json({
       success: true,
@@ -228,7 +235,13 @@ router.post('/rotate-remove', async (req, res) => {
       });
     }
 
-    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+    // Lock the conversation row to serialize concurrent membership changes
+    // across all devices/tabs/admins for this conversation.
+    const lockedVersionResult = await client.query(
+      'SELECT current_key_version FROM conversations WHERE id = $1 FOR UPDATE',
+      [conversation.id]
+    );
+    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
     if (newKeyVersion !== currentKeyVersion + 1) {
       await client.query('ROLLBACK');
       return res.status(409).json({
@@ -290,7 +303,8 @@ router.post('/rotate-remove', async (req, res) => {
 
     await client.query('COMMIT');
 
-    await emitConversationUpdate(conversation, remainingMemberIds, newKeyVersion, remainingMemberIds.length);
+    // NOTE: emitConversationUpdate deferred to client-triggered
+    // POST /members/emit-update after MLS artifacts are uploaded.
 
     sendLiveEventToUser(targetUserId, 'MEMBER_LEAVE', {
       conversation_id: conversation.id,
@@ -411,6 +425,40 @@ router.put('/:targetUserId', async (req, res) => {
   } catch (err) {
     console.error('Members PUT error:', err);
     res.status(500).json({ error: 'Failed to update role' });
+  }
+});
+
+// POST /api/conversations/:conversationId/members/emit-update
+// Client calls this AFTER uploading durable MLS recovery artifacts so that
+// other devices only learn about the new key version once they can recover it.
+router.post('/emit-update', async (req, res) => {
+  const userId = req.user.id;
+  const { conversationId } = req.params;
+
+  try {
+    const conversation = await resolveMembershipConversation(pool, conversationId);
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const membership = await getGroupMembership(pool, conversation.id, userId);
+    if (!membership) {
+      return res.status(403).json({ error: 'Not a member' });
+    }
+
+    const membersResult = await pool.query(
+      'SELECT user_id FROM conversation_members WHERE conversation_id = $1',
+      [conversation.id]
+    );
+    const memberIds = membersResult.rows.map((row) => row.user_id);
+    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+
+    await emitConversationUpdate(conversation, memberIds, currentKeyVersion, memberIds.length);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Emit-update error:', err);
+    res.status(500).json({ error: 'Failed to emit update' });
   }
 });
 

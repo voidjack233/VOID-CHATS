@@ -9,6 +9,23 @@ const KEY_ROTATION_ENABLED = true;
 const DEFAULT_MLS_MESSAGE_TYPE = 'mls_application';
 const MLS_ROLLOUT_DATE_MS = Date.parse('2026-03-15T00:00:00.000Z');
 
+// ============== Per-conversation membership mutex ==============
+// Serializes membership-changing operations (approve, add, remove) per
+// conversation so that concurrent calls don't race on current_key_version.
+const membershipLocks = new Map<string, Promise<unknown>>();
+
+function withMembershipLock<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = membershipLocks.get(conversationId) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  membershipLocks.set(conversationId, next);
+  next.finally(() => {
+    if (membershipLocks.get(conversationId) === next) {
+      membershipLocks.delete(conversationId);
+    }
+  });
+  return next;
+}
+
 // ============== Types ==============
 
 export interface Conversation {
@@ -201,6 +218,45 @@ function normalizeKeyVersion(value: unknown, fallback = 1): number {
 function ensureKeyRotationEnabled() {
   if (!KEY_ROTATION_ENABLED) {
     throw new Error('Membership updates are temporarily paused while encrypted key delivery is stabilized.');
+  }
+}
+
+/**
+ * Fetch the latest `current_key_version` from the server so that serialized
+ * membership operations always use the real value, not a stale React-state
+ * snapshot.  Falls back to the caller-provided conversation on network error.
+ */
+async function refreshConversationKeyVersion(
+  keyConversationId: string,
+  fallback: Conversation
+): Promise<Conversation> {
+  try {
+    const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}`);
+    const data = await res.json();
+    if (data.success && data.conversation) {
+      return {
+        ...fallback,
+        current_key_version: normalizeKeyVersion(data.conversation.current_key_version, 1),
+      };
+    }
+  } catch {}
+  return fallback;
+}
+
+/**
+ * Notify all members of a conversation update via the server.
+ * Called AFTER durable MLS artifacts (group state, welcomes, commits) have
+ * been uploaded, so other devices only learn about the new version once
+ * recovery artifacts exist.  Best-effort — failure does not block the caller.
+ */
+async function notifyMembershipUpdate(keyConversationId: string): Promise<void> {
+  try {
+    await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/emit-update`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  } catch {
+    // Best-effort: if this fails, members discover the change on next sync.
   }
 }
 
@@ -591,124 +647,138 @@ export async function ensureGroupKeyDistribution(
   );
 }
 
-export async function rotateAddMembers(
+export function rotateAddMembers(
   conversation: Conversation,
   currentUserId: string,
   currentMemberIds: string[],
   newMemberIds: string[]
 ): Promise<{ added: string[]; key_version: number }> {
-  ensureKeyRotationEnabled();
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
-  const additions = [...new Set(newMemberIds.filter((memberId) => memberId && memberId !== currentUserId))];
+  return withMembershipLock(keyConversationId, async () => {
+    ensureKeyRotationEnabled();
+    const additions = [...new Set(newMemberIds.filter((memberId) => memberId && memberId !== currentUserId))];
 
-  if (additions.length === 0) {
-    throw new Error('Select at least one member to add');
-  }
+    if (additions.length === 0) {
+      throw new Error('Select at least one member to add');
+    }
 
-  const finalMemberIds = [...new Set([...currentMemberIds, ...additions, currentUserId])];
-  const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+    // Fetch the latest server-side key version to avoid stale reads from
+    // React state when multiple approves fire concurrently.
+    const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
+    const finalMemberIds = [...new Set([...currentMemberIds, ...additions, currentUserId])];
+    const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
 
-  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-add`, {
-    method: 'POST',
-    body: JSON.stringify({
-      members: additions,
-      new_key_version: nextKeyVersion,
-    }),
+    const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-add`, {
+      method: 'POST',
+      body: JSON.stringify({
+        members: additions,
+        new_key_version: nextKeyVersion,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) throw createApiError(data);
+    const resolvedKeyVersion = data.key_version || nextKeyVersion;
+
+    const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+      { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+      currentUserId,
+      finalMemberIds
+    );
+    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+    await notifyMembershipUpdate(keyConversationId);
+
+    return {
+      added: data.added || additions,
+      key_version: resolvedKeyVersion,
+    };
   });
-  const data = await res.json();
-  if (!data.success) throw createApiError(data);
-  const resolvedKeyVersion = data.key_version || nextKeyVersion;
-
-  const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-    { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
-    currentUserId,
-    finalMemberIds
-  );
-  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
-
-  return {
-    added: data.added || additions,
-    key_version: resolvedKeyVersion,
-  };
 }
 
-export async function rotateRemoveMember(
+export function rotateRemoveMember(
   conversation: Conversation,
   currentUserId: string,
   remainingMemberIds: string[],
   targetUserId: string
 ): Promise<{ key_version: number }> {
-  ensureKeyRotationEnabled();
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
-  const survivors = [...new Set(remainingMemberIds.filter(Boolean))];
+  return withMembershipLock(keyConversationId, async () => {
+    ensureKeyRotationEnabled();
+    const survivors = [...new Set(remainingMemberIds.filter(Boolean))];
 
-  if (!targetUserId) {
-    throw new Error('targetUserId required');
-  }
+    if (!targetUserId) {
+      throw new Error('targetUserId required');
+    }
 
-  if (survivors.length === 0) {
-    throw new Error('At least one member must remain in the group');
-  }
+    if (survivors.length === 0) {
+      throw new Error('At least one member must remain in the group');
+    }
 
-  const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+    const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
+    const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
 
-  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
-    method: 'POST',
-    body: JSON.stringify({
-      target_user_id: targetUserId,
-      new_key_version: nextKeyVersion,
-    }),
+    const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
+      method: 'POST',
+      body: JSON.stringify({
+        target_user_id: targetUserId,
+        new_key_version: nextKeyVersion,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) throw createApiError(data);
+    const resolvedKeyVersion = data.key_version || nextKeyVersion;
+
+    const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+      { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+      currentUserId,
+      survivors
+    );
+
+    if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
+      await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+    }
+    await notifyMembershipUpdate(keyConversationId);
+
+    return { key_version: resolvedKeyVersion };
   });
-  const data = await res.json();
-  if (!data.success) throw createApiError(data);
-  const resolvedKeyVersion = data.key_version || nextKeyVersion;
-
-  const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-    { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
-    currentUserId,
-    survivors
-  );
-
-  if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
-    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
-  }
-
-  return { key_version: resolvedKeyVersion };
 }
 
-export async function approveConversationJoinRequest(
+export function approveConversationJoinRequest(
   conversation: Conversation,
   currentUserId: string,
   currentMemberIds: string[],
   requestId: number,
   requesterUserId: string
 ): Promise<{ approved_user_id: string; key_version: number }> {
-  ensureKeyRotationEnabled();
   const keyConversationId = conversation.parent_conversation_id || conversation.id;
-  const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
-  const nextKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1) + 1;
+  return withMembershipLock(keyConversationId, async () => {
+    ensureKeyRotationEnabled();
+    const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
+    const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
+    const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
 
-  const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
-    method: 'POST',
-    body: JSON.stringify({
-      new_key_version: nextKeyVersion,
-    }),
+    const res = await fetchWithAuth(`${API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({
+        new_key_version: nextKeyVersion,
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) throw createApiError(data);
+    const resolvedKeyVersion = data.key_version || nextKeyVersion;
+
+    const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+      { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+      currentUserId,
+      finalMemberIds
+    );
+    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+    await notifyMembershipUpdate(keyConversationId);
+
+    return {
+      approved_user_id: data.approved_user_id || requesterUserId,
+      key_version: resolvedKeyVersion,
+    };
   });
-  const data = await res.json();
-  if (!data.success) throw createApiError(data);
-  const resolvedKeyVersion = data.key_version || nextKeyVersion;
-
-  const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-    { ...conversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
-    currentUserId,
-    finalMemberIds
-  );
-  await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
-
-  return {
-    approved_user_id: data.approved_user_id || requesterUserId,
-    key_version: resolvedKeyVersion,
-  };
 }
 
 export async function declineConversationJoinRequest(

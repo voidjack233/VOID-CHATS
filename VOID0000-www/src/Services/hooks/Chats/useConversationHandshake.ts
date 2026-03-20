@@ -526,11 +526,21 @@ export const useConversationHandshake = ({
           const canMutateGroupMembership =
             ownerConversation?.type !== 'dm' &&
             currentUserRole === 'owner';
+
+          // Guard: if the server's current_key_version > 1, the group has
+          // progressed past initial bootstrap.  Creating a fresh MLS group
+          // would overwrite any in-flight artifacts from another device that
+          // just rotated keys.  Instead, fall through to the sync-and-retry
+          // path so existing durable artifacts are recovered, not replaced.
+          const serverVersionAdvanced =
+            requiredGroupVersion != null && requiredGroupVersion > 1;
+
           if (
             ownerConversation &&
             ownerConversation.type !== 'dm' &&
             resolvedMemberIds.length > 0 &&
-            canMutateGroupMembership
+            canMutateGroupMembership &&
+            !serverVersionAdvanced
           ) {
             try {
               console.log('[GROUP_SELF_HEAL] attempting group key recovery', {
@@ -568,14 +578,15 @@ export const useConversationHandshake = ({
           if (
             ownerConversation &&
             ownerConversation.type !== 'dm' &&
-            !canMutateGroupMembership
+            (!canMutateGroupMembership || serverVersionAdvanced)
           ) {
             const nextAttempt = (preparingRetryAttemptsRef.current[preparingRetryKey] || 0) + 1;
             preparingRetryAttemptsRef.current[preparingRetryKey] = nextAttempt;
-            console.log('[GROUP_SELF_HEAL] skipping owner self-heal on non-owner device', {
+            console.log('[GROUP_SELF_HEAL] deferring to sync-retry path', {
               conversation_id: ownerConversation.id,
               current_user_id: user.id,
               current_user_role: currentUserRole,
+              reason: serverVersionAdvanced ? 'server_version_advanced' : 'non_owner',
               required_group_version: requiredGroupVersion ?? null,
               preparing_retry_attempt: nextAttempt,
             });

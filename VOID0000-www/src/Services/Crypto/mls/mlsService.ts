@@ -35,6 +35,7 @@ import {
   type CredentialBasic,
 } from 'ts-mls';
 import {
+  checkKeyPackageAvailability,
   consumeMlsWelcome,
   fetchMlsCapabilities,
   fetchUserKeyPackage,
@@ -576,6 +577,23 @@ class MlsService {
         throw new Error('DM peer could not be resolved for secure bootstrap');
       }
 
+      // Non-consuming readiness check: verify peer has published key packages
+      // before we attempt buildAddProposals (which consumes a package atomically).
+      // This prevents wasting scarce key packages on bootstraps that will fail.
+      if (isDmConversation) {
+        for (const peerId of otherMembers) {
+          const peerReady = await checkKeyPackageAvailability(peerId);
+          if (!peerReady) {
+            console.warn('[DM_BOOTSTRAP] peer failed non-consuming readiness check', {
+              conversation_id: conversationId,
+              user_id: input.userId,
+              peer_user_id: peerId,
+            });
+            throw new Error('DM peer device is not ready for secure chat yet');
+          }
+        }
+      }
+
       const myCredential: CredentialBasic = {
         credentialType: 'basic',
         identity: new TextEncoder().encode(input.userId),
@@ -996,6 +1014,21 @@ class MlsService {
       return false;
     }
     const localEpoch = Number(state.groupContext.epoch);
+
+    // Guard: if the server tells us which epoch this commit targets and our
+    // local state has already advanced past it (e.g. a newer group-state
+    // snapshot was imported first), skip the stale commit instead of
+    // attempting to apply it against the wrong epoch.
+    if (commit.epoch != null && Number(commit.epoch) < localEpoch) {
+      console.log('[MLS_COMMIT] skipping stale commit (local epoch ahead)', {
+        conversation_id: commit.conversationId,
+        commit_ref: commit.commitRef,
+        commit_epoch: commit.epoch,
+        local_epoch: localEpoch,
+      });
+      await mlsStore.markCommitApplied(commit.conversationId, commit.commitRef);
+      return false;
+    }
 
     const commitBytes = base64ToBytes(commit.payload);
     const decoded = decodeMlsMessage(commitBytes, 0);
