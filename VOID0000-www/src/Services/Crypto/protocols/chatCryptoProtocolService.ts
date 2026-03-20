@@ -8,6 +8,7 @@ export interface DistributeGroupKeyInput {
   userId: string;
   conversation: Conversation;
   memberUserIds: string[];
+  allowFreshGroupBootstrap?: boolean;
 }
 
 export interface ChatCryptoProtocolService {
@@ -15,7 +16,7 @@ export interface ChatCryptoProtocolService {
   readonly protocolVersion: 1;
   getSupportedProtocols(): ChatSupportedProtocol[];
   isProtocolEnabled(protocol: ChatSupportedProtocol): boolean;
-  bootstrapAccount(userId: string): Promise<void>;
+  bootstrapAccount(userId: string, force?: boolean): Promise<void>;
   preWarmForDm(userId: string, peerUserId: string): Promise<void>;
   syncInbox(userId: string, force?: boolean): Promise<MlsInboxSyncResult>;
   isDmMessageType(messageType: string | null | undefined): boolean;
@@ -34,12 +35,12 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
     return protocol === 'mls';
   }
 
-  async bootstrapAccount(userId: string): Promise<void> {
-    await mlsService.bootstrapAccount(userId);
+  async bootstrapAccount(userId: string, force = false): Promise<void> {
+    await mlsService.bootstrapAccount(userId, force);
   }
 
   async preWarmForDm(userId: string, _peerUserId: string): Promise<void> {
-    await mlsService.bootstrapAccount(userId);
+    await mlsService.bootstrapAccount(userId, true);
   }
 
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
@@ -55,6 +56,7 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
       userId: input.userId,
       conversation: input.conversation,
       memberUserIds: input.memberUserIds,
+      allowFreshGroupBootstrap: input.allowFreshGroupBootstrap,
     });
   }
 }

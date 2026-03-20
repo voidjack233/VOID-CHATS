@@ -10,6 +10,7 @@ interface MessageInputProps {
   encryptionKey: CryptoKey | null;
   keyVersion: number;
   onMessageSent: (message: Message) => void;
+  onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
   replyTo?: Message | null;
@@ -41,6 +42,11 @@ const MessageInput = (props: MessageInputProps) => {
   const { editingMessage, replyTo, encryptionKey } = props;
   const hasAttachments = attachments.length > 0;
   const hasBanner = !!(editingMessage || replyTo);
+  const canBootstrapDmOnSend =
+    props.conversation.type === 'dm' &&
+    Boolean(props.currentUserId) &&
+    Boolean(props.conversation.dm_user_id);
+  const inputDisabled = !encryptionKey && !canBootstrapDmOnSend;
 
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -147,7 +153,7 @@ const MessageInput = (props: MessageInputProps) => {
         <div ref={attachMenuRef} className="relative mr-3 pb-1">
           <button
             onClick={() => setAttachMenuOpen((o) => !o)}
-            disabled={!encryptionKey || attachments.length >= 5}
+            disabled={inputDisabled || attachments.length >= 5}
             className={`rounded-full p-1 transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${attachMenuOpen ? 'text-void-accent' : 'text-void-text-muted hover:text-void-text'
               }`}
             title="Attach"
@@ -187,7 +193,7 @@ const MessageInput = (props: MessageInputProps) => {
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={getPlaceholder()}
-          disabled={!encryptionKey}
+          disabled={inputDisabled}
           autoComplete="off"
           spellCheck="false"
           enterKeyHint="enter" // <-- This forces the mobile keyboard to show "Return"

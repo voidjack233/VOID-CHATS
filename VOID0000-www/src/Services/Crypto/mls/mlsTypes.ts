@@ -1,4 +1,18 @@
+import type { Proposal } from 'ts-mls';
 import type { Conversation } from '../../Chat/chatService';
+
+export const MLS_BOOTSTRAP_COOLDOWN_MS = 5 * 60 * 1000;
+export const MLS_SYNC_COOLDOWN_MS = 30 * 1000;
+export const MLS_MINIMUM_KEY_PACKAGES = 3;
+export const MLS_EXPORTER_LABEL = 'void-msg-key';
+
+export const MlsCipherSuites = {
+  default: 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519',
+} as const;
+
+export const MlsProtocolVersions = {
+  current: 'mls10',
+} as const;
 
 export interface MlsAccountStateRecord {
   userId: string;
@@ -58,6 +72,14 @@ export interface MlsConversationBootstrapInput {
   userId: string;
   conversation: Conversation;
   peerUserId?: string;
+}
+
+export interface MlsDistributeGroupInput {
+  userId: string;
+  conversation: Conversation;
+  memberUserIds: string[];
+  allowFreshGroupBootstrap?: boolean;
+  _retried?: boolean;
 }
 
 export interface MlsBootstrapResult {
@@ -158,3 +180,27 @@ export interface MlsInboxSyncResult {
   acknowledgedWelcomes: number;
   acknowledgedCommits: number;
 }
+
+export interface AddProposalBuildResult {
+  proposals: Proposal[];
+  addedUserIds: string[];
+  missingUserIds: string[];
+}
+
+export interface PersistGroupStateOptions {
+  source: string;
+  upload?: boolean;
+}
+
+export const EMPTY_MLS_SYNC_RESULT: MlsInboxSyncResult = {
+  publishedKeyPackages: 0,
+  uploadedGroupStates: 0,
+  uploadedWelcomes: 0,
+  uploadedCommits: 0,
+  syncedKeyPackages: 0,
+  syncedGroupStates: 0,
+  syncedWelcomes: 0,
+  syncedCommits: 0,
+  acknowledgedWelcomes: 0,
+  acknowledgedCommits: 0,
+};

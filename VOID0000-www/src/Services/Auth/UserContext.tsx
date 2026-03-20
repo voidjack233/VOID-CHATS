@@ -534,9 +534,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     const userId = user.id;
     const password = loginPasswordRef.current;
+    let cancelled = false;
 
-    chatCryptoProtocolService.bootstrapAccount(userId).then(async () => {
-      if (!password) return; // Can't encrypt without password — skip backup
+    const runBootstrapMaintenance = (force = false) => {
+      if (cancelled) return;
+      void chatCryptoProtocolService.bootstrapAccount(userId, force).catch(() => {});
+    };
+
+    void chatCryptoProtocolService.bootstrapAccount(userId, true).then(async () => {
+      if (!password || cancelled) return;
       try {
         const keyBackup = await keyManager.prepareBackup(userId, password);
         const mlsFields = await buildMlsBackupFields(userId, password);
@@ -546,14 +552,50 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
     }).catch(() => {});
 
+    const maintenanceInterval = window.setInterval(() => {
+      runBootstrapMaintenance(true);
+    }, 60_000);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        runBootstrapMaintenance(true);
+      }
+    };
+
+    const onFocus = () => {
+      runBootstrapMaintenance(true);
+    };
+
+    const onOnline = () => {
+      runBootstrapMaintenance(true);
+    };
+
+    const onKeyPackageChanged = () => {
+      runBootstrapMaintenance(true);
+    };
+
     // Incrementally back up group keys whenever they change during the session.
     const onKeyChanged = () => {
       if (loginPasswordRef.current && user?.id) {
         scheduleGroupKeyBackup(user.id, loginPasswordRef.current);
       }
     };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('void:mls-key-package-changed', onKeyPackageChanged);
     window.addEventListener('void:group-key-changed', onKeyChanged);
-    return () => window.removeEventListener('void:group-key-changed', onKeyChanged);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(maintenanceInterval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('void:mls-key-package-changed', onKeyPackageChanged);
+      window.removeEventListener('void:group-key-changed', onKeyChanged);
+    };
   }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
 
   useEffect(() => {

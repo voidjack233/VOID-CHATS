@@ -1,6 +1,15 @@
 // src/Services/hooks/Chats/useMessageInput.ts
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { sendMessage, sendImageOnlyMessage, editMessage, uploadAttachments, sendTypingStart, Message, Conversation } from '../../Chat/chatService';
+import {
+  sendMessage,
+  sendImageOnlyMessage,
+  editMessage,
+  uploadAttachments,
+  sendTypingStart,
+  bootstrapDmKey,
+  Message,
+  Conversation,
+} from '../../Chat/chatService';
 
 export interface PendingAttachment {
   id: string;
@@ -17,6 +26,7 @@ interface UseMessageInputProps {
   encryptionKey: CryptoKey | null;
   keyVersion: number;
   onMessageSent: (message: Message) => void;
+  onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
   replyTo?: Message | null;
@@ -34,6 +44,7 @@ export const useMessageInput = ({
   encryptionKey,
   keyVersion,
   onMessageSent,
+  onEncryptionKeyResolved,
   editingMessage,
   onCancelEdit,
   replyTo,
@@ -145,8 +156,47 @@ export const useMessageInput = ({
     }
   }, [addFiles]);
 
+  const canBootstrapDmOnSend =
+    conversation.type === 'dm' &&
+    Boolean(currentUserId) &&
+    Boolean(conversation.dm_user_id);
+
+  const resolveSendCrypto = useCallback(async (): Promise<{
+    key: CryptoKey;
+    version: number;
+    bootstrapped: boolean;
+  }> => {
+    if (encryptionKey) {
+      return { key: encryptionKey, version: keyVersion, bootstrapped: false };
+    }
+
+    if (conversation.type !== 'dm') {
+      throw new Error('Secure chat is still loading for this conversation.');
+    }
+
+    if (!currentUserId) {
+      throw new Error('You must be signed in to send secure messages.');
+    }
+
+    const peerUserId = conversation.dm_user_id;
+    if (!peerUserId) {
+      throw new Error('This conversation is still loading secure recipient details.');
+    }
+
+    try {
+      const result = await bootstrapDmKey(conversation, currentUserId, peerUserId);
+      return { ...result, bootstrapped: true };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err || '');
+      if (reason.includes('DM peer device is not ready')) {
+        throw new Error('This person has no usable secure device keys on the server yet.');
+      }
+      throw err;
+    }
+  }, [conversation, currentUserId, encryptionKey, keyVersion]);
+
   const getPlaceholder = () => {
-    if (!encryptionKey) return 'Setting up encryption...';
+    if (!encryptionKey && !canBootstrapDmOnSend) return 'Setting up encryption...';
     if (!editingMessage && slowmodeRemaining > 0) {
       return `Slowmode active: wait ${slowmodeRemaining}s`;
     }
@@ -163,7 +213,9 @@ export const useMessageInput = ({
     conversation.type === 'channel' &&
     !['owner', 'admin'].includes(conversation.role);
 
-  const canSend = !sending && !isSlowmodeBlocked && encryptionKey && (
+  const hasSendCrypto = !!encryptionKey || canBootstrapDmOnSend;
+
+  const canSend = !sending && !isSlowmodeBlocked && hasSendCrypto && (
     text.trim().length > 0 || attachments.some((a) => a.url)
   ) && !attachments.some((a) => a.uploading);
 
@@ -275,13 +327,18 @@ export const useMessageInput = ({
     }
 
     try {
+      const sendCrypto = await resolveSendCrypto();
+      if (sendCrypto.bootstrapped) {
+        onEncryptionKeyResolved?.(sendCrypto.key, sendCrypto.version);
+      }
+
       if (editingMessage) {
         await editMessage(
           conversation.id,
           editingMessage.message_id,
           trimmed,
-          encryptionKey!,
-          keyVersion,
+          sendCrypto.key,
+          sendCrypto.version,
           {
             messageType: editingMessage.message_type || null,
           }
@@ -289,8 +346,8 @@ export const useMessageInput = ({
         onEditComplete?.(editingMessage.message_id, trimmed);
         onCancelEdit?.();
       } else if (trimmed) {
-        const msg = await sendMessage(conversation.id, trimmed, encryptionKey!, {
-          key_version: keyVersion,
+        const msg = await sendMessage(conversation.id, trimmed, sendCrypto.key, {
+          key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
           attachments: uploadedUrls,
@@ -306,7 +363,7 @@ export const useMessageInput = ({
         }
       } else if (uploadedUrls.length > 0) {
         const msg = await sendImageOnlyMessage(conversation.id, uploadedUrls, {
-          key_version: keyVersion,
+          key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
         });

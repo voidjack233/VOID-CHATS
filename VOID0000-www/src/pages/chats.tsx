@@ -90,6 +90,7 @@ const ChatDashboard = () => {
     handleMessageSent,
     handleStartDM,
     handleBackToMe,
+    handleEncryptionKeyResolved,
     openConversationByIdentifier,
     openGroupByIdentifier,
   } = useChatManager(user);
@@ -282,6 +283,14 @@ const ChatDashboard = () => {
   const getEncryptionHint = (error: string) => {
     if (mlsRecoveryGate.pending) {
       return 'This device is still preparing secure chat. Messages will appear once recovery finishes.';
+    }
+
+    if (error.includes('no usable secure device keys')) {
+      return 'The server does not currently have a published MLS key package for this person, so a new secure DM cannot start yet.';
+    }
+
+    if (error.includes('secure recipient details')) {
+      return 'This DM is still loading the recipient identity needed for secure bootstrap. Open the conversation again once it finishes loading.';
     }
 
     if (
@@ -649,6 +658,7 @@ const ChatDashboard = () => {
                     conversation={activeConversation}
                     encryptionKey={encryptionKey}
                     keyVersion={keyVersion}
+                    onEncryptionKeyResolved={handleEncryptionKeyResolved}
                     onMessageSent={(msg) => {
                       handleMessageSent(msg);
                       if (activeConversation?.id) setLastSentConversationId(activeConversation.id);

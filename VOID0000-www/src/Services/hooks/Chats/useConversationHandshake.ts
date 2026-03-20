@@ -6,8 +6,8 @@
 //   - Manages members, encryptionKey, keyVersion, encryptionError, and
 //     handshakeRetryToken state.
 //   - Runs the full handshake effect: cache-hit fast-path, member fetch,
-//     key resolution with retry loop, DM bootstrap fallback, group
-//     self-heal fallback.
+//     key resolution with retry loop, DM bootstrap fallback, and
+//     durable sync retry for groups.
 //   - Exposes retryHandshake, updateKey for useMessageStream's resolveMessageKey
 //     and attemptDecryption; resetCryptoState for useChatManager's resetLiveChatState.
 //   - Exposes getConversationKeyScopeId, getConversationKeyScopePublicId,
@@ -19,8 +19,6 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Conversation,
   getEncryptionKey,
-  ensureGroupKeyDistribution,
-  ownerSelfHealGroupKey,
   bootstrapDmKey,
 } from '../../Chat/chatService';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
@@ -245,7 +243,6 @@ export const useConversationHandshake = ({
       }
 
       let resolvedMemberIds: string[] = [];
-      let fetchedUserRole: string | null = null;
 
       try {
         let conversationDetails = staleHandshake
@@ -321,15 +318,7 @@ export const useConversationHandshake = ({
         );
         setMembers(memberMap);
         resolvedMemberIds = Object.keys(memberMap);
-        fetchedUserRole = memberMap[user.id]?.role || null;
         const ownerConversation = activeGroup || activeConversation;
-        const currentUserRole =
-          fetchedUserRole ||
-          ownerConversation?.role ||
-          null;
-        const canMutateGroupMembership =
-          ownerConversation?.type !== 'dm' &&
-          currentUserRole === 'owner';
 
         const peerId =
           activeConversation.type === 'dm'
@@ -444,22 +433,6 @@ export const useConversationHandshake = ({
           void chatCryptoProtocolService.preWarmForDm(user.id, peerId);
         }
 
-        // Auto-redistribution: any member who already has the MLS group
-        // state can add missing members and fan out welcomes/commits.
-        // This ensures new members get keys as soon as ANY existing member
-        // opens the conversation — not just the owner.
-        if (ownerConversation && ownerConversation.type !== 'dm' && canMutateGroupMembership) {
-          ensureGroupKeyDistribution(ownerConversation, user.id, resolvedMemberIds).catch(
-            () => {},
-          );
-        } else if (ownerConversation && ownerConversation.type !== 'dm') {
-          console.log('[GROUP_DISTRIBUTION] skipping automatic redistribution on non-owner device', {
-            conversation_id: ownerConversation.id,
-            current_user_id: user.id,
-            current_user_role: currentUserRole,
-            required_group_version: requiredGroupVersion ?? null,
-          });
-        }
       } catch (err: any) {
         if (ignore) return;
         console.error('[HANDSHAKE] failed', {
@@ -514,81 +487,23 @@ export const useConversationHandshake = ({
                 error: dmBootstrapReason,
               });
               if (dmBootstrapReason.includes('DM peer device is not ready')) {
-                setEncryptionError('The other device is still preparing secure chat. Retry in a moment.');
+                setEncryptionError('This person has no usable secure device keys on the server yet.');
+                return;
+              }
+              if (dmBootstrapReason.includes('DM peer could not be resolved')) {
+                setEncryptionError('This conversation is still loading secure recipient details.');
                 return;
               }
             }
           }
 
-          // Member self-heal: any member (owner or not) who lacks local MLS
-          // state can create a fresh group and redistribute keys to everyone.
-          // This handles new-device logins where IndexedDB is empty.
           const ownerConversation = activeGroup || activeConversation;
-          const currentUserRole = fetchedUserRole || ownerConversation?.role || null;
-          const canMutateGroupMembership =
-            ownerConversation?.type !== 'dm' &&
-            currentUserRole === 'owner';
-
-          // Guard: if the server's current_key_version > 1, the group has
-          // progressed past initial bootstrap.  Creating a fresh MLS group
-          // would overwrite any in-flight artifacts from another device that
-          // just rotated keys.  Instead, fall through to the sync-and-retry
-          // path so existing durable artifacts are recovered, not replaced.
-          const serverVersionAdvanced =
-            requiredGroupVersion != null && requiredGroupVersion > 1;
-
-          if (
-            ownerConversation &&
-            ownerConversation.type !== 'dm' &&
-            resolvedMemberIds.length > 0 &&
-            canMutateGroupMembership &&
-            !serverVersionAdvanced
-          ) {
-            try {
-              console.log('[GROUP_SELF_HEAL] attempting group key recovery', {
-                conversation_id: ownerConversation.id,
-                requested_member_ids: resolvedMemberIds,
-                current_key_version: ownerConversation.current_key_version ?? null,
-              });
-              const result = await ownerSelfHealGroupKey(
-                ownerConversation,
-                user.id,
-                resolvedMemberIds,
-              );
-              if (!ignore) {
-                setEncryptionError(null);
-                setEncryptionKey(result.key);
-                setKeyVersion(result.version);
-                onPatchConversationRef.current({
-                  ...ownerConversation,
-                  current_key_version: result.version,
-                });
-              }
-              console.log('[GROUP_SELF_HEAL] group key recovery succeeded', {
-                conversation_id: ownerConversation.id,
-                key_version: result.version,
-              });
-              return;
-            } catch (healErr) {
-              console.error('[GROUP_SELF_HEAL] group key recovery failed', {
-                conversation_id: ownerConversation.id,
-                error: healErr instanceof Error ? healErr.message : String(healErr || ''),
-              });
-            }
-          }
-
-          if (
-            ownerConversation &&
-            ownerConversation.type !== 'dm' &&
-            (!canMutateGroupMembership || serverVersionAdvanced)
-          ) {
+          if (ownerConversation && ownerConversation.type !== 'dm') {
             const nextAttempt = (preparingRetryAttemptsRef.current[preparingRetryKey] || 0) + 1;
             preparingRetryAttemptsRef.current[preparingRetryKey] = nextAttempt;
-            console.log('[GROUP_SELF_HEAL] deferring to sync-retry path', {
+            console.log('[GROUP_RECOVERY] deferring to durable sync-retry path', {
               conversation_id: ownerConversation.id,
               current_user_id: user.id,
-              current_user_role: currentUserRole,
-              reason: serverVersionAdvanced ? 'server_version_advanced' : 'non_owner',
               required_group_version: requiredGroupVersion ?? null,
               preparing_retry_attempt: nextAttempt,
             });
@@ -659,6 +574,7 @@ export const useConversationHandshake = ({
   };
 
   const updateKey = (key: CryptoKey, version: number) => {
+    setEncryptionError(null);
     setEncryptionKey(key);
     setKeyVersion(version);
   };

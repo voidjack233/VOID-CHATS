@@ -407,6 +407,7 @@ export const useChatManager = (user: any) => {
     setEditingMessage, setReplyTo, setMessageUpdate,
     handleSelectConversation, handleSelectChannel, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,
     handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
+    handleEncryptionKeyResolved: updateKey,
     retryHandshake,
   };
 };

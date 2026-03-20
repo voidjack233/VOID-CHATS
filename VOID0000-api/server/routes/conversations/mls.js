@@ -726,14 +726,16 @@ router.post('/sync', async (req, res) => {
         : Promise.resolve({ rows: [] }),
       isEnabledFor(capabilities, 'group_state')
         ? pool.query(
-            `SELECT gs.conversation_id::text AS conversation_id,
+            `SELECT COALESCE(conversations.parent_conversation_id, conversations.id)::text AS conversation_id,
                     gs.group_id,
                     gs.epoch,
                     gs.state_blob,
                     gs.updated_at
              FROM mls_group_states gs
+             JOIN conversations
+               ON conversations.id = gs.conversation_id
              JOIN conversation_members cm
-               ON cm.conversation_id = gs.conversation_id
+               ON cm.conversation_id = COALESCE(conversations.parent_conversation_id, conversations.id)
              WHERE cm.user_id = $1::UUID
                AND gs.epoch >= COALESCE(cm.joined_key_version, 1)
              ORDER BY gs.updated_at DESC
