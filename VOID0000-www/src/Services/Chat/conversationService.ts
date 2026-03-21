@@ -1,6 +1,6 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
-import { distributeGroupSenderKeyWithProtocol } from './chatCryptoService';
+import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove } from './chatCryptoService';
 import type {
   Conversation,
   ConversationCategory,
@@ -324,6 +324,17 @@ export function rotateRemoveMember(
 
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
+
+    // Preflight: prove local MLS state can apply this removal BEFORE
+    // mutating server membership. No durable side effects — just
+    // validates lineage freshness, leaf index existence, and commit
+    // applicability. If stale, syncs and retries. If still unusable,
+    // throws before any server state is changed.
+    await preflightGroupRemove(
+      { ...freshConversation, id: keyConversationId, current_key_version: nextKeyVersion },
+      currentUserId,
+      [targetUserId],
+    );
 
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
       method: 'POST',

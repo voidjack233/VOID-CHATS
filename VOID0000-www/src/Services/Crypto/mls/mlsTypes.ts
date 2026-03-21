@@ -27,6 +27,7 @@ export interface MlsGroupStateRecord {
   conversationId: string;
   groupId: string;
   epoch: number;
+  keyVersion?: number | null;
   stateBlob: string;
   createdAt: string;
   updatedAt: string;
@@ -110,6 +111,7 @@ export interface MlsSyncGroupStateUpdate {
   conversationId: string;
   groupId: string;
   epoch: number;
+  keyVersion?: number | null;
   stateBlob: string;
   updatedAt?: string | null;
 }
@@ -135,6 +137,7 @@ export interface MlsUploadGroupStateInput {
   conversationId: string;
   groupId: string;
   epoch: number;
+  keyVersion?: number | null;
   stateBlob: string;
 }
 
@@ -190,6 +193,7 @@ export interface AddProposalBuildResult {
 export interface PersistGroupStateOptions {
   source: string;
   upload?: boolean;
+  keyVersion?: number | null;
 }
 
 export const EMPTY_MLS_SYNC_RESULT: MlsInboxSyncResult = {

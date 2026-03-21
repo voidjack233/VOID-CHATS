@@ -155,6 +155,14 @@ export async function distributeGroupSenderKeyWithProtocol(
   };
 }
 
+export async function preflightGroupRemove(
+  conversation: Conversation,
+  currentUserId: string,
+  removeMemberIds: string[],
+): Promise<void> {
+  await chatCryptoProtocolService.preflightGroupRemove(currentUserId, conversation, removeMemberIds);
+}
+
 export async function uploadPublicKey(publicKey: string, keyId: string): Promise<void> {
   const response = await fetchWithAuth(`${CHAT_API_PREFIX}/keys`, {
     method: 'POST',

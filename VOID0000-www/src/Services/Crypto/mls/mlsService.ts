@@ -1,3 +1,4 @@
+import type { Conversation } from '../../Chat/chatService';
 import {
   checkKeyPackageAvailability,
   consumeMlsWelcome,
@@ -294,6 +295,14 @@ export class MlsService {
 
   async distributeGroupSenderKey(input: MlsDistributeGroupInput): Promise<MlsDistributeKeyResult> {
     return this.groupService.distributeGroupSenderKey(input);
+  }
+
+  async preflightGroupRemove(
+    userId: string,
+    conversation: Conversation,
+    removeMemberIds: string[],
+  ): Promise<void> {
+    return this.groupService.preflightGroupRemove(userId, conversation, removeMemberIds);
   }
 
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {

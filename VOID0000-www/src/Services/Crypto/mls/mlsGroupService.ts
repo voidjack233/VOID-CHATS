@@ -29,6 +29,7 @@ import {
   zeroOutPrivateKeyPackage,
 } from './mlsKeyService';
 import { mlsStorageService } from './mlsStorageService';
+import type { Conversation } from '../../Chat/chatService';
 import type {
   MlsBootstrapResult,
   MlsConversationBootstrapInput,
@@ -54,7 +55,7 @@ export class MlsGroupService {
   constructor(private readonly deps: MlsGroupServiceDependencies) {}
 
   private async uploadGroupStateRecord(
-    record: Pick<MlsSyncGroupStateUpdate, 'conversationId' | 'groupId' | 'epoch' | 'stateBlob'>,
+    record: Pick<MlsSyncGroupStateUpdate, 'conversationId' | 'groupId' | 'epoch' | 'keyVersion' | 'stateBlob'>,
     source: string,
   ): Promise<number> {
     const capabilities = await this.deps.getServerCapabilities();
@@ -93,7 +94,9 @@ export class MlsGroupService {
     state: ClientState,
     options: PersistGroupStateOptions,
   ): Promise<void> {
-    const record = await mlsStorageService.saveGroupState(conversationId, state);
+    const record = await mlsStorageService.saveGroupState(conversationId, state, {
+      keyVersion: options.keyVersion,
+    });
     if (options.upload === false) {
       return;
     }
@@ -103,6 +106,7 @@ export class MlsGroupService {
         conversationId: record.conversationId,
         groupId: record.groupId,
         epoch: record.epoch,
+        keyVersion: record.keyVersion,
         stateBlob: record.stateBlob,
       },
       options.source,
@@ -409,6 +413,7 @@ export class MlsGroupService {
 
     await this.persistGroupState(conversationId, newState, {
       source: existingState ? 'distribute_update' : 'distribute_bootstrap',
+      keyVersion: requiredServerVersion,
     });
 
     if (deferredKeyCleanup) {
@@ -498,6 +503,7 @@ export class MlsGroupService {
       await this.persistGroupState(update.conversationId, state, {
         source: 'sync_import',
         upload: false,
+        keyVersion: update.keyVersion,
       });
       const keyResult = await mlsStorageService.cacheDerivedGroupKey(update.conversationId, state, impl);
       console.log('[MLS_GROUP_STATE] imported synced group state', {
@@ -574,6 +580,7 @@ export class MlsGroupService {
 
         await this.persistGroupState(conversationId, joinedState, {
           source: 'welcome_join',
+          keyVersion: derivedKey.keyVersion,
         });
         const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, joinedState, impl, {
           aliasVersionOne: true,
@@ -643,8 +650,10 @@ export class MlsGroupService {
       throw err;
     }
 
+    const commitKeyVersion = Number(newState.groupContext.epoch);
     await this.persistGroupState(commit.conversationId, newState, {
       source: 'commit_apply',
+      keyVersion: commitKeyVersion,
     });
     const keyResult = await mlsStorageService.cacheDerivedGroupKey(commit.conversationId, newState, impl);
     await mlsStorageService.markCommitApplied(commit.conversationId, commit.commitRef);
@@ -654,5 +663,100 @@ export class MlsGroupService {
       key_version: keyResult.keyVersion,
     });
     return true;
+  }
+
+  /**
+   * Preflight check for group member removal. Validates that local MLS state
+   * is fresh enough and can build/commit the removal — with NO durable side
+   * effects (no persist, no upload, no key cache).
+   *
+   * Syncing inbox is allowed (read-only from a durable-state perspective).
+   * Throws MLS_DISTRIBUTE_SYNC_REQUIRED or MLS_PREFLIGHT_REMOVE_FAILED if
+   * the removal cannot be applied locally.
+   */
+  async preflightGroupRemove(
+    userId: string,
+    conversation: Conversation,
+    removeMemberIds: string[],
+  ): Promise<void> {
+    await this.deps.bootstrapAccount(userId);
+
+    const conversationId = normalizeConversationKeyId(conversation);
+    const impl = await getMlsCiphersuiteImpl();
+    const requiredServerVersion = normalizePositiveVersion(conversation.current_key_version);
+
+    let existingState = await mlsStorageService.loadGroupState(conversationId);
+
+    // Lineage freshness check — same logic as distributeGroupSenderKey but
+    // no durable side effects beyond syncing inbox (which only reads).
+    if (requiredServerVersion != null) {
+      const needsSync =
+        (!existingState && requiredServerVersion > 1) ||
+        (existingState != null &&
+          requiredServerVersion > Number(existingState.groupContext.epoch) + 1);
+
+      if (needsSync) {
+        try {
+          await this.deps.syncInbox(userId, true);
+        } catch {
+          // Best-effort sync; fall through to freshness check below.
+        }
+        existingState = await mlsStorageService.loadGroupState(conversationId);
+      }
+
+      const localEpoch = existingState ? Number(existingState.groupContext.epoch) : null;
+      const hasUsableLineage =
+        existingState != null &&
+        requiredServerVersion <= (localEpoch ?? 0) + 1;
+
+      if (!hasUsableLineage) {
+        throw createMlsError(
+          'Local MLS state is behind the server. Sync latest durable group state before retrying this membership change.',
+          'MLS_DISTRIBUTE_SYNC_REQUIRED',
+        );
+      }
+    }
+
+    if (!existingState) {
+      throw createMlsError(
+        'Local MLS state is missing for this group. Cannot preflight removal.',
+        'MLS_PREFLIGHT_REMOVE_FAILED',
+      );
+    }
+
+    // Verify leaf indices exist for all removal targets.
+    const proposals: Proposal[] = [];
+    for (const removeId of removeMemberIds) {
+      const leafIdx = findLeafIndex(existingState, removeId);
+      if (leafIdx === null) {
+        throw createMlsError(
+          `Member ${removeId} not found in local MLS group state. Cannot apply removal.`,
+          'MLS_PREFLIGHT_REMOVE_FAILED',
+        );
+      }
+      proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
+    }
+
+    // Dry-run createCommit — validates the MLS operation will succeed.
+    // Result is discarded; no state is persisted.
+    try {
+      const commitResult = await createCommit(
+        { state: existingState, cipherSuite: impl },
+        { extraProposals: proposals, ratchetTreeExtension: false },
+      );
+      // Zero out any sensitive material from the discarded result.
+      commitResult.consumed.forEach(zeroOutUint8Array);
+    } catch (commitErr) {
+      // Sync once and re-check, mirroring distributeGroupSenderKey behavior.
+      try {
+        await this.deps.syncInbox(userId, true);
+      } catch {
+        // Best-effort.
+      }
+      throw createMlsError(
+        'Local MLS state could not apply this removal. Sync latest durable group state before retrying.',
+        'MLS_PREFLIGHT_REMOVE_FAILED',
+      );
+    }
   }
 }

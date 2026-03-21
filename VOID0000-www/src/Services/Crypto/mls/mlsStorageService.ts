@@ -21,12 +21,17 @@ export class MlsStorageService {
     }
   }
 
-  async saveGroupState(conversationId: string, state: ClientState): Promise<MlsGroupStateRecord> {
+  async saveGroupState(
+    conversationId: string,
+    state: ClientState,
+    options?: { keyVersion?: number | null },
+  ): Promise<MlsGroupStateRecord> {
     const stateBytes = encodeGroupState(state);
     const record: MlsGroupStateRecord = {
       conversationId,
       groupId: bytesToBase64(state.groupContext.groupId),
       epoch: Number(state.groupContext.epoch),
+      keyVersion: options?.keyVersion ?? null,
       stateBlob: bytesToBase64(stateBytes),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

@@ -106,6 +106,7 @@ async function restoreMlsStateFromBackup(
             conversationId: group.conversationId,
             groupId: group.groupId,
             epoch: group.epoch,
+            keyVersion: group.keyVersion ?? null,
             stateBlob: group.stateBlob,
           }))
         );

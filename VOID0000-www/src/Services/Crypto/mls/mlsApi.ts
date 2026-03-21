@@ -230,6 +230,7 @@ export async function upsertMlsGroupStates(items: MlsUploadGroupStateInput[]): P
         conversation_id: item.conversationId,
         group_id: item.groupId,
         epoch: item.epoch,
+        ...(item.keyVersion != null ? { key_version: item.keyVersion } : {}),
         state_blob: item.stateBlob,
       })),
     }),
@@ -370,11 +371,13 @@ function normalizeSyncGroupStates(raw: unknown): MlsSyncGroupStateUpdate[] {
     const stateBlob = pickString(obj, ['state_blob', 'stateBlob']);
     const epoch = pickNumber(obj, ['epoch']);
     if (!conversationId || !groupId || !stateBlob || epoch == null) return [];
+    const keyVersion = pickNumber(obj, ['key_version', 'keyVersion']);
     const updatedAt = pickString(obj, ['updated_at', 'updatedAt']);
     return [{
       conversationId,
       groupId,
       epoch,
+      keyVersion,
       stateBlob,
       updatedAt,
     }];

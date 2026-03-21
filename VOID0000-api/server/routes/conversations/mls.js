@@ -104,10 +104,16 @@ async function ensureSchema() {
            conversation_id UUID PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
            group_id TEXT NOT NULL,
            epoch INTEGER NOT NULL,
+           key_version INTEGER,
            state_blob TEXT NOT NULL,
            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
          )`
+      );
+
+      // Backfill column for databases created before key_version was added.
+      await pool.query(
+        `ALTER TABLE mls_group_states ADD COLUMN IF NOT EXISTS key_version INTEGER`
       );
 
       await pool.query(
@@ -259,12 +265,22 @@ router.post('/group-states', async (req, res) => {
       const groupId = normalizeRequiredString(item?.group_id ?? item?.groupId, MAX_GROUP_ID_LENGTH);
       const stateBlob = normalizeRequiredString(item?.state_blob ?? item?.stateBlob, MAX_STATE_BLOB_LENGTH);
       const epoch = parsePositiveInt(item?.epoch, -1);
+      const keyVersionRaw = item?.key_version ?? item?.keyVersion;
+      const keyVersion = keyVersionRaw == null ? null : parsePositiveInt(keyVersionRaw, -1);
 
       if (!conversationIdentifier || !groupId || !stateBlob || epoch <= 0) {
         await client.query('ROLLBACK');
         return res.status(400).json({
           success: false,
           error: 'Each item requires conversation_id, group_id, state_blob, and positive epoch',
+        });
+      }
+
+      if (keyVersion === -1) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          error: 'key_version must be a positive integer when provided',
         });
       }
 
@@ -279,18 +295,19 @@ router.post('/group-states', async (req, res) => {
       }
 
       const result = await client.query(
-        `INSERT INTO mls_group_states (conversation_id, group_id, epoch, state_blob, created_at, updated_at)
-         VALUES ($1::UUID, $2, $3, $4, NOW(), NOW())
+        `INSERT INTO mls_group_states (conversation_id, group_id, epoch, key_version, state_blob, created_at, updated_at)
+         VALUES ($1::UUID, $2, $3, $4, $5, NOW(), NOW())
          ON CONFLICT (conversation_id)
          DO UPDATE SET
            group_id = EXCLUDED.group_id,
            epoch = EXCLUDED.epoch,
+           key_version = COALESCE(EXCLUDED.key_version, mls_group_states.key_version),
            state_blob = EXCLUDED.state_blob,
            updated_at = NOW()
          WHERE mls_group_states.epoch IS NULL
             OR EXCLUDED.epoch >= mls_group_states.epoch
-         RETURNING conversation_id::text AS conversation_id, group_id, epoch, updated_at`,
-        [resolved.conversationId, groupId, epoch, stateBlob]
+         RETURNING conversation_id::text AS conversation_id, group_id, epoch, key_version, updated_at`,
+        [resolved.conversationId, groupId, epoch, keyVersion, stateBlob]
       );
 
       if (result.rows[0]) {
@@ -299,7 +316,7 @@ router.post('/group-states', async (req, res) => {
       }
 
       const existing = await client.query(
-        `SELECT conversation_id::text AS conversation_id, group_id, epoch, updated_at
+        `SELECT conversation_id::text AS conversation_id, group_id, epoch, key_version, updated_at
          FROM mls_group_states
          WHERE conversation_id = $1::UUID
          LIMIT 1`,
@@ -729,6 +746,7 @@ router.post('/sync', async (req, res) => {
             `SELECT COALESCE(conversations.parent_conversation_id, conversations.id)::text AS conversation_id,
                     gs.group_id,
                     gs.epoch,
+                    gs.key_version,
                     gs.state_blob,
                     gs.updated_at
              FROM mls_group_states gs
@@ -737,7 +755,7 @@ router.post('/sync', async (req, res) => {
              JOIN conversation_members cm
                ON cm.conversation_id = COALESCE(conversations.parent_conversation_id, conversations.id)
              WHERE cm.user_id = $1::UUID
-               AND gs.epoch >= COALESCE(cm.joined_key_version, 1)
+               AND COALESCE(gs.key_version, gs.epoch) >= COALESCE(cm.joined_key_version, 1)
              ORDER BY gs.updated_at DESC
              LIMIT $2`,
             [requesterUserId, limit]
