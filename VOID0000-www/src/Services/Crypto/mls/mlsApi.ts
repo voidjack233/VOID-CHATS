@@ -2,6 +2,7 @@ import { fetchWithAuth } from '../../Auth/authServiceApi';
 import type {
   MlsInboxSyncPayload,
   MlsServerCapabilities,
+  MlsSyncArchivedKeyUpdate,
   MlsSyncCommitUpdate,
   MlsSyncGroupStateUpdate,
   MlsSyncKeyPackageUpdate,
@@ -342,6 +343,33 @@ export async function applyMlsCommit(conversationId: string, commitRef: string):
   return true;
 }
 
+export async function archiveGroupKeys(
+  items: Array<{ conversationId: string; keyVersion: number; keyData: string }>,
+): Promise<number> {
+  if (items.length === 0) return 0;
+
+  const response = await fetchWithAuth(`${MLS_API_PREFIX}/group-key-archive`, {
+    method: 'POST',
+    body: JSON.stringify({
+      items: items.map((item) => ({
+        conversation_id: item.conversationId,
+        key_version: item.keyVersion,
+        key_data: item.keyData,
+      })),
+    }),
+  });
+
+  if (response.status === 404 || !response.ok) {
+    return 0;
+  }
+
+  const payload = (await parseJsonSafe(response)) as MlsApiEnvelope<unknown> | null;
+  if (!payload) return items.length;
+  if (payload.success === false) return 0;
+  const count = resolveBatchCount(payload);
+  return count > 0 ? count : items.length;
+}
+
 function normalizeSyncKeyPackageUpdates(raw: unknown, userId: string): MlsSyncKeyPackageUpdate[] {
   return asArray(raw).flatMap((entry) => {
     const obj = asObject(entry);
@@ -431,12 +459,25 @@ function normalizeSyncCommits(raw: unknown): MlsSyncCommitUpdate[] {
   });
 }
 
+function normalizeSyncArchivedKeys(raw: unknown): MlsSyncArchivedKeyUpdate[] {
+  return asArray(raw).flatMap((entry) => {
+    const obj = asObject(entry);
+    if (!obj) return [];
+    const conversationId = pickString(obj, ['conversation_id', 'conversationId']);
+    const keyData = pickString(obj, ['key_data', 'keyData']);
+    const keyVersion = pickNumber(obj, ['key_version', 'keyVersion']);
+    if (!conversationId || !keyData || keyVersion == null || keyVersion < 1) return [];
+    return [{ conversationId, keyVersion, keyData }];
+  });
+}
+
 function emptySyncPayload(): MlsInboxSyncPayload {
   return {
     keyPackages: [],
     groupStates: [],
     welcomes: [],
     commits: [],
+    archivedKeys: [],
   };
 }
 
@@ -460,12 +501,16 @@ function normalizeInboxSyncPayload(raw: unknown, userId: string): MlsInboxSyncPa
   const commits = normalizeSyncCommits(
     source.commits ?? source.commit_messages ?? source.commitMessages
   );
+  const archivedKeys = normalizeSyncArchivedKeys(
+    source.archived_keys ?? source.archivedKeys
+  );
 
   return {
     keyPackages,
     groupStates,
     welcomes,
     commits,
+    archivedKeys,
   };
 }
 

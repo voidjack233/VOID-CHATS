@@ -33,3 +33,74 @@ export function createMlsError(message: string, code: string): Error & { code: s
   error.code = code;
   return error;
 }
+
+const ARCHIVE_KEY_SALT = new TextEncoder().encode('void-group-key-archive');
+
+async function deriveArchiveWrappingKey(
+  identityKeyBytes: Uint8Array,
+  userId: string,
+): Promise<CryptoKey> {
+  const hkdfKey = await crypto.subtle.importKey(
+    'raw',
+    identityKeyBytes,
+    'HKDF',
+    false,
+    ['deriveKey'],
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: ARCHIVE_KEY_SALT,
+      info: new TextEncoder().encode(userId),
+    },
+    hkdfKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+/**
+ * Encrypt a raw AES key before archiving to the server.
+ * Output: base64( 12-byte IV || ciphertext+tag )
+ */
+export async function wrapArchiveKey(
+  rawKeyBytes: ArrayBuffer,
+  identityKeyBytes: Uint8Array,
+  userId: string,
+): Promise<string> {
+  const wrappingKey = await deriveArchiveWrappingKey(identityKeyBytes, userId);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    wrappingKey,
+    rawKeyBytes,
+  );
+
+  const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ciphertext), iv.byteLength);
+  return btoa(String.fromCharCode(...combined));
+}
+
+/**
+ * Decrypt an archived key fetched from the server.
+ * Input: base64( 12-byte IV || ciphertext+tag )
+ */
+export async function unwrapArchiveKey(
+  wrappedBase64: string,
+  identityKeyBytes: Uint8Array,
+  userId: string,
+): Promise<ArrayBuffer> {
+  const wrappingKey = await deriveArchiveWrappingKey(identityKeyBytes, userId);
+  const combined = base64ToBytes(wrappedBase64);
+  const iv = combined.slice(0, 12);
+  const ciphertext = combined.slice(12);
+  return crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    wrappingKey,
+    ciphertext,
+  );
+}

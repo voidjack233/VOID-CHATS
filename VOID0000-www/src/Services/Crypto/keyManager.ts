@@ -788,8 +788,15 @@ async function restoreFromRecoveryPhrase(
   return { publicKey: publicKeyBase64, privateKey: await importPrivateKey(privateKeyBase64) };
 }
 
+async function getIdentityKeyBytes(userId: string): Promise<Uint8Array | null> {
+  const stored = await dbGet(`keypair:${userId}`);
+  if (!stored?.privateKey) return null;
+  return new Uint8Array(base64ToArrayBuffer(stored.privateKey));
+}
+
 export const keyManager = {
   initializeKeys,
+  getIdentityKeyBytes,
   generateRecoveryPhrase: () => generateRecoveryCode(),
   validateRecoveryPhrase: isValidRecoveryPhrase,
   generateFreshKeys,

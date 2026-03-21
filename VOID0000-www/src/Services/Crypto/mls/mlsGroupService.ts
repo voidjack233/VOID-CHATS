@@ -315,7 +315,7 @@ export class MlsGroupService {
           current_member_user_ids: currentMembers,
           missing_member_user_ids: toAdd,
         });
-        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl);
+        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl, { userId: input.userId });
         return {
           ...result,
           includedMemberUserIds: currentMembers,
@@ -324,7 +324,7 @@ export class MlsGroupService {
       }
 
       if (toAdd.length === 0 && toRemove.length === 0) {
-        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl);
+        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl, { userId: input.userId });
         return {
           ...result,
           includedMemberUserIds: currentMembers,
@@ -420,7 +420,7 @@ export class MlsGroupService {
       zeroOutPrivateKeyPackage(deferredKeyCleanup);
     }
 
-    const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, newState, impl);
+    const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, newState, impl, { userId: input.userId });
 
     if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
       const welcomeRef = crypto.randomUUID();
@@ -480,10 +480,11 @@ export class MlsGroupService {
   async importSyncedGroupState(
     update: MlsSyncGroupStateUpdate,
     impl: CiphersuiteImpl,
+    userId?: string,
   ): Promise<boolean> {
     const existing = await mlsStorageService.getGroupStateRecord(update.conversationId);
-    if (existing && Number(existing.epoch) > Number(update.epoch)) {
-      console.log('[MLS_GROUP_STATE] skipping stale synced group state', {
+    if (existing && Number(existing.epoch) >= Number(update.epoch)) {
+      console.log('[MLS_GROUP_STATE] skipping stale or same-epoch synced group state', {
         conversation_id: update.conversationId,
         local_epoch: existing.epoch,
         incoming_epoch: update.epoch,
@@ -507,6 +508,7 @@ export class MlsGroupService {
       });
       const keyResult = await mlsStorageService.cacheDerivedGroupKey(update.conversationId, state, impl, {
         aliasVersion: update.keyVersion,
+        userId,
       });
       console.log('[MLS_GROUP_STATE] imported synced group state', {
         conversation_id: update.conversationId,
@@ -587,6 +589,7 @@ export class MlsGroupService {
         });
         const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, joinedState, impl, {
           aliasVersionOne: true,
+          userId,
         });
         await mlsStorageService.markKeyPackageConsumed(userId, kpRecord.packageRef);
         mlsStorageService.notifyKeyPackageChanged();
@@ -613,6 +616,7 @@ export class MlsGroupService {
   async processIncomingCommit(
     commit: MlsSyncCommitUpdate,
     impl: CiphersuiteImpl,
+    userId?: string,
   ): Promise<boolean> {
     const state = await mlsStorageService.loadGroupState(commit.conversationId);
     if (!state) {
@@ -658,7 +662,7 @@ export class MlsGroupService {
       source: 'commit_apply',
       keyVersion: commitKeyVersion,
     });
-    const keyResult = await mlsStorageService.cacheDerivedGroupKey(commit.conversationId, newState, impl);
+    const keyResult = await mlsStorageService.cacheDerivedGroupKey(commit.conversationId, newState, impl, { userId });
     await mlsStorageService.markCommitApplied(commit.conversationId, commit.commitRef);
     console.log('[MLS_COMMIT] applied commit', {
       conversation_id: commit.conversationId,

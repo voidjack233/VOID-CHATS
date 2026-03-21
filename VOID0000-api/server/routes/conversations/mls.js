@@ -142,6 +142,16 @@ async function ensureSchema() {
          )`
       );
 
+      await pool.query(
+        `CREATE TABLE IF NOT EXISTS mls_group_key_archive (
+           conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+           key_version INTEGER NOT NULL,
+           key_data TEXT NOT NULL,
+           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           PRIMARY KEY (conversation_id, key_version)
+         )`
+      );
+
       await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_key_packages_user_id ON mls_key_packages(user_id)');
       await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_group_states_updated_at ON mls_group_states(updated_at DESC)');
       await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_welcome_messages_user_id ON mls_welcome_messages(user_id, consumed_at, received_at)');
@@ -701,6 +711,65 @@ router.post('/commits/:conversationId/:commitRef/apply', async (req, res) => {
   }
 });
 
+// POST /api/conversations/mls/group-key-archive — archive derived group key per version
+router.post('/group-key-archive', async (req, res) => {
+  const capabilities = resolveCapabilities();
+  if (!capabilities.supported) {
+    return notEnabled(res, 'group_state');
+  }
+
+  const requesterUserId = String(req.user.id);
+  const items = normalizeBatchInput(req.body).slice(0, MAX_BATCH_ITEMS);
+
+  if (items.length === 0) {
+    return res.json({ success: true, data: { items: [] } });
+  }
+
+  let client;
+  try {
+    await ensureSchema();
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const upserted = [];
+    for (const item of items) {
+      const conversationIdentifier = normalizeOptionalString(
+        item.conversation_id ?? item.conversationId,
+        64
+      );
+      const keyVersion = parsePositiveInt(item.key_version ?? item.keyVersion, null);
+      const keyData = normalizeRequiredString(item.key_data ?? item.keyData, MAX_PACKAGE_DATA_LENGTH);
+
+      if (!conversationIdentifier || !keyVersion || !keyData) continue;
+
+      const resolved = await resolveAccessibleConversationId(conversationIdentifier, requesterUserId, client);
+      if (resolved.error) continue;
+
+      const result = await client.query(
+        `INSERT INTO mls_group_key_archive (conversation_id, key_version, key_data, created_at)
+         VALUES ($1::UUID, $2, $3, NOW())
+         ON CONFLICT (conversation_id, key_version) DO UPDATE SET
+           key_data = EXCLUDED.key_data
+         RETURNING conversation_id::text AS conversation_id, key_version`,
+        [resolved.conversationId, keyVersion, keyData]
+      );
+
+      if (result.rows[0]) {
+        upserted.push(result.rows[0]);
+      }
+    }
+
+    await client.query('COMMIT');
+    return res.json({ success: true, data: { items: upserted } });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('MLS group key archive error:', err);
+    return res.status(500).json({ success: false, error: 'Failed to archive group keys' });
+  } finally {
+    client?.release();
+  }
+});
+
 // POST /api/conversations/mls/sync
 router.post('/sync', async (req, res) => {
   const capabilities = resolveCapabilities();
@@ -726,7 +795,7 @@ router.post('/sync', async (req, res) => {
   try {
     await ensureSchema();
 
-    const [keyPackagesResult, groupStatesResult, welcomesResult, commitsResult] = await Promise.all([
+    const [keyPackagesResult, groupStatesResult, welcomesResult, commitsResult, archivedKeysResult] = await Promise.all([
       isEnabledFor(capabilities, 'key_packages')
         ? pool.query(
             `SELECT user_id::text AS user_id,
@@ -803,6 +872,21 @@ router.post('/sync', async (req, res) => {
             [requesterUserId, limit]
           )
         : Promise.resolve({ rows: [] }),
+      isEnabledFor(capabilities, 'group_state')
+        ? pool.query(
+            `SELECT ka.conversation_id::text AS conversation_id,
+                    ka.key_version,
+                    ka.key_data
+             FROM mls_group_key_archive ka
+             JOIN conversation_members cm
+               ON cm.conversation_id = ka.conversation_id
+             WHERE cm.user_id = $1::UUID
+               AND ka.key_version >= COALESCE(cm.joined_key_version, 1)
+             ORDER BY ka.conversation_id, ka.key_version ASC
+             LIMIT $2`,
+            [requesterUserId, limit * 10]
+          )
+        : Promise.resolve({ rows: [] }),
     ]);
 
     return res.json({
@@ -812,6 +896,7 @@ router.post('/sync', async (req, res) => {
         group_states: groupStatesResult.rows,
         welcomes: welcomesResult.rows,
         commits: commitsResult.rows,
+        archived_keys: archivedKeysResult.rows,
       },
     });
   } catch (err) {

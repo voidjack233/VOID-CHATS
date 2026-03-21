@@ -1,4 +1,5 @@
 import type { Conversation } from '../../Chat/chatService';
+import { keyManager } from '../keyManager';
 import {
   checkKeyPackageAvailability,
   consumeMlsWelcome,
@@ -10,6 +11,7 @@ import { getMlsCiphersuiteImpl } from './mlsCryptoService';
 import { MlsGroupService } from './mlsGroupService';
 import { createKeyPackageRecord } from './mlsKeyService';
 import { mlsStorageService } from './mlsStorageService';
+import { unwrapArchiveKey } from './mlsUtils';
 import {
   EMPTY_MLS_SYNC_RESULT,
   MLS_BOOTSTRAP_COOLDOWN_MS,
@@ -347,13 +349,14 @@ export class MlsService {
       group_states: payload.groupStates.length,
       welcomes: payload.welcomes.length,
       commits: payload.commits.length,
+      archived_keys: payload.archivedKeys.length,
     });
 
     const impl = await getMlsCiphersuiteImpl();
     const keyPackageStateChanged = await this.syncKeyPackageInventory(userId, payload.keyPackages);
 
     for (const groupState of payload.groupStates) {
-      await this.groupService.importSyncedGroupState(groupState, impl);
+      await this.groupService.importSyncedGroupState(groupState, impl, userId);
     }
 
     const acknowledgedWelcomes: MlsSyncWelcomeUpdate[] = [];
@@ -370,10 +373,53 @@ export class MlsService {
 
     for (const commit of payload.commits) {
       try {
-        await this.groupService.processIncomingCommit(commit, impl);
+        await this.groupService.processIncomingCommit(commit, impl, userId);
       } catch (err) {
         console.warn('[MLS] Commit processing failed:', err);
       }
+    }
+
+    // Import archived group keys for same-account multi-device recovery.
+    // Keys are AES-GCM wrapped with an HKDF-derived wrapping key from the
+    // identity private key — unwrap before importing into keyManager.
+    let importedArchivedKeys = 0;
+    const identityBytes = payload.archivedKeys.length > 0
+      ? await keyManager.getIdentityKeyBytes(userId)
+      : null;
+    for (const archived of payload.archivedKeys) {
+      try {
+        const existing = await keyManager.getGroupKey(archived.conversationId, archived.keyVersion);
+        if (existing) continue;
+        if (!identityBytes) continue;
+
+        const rawBytes = await unwrapArchiveKey(archived.keyData, identityBytes, userId);
+        const key = await crypto.subtle.importKey(
+          'raw',
+          rawBytes,
+          { name: 'AES-GCM', length: 256 },
+          true,
+          ['encrypt', 'decrypt'],
+        );
+        await keyManager.storeGroupKey(archived.conversationId, archived.keyVersion, key);
+        importedArchivedKeys += 1;
+      } catch (archiveErr) {
+        // Non-fatal — skip malformed or unwrap-failed entries, but log for
+        // diagnostics so same-account multi-device old-history recovery
+        // failures are visible instead of silently swallowed.
+        console.warn('[MLS_SYNC] archived key import failed', {
+          conversation_id: archived.conversationId,
+          key_version: archived.keyVersion,
+          has_identity_bytes: Boolean(identityBytes),
+          error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr || ''),
+        });
+      }
+    }
+    if (importedArchivedKeys > 0) {
+      console.log('[MLS_SYNC] imported archived group keys', {
+        user_id: userId,
+        imported: importedArchivedKeys,
+        total: payload.archivedKeys.length,
+      });
     }
 
     let ackCount = 0;

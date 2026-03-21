@@ -1,5 +1,6 @@
 import { bytesToBase64, decodeGroupState, encodeGroupState, type ClientState, type CiphersuiteImpl } from 'ts-mls';
 import { keyManager } from '../keyManager';
+import { archiveGroupKeys } from './mlsApi';
 import { deriveGroupAesKey, buildMlsClientConfig } from './mlsCryptoService';
 import { mlsStore } from './mlsStore';
 import type {
@@ -8,11 +9,12 @@ import type {
   MlsGroupStateRecord,
   MlsKeyPackageRecord,
 } from './mlsTypes';
-import { base64ToBytes } from './mlsUtils';
+import { base64ToBytes, wrapArchiveKey } from './mlsUtils';
 
 interface CacheDerivedGroupKeyOptions {
   aliasVersionOne?: boolean;
   aliasVersion?: number | null;
+  userId?: string;
 }
 
 export class MlsStorageService {
@@ -138,6 +140,29 @@ export class MlsStorageService {
       options.aliasVersion !== result.keyVersion
     ) {
       await keyManager.storeGroupKey(conversationId, options.aliasVersion, result.key);
+    }
+
+    // Archive derived key to server for same-account multi-device recovery.
+    // The key is AES-GCM wrapped with an HKDF-derived wrapping key from the
+    // identity private key so the server only stores ciphertext.
+    // Fire-and-forget: archiving failure must not block encryption/decryption.
+    if (options?.userId) {
+      try {
+        const identityBytes = await keyManager.getIdentityKeyBytes(options.userId);
+        if (identityBytes) {
+          const rawBytes = await crypto.subtle.exportKey('raw', result.key);
+          const keyData = await wrapArchiveKey(rawBytes, identityBytes, options.userId);
+          archiveGroupKeys([{
+            conversationId,
+            keyVersion: result.keyVersion,
+            keyData,
+          }]).catch(() => {
+            // Silently swallow — the key will be re-archived on next derivation.
+          });
+        }
+      } catch {
+        // Export or wrap failed — non-fatal.
+      }
     }
 
     this.dispatchWindowEvent('void:group-key-changed');

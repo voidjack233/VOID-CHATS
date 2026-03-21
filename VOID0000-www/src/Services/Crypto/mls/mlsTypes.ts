@@ -133,6 +133,12 @@ export interface MlsSyncCommitUpdate {
   receivedAt?: string | null;
 }
 
+export interface MlsSyncArchivedKeyUpdate {
+  conversationId: string;
+  keyVersion: number;
+  keyData: string;
+}
+
 export interface MlsUploadGroupStateInput {
   conversationId: string;
   groupId: string;
@@ -160,6 +166,7 @@ export interface MlsInboxSyncPayload {
   groupStates: MlsSyncGroupStateUpdate[];
   welcomes: MlsSyncWelcomeUpdate[];
   commits: MlsSyncCommitUpdate[];
+  archivedKeys: MlsSyncArchivedKeyUpdate[];
 }
 
 export interface MlsBackupData {
