@@ -233,13 +233,14 @@ export async function getEncryptionKey(
   const fallback = await keyManager.findAnyGroupKey(keyConversationId);
   if (fallback) {
     if (conversation.type !== 'dm') {
-      console.warn('[KEY_RESOLVE] refusing group version-alias fallback', {
+      console.warn('[KEY_RESOLVE] group version-alias fallback (post-sync)', {
         conversation_id: keyConversationId,
         conversation_type: conversation.type,
         found_version: fallback.version,
         target_version: targetVersion,
       });
-      throw new Error(`No group sender key available for version ${targetVersion}`);
+      await keyManager.storeGroupKey(keyConversationId, targetVersion, fallback.key);
+      return { key: fallback.key, version: targetVersion };
     }
 
     console.warn('[KEY_RESOLVE] version-alias fallback', {

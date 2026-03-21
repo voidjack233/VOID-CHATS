@@ -505,12 +505,15 @@ export class MlsGroupService {
         upload: false,
         keyVersion: update.keyVersion,
       });
-      const keyResult = await mlsStorageService.cacheDerivedGroupKey(update.conversationId, state, impl);
+      const keyResult = await mlsStorageService.cacheDerivedGroupKey(update.conversationId, state, impl, {
+        aliasVersion: update.keyVersion,
+      });
       console.log('[MLS_GROUP_STATE] imported synced group state', {
         conversation_id: update.conversationId,
         incoming_epoch: update.epoch,
         previous_local_epoch: existing?.epoch ?? null,
         key_version: keyResult.keyVersion,
+        alias_version: update.keyVersion ?? null,
       });
       return true;
     } catch (err) {

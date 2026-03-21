@@ -107,13 +107,16 @@ export function getMemberUserIds(state: ClientState): string[] {
 }
 
 export function findLeafIndex(state: ClientState, targetUserId: string): LeafIndex | null {
-  const members = getGroupMembers(state);
-  const idx = members.findIndex((leaf: LeafNode) => {
-    if (leaf.credential.credentialType !== 'basic') return false;
-    return textDecoder.decode(leaf.credential.identity) === targetUserId;
-  });
-
-  return idx === -1 ? null : (idx as LeafIndex);
+  const tree = state.ratchetTree;
+  for (let nodeIndex = 0; nodeIndex < tree.length; nodeIndex += 2) {
+    const node = tree[nodeIndex];
+    if (node === undefined || node.nodeType !== 'leaf') continue;
+    if (node.leaf.credential.credentialType !== 'basic') continue;
+    if (textDecoder.decode(node.leaf.credential.identity) === targetUserId) {
+      return (nodeIndex / 2) as LeafIndex;
+    }
+  }
+  return null;
 }
 
 export async function buildAddProposals(userIds: string[]): Promise<AddProposalBuildResult> {

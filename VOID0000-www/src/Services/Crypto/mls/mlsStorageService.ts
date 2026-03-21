@@ -12,6 +12,7 @@ import { base64ToBytes } from './mlsUtils';
 
 interface CacheDerivedGroupKeyOptions {
   aliasVersionOne?: boolean;
+  aliasVersion?: number | null;
 }
 
 export class MlsStorageService {
@@ -128,6 +129,15 @@ export class MlsStorageService {
 
     if (options?.aliasVersionOne && result.keyVersion !== 1) {
       await keyManager.storeGroupKey(conversationId, 1, result.key);
+    }
+
+    if (
+      options?.aliasVersion != null &&
+      Number.isInteger(options.aliasVersion) &&
+      options.aliasVersion > 0 &&
+      options.aliasVersion !== result.keyVersion
+    ) {
+      await keyManager.storeGroupKey(conversationId, options.aliasVersion, result.key);
     }
 
     this.dispatchWindowEvent('void:group-key-changed');
