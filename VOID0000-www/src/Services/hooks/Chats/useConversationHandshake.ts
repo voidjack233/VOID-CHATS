@@ -242,7 +242,6 @@ export const useConversationHandshake = ({
         void chatCryptoProtocolService.bootstrapAccount(user.id);
       }
 
-      let resolvedMemberIds: string[] = [];
 
       try {
         let conversationDetails = staleHandshake
@@ -317,7 +316,6 @@ export const useConversationHandshake = ({
           memberMap[user.id]?.joined_key_version ?? null,
         );
         setMembers(memberMap);
-        resolvedMemberIds = Object.keys(memberMap);
         const ownerConversation = activeGroup || activeConversation;
 
         const peerId =
@@ -347,35 +345,70 @@ export const useConversationHandshake = ({
           accepts_newer_group_version: acceptsNewerGroupVersion,
         });
 
-        for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (activeConversation.type === 'dm') {
+          // DM: try cached/synced key once, then bootstrap directly.
+          // No retry loop — avoids the 3-attempt + delay handshake theater
+          // that wastes ~2s on brand-new DMs where no state exists yet.
           try {
-            console.log('[HANDSHAKE] resolving encryption key', {
-              conversation_id: activeConversation.id,
-              conversation_type: activeConversation.type,
-              attempt: attempt + 1,
-              requested_version: requiredGroupVersion || null,
-              joined_key_version_floor: joinedKeyVersionFloor,
-            });
-            keyResult = await getEncryptionKey(
-              user.id,
-              keyLookupConversation,
-              requiredGroupVersion || undefined,
-              {
-                allowNewerGroupVersion: acceptsNewerGroupVersion,
-              },
-            );
-            lastKeyError = null;
-            break;
-          } catch (err) {
-            const nextError = err instanceof Error ? err : new Error(String(err || ''));
-            lastKeyError = nextError;
-
-            if (attempt < 2 && isTransientGroupKeyError(nextError.message)) {
-              await wait(450 * (attempt + 1));
-              continue;
+            keyResult = await getEncryptionKey(user.id, keyLookupConversation);
+          } catch {
+            if (ignore) return;
+            // Cache + sync didn't resolve it — bootstrap the MLS group directly.
+            // This handles both cases:
+            //   - Initiator (new DM): creates group, adds peer, sends welcome
+            //   - Receiver (state exists on server but welcome failed): re-bootstraps
+            try {
+              console.log('[DM_BOOTSTRAP] direct bootstrap from handshake', {
+                conversation_id: activeConversation.id,
+                peer_user_id: peerId || null,
+              });
+              keyResult = await bootstrapDmKey(activeConversation, user.id, peerId);
+            } catch (dmErr) {
+              if (ignore) return;
+              const dmReason = dmErr instanceof Error ? dmErr.message : String(dmErr || '');
+              if (dmReason.includes('DM peer device is not ready')) {
+                setEncryptionError('This person has no usable secure device keys on the server yet.');
+                return;
+              }
+              if (dmReason.includes('DM peer could not be resolved')) {
+                setEncryptionError('This conversation is still loading secure recipient details.');
+                return;
+              }
+              throw dmErr;
             }
+          }
+        } else {
+          // Groups/channels: retry loop with transient-error tolerance.
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              console.log('[HANDSHAKE] resolving encryption key', {
+                conversation_id: activeConversation.id,
+                conversation_type: activeConversation.type,
+                attempt: attempt + 1,
+                requested_version: requiredGroupVersion || null,
+                joined_key_version_floor: joinedKeyVersionFloor,
+              });
+              keyResult = await getEncryptionKey(
+                user.id,
+                keyLookupConversation,
+                requiredGroupVersion || undefined,
+                {
+                  allowNewerGroupVersion: acceptsNewerGroupVersion,
+                },
+              );
+              lastKeyError = null;
+              break;
+            } catch (err) {
+              const nextError = err instanceof Error ? err : new Error(String(err || ''));
+              lastKeyError = nextError;
 
-            throw nextError;
+              if (attempt < 2 && isTransientGroupKeyError(nextError.message)) {
+                await wait(450 * (attempt + 1));
+                continue;
+              }
+
+              throw nextError;
+            }
           }
         }
 
@@ -456,47 +489,6 @@ export const useConversationHandshake = ({
           reason.includes('OperationError');
 
         if (isGroupKeyError) {
-          // DM bootstrap: no MLS group exists yet for this conversation.
-          // Create one now only when the peer can actually be included.
-          // This avoids generating sender-only DM keys that break history
-          // decryption for the other side on a fresh device.
-          if (activeConversation?.type === 'dm') {
-            const dmPeerId =
-              activeConversation.dm_user_id ||
-              resolvedMemberIds.find((id) => id !== user.id);
-            try {
-              console.log('[DM_BOOTSTRAP] starting fallback bootstrap from handshake', {
-                conversation_id: activeConversation.id,
-                peer_user_id: dmPeerId || null,
-              });
-              const result = await bootstrapDmKey(activeConversation, user.id, dmPeerId);
-              if (!ignore) {
-                setEncryptionError(null);
-                setEncryptionKey(result.key);
-                setKeyVersion(result.version);
-              }
-              return;
-            } catch (dmBootstrapErr) {
-              const dmBootstrapReason =
-                dmBootstrapErr instanceof Error
-                  ? dmBootstrapErr.message
-                  : String(dmBootstrapErr || '');
-              console.error('[DM_BOOTSTRAP] handshake fallback failed', {
-                conversation_id: activeConversation.id,
-                peer_user_id: dmPeerId || null,
-                error: dmBootstrapReason,
-              });
-              if (dmBootstrapReason.includes('DM peer device is not ready')) {
-                setEncryptionError('This person has no usable secure device keys on the server yet.');
-                return;
-              }
-              if (dmBootstrapReason.includes('DM peer could not be resolved')) {
-                setEncryptionError('This conversation is still loading secure recipient details.');
-                return;
-              }
-            }
-          }
-
           const ownerConversation = activeGroup || activeConversation;
           if (ownerConversation && ownerConversation.type !== 'dm') {
             const nextAttempt = (preparingRetryAttemptsRef.current[preparingRetryKey] || 0) + 1;
