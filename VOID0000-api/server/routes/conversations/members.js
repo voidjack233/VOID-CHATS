@@ -13,6 +13,27 @@ import {
 
 const router = Router({ mergeParams: true });
 
+// Two-phase rotate-remove requires pending columns on conversations.
+// Idempotent — safe to run on every startup.
+let pendingRemoveSchemaReady = null;
+function ensurePendingRemoveSchema() {
+  if (!pendingRemoveSchemaReady) {
+    pendingRemoveSchemaReady = (async () => {
+      await pool.query(
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_remove_target UUID`
+      );
+      await pool.query(
+        `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pending_remove_key_version INTEGER`
+      );
+    })().catch((err) => {
+      pendingRemoveSchemaReady = null;
+      console.error('Failed to ensure pending_remove schema:', err);
+      throw err;
+    });
+  }
+  return pendingRemoveSchemaReady;
+}
+
 // POST /api/conversations/:conversationId/members/rotate-add — add members with key rotation
 router.post('/rotate-add', async (req, res) => {
   const actorUserId = req.user.id;
@@ -296,7 +317,14 @@ router.post('/rotate-add/rollback', async (req, res) => {
   }
 });
 
-// POST /api/conversations/:conversationId/members/rotate-remove — remove member with key rotation
+// POST /api/conversations/:conversationId/members/rotate-remove — prepare member removal
+//
+// Phase 1 of two-phase remove. Validates the removal and records intent by
+// setting pending_remove_target / pending_remove_key_version on the
+// conversation row. Does NOT delete the member or advance current_key_version.
+// The client must upload the survivor's durable group state snapshot for
+// pending_key_version, then call POST /rotate-remove/finalize to atomically
+// commit the removal.
 router.post('/rotate-remove', async (req, res) => {
   const actorUserId = req.user.id;
   const { conversationId } = req.params;
@@ -314,6 +342,7 @@ router.post('/rotate-remove', async (req, res) => {
   let client;
 
   try {
+    await ensurePendingRemoveSchema();
     client = await pool.connect();
     await client.query('BEGIN');
 
@@ -362,13 +391,43 @@ router.post('/rotate-remove', async (req, res) => {
       });
     }
 
-    // Lock the conversation row to serialize concurrent membership changes
-    // across all devices/tabs/admins for this conversation.
-    const lockedVersionResult = await client.query(
-      'SELECT current_key_version FROM conversations WHERE id = $1 FOR UPDATE',
+    // Lock the conversation row to serialize concurrent membership changes.
+    const lockedResult = await client.query(
+      `SELECT current_key_version, pending_remove_target, pending_remove_key_version
+       FROM conversations WHERE id = $1 FOR UPDATE`,
       [conversation.id]
     );
-    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
+    const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
+
+    // Idempotent: if the same prepare was already issued, return the pending state.
+    const existingPendingTarget = lockedResult.rows[0].pending_remove_target
+      ? String(lockedResult.rows[0].pending_remove_target)
+      : null;
+    const existingPendingVersion = lockedResult.rows[0].pending_remove_key_version
+      ? Number(lockedResult.rows[0].pending_remove_key_version)
+      : null;
+
+    if (existingPendingTarget && existingPendingVersion) {
+      if (existingPendingTarget === targetUserId && existingPendingVersion === newKeyVersion) {
+        // Same prepare already in progress — idempotent success.
+        await client.query('ROLLBACK');
+        return res.json({
+          success: true,
+          phase: 'prepared',
+          pending_key_version: existingPendingVersion,
+          current_key_version: currentKeyVersion,
+        });
+      }
+      // Different pending remove exists — conflict.
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Another member removal is already pending for this conversation',
+        code: 'PENDING_REMOVE_CONFLICT',
+        pending_remove_target: existingPendingTarget,
+        pending_remove_key_version: existingPendingVersion,
+      });
+    }
+
     if (newKeyVersion !== currentKeyVersion + 1) {
       await client.query('ROLLBACK');
       return res.status(409).json({
@@ -392,6 +451,140 @@ router.post('/rotate-remove', async (req, res) => {
       return res.status(400).json({ error: 'Cannot remove the final group member' });
     }
 
+    // Record intent — do NOT delete member or advance version yet.
+    await client.query(
+      `UPDATE conversations
+       SET pending_remove_target = $2::UUID,
+           pending_remove_key_version = $3,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [conversation.id, targetUserId, newKeyVersion]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      phase: 'prepared',
+      pending_key_version: newKeyVersion,
+      current_key_version: currentKeyVersion,
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Rotate-remove prepare error:', err);
+    res.status(500).json({ error: 'Failed to prepare member removal' });
+  } finally {
+    client?.release();
+  }
+});
+
+// POST /api/conversations/:conversationId/members/rotate-remove/finalize
+//
+// Phase 2 of two-phase remove. Verifies the survivor's durable group state
+// snapshot for pending_key_version exists in mls_group_states, then atomically
+// commits the membership deletion, version advance, and rotation record.
+// If the snapshot is missing, returns 428 SNAPSHOT_REQUIRED — no state change.
+router.post('/rotate-remove/finalize', async (req, res) => {
+  const actorUserId = req.user.id;
+  const { conversationId } = req.params;
+
+  let client;
+
+  try {
+    await ensurePendingRemoveSchema();
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const conversation = await resolveMembershipConversation(client, conversationId);
+    if (!conversation) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    const membership = await getGroupMembership(client, conversation.id, actorUserId);
+    if (!membership || membership.role !== 'owner') {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Only the owner can finalize member removal' });
+    }
+
+    // Lock and read the pending remove state.
+    const lockedResult = await client.query(
+      `SELECT current_key_version, pending_remove_target, pending_remove_key_version
+       FROM conversations WHERE id = $1 FOR UPDATE`,
+      [conversation.id]
+    );
+
+    const pendingTarget = lockedResult.rows[0].pending_remove_target
+      ? String(lockedResult.rows[0].pending_remove_target)
+      : null;
+    const pendingKeyVersion = lockedResult.rows[0].pending_remove_key_version
+      ? Number(lockedResult.rows[0].pending_remove_key_version)
+      : null;
+    const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
+
+    if (!pendingTarget || !pendingKeyVersion) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'No pending member removal to finalize',
+        code: 'NO_PENDING_REMOVE',
+      });
+    }
+
+    if (pendingKeyVersion !== currentKeyVersion + 1) {
+      // Version moved underneath us — the pending is stale. Clear it.
+      await client.query(
+        `UPDATE conversations
+         SET pending_remove_target = NULL,
+             pending_remove_key_version = NULL,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [conversation.id]
+      );
+      await client.query('COMMIT');
+      return res.status(409).json({
+        error: 'Pending removal is stale — version has moved',
+        code: 'PENDING_REMOVE_STALE',
+        current_key_version: currentKeyVersion,
+      });
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // DURABILITY GATE: verify the survivor's group state snapshot
+    // for pendingKeyVersion exists in mls_group_states.
+    // This is the single point that prevents stranded N+1 states.
+    // ──────────────────────────────────────────────────────────────
+    let snapshotExists = false;
+    try {
+      const snapshotCheck = await client.query(
+        `SELECT 1 FROM mls_group_states
+         WHERE conversation_id = $1
+           AND user_id = $2
+           AND key_version IS NOT NULL
+           AND key_version >= $3
+         LIMIT 1`,
+        [conversation.id, actorUserId, pendingKeyVersion]
+      );
+      snapshotExists = snapshotCheck.rows.length > 0;
+    } catch (snapshotErr) {
+      // mls_group_states table may not exist yet (schema created lazily).
+      console.warn('Rotate-remove finalize snapshot check failed:', snapshotErr.message);
+    }
+
+    if (!snapshotExists) {
+      await client.query('ROLLBACK');
+      return res.status(428).json({
+        success: false,
+        error: 'Survivor group state snapshot for the new key version must be uploaded before finalizing remove',
+        code: 'SNAPSHOT_REQUIRED',
+        required_key_version: pendingKeyVersion,
+        current_key_version: currentKeyVersion,
+      });
+    }
+
+    // Snapshot proven durable — now atomically commit the remove.
+    const targetUserId = pendingTarget;
+    const newKeyVersion = pendingKeyVersion;
+
     await client.query(
       `DELETE FROM conversation_members
        WHERE conversation_id = $1 AND user_id = $2`,
@@ -410,6 +603,8 @@ router.post('/rotate-remove', async (req, res) => {
     await client.query(
       `UPDATE conversations
        SET current_key_version = $2,
+           pending_remove_target = NULL,
+           pending_remove_key_version = NULL,
            updated_at = NOW()
        WHERE id = $1`,
       [conversation.id, newKeyVersion]
@@ -430,9 +625,6 @@ router.post('/rotate-remove', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // NOTE: emitConversationUpdate deferred to client-triggered
-    // POST /members/emit-update after MLS artifacts are uploaded.
-
     sendLiveEventToUser(targetUserId, 'MEMBER_LEAVE', {
       conversation_id: conversation.id,
       conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
@@ -446,8 +638,8 @@ router.post('/rotate-remove', async (req, res) => {
     });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
-    console.error('Rotate-remove member error:', err);
-    res.status(500).json({ error: 'Failed to remove member with key rotation' });
+    console.error('Rotate-remove finalize error:', err);
+    res.status(500).json({ error: 'Failed to finalize member removal' });
   } finally {
     client?.release();
   }

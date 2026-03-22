@@ -101,19 +101,41 @@ async function ensureSchema() {
 
       await pool.query(
         `CREATE TABLE IF NOT EXISTS mls_group_states (
-           conversation_id UUID PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+           conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
            group_id TEXT NOT NULL,
            epoch INTEGER NOT NULL,
            key_version INTEGER,
            state_blob TEXT NOT NULL,
            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           PRIMARY KEY (conversation_id, user_id)
          )`
       );
 
       // Backfill column for databases created before key_version was added.
       await pool.query(
         `ALTER TABLE mls_group_states ADD COLUMN IF NOT EXISTS key_version INTEGER`
+      );
+
+      // Backfill: add user_id column for per-user group state isolation.
+      await pool.query(
+        `ALTER TABLE mls_group_states ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE`
+      );
+      // Remove legacy rows that pre-date per-user isolation (cannot be attributed).
+      await pool.query(
+        `DELETE FROM mls_group_states WHERE user_id IS NULL`
+      );
+      // Migrate PK from (conversation_id) to (conversation_id, user_id).
+      await pool.query(
+        `ALTER TABLE mls_group_states DROP CONSTRAINT IF EXISTS mls_group_states_pkey`
+      );
+      await pool.query(
+        `ALTER TABLE mls_group_states ALTER COLUMN user_id SET NOT NULL`
+      );
+      await pool.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_mls_group_states_user_unique
+         ON mls_group_states(conversation_id, user_id)`
       );
 
       await pool.query(
@@ -148,8 +170,29 @@ async function ensureSchema() {
            key_version INTEGER NOT NULL,
            key_data TEXT NOT NULL,
            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           PRIMARY KEY (conversation_id, key_version)
+           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+           PRIMARY KEY (conversation_id, key_version, user_id)
          )`
+      );
+
+      // Backfill: add user_id column to tables created before per-user isolation.
+      await pool.query(
+        `ALTER TABLE mls_group_key_archive ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE`
+      );
+      // Remove legacy rows that pre-date per-user isolation (cannot be attributed).
+      await pool.query(
+        `DELETE FROM mls_group_key_archive WHERE user_id IS NULL`
+      );
+      // Migrate PK from (conversation_id, key_version) to include user_id.
+      await pool.query(
+        `ALTER TABLE mls_group_key_archive DROP CONSTRAINT IF EXISTS mls_group_key_archive_pkey`
+      );
+      await pool.query(
+        `ALTER TABLE mls_group_key_archive ALTER COLUMN user_id SET NOT NULL`
+      );
+      await pool.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_mls_group_key_archive_user_unique
+         ON mls_group_key_archive(conversation_id, key_version, user_id)`
       );
 
       await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_key_packages_user_id ON mls_key_packages(user_id)');
@@ -305,9 +348,9 @@ router.post('/group-states', async (req, res) => {
       }
 
       const result = await client.query(
-        `INSERT INTO mls_group_states (conversation_id, group_id, epoch, key_version, state_blob, created_at, updated_at)
-         VALUES ($1::UUID, $2, $3, $4, $5, NOW(), NOW())
-         ON CONFLICT (conversation_id)
+        `INSERT INTO mls_group_states (conversation_id, user_id, group_id, epoch, key_version, state_blob, created_at, updated_at)
+         VALUES ($1::UUID, $2::UUID, $3, $4, $5, $6, NOW(), NOW())
+         ON CONFLICT (conversation_id, user_id)
          DO UPDATE SET
            group_id = EXCLUDED.group_id,
            epoch = EXCLUDED.epoch,
@@ -316,8 +359,10 @@ router.post('/group-states', async (req, res) => {
            updated_at = NOW()
          WHERE mls_group_states.epoch IS NULL
             OR EXCLUDED.epoch >= mls_group_states.epoch
+            OR (EXCLUDED.key_version IS NOT NULL
+                AND EXCLUDED.key_version > COALESCE(mls_group_states.key_version, 0))
          RETURNING conversation_id::text AS conversation_id, group_id, epoch, key_version, updated_at`,
-        [resolved.conversationId, groupId, epoch, keyVersion, stateBlob]
+        [resolved.conversationId, requesterUserId, groupId, epoch, keyVersion, stateBlob]
       );
 
       if (result.rows[0]) {
@@ -329,8 +374,9 @@ router.post('/group-states', async (req, res) => {
         `SELECT conversation_id::text AS conversation_id, group_id, epoch, key_version, updated_at
          FROM mls_group_states
          WHERE conversation_id = $1::UUID
+           AND user_id = $2::UUID
          LIMIT 1`,
-        [resolved.conversationId]
+        [resolved.conversationId, requesterUserId]
       );
 
       if (existing.rows[0]) {
@@ -746,12 +792,12 @@ router.post('/group-key-archive', async (req, res) => {
       if (resolved.error) continue;
 
       const result = await client.query(
-        `INSERT INTO mls_group_key_archive (conversation_id, key_version, key_data, created_at)
-         VALUES ($1::UUID, $2, $3, NOW())
-         ON CONFLICT (conversation_id, key_version) DO UPDATE SET
+        `INSERT INTO mls_group_key_archive (conversation_id, key_version, user_id, key_data, created_at)
+         VALUES ($1::UUID, $2, $3::UUID, $4, NOW())
+         ON CONFLICT (conversation_id, key_version, user_id) DO UPDATE SET
            key_data = EXCLUDED.key_data
          RETURNING conversation_id::text AS conversation_id, key_version`,
-        [resolved.conversationId, keyVersion, keyData]
+        [resolved.conversationId, keyVersion, requesterUserId, keyData]
       );
 
       if (result.rows[0]) {
@@ -823,7 +869,20 @@ router.post('/sync', async (req, res) => {
                ON conversations.id = gs.conversation_id
              JOIN conversation_members cm
                ON cm.conversation_id = COALESCE(conversations.parent_conversation_id, conversations.id)
+             LEFT JOIN mls_group_states own_gs
+               ON own_gs.conversation_id = gs.conversation_id
+              AND own_gs.user_id = $1::UUID
              WHERE cm.user_id = $1::UUID
+               AND (
+                 gs.user_id = $1::UUID
+                 OR (
+                   conversations.type != 'dm'
+                   AND (
+                     own_gs.conversation_id IS NULL
+                     OR COALESCE(gs.key_version, gs.epoch) > COALESCE(own_gs.key_version, own_gs.epoch)
+                   )
+                 )
+               )
                AND COALESCE(gs.key_version, gs.epoch) >= COALESCE(cm.joined_key_version, 1)
              ORDER BY gs.updated_at DESC
              LIMIT $2`,
@@ -881,6 +940,7 @@ router.post('/sync', async (req, res) => {
              JOIN conversation_members cm
                ON cm.conversation_id = ka.conversation_id
              WHERE cm.user_id = $1::UUID
+               AND ka.user_id = $1::UUID
                AND ka.key_version >= COALESCE(cm.joined_key_version, 1)
              ORDER BY ka.conversation_id, ka.key_version ASC
              LIMIT $2`,

@@ -93,15 +93,15 @@ export class MlsGroupService {
     conversationId: string,
     state: ClientState,
     options: PersistGroupStateOptions,
-  ): Promise<void> {
+  ): Promise<number> {
     const record = await mlsStorageService.saveGroupState(conversationId, state, {
       keyVersion: options.keyVersion,
     });
     if (options.upload === false) {
-      return;
+      return -1;
     }
 
-    await this.uploadGroupStateRecord(
+    return this.uploadGroupStateRecord(
       {
         conversationId: record.conversationId,
         groupId: record.groupId,
@@ -184,7 +184,7 @@ export class MlsGroupService {
           existingState != null &&
           requiredServerVersion <= (localEpochAfterSync ?? 0) + 1;
 
-        if (!hasUsableLineage) {
+        if (!hasUsableLineage && !input.allowFreshGroupBootstrap) {
           throw createMlsError(
             'Local MLS state is behind the server. Sync latest durable group state before retrying this membership change.',
             'MLS_DISTRIBUTE_SYNC_REQUIRED',
@@ -235,76 +235,8 @@ export class MlsGroupService {
     let existingPeers: string[] = [];
     let deferredKeyCleanup: PrivateKeyPackage | null = null;
 
-    if (!existingState) {
-      if (isDmConversation && otherMembers.length === 0) {
-        throw new Error('DM peer could not be resolved for secure bootstrap');
-      }
-
-      if (isDmConversation) {
-        for (const peerId of otherMembers) {
-          const peerReady = await checkKeyPackageAvailability(peerId);
-          if (!peerReady) {
-            console.warn('[DM_BOOTSTRAP] peer failed non-consuming readiness check', {
-              conversation_id: conversationId,
-              user_id: input.userId,
-              peer_user_id: peerId,
-            });
-            throw new Error('DM peer device is not ready for secure chat yet');
-          }
-        }
-      }
-
-      const myKp = await generateMemberKeyPackage(input.userId, impl);
-      const groupIdBytes = new TextEncoder().encode(conversationId);
-      let state = await createGroup(
-        groupIdBytes,
-        myKp.publicPackage,
-        myKp.privatePackage,
-        [],
-        impl,
-        buildMlsClientConfig(),
-      );
-
-      const addProposalResult =
-        otherMembers.length > 0
-          ? await buildAddProposals(otherMembers)
-          : { proposals: [], addedUserIds: [], missingUserIds: [] };
-      const addProposals = addProposalResult.proposals;
-      missingMemberUserIds = addProposalResult.missingUserIds;
-
-      if (isDmConversation && missingMemberUserIds.length > 0) {
-        console.warn('[DM_BOOTSTRAP] peer key package unavailable during initial bootstrap', {
-          conversation_id: conversationId,
-          user_id: input.userId,
-          missing_member_user_ids: missingMemberUserIds,
-        });
-        throw new Error('DM peer device is not ready for secure chat yet');
-      }
-
-      const commitResult = await createCommit(
-        { state, cipherSuite: impl },
-        { extraProposals: addProposals, ratchetTreeExtension: addProposals.length > 0 },
-      );
-      commitResult.consumed.forEach(zeroOutUint8Array);
-      state = commitResult.newState;
-
-      if (addProposals.length > 0) {
-        if (commitResult.welcome) {
-          welcomePayload = bytesToBase64(
-            encodeMlsMessage({
-              welcome: commitResult.welcome,
-              wireformat: 'mls_welcome',
-              version: MlsProtocolVersions.current,
-            }),
-          );
-        }
-        commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
-        newMembersForWelcome = addProposalResult.addedUserIds;
-      }
-
-      newState = state;
-      deferredKeyCleanup = myKp.privatePackage;
-    } else {
+    // --- Existing-state branch: try membership update on current local state ---
+    if (existingState) {
       const currentMembers = getMemberUserIds(existingState);
       const toAdd = desiredMembers.filter((id) => !currentMembers.includes(id));
       const toRemove = currentMembers.filter((id) => !desiredMembers.includes(id));
@@ -384,37 +316,136 @@ export class MlsGroupService {
         commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
         existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
       } catch (commitErr) {
-        console.warn('[MLS] Existing-group commit failed - refusing bootstrap fallback', {
+        const errMsg = commitErr instanceof Error ? commitErr.message : String(commitErr || '');
+        console.warn('[MLS] Existing-group commit failed', {
           conversation_id: conversationId,
           required_server_version: requiredServerVersion,
           local_epoch: Number(existingState.groupContext.epoch),
-          error: commitErr instanceof Error ? commitErr.message : String(commitErr || ''),
+          error: errMsg,
         });
-        try {
-          await this.deps.syncInbox(input.userId, true);
-        } catch (syncErr) {
-          console.warn('[MLS_DISTRIBUTE] sync after commit failure failed', {
+
+        // "removing committer" means the local state has the wrong self-identity
+        // (cross-user state pollution from pre-migration shared rows). Clear the
+        // poisoned state and fall through to fresh-bootstrap below.
+        if (errMsg.includes('removing committer')) {
+          console.warn('[MLS_DISTRIBUTE] clearing poisoned local state (wrong committer identity)', {
             conversation_id: conversationId,
-            required_server_version: requiredServerVersion,
-            local_epoch: Number(existingState.groupContext.epoch),
-            error: syncErr instanceof Error ? syncErr.message : String(syncErr || ''),
           });
+          await mlsStorageService.deleteGroupState(conversationId);
+          existingState = null;
+          // Reset vars that may have been partially set during the failed branch.
+          newMembersForWelcome = [];
+          missingMemberUserIds = [];
+        } else {
+          try {
+            await this.deps.syncInbox(input.userId, true);
+          } catch (syncErr) {
+            console.warn('[MLS_DISTRIBUTE] sync after commit failure failed', {
+              conversation_id: conversationId,
+              required_server_version: requiredServerVersion,
+              error: syncErr instanceof Error ? syncErr.message : String(syncErr || ''),
+            });
+          }
+          throw createMlsError(
+            'Local MLS state could not apply this membership change. Sync latest durable group state before retrying.',
+            'MLS_DISTRIBUTE_SYNC_REQUIRED',
+          );
         }
-        throw createMlsError(
-          'Local MLS state could not apply this membership change. Sync latest durable group state before retrying.',
-          'MLS_DISTRIBUTE_SYNC_REQUIRED',
-        );
       }
+    }
+
+    // --- No-state branch: fresh-bootstrap the group ---
+    // Reached when there was never a local state OR when poisoned state was
+    // cleared above (removing-committer recovery).
+    if (!existingState && !newState) {
+      if (isDmConversation && otherMembers.length === 0) {
+        throw new Error('DM peer could not be resolved for secure bootstrap');
+      }
+
+      if (isDmConversation) {
+        for (const peerId of otherMembers) {
+          const peerReady = await checkKeyPackageAvailability(peerId);
+          if (!peerReady) {
+            console.warn('[DM_BOOTSTRAP] peer failed non-consuming readiness check', {
+              conversation_id: conversationId,
+              user_id: input.userId,
+              peer_user_id: peerId,
+            });
+            throw new Error('DM peer device is not ready for secure chat yet');
+          }
+        }
+      }
+
+      const myKp = await generateMemberKeyPackage(input.userId, impl);
+      const groupIdBytes = new TextEncoder().encode(conversationId);
+      let state = await createGroup(
+        groupIdBytes,
+        myKp.publicPackage,
+        myKp.privatePackage,
+        [],
+        impl,
+        buildMlsClientConfig(),
+      );
+
+      const addProposalResult =
+        otherMembers.length > 0
+          ? await buildAddProposals(otherMembers)
+          : { proposals: [], addedUserIds: [], missingUserIds: [] };
+      const addProposals = addProposalResult.proposals;
+      missingMemberUserIds = addProposalResult.missingUserIds;
+
+      if (isDmConversation && missingMemberUserIds.length > 0) {
+        console.warn('[DM_BOOTSTRAP] peer key package unavailable during initial bootstrap', {
+          conversation_id: conversationId,
+          user_id: input.userId,
+          missing_member_user_ids: missingMemberUserIds,
+        });
+        throw new Error('DM peer device is not ready for secure chat yet');
+      }
+
+      const commitResult = await createCommit(
+        { state, cipherSuite: impl },
+        { extraProposals: addProposals, ratchetTreeExtension: addProposals.length > 0 },
+      );
+      commitResult.consumed.forEach(zeroOutUint8Array);
+      state = commitResult.newState;
+
+      if (addProposals.length > 0) {
+        if (commitResult.welcome) {
+          welcomePayload = bytesToBase64(
+            encodeMlsMessage({
+              welcome: commitResult.welcome,
+              wireformat: 'mls_welcome',
+              version: MlsProtocolVersions.current,
+            }),
+          );
+        }
+        commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+        newMembersForWelcome = addProposalResult.addedUserIds;
+      }
+
+      newState = state;
+      deferredKeyCleanup = myKp.privatePackage;
     }
 
     if (!newState) {
       throw new Error('MLS group state creation failed');
     }
 
-    await this.persistGroupState(conversationId, newState, {
-      source: existingState ? 'distribute_update' : 'distribute_bootstrap',
+    const distributeSource = existingState ? 'distribute_update' : 'distribute_bootstrap';
+    const durableUploadCount = await this.persistGroupState(conversationId, newState, {
+      source: distributeSource,
       keyVersion: requiredServerVersion,
     });
+
+    if (durableUploadCount === 0) {
+      console.error('[MLS_DISTRIBUTE] CRITICAL: durable group state upload failed after membership change', {
+        conversation_id: conversationId,
+        source: distributeSource,
+        epoch: Number(newState.groupContext.epoch),
+        key_version: requiredServerVersion,
+      });
+    }
 
     if (deferredKeyCleanup) {
       zeroOutPrivateKeyPackage(deferredKeyCleanup);
@@ -484,12 +515,20 @@ export class MlsGroupService {
   ): Promise<boolean> {
     const existing = await mlsStorageService.getGroupStateRecord(update.conversationId);
     if (existing && Number(existing.epoch) >= Number(update.epoch)) {
-      console.log('[MLS_GROUP_STATE] skipping stale or same-epoch synced group state', {
-        conversation_id: update.conversationId,
-        local_epoch: existing.epoch,
-        incoming_epoch: update.epoch,
-      });
-      return false;
+      // A fresh-bootstrap can produce a lower epoch but higher key_version.
+      // Accept the incoming state if its key_version is strictly higher.
+      const existingKv = Number(existing.keyVersion ?? existing.epoch ?? 0);
+      const incomingKv = Number(update.keyVersion ?? update.epoch ?? 0);
+      if (incomingKv <= existingKv) {
+        console.log('[MLS_GROUP_STATE] skipping stale or same-epoch synced group state', {
+          conversation_id: update.conversationId,
+          local_epoch: existing.epoch,
+          incoming_epoch: update.epoch,
+          local_key_version: existingKv,
+          incoming_key_version: incomingKv,
+        });
+        return false;
+      }
     }
 
     try {
@@ -685,7 +724,7 @@ export class MlsGroupService {
     userId: string,
     conversation: Conversation,
     removeMemberIds: string[],
-  ): Promise<void> {
+  ): Promise<{ requiresFreshBootstrap: boolean }> {
     await this.deps.bootstrapAccount(userId);
 
     const conversationId = normalizeConversationKeyId(conversation);
@@ -754,6 +793,28 @@ export class MlsGroupService {
       // Zero out any sensitive material from the discarded result.
       commitResult.consumed.forEach(zeroOutUint8Array);
     } catch (commitErr) {
+      const errMsg = commitErr instanceof Error ? commitErr.message : String(commitErr || '');
+      console.warn('[MLS_PREFLIGHT] dry-run createCommit failed', {
+        conversation_id: conversationId,
+        local_epoch: Number(existingState.groupContext.epoch),
+        required_server_version: requiredServerVersion,
+        remove_member_ids: removeMemberIds,
+        error: errMsg,
+        stack: commitErr instanceof Error ? commitErr.stack : undefined,
+      });
+
+      // "removing committer" means the local state has the wrong self-identity
+      // (cross-user state pollution from pre-migration shared rows). Clear the
+      // poisoned state and return — the subsequent distributeGroupSenderKey call
+      // will fresh-bootstrap the group with the correct member set.
+      if (errMsg.includes('removing committer')) {
+        console.warn('[MLS_PREFLIGHT] clearing poisoned local state (wrong committer identity)', {
+          conversation_id: conversationId,
+        });
+        await mlsStorageService.deleteGroupState(conversationId);
+        return { requiresFreshBootstrap: true };
+      }
+
       // Sync once and re-check, mirroring distributeGroupSenderKey behavior.
       try {
         await this.deps.syncInbox(userId, true);
@@ -765,5 +826,29 @@ export class MlsGroupService {
         'MLS_PREFLIGHT_REMOVE_FAILED',
       );
     }
+
+    return { requiresFreshBootstrap: false };
+  }
+
+  /**
+   * Re-upload the local group state record to the server. Used by the
+   * two-phase remove finalize path when the initial upload may have silently
+   * failed. Returns true if a record was found and upload succeeded.
+   */
+  async reuploadGroupState(conversationId: string): Promise<boolean> {
+    const record = await mlsStorageService.getGroupStateRecord(conversationId);
+    if (!record) return false;
+
+    const uploaded = await this.uploadGroupStateRecord(
+      {
+        conversationId: record.conversationId,
+        groupId: record.groupId,
+        epoch: record.epoch,
+        keyVersion: record.keyVersion,
+        stateBlob: record.stateBlob,
+      },
+      'reupload_for_finalize',
+    );
+    return uploaded > 0;
   }
 }

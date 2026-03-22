@@ -159,8 +159,12 @@ export async function preflightGroupRemove(
   conversation: Conversation,
   currentUserId: string,
   removeMemberIds: string[],
-): Promise<void> {
-  await chatCryptoProtocolService.preflightGroupRemove(currentUserId, conversation, removeMemberIds);
+): Promise<{ requiresFreshBootstrap: boolean }> {
+  return chatCryptoProtocolService.preflightGroupRemove(currentUserId, conversation, removeMemberIds);
+}
+
+export async function reuploadGroupState(conversationId: string): Promise<boolean> {
+  return chatCryptoProtocolService.reuploadGroupState(conversationId);
 }
 
 export async function uploadPublicKey(publicKey: string, keyId: string): Promise<void> {

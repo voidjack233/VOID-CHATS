@@ -528,8 +528,16 @@ export const useConversationHandshake = ({
                     }
                   });
               }, retryDelayMs);
+              setEncryptionError('Secure chat is still preparing for this conversation. Retry in a moment.');
+            } else {
+              console.error('[GROUP_RECOVERY] exhausted sync-retry attempts with no recovery artifacts', {
+                conversation_id: ownerConversation.id,
+                current_user_id: user.id,
+                required_group_version: requiredGroupVersion ?? null,
+                attempts_exhausted: nextAttempt,
+              });
+              setEncryptionError('Unable to recover group encryption keys. The group owner may need to resend a key distribution.');
             }
-            setEncryptionError('Secure chat is still preparing for this conversation. Retry in a moment.');
             return;
           }
 

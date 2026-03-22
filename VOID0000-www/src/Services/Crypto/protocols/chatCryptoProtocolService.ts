@@ -21,7 +21,8 @@ export interface ChatCryptoProtocolService {
   syncInbox(userId: string, force?: boolean): Promise<MlsInboxSyncResult>;
   isDmMessageType(messageType: string | null | undefined): boolean;
   distributeGroupKey(input: DistributeGroupKeyInput): Promise<MlsDistributeKeyResult>;
-  preflightGroupRemove(userId: string, conversation: Conversation, removeMemberIds: string[]): Promise<void>;
+  preflightGroupRemove(userId: string, conversation: Conversation, removeMemberIds: string[]): Promise<{ requiresFreshBootstrap: boolean }>;
+  reuploadGroupState(conversationId: string): Promise<boolean>;
 }
 
 class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
@@ -65,8 +66,12 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
     userId: string,
     conversation: Conversation,
     removeMemberIds: string[],
-  ): Promise<void> {
+  ): Promise<{ requiresFreshBootstrap: boolean }> {
     return mlsService.preflightGroupRemove(userId, conversation, removeMemberIds);
+  }
+
+  async reuploadGroupState(conversationId: string): Promise<boolean> {
+    return mlsService.reuploadGroupState(conversationId);
   }
 }
 

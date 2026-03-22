@@ -1,6 +1,6 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
-import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove } from './chatCryptoService';
+import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove, reuploadGroupState } from './chatCryptoService';
 import type {
   Conversation,
   ConversationCategory,
@@ -330,28 +330,65 @@ export function rotateRemoveMember(
     // validates lineage freshness, leaf index existence, and commit
     // applicability. If stale, syncs and retries. If still unusable,
     // throws before any server state is changed.
-    await preflightGroupRemove(
+    const preflightResult = await preflightGroupRemove(
       { ...freshConversation, id: keyConversationId, current_key_version: nextKeyVersion },
       currentUserId,
       [targetUserId],
     );
 
-    const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
+    // ── Phase 1: PREPARE ─────────────────────────────────────────
+    // Server validates the removal and records intent (pending_remove_*
+    // columns on the conversation row). Does NOT delete the member or
+    // advance current_key_version. Idempotent for the same target/version.
+    const prepareResponse = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
       method: 'POST',
       body: JSON.stringify({
         target_user_id: targetUserId,
         new_key_version: nextKeyVersion,
       }),
     });
-    const data = await response.json();
-    if (!data.success) throw createApiError(data);
-    const resolvedKeyVersion = data.key_version || nextKeyVersion;
+    const prepareData = await prepareResponse.json();
+    if (!prepareData.success) throw createApiError(prepareData);
+    const pendingKeyVersion = prepareData.pending_key_version || nextKeyVersion;
 
+    // ── Distribute: produce MLS state and upload survivor snapshot ──
+    // The survivor's durable snapshot for pendingKeyVersion must exist
+    // in mls_group_states BEFORE finalize will commit the removal.
     const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-      { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+      { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
       currentUserId,
       survivors,
+      { allowFreshGroupBootstrap: preflightResult.requiresFreshBootstrap },
     );
+
+    // ── Phase 2: FINALIZE ────────────────────────────────────────
+    // Server verifies the survivor's snapshot exists in mls_group_states
+    // with key_version >= pendingKeyVersion, then atomically commits:
+    // member deletion, version advance, rotation record.
+    // If the snapshot is missing, returns 428 SNAPSHOT_REQUIRED.
+    let finalizeResponse = await fetchWithAuth(
+      `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
+      { method: 'POST' },
+    );
+    let finalizeData = await finalizeResponse.json();
+
+    // If finalize fails because the upload was silently lost, re-upload
+    // from local state and retry once.
+    if (!finalizeData.success && finalizeData.code === 'SNAPSHOT_REQUIRED') {
+      console.warn('[ROTATE_REMOVE] snapshot not found on server, re-uploading from local state', {
+        conversation_id: keyConversationId,
+        pending_key_version: pendingKeyVersion,
+      });
+      await reuploadGroupState(keyConversationId);
+      finalizeResponse = await fetchWithAuth(
+        `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
+        { method: 'POST' },
+      );
+      finalizeData = await finalizeResponse.json();
+    }
+
+    if (!finalizeData.success) throw createApiError(finalizeData);
+    const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
 
     if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
       await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);

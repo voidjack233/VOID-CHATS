@@ -17,6 +17,22 @@ interface CacheDerivedGroupKeyOptions {
   userId?: string;
 }
 
+const MAX_ARCHIVE_BATCH_ITEMS = 200;
+
+function extractConversationIdFromExportedGroupKey(
+  id: string,
+  version: number,
+): string | null {
+  const prefix = 'group:';
+  const suffix = `:${version}`;
+  if (!id.startsWith(prefix) || !id.endsWith(suffix)) {
+    return null;
+  }
+
+  const conversationId = id.slice(prefix.length, -suffix.length);
+  return conversationId || null;
+}
+
 export class MlsStorageService {
   private dispatchWindowEvent(name: string): void {
     if (typeof window !== 'undefined') {
@@ -62,6 +78,10 @@ export class MlsStorageService {
 
   async getGroupStateRecord(conversationId: string): Promise<MlsGroupStateRecord | null> {
     return mlsStore.getGroupState(conversationId);
+  }
+
+  async deleteGroupState(conversationId: string): Promise<void> {
+    await mlsStore.deleteGroupState(conversationId);
   }
 
   async ensureAccountState(userId: string): Promise<MlsAccountStateRecord> {
@@ -120,6 +140,72 @@ export class MlsStorageService {
     this.dispatchWindowEvent('void:mls-key-package-changed');
   }
 
+  async syncArchivedGroupKeys(
+    userId: string,
+    options?: { conversationId?: string | null },
+  ): Promise<number> {
+    const identityBytes = await keyManager.getIdentityKeyBytes(userId);
+    if (!identityBytes) {
+      return 0;
+    }
+
+    const exportedKeys = await keyManager.exportGroupKeys();
+    const archiveInputs: Array<{ conversationId: string; keyVersion: number; keyData: string }> = [];
+
+    for (const entry of exportedKeys) {
+      const conversationId = extractConversationIdFromExportedGroupKey(entry.id, entry.version);
+      if (!conversationId) {
+        continue;
+      }
+
+      if (options?.conversationId && options.conversationId !== conversationId) {
+        continue;
+      }
+
+      try {
+        const rawBytes = base64ToBytes(entry.key);
+        const keyData = await wrapArchiveKey(
+          rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength),
+          identityBytes,
+          userId,
+        );
+
+        archiveInputs.push({
+          conversationId,
+          keyVersion: entry.version,
+          keyData,
+        });
+      } catch (err) {
+        console.warn('[MLS_ARCHIVE] skipping local group key during archive reconciliation', {
+          conversation_id: conversationId,
+          key_version: entry.version,
+          error: err instanceof Error ? err.message : String(err || ''),
+        });
+      }
+    }
+
+    if (archiveInputs.length === 0) {
+      return 0;
+    }
+
+    archiveInputs.sort((a, b) => {
+      const conversationOrder = a.conversationId.localeCompare(b.conversationId);
+      if (conversationOrder !== 0) {
+        return conversationOrder;
+      }
+      return a.keyVersion - b.keyVersion;
+    });
+
+    let archivedCount = 0;
+    for (let index = 0; index < archiveInputs.length; index += MAX_ARCHIVE_BATCH_ITEMS) {
+      archivedCount += await archiveGroupKeys(
+        archiveInputs.slice(index, index + MAX_ARCHIVE_BATCH_ITEMS),
+      );
+    }
+
+    return archivedCount;
+  }
+
   async cacheDerivedGroupKey(
     conversationId: string,
     state: ClientState,
@@ -142,27 +228,17 @@ export class MlsStorageService {
       await keyManager.storeGroupKey(conversationId, options.aliasVersion, result.key);
     }
 
-    // Archive derived key to server for same-account multi-device recovery.
-    // The key is AES-GCM wrapped with an HKDF-derived wrapping key from the
-    // identity private key so the server only stores ciphertext.
-    // Fire-and-forget: archiving failure must not block encryption/decryption.
+    // Reconcile the full per-version archive for this conversation.
+    // A transient failure while version N was current must not permanently
+    // strand that historical key on one device only.
     if (options?.userId) {
-      try {
-        const identityBytes = await keyManager.getIdentityKeyBytes(options.userId);
-        if (identityBytes) {
-          const rawBytes = await crypto.subtle.exportKey('raw', result.key);
-          const keyData = await wrapArchiveKey(rawBytes, identityBytes, options.userId);
-          archiveGroupKeys([{
-            conversationId,
-            keyVersion: result.keyVersion,
-            keyData,
-          }]).catch(() => {
-            // Silently swallow — the key will be re-archived on next derivation.
-          });
-        }
-      } catch {
-        // Export or wrap failed — non-fatal.
-      }
+      this.syncArchivedGroupKeys(options.userId, { conversationId }).catch((err) => {
+        console.warn('[MLS_ARCHIVE] conversation archive reconciliation failed', {
+          user_id: options.userId,
+          conversation_id: conversationId,
+          error: err instanceof Error ? err.message : String(err || ''),
+        });
+      });
     }
 
     this.dispatchWindowEvent('void:group-key-changed');

@@ -11,7 +11,7 @@ import { getMlsCiphersuiteImpl } from './mlsCryptoService';
 import { MlsGroupService } from './mlsGroupService';
 import { createKeyPackageRecord } from './mlsKeyService';
 import { mlsStorageService } from './mlsStorageService';
-import { unwrapArchiveKey } from './mlsUtils';
+import { base64ToBytes, unwrapArchiveKey } from './mlsUtils';
 import {
   EMPTY_MLS_SYNC_RESULT,
   MLS_BOOTSTRAP_COOLDOWN_MS,
@@ -255,6 +255,7 @@ export class MlsService {
     let localPublishedKeyPackages = 0;
     let availableKeyPackages = 0;
     let serverKeyPackageAvailable = false;
+    let archivedLocalGroupKeys = 0;
 
     if (capabilities.keyPackages) {
       await this.ensureLocalKeyPackages(userId);
@@ -275,6 +276,17 @@ export class MlsService {
       ).length;
     }
 
+    if (capabilities.groupState) {
+      try {
+        archivedLocalGroupKeys = await mlsStorageService.syncArchivedGroupKeys(userId);
+      } catch (err) {
+        console.warn('[MLS_ARCHIVE] local archive reconciliation failed during bootstrap', {
+          user_id: userId,
+          error: err instanceof Error ? err.message : String(err || ''),
+        });
+      }
+    }
+
     console.log('[MLS_BOOTSTRAP] account ready', {
       user_id: userId,
       forced: force,
@@ -282,6 +294,7 @@ export class MlsService {
       local_published_key_packages: localPublishedKeyPackages,
       available_key_packages: availableKeyPackages,
       server_key_package_available: serverKeyPackageAvailable,
+      archived_local_group_keys: archivedLocalGroupKeys,
     });
 
     await mlsStorageService.putAccountState({
@@ -303,8 +316,12 @@ export class MlsService {
     userId: string,
     conversation: Conversation,
     removeMemberIds: string[],
-  ): Promise<void> {
+  ): Promise<{ requiresFreshBootstrap: boolean }> {
     return this.groupService.preflightGroupRemove(userId, conversation, removeMemberIds);
+  }
+
+  async reuploadGroupState(conversationId: string): Promise<boolean> {
+    return this.groupService.reuploadGroupState(conversationId);
   }
 
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
@@ -403,13 +420,32 @@ export class MlsService {
         await keyManager.storeGroupKey(archived.conversationId, archived.keyVersion, key);
         importedArchivedKeys += 1;
       } catch (archiveErr) {
-        // Non-fatal — skip malformed or unwrap-failed entries, but log for
-        // diagnostics so same-account multi-device old-history recovery
-        // failures are visible instead of silently swallowed.
+        // Non-fatal — skip malformed or unwrap-failed entries, but log
+        // detailed diagnostics so the exact failure point is visible.
+        let keyDataParsed = false;
+        let ivLength = 0;
+        let ciphertextLength = 0;
+        try {
+          const combined = base64ToBytes(archived.keyData);
+          ivLength = Math.min(combined.length, 12);
+          ciphertextLength = Math.max(0, combined.length - 12);
+          keyDataParsed = combined.length > 12;
+        } catch { /* base64 decode failed */ }
+
+        const alreadyExistsLocally = await keyManager
+          .getGroupKey(archived.conversationId, archived.keyVersion)
+          .then((k) => k !== null)
+          .catch(() => false);
+
         console.warn('[MLS_SYNC] archived key import failed', {
           conversation_id: archived.conversationId,
           key_version: archived.keyVersion,
           has_identity_bytes: Boolean(identityBytes),
+          key_data_parsed: keyDataParsed,
+          iv_length: ivLength,
+          ciphertext_length: ciphertextLength,
+          unwrap_stage: keyDataParsed ? 'aes_gcm_decrypt' : 'base64_parse',
+          already_exists_locally: alreadyExistsLocally,
           error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr || ''),
         });
       }
