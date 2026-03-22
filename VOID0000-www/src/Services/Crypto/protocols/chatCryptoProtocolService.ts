@@ -17,6 +17,7 @@ export interface ChatCryptoProtocolService {
   getSupportedProtocols(): ChatSupportedProtocol[];
   isProtocolEnabled(protocol: ChatSupportedProtocol): boolean;
   bootstrapAccount(userId: string, force?: boolean): Promise<void>;
+  ensureServerKeyPackageReserve(userId: string): Promise<{ published: number; serverCount: number }>;
   preWarmForDm(userId: string, peerUserId: string): Promise<void>;
   syncInbox(userId: string, force?: boolean): Promise<MlsInboxSyncResult>;
   isDmMessageType(messageType: string | null | undefined): boolean;
@@ -39,6 +40,10 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
 
   async bootstrapAccount(userId: string, force = false): Promise<void> {
     await mlsService.bootstrapAccount(userId, force);
+  }
+
+  async ensureServerKeyPackageReserve(userId: string): Promise<{ published: number; serverCount: number }> {
+    return mlsService.ensureServerKeyPackageReserve(userId);
   }
 
   async preWarmForDm(userId: string, _peerUserId: string): Promise<void> {

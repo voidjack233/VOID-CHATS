@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 
 const router = Router();
@@ -13,6 +14,11 @@ const MAX_GROUP_ID_LENGTH = 255;
 const MAX_PACKAGE_DATA_LENGTH = 1024 * 1024;
 const MAX_STATE_BLOB_LENGTH = 4 * 1024 * 1024;
 const MAX_MESSAGE_PAYLOAD_LENGTH = 4 * 1024 * 1024;
+
+// Key-package pool thresholds — shared with clients via /check endpoint.
+const MLS_KEY_PACKAGE_MINIMUM = 3;
+const MLS_KEY_PACKAGE_TARGET = 10;
+const MLS_KEY_PACKAGE_LOW_WATERMARK = 3;
 
 let schemaReadyPromise = null;
 
@@ -208,6 +214,19 @@ async function ensureSchema() {
   return schemaReadyPromise;
 }
 
+async function getAvailableKeyPackageCount(userId, db = pool) {
+  const result = await db.query(
+    `SELECT COUNT(*)::int AS available_count
+     FROM mls_key_packages
+     WHERE user_id = $1::UUID
+       AND published_at IS NOT NULL
+       AND consumed_at IS NULL`,
+    [userId]
+  );
+
+  return result.rows[0]?.available_count || 0;
+}
+
 async function ensureConversationMembership(conversationId, userId, db = pool) {
   const membership = await db.query(
     `SELECT 1
@@ -268,6 +287,11 @@ router.post('/key-packages', async (req, res) => {
   try {
     await ensureSchema();
 
+    console.log('[MLS_KEY_PACKAGE] publish request ref', {
+      user_id: userId,
+      package_ref: packageRef,
+    });
+
     const result = await pool.query(
       `INSERT INTO mls_key_packages (user_id, package_ref, package_data, published_at)
        VALUES ($1::UUID, $2, $3, NOW())
@@ -275,16 +299,46 @@ router.post('/key-packages', async (req, res) => {
        DO UPDATE SET
          package_data = EXCLUDED.package_data,
          published_at = NOW()
-       RETURNING user_id::text AS user_id, package_ref, published_at`,
+       RETURNING user_id::text AS user_id,
+                 package_ref,
+                 published_at,
+                 (xmax = 0) AS inserted`,
       [userId, packageRef, packageData]
     );
+    const row = result.rows[0];
+    let availableCount = null;
+    try {
+      availableCount = await getAvailableKeyPackageCount(userId);
+    } catch (countErr) {
+      console.warn('[MLS_KEY_PACKAGE] publish post-write count failed', {
+        user_id: userId,
+        package_ref: packageRef,
+        error: countErr,
+      });
+    }
+
+    console.log('[MLS_KEY_PACKAGE] publish upsert result', {
+      user_id: userId,
+      package_ref: packageRef,
+      action: row?.inserted ? 'inserted' : 'updated_on_conflict',
+      conflicted: row?.inserted !== true,
+      available_count: availableCount,
+    });
 
     return res.json({
       success: true,
-      data: result.rows[0],
+      data: {
+        user_id: row?.user_id,
+        package_ref: row?.package_ref,
+        published_at: row?.published_at,
+      },
     });
   } catch (err) {
-    console.error('MLS key package publish error:', err);
+    console.error('MLS key package publish error:', {
+      user_id: userId,
+      package_ref: packageRef,
+      error: err,
+    });
     return res.status(500).json({ success: false, error: 'Failed to publish MLS key package' });
   }
 });
@@ -421,20 +475,23 @@ router.get('/key-packages/:userId/check', async (req, res) => {
 
   try {
     await ensureSchema();
+    const count = await getAvailableKeyPackageCount(targetUserId);
 
-    const result = await pool.query(
-      `SELECT COUNT(*)::int AS available_count
-       FROM mls_key_packages
-       WHERE user_id = $1::UUID
-         AND published_at IS NOT NULL
-         AND consumed_at IS NULL`,
-      [targetUserId]
-    );
+    console.log('[MLS_KEY_PACKAGE] count endpoint raw count', {
+      user_id: targetUserId,
+      available_count: count,
+    });
 
-    const count = result.rows[0]?.available_count || 0;
     return res.json({
       success: true,
-      data: { available: count > 0, count },
+      data: {
+        available: count > 0,
+        availableCount: count,
+        count,
+        // Thresholds for client-side top-up decisions
+        minimumRequired: MLS_KEY_PACKAGE_MINIMUM,
+        targetRecommended: MLS_KEY_PACKAGE_TARGET,
+      },
     });
   } catch (err) {
     console.error('MLS key package check error:', err);
@@ -483,7 +540,35 @@ router.get('/key-packages/:userId', async (req, res) => {
       return res.status(404).json({ success: false, error: 'No key packages available for this user', code: 'NO_KEY_PACKAGE' });
     }
 
+    console.log('[MLS_KEY_PACKAGE] claim endpoint selected ref', {
+      requester_user_id: requesterUserId,
+      owner_user_id: targetUserId,
+      package_ref: result.rows[0].package_ref,
+    });
+
     void requesterUserId; // requester is authenticated; key is HPKE-encrypted to recipient
+
+    // Notify the package owner's same-account multiple devices when their
+    // remaining key-package count drops below the low watermark, so they
+    // can immediately run ensureServerKeyPackageReserve().
+    try {
+      const remainingCount = await getAvailableKeyPackageCount(targetUserId);
+      console.log('[MLS_KEY_PACKAGE] claim remaining available count', {
+        owner_user_id: targetUserId,
+        available_count: remainingCount,
+      });
+      if (remainingCount < MLS_KEY_PACKAGE_LOW_WATERMARK) {
+        sendLiveEventToUser(targetUserId, 'KEY_PACKAGE_LOW', {
+          available_count: remainingCount,
+          low_watermark: MLS_KEY_PACKAGE_LOW_WATERMARK,
+          target_recommended: MLS_KEY_PACKAGE_TARGET,
+        });
+      }
+    } catch (notifyErr) {
+      // Non-critical — client will discover low count on next maintenance cycle.
+      console.warn('MLS key package low watermark notification failed:', notifyErr);
+    }
+
     return res.json({ success: true, data: result.rows[0] });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});

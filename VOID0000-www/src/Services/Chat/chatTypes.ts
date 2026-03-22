@@ -58,7 +58,7 @@ export interface Message {
   reactions?: ReactionMap;
   protocol?: MessageCryptoProtocol | null;
   protocol_version?: number | null;
-  local_status?: 'sending' | 'sent' | 'failed';
+  local_status?: 'sending' | 'sent' | 'failed' | 'queued';
   local_client_id?: string;
 }
 

@@ -1,15 +1,18 @@
 import { fetchWithAuth } from '../../Auth/authServiceApi';
-import type {
-  MlsInboxSyncPayload,
-  MlsServerCapabilities,
-  MlsSyncArchivedKeyUpdate,
-  MlsSyncCommitUpdate,
-  MlsSyncGroupStateUpdate,
-  MlsSyncKeyPackageUpdate,
-  MlsSyncWelcomeUpdate,
-  MlsUploadCommitInput,
-  MlsUploadGroupStateInput,
-  MlsUploadWelcomeInput,
+import {
+  MLS_KEY_PACKAGE_TARGET,
+  MLS_MINIMUM_KEY_PACKAGES,
+  type KeyPackageReserveStatus,
+  type MlsInboxSyncPayload,
+  type MlsServerCapabilities,
+  type MlsSyncArchivedKeyUpdate,
+  type MlsSyncCommitUpdate,
+  type MlsSyncGroupStateUpdate,
+  type MlsSyncKeyPackageUpdate,
+  type MlsSyncWelcomeUpdate,
+  type MlsUploadCommitInput,
+  type MlsUploadGroupStateInput,
+  type MlsUploadWelcomeInput,
 } from './mlsTypes';
 
 const MLS_API_PREFIX = '/api/conversations/mls';
@@ -166,19 +169,33 @@ export async function fetchMlsCapabilities(): Promise<MlsServerCapabilities> {
   return normalized;
 }
 
-export async function checkKeyPackageAvailability(userId: string): Promise<boolean> {
+export async function fetchKeyPackageReserveStatus(
+  userId: string,
+): Promise<KeyPackageReserveStatus | null> {
   try {
     const response = await fetchWithAuth(
-      `${MLS_API_PREFIX}/key-packages/${encodeURIComponent(userId)}/check`
+      `${MLS_API_PREFIX}/key-packages/${encodeURIComponent(userId)}/check`,
     );
-    if (!response.ok) return false;
+    if (!response.ok) return null;
     const payload = (await parseJsonSafe(response)) as MlsApiEnvelope<unknown> | null;
     const data = asObject(pickEnvelopeData(payload));
-    if (!data) return false;
-    return data.available === true;
+    if (!data) return null;
+
+    return {
+      available: data.available === true,
+      availableCount: typeof data.availableCount === 'number' ? data.availableCount : (data.available ? 1 : 0),
+      minimumRequired: typeof data.minimumRequired === 'number' ? data.minimumRequired : MLS_MINIMUM_KEY_PACKAGES,
+      targetRecommended: typeof data.targetRecommended === 'number' ? data.targetRecommended : MLS_KEY_PACKAGE_TARGET,
+    };
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Backward-compatible boolean check — delegates to fetchKeyPackageReserveStatus. */
+export async function checkKeyPackageAvailability(userId: string): Promise<boolean> {
+  const status = await fetchKeyPackageReserveStatus(userId);
+  return status?.available === true;
 }
 
 export async function fetchUserKeyPackage(

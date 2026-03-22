@@ -94,6 +94,8 @@ const MessageItem = memo(function MessageItem({
   const isSystem = message.message_type === 'system';
   const isOwn = message.sender_id === currentUserId;
   const isSending = message.local_status === 'sending';
+  const isQueued = message.local_status === 'queued';
+  const isPending = isSending || isQueued;
   const isRightAligned = isOwn && density === 'comfortable';
   const showSenderMeta = startsGroup;
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
@@ -175,15 +177,15 @@ const MessageItem = memo(function MessageItem({
 
       <div
         onMouseEnter={() => {
-          if (!isSending) setIsHovered(true);
+          if (!isPending) setIsHovered(true);
         }}
         onMouseLeave={() => setIsHovered(false)}
         onContextMenu={(event) => {
-          if (!isSending) {
+          if (!isPending) {
             event.preventDefault();
           }
         }}
-        className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full ${rowIndent} ${isSending ? 'opacity-65 saturate-50' : ''}`}
+        className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full ${rowIndent} ${isPending ? 'opacity-65 saturate-50' : ''}`}
       >
         {showAvatar && (
           <div
@@ -269,7 +271,7 @@ const MessageItem = memo(function MessageItem({
                     : isOwn
                       ? 'rounded-bl-sm bg-void-accent text-white'
                       : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                } ${isSending ? 'brightness-90' : ''}`}
+                } ${isPending ? 'brightness-90' : ''}`}
                 style={{ fontSize: `${bubbleFontSize}px` }}
               >
                 {hasRealContent ? (
@@ -300,8 +302,8 @@ const MessageItem = memo(function MessageItem({
                   <button
                     key={index}
                     onClick={() => onOpenImageViewer(rawUrls, index)}
-                    disabled={isSending}
-                    className={`block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square ${isSending ? 'cursor-not-allowed' : ''}`}
+                    disabled={isPending}
+                    className={`block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square ${isPending ? 'cursor-not-allowed' : ''}`}
                   >
                     <BlurImage
                       src={attachment.url}
@@ -326,16 +328,16 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
 
-          {isSending && (
+          {isPending && (
             <div className={`pt-1 ${isRightAligned ? 'text-right' : 'text-left'}`}>
               <span className="text-[10px] italic text-void-text-muted">
-                sending...
+                {isQueued ? 'queued' : 'sending...'}
               </span>
             </div>
           )}
         </div>
 
-        {!message.is_deleted && !isSending && (
+        {!message.is_deleted && !isPending && (
           <div
             className={`flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           >

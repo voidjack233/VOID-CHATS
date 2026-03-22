@@ -10,6 +10,7 @@ import {
   Message,
   Conversation,
 } from '../../Chat/chatService';
+import { queuedSendStore } from '../../Chat/queuedSendStore';
 
 export interface PendingAttachment {
   id: string;
@@ -241,6 +242,73 @@ export const useMessageInput = ({
     }
   }, [sendError, slowmodeRemaining]);
 
+  // Auto-retry queued secure sends when encryptionKey becomes available.
+  // Loads from persistent IndexedDB store so queued messages survive
+  // conversation switch, refresh, and crash.
+  useEffect(() => {
+    if (!encryptionKey) return;
+
+    let cancelled = false;
+
+    (async () => {
+      let pending;
+      try {
+        pending = await queuedSendStore.getByConversation(conversation.id);
+      } catch {
+        return;
+      }
+      if (cancelled || pending.length === 0) return;
+
+      console.log('[QUEUED_SEND] encryption key available, flushing queued sends', {
+        conversation_id: conversation.id,
+        count: pending.length,
+      });
+
+      for (const queued of pending) {
+        if (cancelled) break;
+        try {
+          let msg: Message;
+          if (queued.text) {
+            msg = await sendMessage(conversation.id, queued.text, encryptionKey, {
+              key_version: keyVersion,
+              message_type: MLS_MESSAGE_TYPE,
+              reply_to: queued.reply_to_id || undefined,
+              attachments: queued.uploaded_urls,
+            });
+          } else if (queued.uploaded_urls.length > 0) {
+            msg = await sendImageOnlyMessage(conversation.id, queued.uploaded_urls, {
+              key_version: keyVersion,
+              message_type: MLS_MESSAGE_TYPE,
+              reply_to: queued.reply_to_id || undefined,
+            });
+          } else {
+            await queuedSendStore.remove(conversation.id, queued.local_client_id);
+            continue;
+          }
+
+          console.log('[QUEUED_SEND] queued message sent successfully', {
+            local_client_id: queued.local_client_id,
+            message_id: msg.message_id,
+          });
+          await queuedSendStore.remove(conversation.id, queued.local_client_id);
+          onMessageSent({
+            ...msg,
+            local_status: 'sent',
+            local_client_id: queued.local_client_id,
+          });
+        } catch (retryErr) {
+          // Leave in store for future retry — don't remove unless permanently failed.
+          console.error('[QUEUED_SEND] retry failed, will retry later', {
+            local_client_id: queued.local_client_id,
+            error: retryErr,
+          });
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [encryptionKey, conversation.id, keyVersion, onMessageSent]);
+
   useEffect(() => {
     const isTypingEligible =
       !!encryptionKey &&
@@ -379,23 +447,56 @@ export const useMessageInput = ({
       }
     } catch (err: any) {
       console.error('Send failed:', err);
-      setText(previousText);
-      setAttachments(previousAttachments);
-      if (optimisticMessage && localClientId) {
-        onMessageSent({
-          ...optimisticMessage,
-          local_status: 'failed',
+
+      const isPeerNotReady =
+        conversation.type === 'dm' &&
+        typeof err?.message === 'string' &&
+        (err.message.includes('no usable secure device keys') ||
+          err.message.includes('DM peer device is not ready'));
+
+      if (isPeerNotReady && optimisticMessage && localClientId) {
+        // Queue the message locally — don't restore input, don't mark failed.
+        // The message stays visible with 'queued' status and will be retried
+        // automatically when encryptionKey becomes available (bootstrap succeeds).
+        console.log('[QUEUED_SEND] queuing message for deferred secure send', {
+          conversation_id: conversation.id,
           local_client_id: localClientId,
         });
-      }
-
-      if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
-        setSlowmodeRemaining(err.retry_after_seconds);
-        setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
-      } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
-        setSendError('Encryption keys changed. Please close and reopen this conversation, then try again.');
+        onMessageSent({
+          ...optimisticMessage,
+          local_status: 'queued',
+          local_client_id: localClientId,
+        });
+        queuedSendStore.put({
+          conversation_id: conversation.id,
+          local_client_id: localClientId,
+          sender_id: currentUserId || 'local-user',
+          text: trimmed,
+          uploaded_urls: uploadedUrls,
+          reply_to_id: replyTo?.message_id || null,
+          created_at: optimisticMessage.created_at,
+        }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));
+        setSendError('');
       } else {
-        setSendError(err?.message || 'Failed to send message');
+        // Normal failure path — restore input and show error.
+        setText(previousText);
+        setAttachments(previousAttachments);
+        if (optimisticMessage && localClientId) {
+          onMessageSent({
+            ...optimisticMessage,
+            local_status: 'failed',
+            local_client_id: localClientId,
+          });
+        }
+
+        if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
+          setSlowmodeRemaining(err.retry_after_seconds);
+          setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
+        } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
+          setSendError('Encryption keys changed. Please close and reopen this conversation, then try again.');
+        } else {
+          setSendError(err?.message || 'Failed to send message');
+        }
       }
     } finally {
       setSending(false);

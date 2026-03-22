@@ -1,8 +1,8 @@
 import type { Conversation } from '../../Chat/chatService';
 import { keyManager } from '../keyManager';
 import {
-  checkKeyPackageAvailability,
   consumeMlsWelcome,
+  fetchKeyPackageReserveStatus,
   fetchMlsCapabilities,
   publishMlsKeyPackage,
   syncMlsInbox,
@@ -15,6 +15,7 @@ import { base64ToBytes, unwrapArchiveKey } from './mlsUtils';
 import {
   EMPTY_MLS_SYNC_RESULT,
   MLS_BOOTSTRAP_COOLDOWN_MS,
+  MLS_KEY_PACKAGE_TARGET,
   MLS_MINIMUM_KEY_PACKAGES,
   MLS_SYNC_COOLDOWN_MS,
   type MlsBootstrapResult,
@@ -31,7 +32,9 @@ import {
 export class MlsService {
   private serverCapabilitiesPromise: Promise<MlsServerCapabilities> | null = null;
   private readonly minimumKeyPackages = MLS_MINIMUM_KEY_PACKAGES;
+  private readonly keyPackageTarget = MLS_KEY_PACKAGE_TARGET;
   private readonly syncInboxPromises = new Map<string, Promise<MlsInboxSyncResult>>();
+  private readonly reserveTopUpPromises = new Map<string, Promise<{ published: number; serverCount: number }>>();
   private readonly groupService = new MlsGroupService({
     getServerCapabilities: () => this.getServerCapabilities(),
     bootstrapAccount: (userId: string, force = false) => this.bootstrapAccount(userId, force),
@@ -125,18 +128,6 @@ export class MlsService {
     mlsStorageService.notifyKeyPackageChanged();
   }
 
-  private async ensureLocalKeyPackages(userId: string): Promise<void> {
-    const localKeyPackages = await mlsStorageService.listKeyPackages(userId);
-    const available = localKeyPackages.filter((record) => !record.consumedAt);
-    if (available.length >= this.minimumKeyPackages) {
-      return;
-    }
-
-    const missing = this.minimumKeyPackages - available.length;
-    await Promise.all(
-      Array.from({ length: missing }).map(() => this.generateAndStoreKeyPackage(userId)),
-    );
-  }
 
   private async publishKeyPackageRecord(
     record: Pick<MlsKeyPackageRecord, 'userId' | 'packageRef' | 'packageData'>,
@@ -189,52 +180,104 @@ export class MlsService {
     return published;
   }
 
-  private async repairServerKeyPackageAvailability(
+  /**
+   * Ensure this user has at least `target` usable key packages on the server.
+   * Server availability is the source of truth — local counts are not trusted.
+   *
+   * Steps:
+   * 1. Fetch exact server count via /check endpoint.
+   * 2. If count >= target → done.
+   * 3. Publish any genuinely local-unpublished packages (never reached server).
+   * 4. If still below target, generate brand-new packages with fresh refs.
+   * 5. Re-check server count after publishing.
+   *
+   * Consumed packages are never re-published (single-use guarantee).
+   * A single-flight guard prevents concurrent duplicate runs per userId.
+   */
+  async ensureServerKeyPackageReserve(
     userId: string,
-    localKeyPackages: MlsKeyPackageRecord[],
-  ): Promise<{ repairedPublications: number; serverAvailable: boolean }> {
-    let serverAvailable = await checkKeyPackageAvailability(userId);
-    if (serverAvailable) {
-      return { repairedPublications: 0, serverAvailable: true };
+    target = this.keyPackageTarget,
+    minimum = this.minimumKeyPackages,
+  ): Promise<{ published: number; serverCount: number }> {
+    const inflight = this.reserveTopUpPromises.get(userId);
+    if (inflight) return inflight;
+
+    const promise = this._ensureServerKeyPackageReserveWork(userId, target, minimum).finally(() => {
+      this.reserveTopUpPromises.delete(userId);
+    });
+    this.reserveTopUpPromises.set(userId, promise);
+    return promise;
+  }
+
+  private async _ensureServerKeyPackageReserveWork(
+    userId: string,
+    target: number,
+    minimum: number,
+  ): Promise<{ published: number; serverCount: number }> {
+    const status = await fetchKeyPackageReserveStatus(userId);
+    if (!status) {
+      return { published: 0, serverCount: 0 };
     }
 
-    const repairCandidates = [...localKeyPackages]
-      .filter((record) => !record.consumedAt)
-      .sort((a, b) => {
-        const aPublished = a.publishedAt ? 1 : 0;
-        const bPublished = b.publishedAt ? 1 : 0;
-        if (aPublished !== bPublished) {
-          return aPublished - bPublished;
-        }
-        return Date.parse(b.createdAt) - Date.parse(a.createdAt);
-      })
-      .slice(0, this.minimumKeyPackages);
+    // Use server-provided thresholds when available, fall back to caller args.
+    const effectiveTarget = Math.max(target, status.targetRecommended || target);
+    const effectiveMinimum = Math.max(minimum, status.minimumRequired || minimum);
 
-    let repairedPublications = 0;
-    for (const record of repairCandidates) {
+    if (status.availableCount >= effectiveTarget) {
+      return { published: 0, serverCount: status.availableCount };
+    }
+
+    const deficit = effectiveTarget - status.availableCount;
+    let published = 0;
+
+    // Stage 1: publish any genuinely local-unpublished packages (ones that
+    // were generated but never reached the server).  Already-published
+    // packages may have been consumed server-side — never re-publish them.
+    const localUnpublished = await mlsStorageService.listUnpublishedKeyPackages(userId);
+    const stage1Candidates = localUnpublished.slice(0, deficit);
+    for (const record of stage1Candidates) {
       const ok = await this.publishKeyPackageRecord(record, 'server_repair');
-      if (ok) {
-        repairedPublications += 1;
-      }
+      if (ok) published += 1;
     }
 
-    if (repairedPublications > 0) {
+    // Stage 2: if still below target, generate brand-new key packages with
+    // fresh crypto.randomUUID() refs.  This is the primary path when local
+    // inventory is stale (server consumed packages without local knowledge).
+    const remainingDeficit = deficit - published;
+    if (remainingDeficit > 0) {
+      for (let i = 0; i < remainingDeficit; i++) {
+        await this.generateAndStoreKeyPackage(userId);
+      }
+      const freshPublished = await this.publishPendingKeyPackages(userId);
+      published += freshPublished;
+    }
+
+    if (published > 0) {
       mlsStorageService.notifyKeyPackageChanged();
     }
 
-    serverAvailable = await checkKeyPackageAvailability(userId);
-    if (!serverAvailable) {
-      console.warn('[MLS_KEY_PACKAGE] server pool still unavailable after repair attempt', {
+    // Re-check: server is source of truth.
+    const after = await fetchKeyPackageReserveStatus(userId);
+    const finalCount = after?.availableCount ?? status.availableCount + published;
+
+    if (finalCount < effectiveMinimum) {
+      console.warn('[MLS_KEY_PACKAGE] server reserve still below minimum after top-up', {
         user_id: userId,
-        repair_candidate_count: repairCandidates.length,
-        repaired_publications: repairedPublications,
+        server_count: finalCount,
+        target: effectiveTarget,
+        minimum: effectiveMinimum,
+        published,
+      });
+    } else {
+      console.log('[MLS_KEY_PACKAGE] server reserve topped up', {
+        user_id: userId,
+        server_count: finalCount,
+        target: effectiveTarget,
+        published,
       });
     }
 
-    return {
-      repairedPublications,
-      serverAvailable,
-    };
+    return { published, serverCount: finalCount };
   }
 
   async bootstrapAccount(userId: string, force = false): Promise<void> {
@@ -258,18 +301,14 @@ export class MlsService {
     let archivedLocalGroupKeys = 0;
 
     if (capabilities.keyPackages) {
-      await this.ensureLocalKeyPackages(userId);
-      publishedKeyPackages = await this.publishPendingKeyPackages(userId);
+      // Server availability is the source of truth for DM reachability.
+      // ensureServerKeyPackageReserve handles all top-up logic including
+      // publishing genuinely-unpublished locals and generating fresh packages.
+      const reserveResult = await this.ensureServerKeyPackageReserve(userId);
+      publishedKeyPackages = reserveResult.published;
+      serverKeyPackageAvailable = reserveResult.serverCount >= this.minimumKeyPackages;
 
-      let localKeyPackages = await mlsStorageService.listKeyPackages(userId);
-      const repairResult = await this.repairServerKeyPackageAvailability(userId, localKeyPackages);
-      publishedKeyPackages += repairResult.repairedPublications;
-      serverKeyPackageAvailable = repairResult.serverAvailable;
-
-      if (repairResult.repairedPublications > 0) {
-        localKeyPackages = await mlsStorageService.listKeyPackages(userId);
-      }
-
+      const localKeyPackages = await mlsStorageService.listKeyPackages(userId);
       availableKeyPackages = localKeyPackages.filter((record) => !record.consumedAt).length;
       localPublishedKeyPackages = localKeyPackages.filter(
         (record) => !record.consumedAt && Boolean(record.publishedAt),

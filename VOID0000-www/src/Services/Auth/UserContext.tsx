@@ -542,7 +542,17 @@ export function UserProvider({ children }: { children: ReactNode }) {
       void chatCryptoProtocolService.bootstrapAccount(userId, force).catch(() => {});
     };
 
+    // Top-up the server key-package reserve.  The single-flight mutex inside
+    // ensureServerKeyPackageReserve prevents concurrent duplicate jobs when
+    // multiple triggers (READY, RESUMED, focus, online) fire close together.
+    const runKeyPackageTopUp = () => {
+      if (cancelled) return;
+      void chatCryptoProtocolService.ensureServerKeyPackageReserve(userId).catch(() => {});
+    };
+
+    // Login: initial bootstrap + backup, then immediate reserve top-up.
     void chatCryptoProtocolService.bootstrapAccount(userId, true).then(async () => {
+      runKeyPackageTopUp();
       if (!password || cancelled) return;
       try {
         const keyBackup = await keyManager.prepareBackup(userId, password);
@@ -553,26 +563,47 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
     }).catch(() => {});
 
+    // Periodic maintenance fallback — run bootstrap + top-up every 60s.
     const maintenanceInterval = window.setInterval(() => {
       runBootstrapMaintenance(true);
+      runKeyPackageTopUp();
     }, 60_000);
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         runBootstrapMaintenance(true);
+        runKeyPackageTopUp();
       }
     };
 
     const onFocus = () => {
       runBootstrapMaintenance(true);
+      runKeyPackageTopUp();
     };
 
     const onOnline = () => {
       runBootstrapMaintenance(true);
+      runKeyPackageTopUp();
     };
 
     const onKeyPackageChanged = () => {
       runBootstrapMaintenance(true);
+    };
+
+    // WebSocket READY (fresh identify) / RESUMED (session resume): top-up
+    // the server reserve so same-account multiple devices stay DM-reachable.
+    const onGatewayReady = () => {
+      runBootstrapMaintenance(true);
+      runKeyPackageTopUp();
+    };
+    const onGatewayResumed = () => {
+      runKeyPackageTopUp();
+    };
+
+    // Server notifies that key-package count dropped below low watermark
+    // after another user claimed packages.  Immediately replenish.
+    const onKeyPackageLow = () => {
+      runKeyPackageTopUp();
     };
 
     // Incrementally back up group keys whenever they change during the session.
@@ -587,6 +618,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
     window.addEventListener('online', onOnline);
     window.addEventListener('void:mls-key-package-changed', onKeyPackageChanged);
     window.addEventListener('void:group-key-changed', onKeyChanged);
+    gateway.on('READY', onGatewayReady);
+    gateway.on('RESUMED', onGatewayResumed);
+    gateway.on('KEY_PACKAGE_LOW', onKeyPackageLow);
 
     return () => {
       cancelled = true;
@@ -596,6 +630,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('online', onOnline);
       window.removeEventListener('void:mls-key-package-changed', onKeyPackageChanged);
       window.removeEventListener('void:group-key-changed', onKeyChanged);
+      gateway.off('READY', onGatewayReady);
+      gateway.off('RESUMED', onGatewayResumed);
+      gateway.off('KEY_PACKAGE_LOW', onKeyPackageLow);
     };
   }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
 

@@ -4,7 +4,17 @@ import type { Conversation } from '../../Chat/chatService';
 export const MLS_BOOTSTRAP_COOLDOWN_MS = 5 * 60 * 1000;
 export const MLS_SYNC_COOLDOWN_MS = 30 * 1000;
 export const MLS_MINIMUM_KEY_PACKAGES = 3;
+export const MLS_KEY_PACKAGE_TARGET = 10;
+export const MLS_KEY_PACKAGE_LOW_WATERMARK = 3;
 export const MLS_EXPORTER_LABEL = 'void-msg-key';
+
+/** Server response from the non-consuming key-package availability check. */
+export interface KeyPackageReserveStatus {
+  available: boolean;
+  availableCount: number;
+  minimumRequired: number;
+  targetRecommended: number;
+}
 
 export const MlsCipherSuites = {
   default: 'MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519',

@@ -11,6 +11,7 @@ import {
 } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
+import { queuedSendStore } from '../../Chat/queuedSendStore';
 import { gateway } from '../../Gateway/gateway';
 import {
   MESSAGE_CACHE_LIMIT,
@@ -484,6 +485,57 @@ export const useMessageList = (
     return () => { ignore = true; };
   }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, peerUserId, userId]);
 
+  // ============== Restore Persisted Queued Sends ==============
+  // On conversation open, load any queued secure-send messages from the
+  // persistent store and inject them into the message list.  These survive
+  // conversation switch, refresh, and crash.
+  useEffect(() => {
+    let ignore = false;
+
+    (async () => {
+      try {
+        const queued = await queuedSendStore.getByConversation(conversationId);
+        if (ignore || queued.length === 0) return;
+
+        const queuedMessages: Message[] = queued.map((record) => ({
+          conversation_id: record.conversation_id,
+          message_id: record.local_client_id,
+          sender_id: record.sender_id,
+          encrypted_content: null,
+          iv: null,
+          key_version: 1,
+          message_type: 'mls_application',
+          protocol: 'mls' as const,
+          protocol_version: 1,
+          reply_to: record.reply_to_id,
+          attachments: record.uploaded_urls,
+          is_edited: false,
+          edited_at: null,
+          is_deleted: false,
+          created_at: record.created_at,
+          content: record.text || undefined,
+          reactions: {},
+          local_status: 'queued' as const,
+          local_client_id: record.local_client_id,
+        }));
+
+        setMessages((prev) =>
+          mergeMessagesWithReconciliation({
+            existing: prev,
+            incoming: queuedMessages,
+            currentUserId: userId,
+            trimFrom: 'old',
+            allowOptimisticFallback: false,
+          })
+        );
+      } catch (err) {
+        console.error('[QUEUED_SEND] failed to load persisted queued sends', err);
+      }
+    })();
+
+    return () => { ignore = true; };
+  }, [conversationId, userId]);
+
   // ============== Handle Incoming New Messages ==============
   useEffect(() => {
     if (!newMessage) return;
@@ -518,7 +570,7 @@ export const useMessageList = (
       local_client_id: localClientId,
     };
 
-    const isLocalPendingOnly = normalizedMessage.local_status === 'sending' && Boolean(localClientId);
+    const isLocalPendingOnly = (normalizedMessage.local_status === 'sending' || normalizedMessage.local_status === 'queued') && Boolean(localClientId);
     if (!isLocalPendingOnly) {
       const localMsg: LocalMessage = {
         conversation_id: normalizedMessage.conversation_id,
