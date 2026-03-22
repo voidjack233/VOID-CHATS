@@ -469,7 +469,7 @@ router.get('/key-packages/:userId', async (req, res) => {
          WHERE user_id = $1::UUID
            AND published_at IS NOT NULL
            AND consumed_at IS NULL
-         ORDER BY created_at ASC
+         ORDER BY created_at DESC
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )

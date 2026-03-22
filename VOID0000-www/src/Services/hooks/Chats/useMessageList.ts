@@ -129,6 +129,105 @@ const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] =>
     )
   );
 
+const getLocalClientId = (message: Pick<Message, 'message_id' | 'local_client_id'>): string | undefined => {
+  if (message.local_client_id) return message.local_client_id;
+  return typeof message.message_id === 'string' && message.message_id.startsWith('local-')
+    ? message.message_id
+    : undefined;
+};
+
+const isLocalOnlyMessage = (message: Pick<Message, 'message_id'>): boolean =>
+  typeof message.message_id === 'string' && message.message_id.startsWith('local-');
+
+const normalizeMessageContent = (content?: string | null) => {
+  const trimmed = typeof content === 'string' ? content.trim() : '';
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const getAttachmentSignature = (message: Pick<Message, 'attachments'>) =>
+  JSON.stringify(message.attachments || []);
+
+const findOptimisticReplacementId = (
+  messages: Message[],
+  incoming: Message,
+  currentUserId?: string,
+): string | undefined => {
+  if (!currentUserId || incoming.sender_id !== currentUserId || incoming.local_status === 'sending') {
+    return undefined;
+  }
+
+  const incomingReplyTo = incoming.reply_to ?? null;
+  const incomingContent = normalizeMessageContent(incoming.content);
+  const incomingAttachments = getAttachmentSignature(incoming);
+
+  const pendingMatch = messages.find((message) => (
+    message.local_status === 'sending' &&
+    message.sender_id === incoming.sender_id &&
+    String(message.conversation_id) === String(incoming.conversation_id) &&
+    message.message_type === incoming.message_type &&
+    (message.reply_to ?? null) === incomingReplyTo &&
+    normalizeMessageContent(message.content) === incomingContent &&
+    getAttachmentSignature(message) === incomingAttachments
+  ));
+
+  return pendingMatch ? (getLocalClientId(pendingMatch) || pendingMatch.message_id) : undefined;
+};
+
+const mergeMessagesWithReconciliation = ({
+  existing,
+  incoming,
+  currentUserId,
+  trimFrom,
+  allowOptimisticFallback = false,
+}: {
+  existing: Message[];
+  incoming: Message[];
+  currentUserId?: string;
+  trimFrom: 'old' | 'new';
+  allowOptimisticFallback?: boolean;
+}): Message[] => {
+  const next = [...existing];
+
+  incoming.forEach((message) => {
+    const existingIndex = next.findIndex((entry) => String(entry.message_id) === String(message.message_id));
+    if (existingIndex >= 0) {
+      const existingMessage = next[existingIndex]!;
+      next[existingIndex] = {
+        ...existingMessage,
+        ...message,
+        local_client_id: message.local_client_id ?? existingMessage.local_client_id,
+        local_status: message.local_status ?? existingMessage.local_status,
+      };
+      return;
+    }
+
+    const replacementId = getLocalClientId(message) || (
+      allowOptimisticFallback
+        ? findOptimisticReplacementId(next, message, currentUserId)
+        : undefined
+    );
+
+    if (replacementId) {
+      for (let index = next.length - 1; index >= 0; index -= 1) {
+        const candidate = next[index]!;
+        if (
+          String(candidate.message_id) === String(replacementId) ||
+          getLocalClientId(candidate) === replacementId
+        ) {
+          next.splice(index, 1);
+        }
+      }
+    }
+
+    next.push(message);
+  });
+
+  return trimMessages(next, trimFrom);
+};
+
+const getNewestServerBackedMessage = (messages: Message[]): Message | undefined =>
+  [...messages].reverse().find((message) => !isLocalOnlyMessage(message));
+
 // Deduplicate + keep messages oldest-first before trimming
 const trimMessages = (msgs: Message[], trimFrom: 'old' | 'new'): Message[] => {
   const sorted = sortMessages(msgs);
@@ -292,10 +391,13 @@ export const useMessageList = (
           if (isKeyRotation) {
             setMessages((prev) => {
               if (prev.length === 0) return uiMessages;
-              const unique = Array.from(
-                new Map([...prev, ...uiMessages].map((m) => [m.message_id, m])).values()
-              );
-              return trimMessages(unique, 'old');
+              return mergeMessagesWithReconciliation({
+                existing: prev,
+                incoming: uiMessages,
+                currentUserId: userId,
+                trimFrom: 'old',
+                allowOptimisticFallback: true,
+              });
             });
           } else {
             setMessages(uiMessages);
@@ -320,10 +422,13 @@ export const useMessageList = (
             if (ignore) return;
             const freshUI = sortMessages(fresh.messages.map(toUIMessage));
             setMessages((prev) => {
-              const unique = Array.from(
-                new Map([...prev, ...freshUI].map((m) => [m.message_id, m])).values()
-              );
-              return trimMessages(unique, 'old');
+              return mergeMessagesWithReconciliation({
+                existing: prev,
+                incoming: freshUI,
+                currentUserId: userId,
+                trimFrom: 'old',
+                allowOptimisticFallback: true,
+              });
             });
             setHasOlder(resolveInitialHasOlder({
               localHasMore: fresh.has_more,
@@ -346,10 +451,13 @@ export const useMessageList = (
           if (isKeyRotation) {
             setMessages((prev) => {
               if (freshUI.length === 0) return prev;
-              const unique = Array.from(
-                new Map([...prev, ...freshUI].map((m) => [m.message_id, m])).values()
-              );
-              return trimMessages(unique, 'old');
+              return mergeMessagesWithReconciliation({
+                existing: prev,
+                incoming: freshUI,
+                currentUserId: userId,
+                trimFrom: 'old',
+                allowOptimisticFallback: true,
+              });
             });
           } else {
             setMessages(freshUI);
@@ -384,11 +492,7 @@ export const useMessageList = (
       return;
     }
     const localStatus = newMessage.local_status;
-    const localClientId = newMessage.local_client_id || (
-      typeof newMessage.message_id === 'string' && newMessage.message_id.startsWith('local-')
-        ? newMessage.message_id
-        : undefined
-    );
+    const localClientId = getLocalClientId(newMessage);
 
     if (localStatus === 'failed' && localClientId) {
       setMessages((prev) => prev.filter((message) =>
@@ -438,16 +542,15 @@ export const useMessageList = (
 
     // Always inject incoming messages so realtime updates are visible without refresh.
     setMessages((prev) => {
-      const base = localClientId
-        ? prev.filter((message) => message.message_id !== localClientId && message.local_client_id !== localClientId)
-        : prev;
-      const merged = [...base, normalizedMessage];
-      const unique = Array.from(
-        new Map(merged.map(m => [m.message_id, m])).values()
-      );
-      return trimMessages(unique, 'old');
+      return mergeMessagesWithReconciliation({
+        existing: prev,
+        incoming: [normalizedMessage],
+        currentUserId: userId,
+        trimFrom: 'old',
+        allowOptimisticFallback: true,
+      });
     });
-  }, [newMessage, conversationId]);
+  }, [newMessage, conversationId, userId]);
 
   // ============== Handle Edits ==============
   useEffect(() => {
@@ -634,7 +737,7 @@ export const useMessageList = (
     setLoadingNewer(true);
 
     try {
-      const newest = messages[messages.length - 1];
+      const newest = getNewestServerBackedMessage(messages);
       if (!newest) return;
 
       // Try local first
@@ -664,12 +767,13 @@ export const useMessageList = (
       const newerUI = sortMessages(result.messages.map(toUIMessage));
       if (newerUI.length > 0) {
         setMessages((prev) => {
-          const merged = [...prev, ...newerUI];
-          // Deduplicate (though less likely when loading newer)
-          const unique = Array.from(
-            new Map(merged.map(m => [m.message_id, m])).values()
-          );
-          return trimMessages(unique, 'old');
+          return mergeMessagesWithReconciliation({
+            existing: prev,
+            incoming: newerUI,
+            currentUserId: userId,
+            trimFrom: 'old',
+            allowOptimisticFallback: true,
+          });
         });
         // If we got fewer than FETCH_SIZE, we've reached the present
         if (newerUI.length < FETCH_SIZE) {
@@ -693,7 +797,7 @@ export const useMessageList = (
   const reconcileRecentMessages = useCallback(async (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
     if (!encryptionKey) return;
 
-    const newest = messagesRef.current[messagesRef.current.length - 1];
+    const newest = getNewestServerBackedMessage(messagesRef.current);
     if (!newest) return;
 
     console.log('[WS_RESYNC] reconciling active conversation after reconnect/visibility', {
@@ -722,11 +826,13 @@ export const useMessageList = (
 
       const newerUI = sortMessages(serverResult.messages);
       setMessages((prev) => {
-        const merged = [...prev, ...newerUI];
-        const unique = Array.from(
-          new Map(merged.map((message) => [message.message_id, message])).values()
-        );
-        return trimMessages(unique, 'old');
+        return mergeMessagesWithReconciliation({
+          existing: prev,
+          incoming: newerUI,
+          currentUserId: userId,
+          trimFrom: 'old',
+          allowOptimisticFallback: true,
+        });
       });
       setHasNewer(serverResult.has_more || serverResult.messages.length >= FETCH_SIZE);
       setIsAtPresent(!(serverResult.has_more || serverResult.messages.length >= FETCH_SIZE));
