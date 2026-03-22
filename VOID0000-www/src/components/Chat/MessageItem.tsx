@@ -57,6 +57,7 @@ interface MessageItemProps {
     anchor: HTMLElement,
     placement?: 'top' | 'bottom',
   ) => void;
+  onContextMenu?: (event: React.MouseEvent) => void;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
@@ -83,6 +84,7 @@ const MessageItem = memo(function MessageItem({
   getSenderAvatarUrl,
   onProfileClick,
   onOpenEmojiPicker,
+  onContextMenu,
   onReply,
   onEdit,
   onDelete,
@@ -180,11 +182,6 @@ const MessageItem = memo(function MessageItem({
           if (!isPending) setIsHovered(true);
         }}
         onMouseLeave={() => setIsHovered(false)}
-        onContextMenu={(event) => {
-          if (!isPending) {
-            event.preventDefault();
-          }
-        }}
         className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full ${rowIndent} ${isPending ? 'opacity-65 saturate-50' : ''}`}
       >
         {showAvatar && (
@@ -203,7 +200,10 @@ const MessageItem = memo(function MessageItem({
           </div>
         )}
 
-        <div className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}>
+        <div
+          onContextMenu={isPending ? undefined : onContextMenu}
+          className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}
+        >
           {message.reply_to && (
             <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
               <div

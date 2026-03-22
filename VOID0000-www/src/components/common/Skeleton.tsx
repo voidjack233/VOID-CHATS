@@ -1,6 +1,8 @@
 // src/components/common/Skeleton.tsx
 // Reusable skeleton/ghost loading primitives
 
+import type { Density } from '../../Services/hooks/Settings/useTheme';
+
 interface SkeletonProps {
   className?: string;
   rounded?: 'full' | 'lg' | 'md' | 'sm' | 'xl' | '2xl' | 'none';
@@ -12,6 +14,97 @@ export const Skeleton = ({ className = '', rounded = 'md' }: SkeletonProps) => (
     className={`skeleton-shimmer shrink-0 rounded-${rounded} ${className}`}
   />
 );
+
+type MessageSkeletonAlignment = 'incoming' | 'outgoing';
+
+export const MESSAGE_SKELETON_CONTENT_MAX_WIDTH: Record<Density, string> = {
+  compact: 'max-w-[85%]',
+  comfortable: 'max-w-[70%]',
+};
+
+export const MESSAGE_SKELETON_INCOMING_OFFSET = 'pl-10';
+
+const MESSAGE_SKELETON_BUBBLE_WIDTHS: Record<Density, Record<MessageSkeletonAlignment, string[]>> = {
+  compact: {
+    incoming: [
+      'w-[64%] sm:w-[70%] md:w-[74%]',
+      'w-[84%] sm:w-[90%] md:w-[92%]',
+      'w-[50%] sm:w-[56%] md:w-[60%]',
+      'w-[74%] sm:w-[80%] md:w-[84%]',
+    ],
+    outgoing: [
+      'w-[64%] sm:w-[70%] md:w-[74%]',
+      'w-[84%] sm:w-[90%] md:w-[92%]',
+      'w-[50%] sm:w-[56%] md:w-[60%]',
+      'w-[74%] sm:w-[80%] md:w-[84%]',
+    ],
+  },
+  comfortable: {
+    incoming: [
+      'w-[62%] sm:w-[68%] md:w-[72%]',
+      'w-[82%] sm:w-[88%] md:w-[92%]',
+      'w-[48%] sm:w-[54%] md:w-[58%]',
+      'w-[72%] sm:w-[78%] md:w-[84%]',
+    ],
+    outgoing: [
+      'w-[68%] sm:w-[76%] md:w-[80%]',
+      'w-[82%] sm:w-[88%] md:w-[92%]',
+      'w-[54%] sm:w-[60%] md:w-[64%]',
+      'w-[74%] sm:w-[82%] md:w-[86%]',
+    ],
+  },
+};
+
+export const getMessageSkeletonBubbleWidth = (
+  density: Density,
+  alignment: MessageSkeletonAlignment,
+  index = 0,
+) => {
+  const widths = MESSAGE_SKELETON_BUBBLE_WIDTHS[density][alignment];
+  return widths[((index % widths.length) + widths.length) % widths.length];
+};
+
+interface ChatMessageSkeletonRowProps {
+  density?: Density;
+  alignment?: MessageSkeletonAlignment;
+  showAvatar?: boolean;
+  showMeta?: boolean;
+  bubbleWidth?: string;
+  bubbleHeight?: string;
+  metaWidth?: string;
+  className?: string;
+}
+
+export const ChatMessageSkeletonRow = ({
+  density = 'compact',
+  alignment = 'incoming',
+  showAvatar = alignment === 'incoming',
+  showMeta = true,
+  bubbleWidth,
+  bubbleHeight = 'h-10',
+  metaWidth = 'w-24',
+  className = '',
+}: ChatMessageSkeletonRowProps) => {
+  const isRightAligned = density === 'comfortable' && alignment === 'outgoing';
+  const rowIndent = !isRightAligned && !showAvatar ? MESSAGE_SKELETON_INCOMING_OFFSET : '';
+  const contentMaxWidth = MESSAGE_SKELETON_CONTENT_MAX_WIDTH[density];
+  const resolvedBubbleWidth = bubbleWidth || getMessageSkeletonBubbleWidth(density, alignment);
+
+  return (
+    <div className={`flex w-full max-w-full ${isRightAligned ? 'justify-end' : 'justify-start'} ${rowIndent} ${className}`}>
+      <div className={`flex w-full max-w-full items-start gap-2 ${isRightAligned ? 'flex-row-reverse' : 'flex-row'}`}>
+        {showAvatar && !isRightAligned && (
+          <Skeleton className="mt-1 h-8 w-8 shrink-0" rounded="full" />
+        )}
+
+        <div className={`flex min-w-0 w-full flex-col gap-1.5 ${contentMaxWidth} ${isRightAligned ? 'items-end' : 'items-start'}`}>
+          {showMeta && <Skeleton className={`h-3 ${metaWidth}`} />}
+          <Skeleton className={`${bubbleHeight} ${resolvedBubbleWidth} max-w-full`} rounded="2xl" />
+        </div>
+      </div>
+    </div>
+  );
+};
 
 /** Skeleton shaped like a conversation list item — adapts to density */
 export const ConversationItemSkeleton = ({ density = 'compact' }: { density?: 'compact' | 'comfortable' }) => {
@@ -41,13 +134,12 @@ export const MessageSkeleton = ({ isRight = false, showAvatar = true, width = 'w
   showAvatar?: boolean;
   width?: string;
 }) => (
-  <div className={`flex ${isRight ? 'flex-row-reverse' : 'flex-row'} items-start gap-2 mb-4`}>
-    {showAvatar && <Skeleton className="w-8 h-8 mt-1" rounded="full" />}
-    <div className={`space-y-1.5 ${isRight ? 'items-end' : 'items-start'} flex flex-col`}>
-      <Skeleton className="h-3 w-20" />
-      <Skeleton className={`h-10 ${width}`} rounded="2xl" />
-    </div>
-  </div>
+  <ChatMessageSkeletonRow
+    density={isRight ? 'comfortable' : 'compact'}
+    alignment={isRight ? 'outgoing' : 'incoming'}
+    showAvatar={showAvatar}
+    bubbleWidth={width}
+  />
 );
 
 /** Skeleton shaped like a friend request card */
@@ -151,94 +243,151 @@ export const AuthFormSkeleton = () => (
 /** Density-aware message view skeleton — mirrors the actual chat layout */
 export const MessageViewSkeleton = ({ density = 'compact' }: { density?: 'compact' | 'comfortable' }) => {
   if (density === 'comfortable') {
-    // Mix of left (other) and right (own) bubbles matching comfortable layout
     return (
-      <div className="flex-1 p-4 space-y-5 overflow-hidden">
-        {/* Other person, group start */}
-        <div className="flex flex-row items-start gap-2">
-          <Skeleton className="w-8 h-8 shrink-0 mt-1" rounded="full" />
-          <div className="flex flex-col items-start space-y-1.5 max-w-[70%]">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-10 w-52" rounded="2xl" />
-          </div>
-        </div>
-        {/* Other person, consecutive */}
-        <div className="flex flex-row items-center gap-2 mt-1.5 ml-10">
-          <Skeleton className="h-8 w-40" rounded="2xl" />
-        </div>
-        {/* Own message, right-aligned */}
-        <div className="flex flex-row-reverse items-start gap-2 mt-5">
-          <div className="flex flex-col items-end space-y-1.5 max-w-[70%]">
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-10 w-44" rounded="2xl" />
-          </div>
-        </div>
-        {/* Other person */}
-        <div className="flex flex-row items-start gap-2 mt-5">
-          <Skeleton className="w-8 h-8 shrink-0 mt-1" rounded="full" />
-          <div className="flex flex-col items-start space-y-1.5 max-w-[70%]">
-            <Skeleton className="h-3 w-28" />
-            <Skeleton className="h-12 w-64" rounded="2xl" />
-          </div>
-        </div>
-        {/* Own message */}
-        <div className="flex flex-row-reverse items-start gap-2 mt-5">
-          <div className="flex flex-col items-end space-y-1.5 max-w-[70%]">
-            <Skeleton className="h-3 w-16" />
-            <Skeleton className="h-8 w-36" rounded="2xl" />
-          </div>
-        </div>
-        {/* Own consecutive */}
-        <div className="flex flex-row-reverse items-center gap-2 mt-1.5">
-          <Skeleton className="h-7 w-52" rounded="2xl" />
+      <div className="flex-1 overflow-hidden px-2 py-4">
+        <div className="space-y-1.5">
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="incoming"
+            showAvatar
+            showMeta
+            metaWidth="w-24"
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'incoming', 1)}
+            bubbleHeight="h-10"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="incoming"
+            showAvatar={false}
+            showMeta={false}
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'incoming', 0)}
+            bubbleHeight="h-8"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="outgoing"
+            showAvatar={false}
+            showMeta
+            metaWidth="w-20"
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'outgoing', 1)}
+            bubbleHeight="h-10"
+            className="pt-5"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="outgoing"
+            showAvatar={false}
+            showMeta={false}
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'outgoing', 0)}
+            bubbleHeight="h-8"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="incoming"
+            showAvatar
+            showMeta
+            metaWidth="w-28"
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'incoming', 3)}
+            bubbleHeight="h-12"
+            className="pt-5"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="incoming"
+            showAvatar={false}
+            showMeta={false}
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'incoming', 1)}
+            bubbleHeight="h-9"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="incoming"
+            showAvatar={false}
+            showMeta={false}
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'incoming', 2)}
+            bubbleHeight="h-7"
+          />
+          <ChatMessageSkeletonRow
+            density="comfortable"
+            alignment="outgoing"
+            showAvatar={false}
+            showMeta
+            metaWidth="w-16"
+            bubbleWidth={getMessageSkeletonBubbleWidth('comfortable', 'outgoing', 3)}
+            bubbleHeight="h-9"
+            className="pt-5"
+          />
         </div>
       </div>
     );
   }
 
-  // compact — left-aligned with avatar on group start
   return (
-    <div className="flex-1 p-4 overflow-hidden">
-      {/* Group 1 */}
-      <div className="flex items-start gap-2 mt-3">
-        <Skeleton className="w-8 h-8 shrink-0 mt-1" rounded="full" />
-        <div className="space-y-1.5">
-          <Skeleton className="h-3 w-20" />
-          <Skeleton className="h-8 w-48" rounded="2xl" />
-        </div>
-      </div>
-      <div className="flex items-center gap-2 mt-0.5 ml-10">
-        <Skeleton className="h-6 w-36" rounded="2xl" />
-      </div>
-      {/* Group 2 */}
-      <div className="flex items-start gap-2 mt-3">
-        <Skeleton className="w-8 h-8 shrink-0 mt-1" rounded="full" />
-        <div className="space-y-1.5">
-          <Skeleton className="h-3 w-16" />
-          <Skeleton className="h-10 w-64" rounded="2xl" />
-        </div>
-      </div>
-      {/* Group 3 */}
-      <div className="flex items-start gap-2 mt-3">
-        <Skeleton className="w-8 h-8 shrink-0 mt-1" rounded="full" />
-        <div className="space-y-1.5">
-          <Skeleton className="h-3 w-24" />
-          <Skeleton className="h-7 w-40" rounded="2xl" />
-        </div>
-      </div>
-      <div className="flex items-center gap-2 mt-0.5 ml-10">
-        <Skeleton className="h-8 w-56" rounded="2xl" />
-      </div>
-      <div className="flex items-center gap-2 mt-0.5 ml-10">
-        <Skeleton className="h-6 w-32" rounded="2xl" />
-      </div>
-      {/* Group 4 */}
-      <div className="flex items-start gap-2 mt-3">
-        <Skeleton className="w-8 h-8 shrink-0 mt-1" rounded="full" />
-        <div className="space-y-1.5">
-          <Skeleton className="h-3 w-18" />
-          <Skeleton className="h-9 w-44" rounded="2xl" />
-        </div>
+    <div className="flex-1 overflow-hidden px-2 py-4">
+      <div className="space-y-1.5">
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar
+          showMeta
+          metaWidth="w-20"
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 1)}
+          bubbleHeight="h-9"
+        />
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar={false}
+          showMeta={false}
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 0)}
+          bubbleHeight="h-7"
+        />
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar
+          showMeta
+          metaWidth="w-16"
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 3)}
+          bubbleHeight="h-11"
+          className="pt-4"
+        />
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar
+          showMeta
+          metaWidth="w-24"
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 2)}
+          bubbleHeight="h-8"
+          className="pt-4"
+        />
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar={false}
+          showMeta={false}
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 1)}
+          bubbleHeight="h-9"
+        />
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar={false}
+          showMeta={false}
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 2)}
+          bubbleHeight="h-7"
+        />
+        <ChatMessageSkeletonRow
+          density="compact"
+          alignment="incoming"
+          showAvatar
+          showMeta
+          metaWidth="w-20"
+          bubbleWidth={getMessageSkeletonBubbleWidth('compact', 'incoming', 0)}
+          bubbleHeight="h-10"
+          className="pt-4"
+        />
       </div>
     </div>
   );

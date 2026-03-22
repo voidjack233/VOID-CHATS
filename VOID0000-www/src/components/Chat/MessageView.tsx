@@ -9,7 +9,11 @@ import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
 import { useTheme } from '../../Services/hooks/Settings/useTheme';
-import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
+import {
+  ChatMessageSkeletonRow,
+  getMessageSkeletonBubbleWidth,
+  MessageViewSkeleton,
+} from '../common/Skeleton';
 import MessageItem from './MessageItem';
 import MessageOverlays from './MessageOverlays';
 import MessageViewHeader, { buildMessageViewHeaderIdentity } from './MessageViewHeader';
@@ -197,27 +201,28 @@ const MessageView = ({
   ], [typingParticipants.length, visualMessages]);
 
   const renderScrollSeekPlaceholder = useCallback(({ height, index }: ScrollSeekPlaceholderProps) => {
-    const isRightAligned = density === 'comfortable' && index % 4 === 1;
-    const showAvatar = !isRightAligned && index % 3 !== 0;
-    const bubbleWidths =
-      density === 'comfortable'
-        ? ['w-36', 'w-44', 'w-56', 'w-40']
-        : ['w-32', 'w-40', 'w-52', 'w-36'];
-    const bubbleWidth = bubbleWidths[index % bubbleWidths.length];
+    const alignment = density === 'comfortable' && index % 4 === 1 ? 'outgoing' : 'incoming';
+    const startsGroup = index % 3 !== 1;
+    const bubbleHeight =
+      index % 5 === 2
+        ? 'h-12'
+        : index % 2 === 0
+          ? 'h-10'
+          : 'h-8';
 
     return (
-      <div style={{ height }} className="px-2 overflow-hidden">
-        <div className={`flex h-full items-center ${isRightAligned ? 'justify-end' : 'justify-start'}`}>
-          <div className={`flex items-center gap-2 ${isRightAligned ? 'flex-row-reverse max-w-[70%]' : 'max-w-[85%]'}`}>
-            {showAvatar ? (
-              <Skeleton className="w-8 h-8" rounded="full" />
-            ) : (
-              !isRightAligned && <div className="w-8 shrink-0" />
-            )}
-            <div className={`flex flex-col gap-1 ${isRightAligned ? 'items-end' : 'items-start'}`}>
-              <Skeleton className="h-3 w-20" />
-              <Skeleton className={`h-8 ${bubbleWidth}`} rounded="2xl" />
-            </div>
+      <div style={{ height }} className="overflow-hidden px-2">
+        <div className="flex h-full items-center">
+          <div className="w-full">
+            <ChatMessageSkeletonRow
+              density={density}
+              alignment={alignment}
+              showAvatar={alignment === 'incoming' && startsGroup}
+              showMeta={startsGroup}
+              metaWidth={alignment === 'outgoing' ? 'w-20' : index % 4 === 0 ? 'w-24' : 'w-16'}
+              bubbleWidth={getMessageSkeletonBubbleWidth(density, alignment, index)}
+              bubbleHeight={bubbleHeight}
+            />
           </div>
         </div>
       </div>
@@ -226,23 +231,26 @@ const MessageView = ({
 
   const renderPaginationSkeleton = useCallback((position: 'top' | 'bottom') => {
     const isBottom = position === 'bottom';
+    const alignment = density === 'comfortable' && isBottom ? 'outgoing' : 'incoming';
 
     return (
-      <div className={`pointer-events-none absolute inset-x-0 z-[5] px-4 ${isBottom ? 'bottom-3' : 'top-3'}`}>
-        <div className={`flex ${isBottom ? 'justify-end' : 'justify-start'} opacity-95`}>
-          <div className="rounded-2xl bg-void-bg-main/70 p-3 backdrop-blur-sm">
-            <div className={`flex items-start gap-2 ${isBottom ? 'flex-row-reverse' : 'flex-row'}`}>
-              {!isBottom && <Skeleton className="w-8 h-8" rounded="full" />}
-              <div className={`flex flex-col gap-2 ${isBottom ? 'items-end' : 'items-start'}`}>
-                <Skeleton className="h-3 w-20" />
-                <Skeleton className={`h-8 ${isBottom ? 'w-36' : 'w-44'}`} rounded="2xl" />
-              </div>
-            </div>
+      <div className={`pointer-events-none px-4 ${isBottom ? 'pb-3 pt-2' : 'pb-2 pt-3'}`}>
+        <div className={`flex ${alignment === 'outgoing' ? 'justify-end' : 'justify-start'}`}>
+          <div className="w-full max-w-[min(100%,42rem)] rounded-2xl bg-void-bg-main/70 px-2 py-3 opacity-95 backdrop-blur-sm">
+            <ChatMessageSkeletonRow
+              density={density}
+              alignment={alignment}
+              showAvatar={alignment === 'incoming'}
+              showMeta
+              metaWidth={alignment === 'outgoing' ? 'w-20' : 'w-24'}
+              bubbleWidth={getMessageSkeletonBubbleWidth(density, alignment, isBottom ? 1 : 3)}
+              bubbleHeight={isBottom ? 'h-9' : 'h-10'}
+            />
           </div>
         </div>
       </div>
     );
-  }, []);
+  }, [density]);
 
   if (encryptionError) return <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center"><p>Encryption Error: {encryptionError}</p></div>;
   if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
@@ -277,45 +285,51 @@ const MessageView = ({
           const traits = layoutTraitsById[message.message_id] || { startsGroup: true, showDateSeparator: false };
 
           return (
-            <div
-              onContextMenu={(event) => {
-                if (message.local_status !== 'sending') {
-                  handleContextMenu(event, message);
-                }
-              }}
-            >
-              <MessageItem
-                message={message}
-                startsGroup={traits.startsGroup}
-                showDateSeparator={traits.showDateSeparator}
-                density={density}
-                messageGroupSpacing={messageGroupSpacing}
-                metaFontSize={metaFontSize}
-                replyFontSize={replyFontSize}
-                bubbleFontSize={bubbleFontSize}
-                encryptedFontSize={encryptedFontSize}
-                currentUserId={user?.id}
-                replyParent={message.reply_to ? getReplyParent(message.reply_to) : null}
-                messageReactions={reactions[message.message_id] || message.reactions || {}}
-                formatTime={formatTime}
-                getSenderName={getSmartDisplayName}
-                getSenderUsername={getSmartUsername}
-                getSenderAvatarUrl={getSenderAvatarUrl}
-                onProfileClick={handleProfileClick}
-                onOpenEmojiPicker={openEmojiPicker}
-                onReply={onReply}
-                onEdit={onEdit}
-                onDelete={handleDelete}
-                onToggleReaction={handleToggleReaction}
-                onOpenImageViewer={openImageViewer}
-              />
-            </div>
+            <MessageItem
+              message={message}
+              startsGroup={traits.startsGroup}
+              showDateSeparator={traits.showDateSeparator}
+              density={density}
+              messageGroupSpacing={messageGroupSpacing}
+              metaFontSize={metaFontSize}
+              replyFontSize={replyFontSize}
+              bubbleFontSize={bubbleFontSize}
+              encryptedFontSize={encryptedFontSize}
+              currentUserId={user?.id}
+              replyParent={message.reply_to ? getReplyParent(message.reply_to) : null}
+              messageReactions={reactions[message.message_id] || message.reactions || {}}
+              formatTime={formatTime}
+              getSenderName={getSmartDisplayName}
+              getSenderUsername={getSmartUsername}
+              getSenderAvatarUrl={getSenderAvatarUrl}
+              onProfileClick={handleProfileClick}
+              onOpenEmojiPicker={openEmojiPicker}
+              onContextMenu={
+                message.local_status === 'sending' || message.local_status === 'queued'
+                  ? undefined
+                  : (event) => handleContextMenu(event, message)
+              }
+              onReply={onReply}
+              onEdit={onEdit}
+              onDelete={handleDelete}
+              onToggleReaction={handleToggleReaction}
+              onOpenImageViewer={openImageViewer}
+            />
           );
         }}
         components={{
           ScrollSeekPlaceholder: renderScrollSeekPlaceholder,
-          Header: () => hasOlder ? null : <MessageViewHeader conversation={conversation} headerIdentity={headerIdentity} onProfileClick={handleProfileClick} />,
-          Footer: () => null,
+          Header: () => (
+            <>
+              {loadingOlder && renderPaginationSkeleton('top')}
+              {hasOlder ? null : <MessageViewHeader conversation={conversation} headerIdentity={headerIdentity} onProfileClick={handleProfileClick} />}
+            </>
+          ),
+          Footer: () => (
+            <>
+              {loadingNewer ? renderPaginationSkeleton('bottom') : null}
+            </>
+          ),
           EmptyPlaceholder: () => (
             <p className="text-center text-void-text-muted text-sm py-8">
               No messages yet. Say something!
@@ -323,9 +337,6 @@ const MessageView = ({
           ),
         }}
       />
-
-      {loadingOlder && renderPaginationSkeleton('top')}
-      {loadingNewer && renderPaginationSkeleton('bottom')}
 
       {!isAtBottom && (hasNewer || hasUnseenMessages) && (
         <button
