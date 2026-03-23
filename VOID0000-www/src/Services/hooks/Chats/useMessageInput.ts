@@ -1,5 +1,6 @@
 // src/Services/hooks/Chats/useMessageInput.ts
 import { useState, useRef, useEffect, useCallback } from 'react';
+import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
 import {
   sendMessage,
   sendImageOnlyMessage,
@@ -26,6 +27,7 @@ interface UseMessageInputProps {
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
   keyVersion: number;
+  conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
@@ -44,6 +46,7 @@ export const useMessageInput = ({
   conversation,
   encryptionKey,
   keyVersion,
+  conversationSecurityState,
   onMessageSent,
   onEncryptionKeyResolved,
   editingMessage,
@@ -160,13 +163,20 @@ export const useMessageInput = ({
   const canBootstrapDmOnSend =
     conversation.type === 'dm' &&
     Boolean(currentUserId) &&
-    Boolean(conversation.dm_user_id);
+    Boolean(conversation.dm_user_id) &&
+    conversationSecurityState?.canSend !== false;
 
   const resolveSendCrypto = useCallback(async (): Promise<{
     key: CryptoKey;
     version: number;
     bootstrapped: boolean;
   }> => {
+    if (conversationSecurityState && !conversationSecurityState.canSend) {
+      throw new Error(
+        conversationSecurityState.message || 'Secure chat is not ready for this conversation yet.',
+      );
+    }
+
     if (encryptionKey) {
       return { key: encryptionKey, version: keyVersion, bootstrapped: false };
     }
@@ -194,9 +204,16 @@ export const useMessageInput = ({
       }
       throw err;
     }
-  }, [conversation, currentUserId, encryptionKey, keyVersion]);
+  }, [conversation, conversationSecurityState, currentUserId, encryptionKey, keyVersion]);
 
   const getPlaceholder = () => {
+    if (conversationSecurityState && !conversationSecurityState.canSend) {
+      if (conversationSecurityState.status === 'recovering') {
+        return 'Recovering secure conversation state...';
+      }
+      return 'Secure chat recovery required before sending';
+    }
+
     if (!encryptionKey && !canBootstrapDmOnSend) return 'Setting up encryption...';
     if (!editingMessage && slowmodeRemaining > 0) {
       return `Slowmode active: wait ${slowmodeRemaining}s`;
@@ -216,9 +233,15 @@ export const useMessageInput = ({
 
   const hasSendCrypto = !!encryptionKey || canBootstrapDmOnSend;
 
-  const canSend = !sending && !isSlowmodeBlocked && hasSendCrypto && (
+  const canSend =
+    !sending &&
+    !isSlowmodeBlocked &&
+    conversationSecurityState?.canSend !== false &&
+    hasSendCrypto &&
+    (
     text.trim().length > 0 || attachments.some((a) => a.url)
-  ) && !attachments.some((a) => a.uploading);
+  ) &&
+    !attachments.some((a) => a.uploading);
 
   useEffect(() => {
     if (slowmodeRemaining <= 0) return;
@@ -311,6 +334,7 @@ export const useMessageInput = ({
 
   useEffect(() => {
     const isTypingEligible =
+      conversationSecurityState?.canSend !== false &&
       !!encryptionKey &&
       !sending &&
       text.trim().length > 0 &&
@@ -344,7 +368,7 @@ export const useMessageInput = ({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [conversation.id, editingMessage, encryptionKey, sending, text]);
+  }, [conversation.id, conversationSecurityState, editingMessage, encryptionKey, sending, text]);
 
   const handleSend = async () => {
     if (!canSend) return;

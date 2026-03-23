@@ -1,6 +1,7 @@
 // src/components/Chat/MessageInput.tsx
 import { useState, useRef, useEffect } from 'react';
 import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2, Image, FileText, TimerReset } from 'lucide-react';
+import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 
@@ -9,6 +10,7 @@ interface MessageInputProps {
   conversation: Conversation;
   encryptionKey: CryptoKey | null;
   keyVersion: number;
+  conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
@@ -45,8 +47,11 @@ const MessageInput = (props: MessageInputProps) => {
   const canBootstrapDmOnSend =
     props.conversation.type === 'dm' &&
     Boolean(props.currentUserId) &&
-    Boolean(props.conversation.dm_user_id);
-  const inputDisabled = !encryptionKey && !canBootstrapDmOnSend;
+    Boolean(props.conversation.dm_user_id) &&
+    props.conversationSecurityState?.canSend !== false;
+  const inputDisabled =
+    props.conversationSecurityState?.canSend === false ||
+    (!encryptionKey && !canBootstrapDmOnSend);
 
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -218,6 +223,10 @@ const MessageInput = (props: MessageInputProps) => {
         {sendError ? (
           <span className="text-[10px] text-orange-400">
             {sendError}
+          </span>
+        ) : props.conversationSecurityState?.detail ? (
+          <span className="text-[10px] text-void-text-muted">
+            {props.conversationSecurityState.detail}
           </span>
         ) : (
           <span className="text-[10px] text-void-text-muted">Messages are end-to-end encrypted</span>

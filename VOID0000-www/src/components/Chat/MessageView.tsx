@@ -4,6 +4,7 @@ import { ArrowDown } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
+import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { type Conversation, type ConversationMember, type Message } from '../../Services/Chat/chatService';
 import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
@@ -27,6 +28,7 @@ interface MessageViewProps {
   encryptionKey: CryptoKey | null;
   keyVersion?: number;
   encryptionError?: string | null;
+  conversationSecurityState?: ConversationSecurityState;
   members: Record<string, ConversationMember>;
   typingParticipants?: TypingParticipant[];
   onReply?: (message: Message) => void;
@@ -55,6 +57,7 @@ const MessageView = ({
   encryptionKey,
   keyVersion,
   encryptionError,
+  conversationSecurityState,
   members,
   typingParticipants = [],
   onReply,
@@ -252,8 +255,15 @@ const MessageView = ({
     );
   }, [density]);
 
-  if (encryptionError) return <div className="flex-1 flex items-center justify-center text-red-400 p-4 text-center"><p>Encryption Error: {encryptionError}</p></div>;
-  if (loading || !encryptionKey) return <MessageViewSkeleton density={density} />;
+  const showCachedHistoryFallback = Boolean(
+    !encryptionKey &&
+      (
+        conversationSecurityState?.showCachedHistoryFallback ||
+        encryptionError
+      ),
+  );
+
+  if (loading && messages.length === 0) return <MessageViewSkeleton density={density} />;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
@@ -332,7 +342,9 @@ const MessageView = ({
           ),
           EmptyPlaceholder: () => (
             <p className="text-center text-void-text-muted text-sm py-8">
-              No messages yet. Say something!
+              {showCachedHistoryFallback
+                ? conversationSecurityState?.detail || 'Cached history will appear here after this device regains the latest conversation keys.'
+                : 'No messages yet. Say something!'}
             </p>
           ),
         }}

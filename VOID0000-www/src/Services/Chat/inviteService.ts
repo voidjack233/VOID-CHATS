@@ -1,6 +1,6 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
-import { distributeGroupSenderKeyWithProtocol } from './chatCryptoService';
+import { distributeGroupSenderKeyWithProtocol, reuploadGroupState } from './chatCryptoService';
 import type {
   Conversation,
   ConversationInviteLink,
@@ -62,37 +62,68 @@ export function approveConversationJoinRequest(
     });
     const data = await response.json();
     if (!data.success) throw createApiError(data);
-    const resolvedKeyVersion = data.key_version || nextKeyVersion;
+    const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
 
     let mlsKey: CryptoKey;
+    let finalizeStarted = false;
     try {
       ({ key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-        { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+        { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
         currentUserId,
         finalMemberIds,
       ));
+
+      finalizeStarted = true;
+      let finalizeResponse = await fetchWithAuth(
+        `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve/finalize`,
+        { method: 'POST' },
+      );
+      let finalizeData = await finalizeResponse.json();
+
+      if (!finalizeData.success && finalizeData.code === 'SNAPSHOT_REQUIRED') {
+        console.warn('[APPROVE_JOIN] snapshot not found on server, re-uploading from local state', {
+          conversation_id: keyConversationId,
+          pending_key_version: pendingKeyVersion,
+        });
+        await reuploadGroupState(keyConversationId);
+        finalizeResponse = await fetchWithAuth(
+          `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve/finalize`,
+          { method: 'POST' },
+        );
+        finalizeData = await finalizeResponse.json();
+      }
+
+      if (!finalizeData.success) {
+        throw createApiError(finalizeData);
+      }
+
+      const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
+
+      await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+      await notifyMembershipUpdate(keyConversationId);
+
+      return {
+        approved_user_id: finalizeData.approved_user_id || requesterUserId,
+        key_version: resolvedKeyVersion,
+      };
     } catch (error) {
-      if (!isRollbackableMlsAddFailure(error)) {
-        throw error;
+      if (!finalizeStarted) {
+        const rollbackNotice = 'Pending approval was cleared.';
+        try {
+          await rollbackFailedApproval(keyConversationId, requestId, pendingKeyVersion);
+        } catch (rollbackError) {
+          throw new Error(`${getErrorMessage(error)} Pending approval cleanup failed; manual cleanup may be required. ${getErrorMessage(rollbackError)}`);
+        }
+
+        if (!isRollbackableMlsAddFailure(error)) {
+          throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
+        }
+
+        throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
       }
 
-      const rollbackNotice = 'Server membership was rolled back.';
-      try {
-        await rollbackFailedApproval(keyConversationId, requestId, resolvedKeyVersion);
-      } catch (rollbackError) {
-        throw new Error(`${getErrorMessage(error)} Server membership rollback failed; manual cleanup required. ${getErrorMessage(rollbackError)}`);
-      }
-
-      throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
+      throw error;
     }
-
-    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
-    await notifyMembershipUpdate(keyConversationId);
-
-    return {
-      approved_user_id: data.approved_user_id || requesterUserId,
-      key_version: resolvedKeyVersion,
-    };
   });
 }
 

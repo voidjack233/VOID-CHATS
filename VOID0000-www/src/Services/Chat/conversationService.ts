@@ -269,37 +269,68 @@ export function rotateAddMembers(
     });
     const data = await response.json();
     if (!data.success) throw createApiError(data);
-    const resolvedKeyVersion = data.key_version || nextKeyVersion;
+    const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
 
     let mlsKey: CryptoKey;
+    let finalizeStarted = false;
     try {
       ({ key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
-        { ...freshConversation, id: keyConversationId, current_key_version: resolvedKeyVersion },
+        { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
         currentUserId,
         finalMemberIds,
       ));
+
+      finalizeStarted = true;
+      let finalizeResponse = await fetchWithAuth(
+        `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/finalize`,
+        { method: 'POST' },
+      );
+      let finalizeData = await finalizeResponse.json();
+
+      if (!finalizeData.success && finalizeData.code === 'SNAPSHOT_REQUIRED') {
+        console.warn('[ROTATE_ADD] snapshot not found on server, re-uploading from local state', {
+          conversation_id: keyConversationId,
+          pending_key_version: pendingKeyVersion,
+        });
+        await reuploadGroupState(keyConversationId);
+        finalizeResponse = await fetchWithAuth(
+          `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/finalize`,
+          { method: 'POST' },
+        );
+        finalizeData = await finalizeResponse.json();
+      }
+
+      if (!finalizeData.success) {
+        throw createApiError(finalizeData);
+      }
+
+      const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
+
+      await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+      await notifyMembershipUpdate(keyConversationId);
+
+      return {
+        added: finalizeData.added || data.added || additions,
+        key_version: resolvedKeyVersion,
+      };
     } catch (error) {
-      if (!isRollbackableMlsAddFailure(error)) {
-        throw error;
+      if (!finalizeStarted) {
+        const rollbackNotice = 'Pending member add was cleared.';
+        try {
+          await rollbackFailedRotateAdd(keyConversationId, additions, pendingKeyVersion);
+        } catch (rollbackError) {
+          throw new Error(`${getErrorMessage(error)} Pending member add cleanup failed; manual cleanup may be required. ${getErrorMessage(rollbackError)}`);
+        }
+
+        if (!isRollbackableMlsAddFailure(error)) {
+          throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
+        }
+
+        throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
       }
 
-      const rollbackNotice = 'Server membership was rolled back.';
-      try {
-        await rollbackFailedRotateAdd(keyConversationId, additions, resolvedKeyVersion);
-      } catch (rollbackError) {
-        throw new Error(`${getErrorMessage(error)} Server membership rollback failed; manual cleanup required. ${getErrorMessage(rollbackError)}`);
-      }
-
-      throw new Error(`${getErrorMessage(error)} ${rollbackNotice}`);
+      throw error;
     }
-
-    await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
-    await notifyMembershipUpdate(keyConversationId);
-
-    return {
-      added: data.added || additions,
-      key_version: resolvedKeyVersion,
-    };
   });
 }
 

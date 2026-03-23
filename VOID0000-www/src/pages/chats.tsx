@@ -79,6 +79,7 @@ const ChatDashboard = () => {
     encryptionKey,
     keyVersion,
     encryptionError,
+    conversationSecurityState,
     typingUsers,
     newMessage,
     editingMessage,
@@ -309,6 +310,10 @@ const ChatDashboard = () => {
   };
 
   const getEncryptionHint = (error: string) => {
+    if (conversationSecurityState?.detail) {
+      return conversationSecurityState.detail;
+    }
+
     if (mlsRecoveryGate.pending) {
       return 'This device is still preparing secure chat. Messages will appear once recovery finishes.';
     }
@@ -337,6 +342,30 @@ const ChatDashboard = () => {
     }
 
     return 'Secure chat is not ready for this conversation yet. Retry in a moment.';
+  };
+
+  const getSecurityBannerClasses = () => {
+    if (conversationSecurityState?.status === 'recovering') {
+      return {
+        container: 'border-blue-400/25 bg-blue-500/10',
+        icon: 'text-blue-300',
+      };
+    }
+
+    if (
+      conversationSecurityState?.reason === 'conversation_state_missing' ||
+      conversationSecurityState?.reason === 'account_restore_required'
+    ) {
+      return {
+        container: 'border-red-400/25 bg-red-500/10',
+        icon: 'text-red-300',
+      };
+    }
+
+    return {
+      container: 'border-orange-400/25 bg-orange-500/10',
+      icon: 'text-orange-300',
+    };
   };
 
   const getMlsRecoveryGateCopy = () => {
@@ -454,6 +483,8 @@ const ChatDashboard = () => {
   }
 
   const isFriendsActive = !displayConversation;
+  const securityBannerMessage = conversationSecurityState?.message || encryptionError;
+  const securityBannerClasses = getSecurityBannerClasses();
 
   return (
     <div className="relative flex h-screen bg-void-bg-main text-void-text overflow-hidden font-sans">
@@ -655,50 +686,55 @@ const ChatDashboard = () => {
                 </button>
               </nav>
 
-              {encryptionError ? (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-6 bg-void-bg-sec/50">
-                  <ShieldAlert className="w-12 h-12 text-orange-400 mb-4 opacity-80" />
-                  <p className="text-sm font-semibold text-void-text mb-2">{encryptionError}</p>
-                  <p className="text-xs text-void-text-muted max-w-xs">
-                    {getEncryptionHint(encryptionError)}
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <MessageView
-                    key={activeConversation.id}
-                    conversation={activeConversation}
-                    encryptionKey={encryptionKey}
-                    keyVersion={keyVersion}
-                    encryptionError={encryptionError}
-                    members={messageDisplayMembers}
-                    typingParticipants={typingParticipants}
-                    onReply={(msg) => setReplyTo(msg)}
-                    onEdit={(msg) => setEditingMessage(msg)}
-                    newMessage={newMessage}
-                    userAvatar={myProfile?.avatar_url || undefined}
-                    gateway={gateway}
-                    messageUpdate={messageUpdate}
-                    messageDelete={messageDelete}
-                  />
-                  <MessageInput
-                    currentUserId={user?.id}
-                    conversation={activeConversation}
-                    encryptionKey={encryptionKey}
-                    keyVersion={keyVersion}
-                    onEncryptionKeyResolved={handleEncryptionKeyResolved}
-                    onMessageSent={(msg) => {
-                      handleMessageSent(msg);
-                      if (activeConversation?.id) setLastSentConversationId(activeConversation.id);
-                    }}
-                    editingMessage={editingMessage}
-                    onCancelEdit={() => setEditingMessage(null)}
-                    replyTo={replyTo}
-                    onCancelReply={() => setReplyTo(null)}
-                    onEditComplete={handleEditComplete}
-                  />
-                </>
-              )}
+              <>
+                {securityBannerMessage && (
+                  <div className={`mx-4 mt-4 rounded-2xl border px-4 py-3 ${securityBannerClasses.container}`}>
+                    <div className="flex items-start gap-3">
+                      <ShieldAlert className={`mt-0.5 h-5 w-5 shrink-0 ${securityBannerClasses.icon}`} />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-void-text">{securityBannerMessage}</p>
+                        <p className="mt-1 text-xs text-void-text-muted">
+                          {getEncryptionHint(securityBannerMessage)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <MessageView
+                  key={activeConversation.id}
+                  conversation={activeConversation}
+                  encryptionKey={encryptionKey}
+                  keyVersion={keyVersion}
+                  encryptionError={encryptionError}
+                  conversationSecurityState={conversationSecurityState}
+                  members={messageDisplayMembers}
+                  typingParticipants={typingParticipants}
+                  onReply={(msg) => setReplyTo(msg)}
+                  onEdit={(msg) => setEditingMessage(msg)}
+                  newMessage={newMessage}
+                  userAvatar={myProfile?.avatar_url || undefined}
+                  gateway={gateway}
+                  messageUpdate={messageUpdate}
+                  messageDelete={messageDelete}
+                />
+                <MessageInput
+                  currentUserId={user?.id}
+                  conversation={activeConversation}
+                  encryptionKey={encryptionKey}
+                  keyVersion={keyVersion}
+                  conversationSecurityState={conversationSecurityState}
+                  onEncryptionKeyResolved={handleEncryptionKeyResolved}
+                  onMessageSent={(msg) => {
+                    handleMessageSent(msg);
+                    if (activeConversation?.id) setLastSentConversationId(activeConversation.id);
+                  }}
+                  editingMessage={editingMessage}
+                  onCancelEdit={() => setEditingMessage(null)}
+                  replyTo={replyTo}
+                  onCancelReply={() => setReplyTo(null)}
+                  onEditComplete={handleEditComplete}
+                />
+              </>
             </div>
 
             {activeGroup && (

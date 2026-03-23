@@ -349,10 +349,67 @@ export const useMessageList = (
 
   // ============== Initial Load ==============
   useEffect(() => {
-    if (!encryptionKey) return;
     let ignore = false;
     const sessionSnapshot = conversationWindowCache.get(conversationId);
     const initialLimit = Math.max(INITIAL_FETCH_SIZE, sessionSnapshot?.loadedCount ?? 0);
+
+    const loadLocalOnly = async () => {
+      const isKeyRotation = lastLoadedConversationIdRef.current === conversationId;
+      lastLoadedConversationIdRef.current = conversationId;
+
+      if (!isKeyRotation) {
+        setMessages([]);
+        setHasOlder(false);
+        setHasNewer(false);
+        setIsAtPresent(true);
+        setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
+        setGroupBreakBeforeIds(new Set());
+        setPrefetchingOlder(false);
+        setLoading(true);
+      }
+
+      try {
+        const cached = await messageSync.readLocal(conversationId, { limit: initialLimit });
+        if (ignore) return;
+
+        const uiMessages = sortMessages(cached.messages.map(toUIMessage));
+        if (uiMessages.length > 0) {
+          if (isKeyRotation) {
+            setMessages((prev) => {
+              if (prev.length === 0) return uiMessages;
+              return mergeMessagesWithReconciliation({
+                existing: prev,
+                incoming: uiMessages,
+                currentUserId: userId,
+                trimFrom: 'old',
+                allowOptimisticFallback: true,
+              });
+            });
+          } else {
+            setMessages(uiMessages);
+          }
+          onMessagesLoaded?.(uiMessages);
+        } else if (!isKeyRotation) {
+          setMessages([]);
+        }
+
+        setHasOlder(resolveInitialHasOlder({
+          localHasMore: cached.has_more,
+          localCount: uiMessages.length,
+          requestedLimit: initialLimit,
+          sessionSnapshot,
+        }));
+        setHasNewer(false);
+        setIsAtPresent(true);
+        setLoading(false);
+        setSyncing(false);
+      } catch (err) {
+        if (ignore) return;
+        console.error('Failed to load cached messages without an encryption key:', err);
+        setLoading(false);
+        setSyncing(false);
+      }
+    };
 
     const load = async () => {
       // If the conversation hasn't changed, this is a key rotation —
@@ -374,7 +431,7 @@ export const useMessageList = (
       try {
         const { cached, syncPromise } = await messageSync.loadConversation(
           conversationId,
-          encryptionKey,
+          encryptionKey!,
           {
             preferSessionCache: true,
             initialLimit,
@@ -481,7 +538,12 @@ export const useMessageList = (
       }
     };
 
-    load();
+    if (!encryptionKey) {
+      void loadLocalOnly();
+      return () => { ignore = true; };
+    }
+
+    void load();
     return () => { ignore = true; };
   }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, peerUserId, userId]);
 

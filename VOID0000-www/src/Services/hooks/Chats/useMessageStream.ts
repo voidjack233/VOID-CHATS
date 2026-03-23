@@ -13,6 +13,7 @@
 // lives in useConversationSync.
 
 import { useState, useEffect, useRef } from 'react';
+import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
 import { Conversation, Message, getEncryptionKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
@@ -26,6 +27,7 @@ interface UseMessageStreamParams {
   user: { id: string } | null | undefined;
   encryptionKey: CryptoKey | null;
   keyVersion: number;
+  conversationSecurityState?: ConversationSecurityState;
   members: Record<string, any>;
   clearUserTyping: (userId: string) => void;
   retryHandshake: () => void;
@@ -41,6 +43,7 @@ export const useMessageStream = ({
   user,
   encryptionKey,
   keyVersion,
+  conversationSecurityState,
   members,
   clearUserTyping,
   retryHandshake,
@@ -59,6 +62,10 @@ export const useMessageStream = ({
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
 
   const pendingMessages = useRef<any[]>([]);
+  const shouldAutoRecover =
+    !conversationSecurityState ||
+    conversationSecurityState.status === 'ready' ||
+    conversationSecurityState.status === 'recovering';
 
   const resolveMessageKey = async (data: any, fallbackKey: CryptoKey): Promise<CryptoKey> => {
     if (!activeConversation || !user?.id || activeConversation.type === 'dm') {
@@ -202,6 +209,16 @@ export const useMessageStream = ({
         setNewMessage({ ...data, content });
       }
     } catch (err) {
+      if (!shouldAutoRecover) {
+        console.warn('[DECRYPT_HEALER] skipping auto-recovery for blocked conversation state', {
+          conversation_id: activeConversation?.id,
+          conversation_type: activeConversation?.type,
+          key_version: (data as any)?.key_version,
+          reason: conversationSecurityState?.reason ?? null,
+        });
+        return;
+      }
+
       console.warn('[DECRYPT_HEALER] activating — wiping cache and retrying handshake', {
         conversation_id: activeConversation?.id,
         conversation_type: activeConversation?.type,
@@ -290,14 +307,14 @@ export const useMessageStream = ({
 
         if (encryptionKey) {
           await attemptDecryption(data, encryptionKey);
-        } else {
+        } else if (shouldAutoRecover) {
           pendingMessages.current.push(data);
         }
       }
     };
     gateway.on('MESSAGE_CREATE', handleMessage);
     return () => gateway.off('MESSAGE_CREATE', handleMessage);
-  }, [activeConversation?.id, encryptionKey, user?.id]);
+  }, [activeConversation?.id, conversationSecurityState?.reason, conversationSecurityState?.status, encryptionKey, user?.id]);
 
   // Message Edits
   useEffect(() => {

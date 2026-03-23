@@ -21,8 +21,14 @@ import {
   getEncryptionKey,
   bootstrapDmKey,
 } from '../../Chat/chatService';
+import {
+  type ConversationSecurityState,
+  createConversationSecurityState,
+  getReadyConversationSecurityState,
+} from '../../Chat/conversationSecurityState';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
+import { useUser } from '../../Auth/UserContext';
 import { ConversationDetails } from '../../Chat/chatTypes';
 import { getConversationDetails, storeConversationDetails } from '../../Chat/conversationCache';
 import {
@@ -30,6 +36,8 @@ import {
   setHandshakeEntry,
   deleteHandshakeEntry,
 } from '../../Chat/handshakeKeyCache';
+import { keyManager } from '../../Crypto/keyManager';
+import { mlsStore } from '../../Crypto/mls/mlsStore';
 
 interface UseConversationHandshakeProps {
   activeConversation: Conversation | null;
@@ -44,6 +52,7 @@ export interface UseConversationHandshakeResult {
   encryptionKey: CryptoKey | null;
   keyVersion: number;
   encryptionError: string | null;
+  conversationSecurityState: ConversationSecurityState;
   retryHandshake: () => void;
   updateKey: (key: CryptoKey, version: number) => void;
   resetCryptoState: () => void;
@@ -61,10 +70,14 @@ export const useConversationHandshake = ({
   onHydrateDm,
   onPatchConversation,
 }: UseConversationHandshakeProps): UseConversationHandshakeResult => {
+  const { mlsRecoveryGate } = useUser();
   const [members, setMembers] = useState<Record<string, any>>({});
   const [encryptionKey, setEncryptionKey] = useState<CryptoKey | null>(null);
   const [keyVersion, setKeyVersion] = useState(1);
   const [encryptionError, setEncryptionError] = useState<string | null>(null);
+  const [conversationSecurityState, setConversationSecurityState] = useState<ConversationSecurityState>(
+    () => getReadyConversationSecurityState(),
+  );
   const [handshakeRetryToken, setHandshakeRetryToken] = useState(0);
   const preparingRetryAttemptsRef = useRef<Record<string, number>>({});
 
@@ -106,6 +119,36 @@ export const useConversationHandshake = ({
     new Promise<void>((resolve) => {
       window.setTimeout(resolve, ms);
     });
+
+  const inspectLocalConversationRecoveryState = async (
+    conversationId: string,
+    userId: string,
+    requestedVersion: number | null,
+  ) => {
+    const [exactKey, anyKey, groupState, welcomes, commits] = await Promise.all([
+      requestedVersion != null
+        ? keyManager.getGroupKey(conversationId, requestedVersion)
+        : Promise.resolve(null),
+      keyManager.findAnyGroupKey(conversationId),
+      mlsStore.getGroupState(conversationId),
+      mlsStore.listUnconsumedWelcomes(userId),
+      mlsStore.listUnappliedCommits(conversationId),
+    ]);
+
+    const matchingWelcomes = welcomes.filter(
+      (welcome) => welcome.conversationId === conversationId,
+    );
+
+    return {
+      hasExactRequestedKey: Boolean(exactKey),
+      hasAnyGroupKey: Boolean(anyKey),
+      anyGroupKeyVersion: anyKey?.version ?? null,
+      hasLocalGroupState: Boolean(groupState),
+      localGroupStateKeyVersion: groupState?.keyVersion ?? null,
+      hasPendingWelcome: matchingWelcomes.length > 0,
+      hasPendingCommit: commits.length > 0,
+    };
+  };
 
   const requiredConversationKeyVersion = useMemo(() => {
     if (!activeConversation || activeConversation.type === 'dm') {
@@ -212,6 +255,7 @@ export const useConversationHandshake = ({
           required_group_version: requiredGroupVersion ?? null,
         });
         setEncryptionError(null);
+        setConversationSecurityState(getReadyConversationSecurityState());
         setMembers(cached.members);
         setEncryptionKey(cached.key);
         setKeyVersion(cached.version);
@@ -328,6 +372,14 @@ export const useConversationHandshake = ({
             : undefined;
 
         if (activeConversation.type === 'dm' && !peerId) {
+          setConversationSecurityState(createConversationSecurityState({
+            status: 'blocked',
+            reason: 'recipient_details_missing',
+            message: 'This conversation is still loading secure recipient details.',
+            detail: 'Open the conversation again once the recipient identity finishes loading.',
+            canSend: false,
+            canRetry: true,
+          }));
           throw new Error('Could not resolve DM peer');
         }
 
@@ -367,10 +419,26 @@ export const useConversationHandshake = ({
               if (ignore) return;
               const dmReason = dmErr instanceof Error ? dmErr.message : String(dmErr || '');
               if (dmReason.includes('DM peer device is not ready')) {
+                setConversationSecurityState(createConversationSecurityState({
+                  status: 'blocked',
+                  reason: 'peer_not_ready',
+                  message: 'This person has no usable secure device keys on the server yet.',
+                  detail: 'They need to open the app on a secure device before a new DM can start.',
+                  canSend: false,
+                  canRetry: true,
+                }));
                 setEncryptionError('This person has no usable secure device keys on the server yet.');
                 return;
               }
               if (dmReason.includes('DM peer could not be resolved')) {
+                setConversationSecurityState(createConversationSecurityState({
+                  status: 'blocked',
+                  reason: 'recipient_details_missing',
+                  message: 'This conversation is still loading secure recipient details.',
+                  detail: 'Open the conversation again once the recipient identity finishes loading.',
+                  canSend: false,
+                  canRetry: true,
+                }));
                 setEncryptionError('This conversation is still loading secure recipient details.');
                 return;
               }
@@ -457,6 +525,7 @@ export const useConversationHandshake = ({
         }
 
         setEncryptionError(null);
+        setConversationSecurityState(getReadyConversationSecurityState());
         setEncryptionKey(key);
         setKeyVersion(version);
 
@@ -477,7 +546,21 @@ export const useConversationHandshake = ({
         const reason = err instanceof Error ? err.message : String(err || '');
 
         if (reason.includes('Identity keys missing')) {
+          setConversationSecurityState(createConversationSecurityState({
+            status: 'blocked',
+            reason: 'identity_missing',
+            message: 'Your private keys are not available on this device yet.',
+            detail: 'Restore this device with your account password or recovery phrase before opening secure chats.',
+            canSend: false,
+            canRetry: false,
+            showCachedHistoryFallback: activeConversation?.type !== 'dm',
+          }));
           setEncryptionError('Your private keys are not available on this device yet.');
+          return;
+        }
+
+        if (reason.includes('Could not resolve DM peer')) {
+          setEncryptionError('This conversation is still loading secure recipient details.');
           return;
         }
 
@@ -491,6 +574,59 @@ export const useConversationHandshake = ({
         if (isGroupKeyError) {
           const ownerConversation = activeGroup || activeConversation;
           if (ownerConversation && ownerConversation.type !== 'dm') {
+            const recoveryState = await inspectLocalConversationRecoveryState(
+              keyScopeId,
+              user.id,
+              requiredGroupVersion,
+            );
+            const canRecoverInPlace =
+              mlsRecoveryGate.pending ||
+              recoveryState.hasLocalGroupState ||
+              recoveryState.hasPendingWelcome ||
+              recoveryState.hasPendingCommit;
+
+            if (mlsRecoveryGate.active) {
+              setConversationSecurityState(createConversationSecurityState({
+                status: 'blocked',
+                reason: 'account_restore_required',
+                message: 'Secure chat recovery must finish before this conversation can decrypt again.',
+                detail: 'This device needs a secure restore with your password or another recovery path before group history can reopen.',
+                canSend: false,
+                canRetry: false,
+                showCachedHistoryFallback: true,
+              }));
+              setEncryptionError('Secure chat recovery must finish before this conversation can decrypt again.');
+              return;
+            }
+
+            if (!canRecoverInPlace) {
+              const hasOlderSecureState =
+                recoveryState.hasAnyGroupKey || recoveryState.hasLocalGroupState;
+              const blockedState = hasOlderSecureState
+                ? createConversationSecurityState({
+                    status: 'blocked',
+                    reason: 'distribution_missing',
+                    message: 'This device cannot reach the latest secure group state for this conversation.',
+                    detail: 'Older secure state still exists locally, but the latest durable recovery artifacts are missing. Ask the group owner to resend the membership change or key distribution.',
+                    canSend: false,
+                    canRetry: true,
+                    showCachedHistoryFallback: true,
+                  })
+                : createConversationSecurityState({
+                    status: 'blocked',
+                    reason: 'conversation_state_missing',
+                    message: 'This device no longer has the secure conversation state needed for this group.',
+                    detail: 'Restore this device from a secure backup, or rejoin the conversation from a device that still has the group state.',
+                    canSend: false,
+                    canRetry: false,
+                    showCachedHistoryFallback: true,
+                  });
+
+              setConversationSecurityState(blockedState);
+              setEncryptionError(blockedState.message);
+              return;
+            }
+
             const nextAttempt = (preparingRetryAttemptsRef.current[preparingRetryKey] || 0) + 1;
             preparingRetryAttemptsRef.current[preparingRetryKey] = nextAttempt;
             console.log('[GROUP_RECOVERY] deferring to durable sync-retry path', {
@@ -528,23 +664,59 @@ export const useConversationHandshake = ({
                     }
                   });
               }, retryDelayMs);
+              setConversationSecurityState(createConversationSecurityState({
+                status: 'recovering',
+                reason: 'preparing',
+                message: 'Secure chat is still preparing for this conversation.',
+                detail: 'This device still has recoverable secure state for the thread and is syncing the latest epoch now.',
+                canSend: false,
+                canRetry: true,
+                showCachedHistoryFallback: true,
+              }));
               setEncryptionError('Secure chat is still preparing for this conversation. Retry in a moment.');
             } else {
               console.error('[GROUP_RECOVERY] exhausted sync-retry attempts with no recovery artifacts', {
                 conversation_id: ownerConversation.id,
                 current_user_id: user.id,
                 required_group_version: requiredGroupVersion ?? null,
-                attempts_exhausted: nextAttempt,
+                  attempts_exhausted: nextAttempt,
               });
+              setConversationSecurityState(createConversationSecurityState({
+                status: 'blocked',
+                reason: 'distribution_missing',
+                message: 'Unable to recover the latest group encryption state for this conversation.',
+                detail: 'This device still has older secure state, but the server does not have enough durable recovery data for the latest version yet. Ask the group owner to resend the membership change or key distribution.',
+                canSend: false,
+                canRetry: true,
+                showCachedHistoryFallback: true,
+              }));
               setEncryptionError('Unable to recover group encryption keys. The group owner may need to resend a key distribution.');
             }
             return;
           }
 
+          setConversationSecurityState(createConversationSecurityState({
+            status: 'blocked',
+            reason: 'key_load_failed',
+            message: 'Unable to decrypt group keys.',
+            detail: 'This conversation is missing the secure key material needed to load right now.',
+            canSend: false,
+            canRetry: true,
+            showCachedHistoryFallback: true,
+          }));
           setEncryptionError('Unable to decrypt group keys');
           return;
         }
 
+        setConversationSecurityState(createConversationSecurityState({
+          status: 'blocked',
+          reason: 'key_load_failed',
+          message: 'Failed to load encryption keys for this chat.',
+          detail: 'Secure chat could not finish loading for this conversation yet.',
+          canSend: false,
+          canRetry: true,
+          showCachedHistoryFallback: activeConversation?.type !== 'dm',
+        }));
         setEncryptionError('Failed to load encryption keys for this chat.');
       }
     };
@@ -565,6 +737,8 @@ export const useConversationHandshake = ({
     activeGroup?.public_id,
     requiredConversationKeyVersion,
     handshakeRetryToken,
+    mlsRecoveryGate.active,
+    mlsRecoveryGate.pending,
     user?.id,
   ]);
 
@@ -575,6 +749,7 @@ export const useConversationHandshake = ({
 
   const updateKey = (key: CryptoKey, version: number) => {
     setEncryptionError(null);
+    setConversationSecurityState(getReadyConversationSecurityState());
     setEncryptionKey(key);
     setKeyVersion(version);
   };
@@ -583,6 +758,7 @@ export const useConversationHandshake = ({
     setMembers({});
     setEncryptionKey(null);
     setEncryptionError(null);
+    setConversationSecurityState(getReadyConversationSecurityState());
   };
 
   return {
@@ -590,6 +766,7 @@ export const useConversationHandshake = ({
     encryptionKey,
     keyVersion,
     encryptionError,
+    conversationSecurityState,
     retryHandshake,
     updateKey,
     resetCryptoState,

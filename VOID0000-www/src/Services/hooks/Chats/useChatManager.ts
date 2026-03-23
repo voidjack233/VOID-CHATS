@@ -158,6 +158,7 @@ export const useChatManager = (user: any) => {
     encryptionKey,
     keyVersion,
     encryptionError,
+    conversationSecurityState,
     retryHandshake,
     updateKey,
     resetCryptoState,
@@ -185,6 +186,7 @@ export const useChatManager = (user: any) => {
     user,
     encryptionKey,
     keyVersion,
+    conversationSecurityState,
     members,
     clearUserTyping,
     retryHandshake,
@@ -401,7 +403,7 @@ export const useChatManager = (user: any) => {
   };
 
   return {
-    members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError,
+    members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError, conversationSecurityState,
     typingUsers,
     newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
