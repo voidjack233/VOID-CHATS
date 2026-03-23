@@ -26,6 +26,11 @@ import { useUser } from '../Services/Auth/UserContext';
 import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
 import UserAvatar from '../components/common/UserAvatar';
 
+const normalizeText = (value?: string | null) => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const ChatDashboard = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -232,14 +237,37 @@ const ChatDashboard = () => {
         };
       });
   }, [activeConversation?.id, members, messageDisplayMembers, typingUsers, user?.id]);
+  const dmPeerUserId = displayConversation?.type === 'dm' ? normalizeText(displayConversation.dm_user_id) : null;
+  const dmPeerUsername = displayConversation?.type === 'dm' ? normalizeText(displayConversation.dm_username) : null;
   const dmPeer = displayConversation?.type === 'dm'
     ? Object.values(members).find(
-        (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) => member.user_id !== user?.id
+        (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) =>
+          member.user_id !== user?.id && (
+            (dmPeerUserId ? member.user_id === dmPeerUserId : false) ||
+            (dmPeerUsername ? normalizeText(member.username) === dmPeerUsername : false)
+          )
+      ) || (!dmPeerUserId && !dmPeerUsername
+        ? Object.values(members).find(
+            (member: { user_id: string; display_name?: string | null; username?: string; avatar_url?: string | null }) => member.user_id !== user?.id
+          ) || null
+        : null)
+    : null;
+  const dmFriend = displayConversation?.type === 'dm'
+    ? friends.find((friend) =>
+        (dmPeerUserId ? friend.id === dmPeerUserId : false) ||
+        (dmPeerUsername ? normalizeText(friend.username) === dmPeerUsername : false)
       ) || null
     : null;
-  const resolvedDmDisplayName = dmPeer?.display_name || displayConversation?.dm_display_name || null;
-  const resolvedDmUsername = dmPeer?.username || displayConversation?.dm_username || null;
-  const resolvedDmAvatarUrl = dmPeer?.avatar_url || displayConversation?.dm_avatar_url || null;
+  const resolvedDmDisplayName =
+    dmPeer?.display_name ||
+    dmFriend?.display_name ||
+    displayConversation?.dm_display_name ||
+    dmPeer?.username ||
+    dmFriend?.username ||
+    displayConversation?.dm_username ||
+    null;
+  const resolvedDmUsername = dmPeer?.username || dmFriend?.username || displayConversation?.dm_username || null;
+  const resolvedDmAvatarUrl = dmPeer?.avatar_url || dmFriend?.avatar_url || displayConversation?.dm_avatar_url || null;
 
   const getHeaderIcon = () => {
     if (!displayConversation) return null;

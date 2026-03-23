@@ -580,6 +580,7 @@ export const useConversationHandshake = ({
   };
 
   const resetCryptoState = () => {
+    setMembers({});
     setEncryptionKey(null);
     setEncryptionError(null);
   };

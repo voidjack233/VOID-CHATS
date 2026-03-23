@@ -8,6 +8,38 @@ const normalizeText = (value?: string | null) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+const findDmIntroMember = ({
+  conversation,
+  members,
+  currentUserId,
+}: {
+  conversation: Conversation;
+  members: Record<string, ConversationMember>;
+  currentUserId?: string;
+}) => {
+  if (conversation.type !== 'dm' || !currentUserId) {
+    return null;
+  }
+
+  const peerMembers = Object.values(members).filter((member) => member.user_id !== currentUserId);
+  if (peerMembers.length === 0) {
+    return null;
+  }
+
+  const peerUserId = normalizeText(conversation.dm_user_id);
+  const peerUsername = normalizeText(conversation.dm_username);
+
+  return (
+    (peerUserId
+      ? peerMembers.find((member) => member.user_id === peerUserId)
+      : null) ||
+    (peerUsername
+      ? peerMembers.find((member) => normalizeText(member.username) === peerUsername)
+      : null) ||
+    (!peerUserId && !peerUsername ? peerMembers[0] || null : null)
+  );
+};
+
 export interface MessageViewHeaderIdentity {
   key: string;
   label: string;
@@ -29,14 +61,11 @@ export function buildMessageViewHeaderIdentity(params: {
     conversation.type === 'dm'
       ? friends.find((friend) =>
           friend.id === conversation.dm_user_id ||
-          friend.username === conversation.dm_username,
+          normalizeText(friend.username) === normalizeText(conversation.dm_username),
         ) || null
       : null;
 
-  const dmIntroMember =
-    conversation.type === 'dm' && currentUserId
-      ? Object.values(members).find((member) => member.user_id !== currentUserId) || null
-      : null;
+  const dmIntroMember = findDmIntroMember({ conversation, members, currentUserId });
 
   const label =
     conversation.type === 'dm'
