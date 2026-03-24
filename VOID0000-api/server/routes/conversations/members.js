@@ -312,6 +312,28 @@ router.post('/rotate-add/finalize', async (req, res) => {
       });
     }
 
+    const welcomeCheck = await client.query(
+      `SELECT user_id::text AS user_id
+       FROM mls_welcome_messages
+       WHERE conversation_id = $1
+         AND user_id = ANY($2::UUID[])
+         AND consumed_at IS NULL`,
+      [conversation.id, pendingUserIds]
+    );
+
+    const welcomedUserIds = new Set(welcomeCheck.rows.map((r) => r.user_id));
+    const missingWelcome = pendingUserIds.find((id) => !welcomedUserIds.has(id));
+
+    if (missingWelcome) {
+      await client.query('ROLLBACK');
+      return res.status(428).json({
+        success: false,
+        error: 'Welcome message for each new member must be uploaded before finalizing member add',
+        code: 'WELCOME_REQUIRED',
+        required_user_id: missingWelcome,
+      });
+    }
+
     const duplicateMembers = await client.query(
       `SELECT user_id::text AS user_id
        FROM conversation_members

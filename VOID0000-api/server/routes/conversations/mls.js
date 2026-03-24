@@ -989,7 +989,6 @@ router.post('/sync', async (req, res) => {
              WHERE welcomes.user_id = $1::UUID
                AND welcomes.consumed_at IS NULL
                AND welcomes.conversation_id IS NOT NULL
-               AND welcomes.received_at >= cm.joined_at
              ORDER BY received_at ASC
              LIMIT $2`,
             [requesterUserId, limit]

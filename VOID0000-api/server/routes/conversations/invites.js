@@ -519,6 +519,26 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
       });
     }
 
+    const welcomeCheck = await client.query(
+      `SELECT 1
+       FROM mls_welcome_messages
+       WHERE conversation_id = $1
+         AND user_id = $2
+         AND consumed_at IS NULL
+       LIMIT 1`,
+      [conversation.id, joinRequest.requester_user_id]
+    );
+
+    if (welcomeCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(428).json({
+        success: false,
+        error: 'Welcome message for the new member must be uploaded before finalizing approval',
+        code: 'WELCOME_REQUIRED',
+        required_user_id: joinRequest.requester_user_id,
+      });
+    }
+
     const existingMember = await client.query(
       `SELECT 1
        FROM conversation_members
