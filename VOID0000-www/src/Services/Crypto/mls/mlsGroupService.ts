@@ -772,15 +772,53 @@ export class MlsGroupService {
 
     // Verify leaf indices exist for all removal targets.
     const proposals: Proposal[] = [];
+    let missingLeaf = false;
     for (const removeId of removeMemberIds) {
       const leafIdx = findLeafIndex(existingState, removeId);
       if (leafIdx === null) {
-        throw createMlsError(
-          `Member ${removeId} not found in local MLS group state. Cannot apply removal.`,
-          'MLS_PREFLIGHT_REMOVE_FAILED',
-        );
+        missingLeaf = true;
+        break;
       }
       proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
+    }
+
+    // If any removal target is missing from the local ratchet tree, sync
+    // inbox once (the add-commit may be pending) and retry. If still
+    // missing the local state is irrecoverably stale — clear it and let
+    // distributeGroupSenderKey fresh-bootstrap the group with the correct
+    // survivor set (same recovery path as the "removing committer" case).
+    if (missingLeaf) {
+      try {
+        await this.deps.syncInbox(userId, true);
+      } catch {
+        // Best-effort sync.
+      }
+      const refreshedState = await mlsStorageService.loadGroupState(conversationId);
+      if (refreshedState) {
+        const allFound = removeMemberIds.every(
+          (id) => findLeafIndex(refreshedState, id) !== null,
+        );
+        if (allFound) {
+          // Sync resolved it — rebuild proposals from the refreshed state
+          // and fall through to the dry-run commit below.
+          proposals.length = 0;
+          for (const removeId of removeMemberIds) {
+            const leafIdx = findLeafIndex(refreshedState, removeId)!;
+            proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
+          }
+          existingState = refreshedState;
+          missingLeaf = false;
+        }
+      }
+
+      if (missingLeaf) {
+        console.warn('[MLS_PREFLIGHT] member leaf missing after sync — clearing stale state for fresh bootstrap', {
+          conversation_id: conversationId,
+          remove_member_ids: removeMemberIds,
+        });
+        await mlsStorageService.deleteGroupState(conversationId);
+        return { requiresFreshBootstrap: true };
+      }
     }
 
     // Dry-run createCommit — validates the MLS operation will succeed.

@@ -554,14 +554,8 @@ const ChatDashboard = () => {
             patchConversationInState(nextConversation);
             setConvRefresh((n) => n + 1);
           }}
-          onMembershipChanged={async () => {
+          onMembershipChanged={() => {
             setConvRefresh((n) => n + 1);
-
-            if (activeGroup) {
-              await refreshActiveGroup(
-                channelConversationId || activeConversation?.public_id || activeConversation?.id
-              );
-            }
           }}
           onClose={() => setShowConvSettings(false)}
         />

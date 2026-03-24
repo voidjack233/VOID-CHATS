@@ -774,7 +774,6 @@ router.post('/rotate-remove/finalize', async (req, res) => {
   let client;
 
   try {
-    await ensurePendingRemoveSchema();
     client = await pool.connect();
     await client.query('BEGIN');
 

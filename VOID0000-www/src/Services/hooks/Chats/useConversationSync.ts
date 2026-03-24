@@ -38,9 +38,9 @@ export const useConversationSync = ({
   activeConversation,
   activeGroup,
   user,
-  lastActiveChannelRef,
+  lastActiveChannelRef: _lastActiveChannelRef,
   onPatchConversation,
-  onRefreshActiveGroup,
+  onRefreshActiveGroup: _onRefreshActiveGroup,
   onBackToMe,
   onResetLiveChatState,
   onSetActiveConversation,
@@ -50,9 +50,6 @@ export const useConversationSync = ({
   // to effect dep arrays, matching the pattern in useConversationHandshake.
   const onPatchConversationRef = useRef(onPatchConversation);
   useEffect(() => { onPatchConversationRef.current = onPatchConversation; });
-
-  const onRefreshActiveGroupRef = useRef(onRefreshActiveGroup);
-  useEffect(() => { onRefreshActiveGroupRef.current = onRefreshActiveGroup; });
 
   const onBackToMeRef = useRef(onBackToMe);
   useEffect(() => { onBackToMeRef.current = onBackToMe; });
@@ -116,8 +113,11 @@ export const useConversationSync = ({
     activeGroup?.channels,
   ]);
 
-  // CONVERSATION_UPDATE: patch state; reload the group when key version or
-  // member count changes so crypto is refreshed immediately.
+  // CONVERSATION_UPDATE: patch state inline. The patch updates activeGroup
+  // with the new current_key_version / member_count, which is enough for the
+  // handshake hook to re-derive encryption keys. No full reload needed —
+  // forcing forceReload here caused redundant API fetches and UI thrashing
+  // (skeleton flash) on every member add/kick/promote.
   useEffect(() => {
     if (!user?.id) return;
 
@@ -125,40 +125,12 @@ export const useConversationSync = ({
       const updatedConversation = data?.conversation as Conversation | undefined;
       if (!updatedConversation) return;
 
-      const conversationIdentifier = updatedConversation.public_id || updatedConversation.id;
-      const touchesActiveGroup = matchesConversationIdentifier(activeGroup, conversationIdentifier);
-      const keyVersionChanged =
-        touchesActiveGroup &&
-        updatedConversation.current_key_version != null &&
-        updatedConversation.current_key_version !== activeGroup?.current_key_version;
-      const memberCountChanged =
-        touchesActiveGroup &&
-        updatedConversation.member_count != null &&
-        updatedConversation.member_count !== activeGroup?.member_count;
-
       onPatchConversationRef.current(updatedConversation);
-
-      if (touchesActiveGroup && (keyVersionChanged || memberCountChanged)) {
-        const preferredChannelId =
-          lastActiveChannelRef.current?.public_id ||
-          lastActiveChannelRef.current?.id ||
-          activeConversation?.public_id ||
-          activeConversation?.id;
-        void onRefreshActiveGroupRef.current(preferredChannelId);
-      }
     };
 
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     return () => gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
-  }, [
-    activeConversation?.id,
-    activeConversation?.public_id,
-    activeGroup?.current_key_version,
-    activeGroup?.id,
-    activeGroup?.member_count,
-    activeGroup?.public_id,
-    user?.id,
-  ]);
+  }, [user?.id]);
 
   // MEMBER_LEAVE: purge caches and navigate away when the current user is
   // removed from the active conversation or group.
