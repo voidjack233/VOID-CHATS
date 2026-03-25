@@ -415,6 +415,17 @@ export class MlsService {
       await this.groupService.importSyncedGroupState(groupState, impl, userId);
     }
 
+    for (const welcome of payload.welcomes) {
+      await mlsStorageService.persistWelcome({
+        userId: welcome.userId,
+        welcomeRef: welcome.welcomeRef,
+        payload: welcome.payload,
+        conversationId: welcome.conversationId ?? null,
+        receivedAt: welcome.receivedAt ?? new Date().toISOString(),
+        consumedAt: null,
+      });
+    }
+
     const acknowledgedWelcomes: MlsSyncWelcomeUpdate[] = [];
     for (const welcome of payload.welcomes) {
       try {
@@ -425,6 +436,17 @@ export class MlsService {
       } catch (err) {
         console.warn('[MLS] Welcome processing failed:', err);
       }
+    }
+
+    for (const commit of payload.commits) {
+      await mlsStorageService.persistCommit({
+        conversationId: commit.conversationId,
+        commitRef: commit.commitRef,
+        payload: commit.payload,
+        epoch: commit.epoch ?? null,
+        receivedAt: commit.receivedAt ?? new Date().toISOString(),
+        appliedAt: null,
+      });
     }
 
     for (const commit of payload.commits) {

@@ -32,6 +32,33 @@ function hasMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
   );
 }
 
+function toTimestamp(value?: string | null): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizePositiveVersion(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return 0;
+}
+
+function pickLatestTimestamp(current?: string | null, incoming?: string | null): string | null {
+  if (!current) return incoming || null;
+  if (!incoming) return current;
+  return toTimestamp(incoming) > toTimestamp(current) ? incoming : current;
+}
+
 async function inspectLocalMlsChatState(): Promise<{
   groupStateCount: number;
   groupKeyCount: number;
@@ -73,16 +100,6 @@ async function restoreMlsStateFromBackup(
   }
 
   try {
-    const existingAccount = await mlsStore.getAccountState(userId);
-    const existingGroups = await mlsStore.listGroupStates();
-    if (existingAccount && existingGroups.length > 0) {
-      console.log('[MLS_RESTORE] local MLS state already present', {
-        user_id: userId,
-        existing_group_states: existingGroups.length,
-      });
-      return 'already_local';
-    }
-
     const payload = await keyManager.decryptDataWithPassword(
       backup.mls_state_encrypted!,
       backup.mls_state_iv!,
@@ -90,19 +107,114 @@ async function restoreMlsStateFromBackup(
       password
     ) as MlsBackupData;
 
-    await mlsStore.importFromBackup(payload);
-    if (payload.groupKeys?.length) {
-      await keyManager.importGroupKeys(payload.groupKeys);
+    const existingAccount = await mlsStore.getAccountState(userId);
+    const existingGroups = await mlsStore.listGroupStates();
+    const existingKeyPackages = await mlsStore.listKeyPackages(userId);
+    const existingGroupKeys = await keyManager.exportGroupKeys();
+
+    const groupsByConversationId = new Map(
+      existingGroups.map((group) => [group.conversationId, group]),
+    );
+    const keyPackagesByRef = new Map(
+      existingKeyPackages.map((record) => [record.packageRef, record]),
+    );
+    const groupKeysById = new Map(
+      existingGroupKeys.map((entry) => [entry.id, entry]),
+    );
+
+    let restoredAccount = false;
+    let restoredGroups = 0;
+    let restoredKeyPackages = 0;
+    let restoredGroupKeys = 0;
+    const uploadedGroups: MlsBackupData['groups'] = [];
+
+    const backupAccount =
+      payload.accounts.find((account) => account.userId === userId) ||
+      payload.accounts[0] ||
+      null;
+    if (
+      backupAccount &&
+      (!existingAccount || toTimestamp(backupAccount.updatedAt) >= toTimestamp(existingAccount.updatedAt))
+    ) {
+      await mlsStore.putAccountState(backupAccount);
+      restoredAccount = !existingAccount || JSON.stringify(existingAccount) !== JSON.stringify(backupAccount);
     }
 
-    if (payload.groups.length > 0) {
+    for (const group of payload.groups) {
+      const existing = groupsByConversationId.get(group.conversationId) || null;
+      const existingVersion = normalizePositiveVersion(existing?.keyVersion ?? existing?.epoch ?? 0);
+      const backupVersion = normalizePositiveVersion(group.keyVersion ?? group.epoch ?? 0);
+      const shouldImport =
+        !existing ||
+        backupVersion > existingVersion ||
+        (backupVersion === existingVersion &&
+          toTimestamp(group.updatedAt) >= toTimestamp(existing.updatedAt) &&
+          group.stateBlob !== existing.stateBlob);
+
+      if (!shouldImport) {
+        continue;
+      }
+
+      await mlsStore.putGroupState(group);
+      groupsByConversationId.set(group.conversationId, group);
+      restoredGroups += 1;
+      uploadedGroups.push(group);
+    }
+
+    for (const keyPackage of payload.keyPackages) {
+      if (keyPackage.userId !== userId) {
+        continue;
+      }
+
+      const existing = keyPackagesByRef.get(keyPackage.packageRef) || null;
+      if (!existing) {
+        await mlsStore.putKeyPackage(keyPackage);
+        keyPackagesByRef.set(keyPackage.packageRef, keyPackage);
+        restoredKeyPackages += 1;
+        continue;
+      }
+
+      const merged = {
+        ...existing,
+        packageData: keyPackage.packageData || existing.packageData,
+        privateData: existing.privateData ?? keyPackage.privateData ?? null,
+        createdAt: existing.createdAt || keyPackage.createdAt,
+        publishedAt: pickLatestTimestamp(existing.publishedAt, keyPackage.publishedAt),
+        consumedAt: pickLatestTimestamp(existing.consumedAt, keyPackage.consumedAt),
+      };
+
+      const didChange =
+        merged.packageData !== existing.packageData ||
+        (merged.privateData ?? null) !== (existing.privateData ?? null) ||
+        (merged.publishedAt ?? null) !== (existing.publishedAt ?? null) ||
+        (merged.consumedAt ?? null) !== (existing.consumedAt ?? null);
+
+      if (!didChange) {
+        continue;
+      }
+
+      await mlsStore.putKeyPackage(merged);
+      keyPackagesByRef.set(keyPackage.packageRef, merged);
+      restoredKeyPackages += 1;
+    }
+
+    const groupKeysToImport = (payload.groupKeys || []).filter((entry) => {
+      const existing = groupKeysById.get(entry.id);
+      return !existing || existing.key !== entry.key || existing.version !== entry.version;
+    });
+    if (groupKeysToImport.length > 0) {
+      await keyManager.importGroupKeys(groupKeysToImport);
+      restoredGroupKeys = groupKeysToImport.length;
+    }
+
+    if (uploadedGroups.length > 0) {
       try {
         console.log('[MLS_GROUP_STATE] uploading restored backup group states', {
           user_id: userId,
-          group_state_count: payload.groups.length,
+          group_state_count: uploadedGroups.length,
         });
         const uploaded = await upsertMlsGroupStates(
-          payload.groups.map((group) => ({
+          uploadedGroups.map((group) => ({
             conversationId: group.conversationId,
             groupId: group.groupId,
             epoch: group.epoch,
@@ -112,25 +224,35 @@ async function restoreMlsStateFromBackup(
         );
         console.log('[MLS_GROUP_STATE] uploaded restored backup group states', {
           user_id: userId,
-          group_state_count: payload.groups.length,
+          group_state_count: uploadedGroups.length,
           uploaded_items: uploaded,
         });
       } catch (err) {
         console.warn('[MLS_GROUP_STATE] backup group state upload failed', {
           user_id: userId,
-          group_state_count: payload.groups.length,
+          group_state_count: uploadedGroups.length,
           error: err instanceof Error ? err.message : String(err || ''),
         });
       }
     }
 
-    console.log('[MLS_RESTORE] restored MLS state from backup', {
+    const didRestore =
+      restoredAccount ||
+      restoredGroups > 0 ||
+      restoredKeyPackages > 0 ||
+      restoredGroupKeys > 0;
+
+    console.log('[MLS_RESTORE] reconciled MLS state from backup', {
       user_id: userId,
-      group_state_count: payload.groups.length,
-      group_key_count: payload.groupKeys?.length || 0,
-      key_package_count: payload.keyPackages.length,
+      restored_account: restoredAccount,
+      restored_group_states: restoredGroups,
+      restored_group_keys: restoredGroupKeys,
+      restored_key_packages: restoredKeyPackages,
+      backup_group_state_count: payload.groups.length,
+      backup_group_key_count: payload.groupKeys?.length || 0,
+      backup_key_package_count: payload.keyPackages.length,
     });
-    return 'restored';
+    return didRestore ? 'restored' : 'already_local';
   } catch (err) {
     console.warn('[MLS_RESTORE] restore failed', {
       user_id: userId,
@@ -588,6 +710,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     const onKeyPackageChanged = () => {
       runBootstrapMaintenance(true);
+      if (loginPasswordRef.current && user?.id) {
+        scheduleGroupKeyBackup(user.id, loginPasswordRef.current);
+      }
     };
 
     // WebSocket READY (fresh identify) / RESUMED (session resume): top-up

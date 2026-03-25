@@ -5,9 +5,11 @@ import { deriveGroupAesKey, buildMlsClientConfig } from './mlsCryptoService';
 import { mlsStore } from './mlsStore';
 import type {
   MlsAccountStateRecord,
+  MlsCommitRecord,
   MlsDistributeKeyResult,
   MlsGroupStateRecord,
   MlsKeyPackageRecord,
+  MlsWelcomeRecord,
 } from './mlsTypes';
 import { base64ToBytes, wrapArchiveKey } from './mlsUtils';
 
@@ -128,8 +130,16 @@ export class MlsStorageService {
     await mlsStore.markKeyPackageConsumed(userId, packageRef);
   }
 
+  async persistWelcome(record: MlsWelcomeRecord): Promise<void> {
+    await mlsStore.putWelcome(record);
+  }
+
   async markWelcomeConsumed(userId: string, welcomeRef: string): Promise<void> {
     await mlsStore.markWelcomeConsumed(userId, welcomeRef);
+  }
+
+  async persistCommit(record: MlsCommitRecord): Promise<void> {
+    await mlsStore.putCommit(record);
   }
 
   async markCommitApplied(conversationId: string, commitRef: string): Promise<void> {
