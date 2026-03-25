@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 import { Virtuoso, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
 import { ArrowDown } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
@@ -43,6 +43,53 @@ interface MessageViewProps {
 type MessageListItem =
   | { kind: 'message'; message: Message }
   | { kind: 'typing'; id: 'typing-indicator' };
+
+interface VirtuosoContext {
+  loadingOlder: boolean;
+  loadingNewer: boolean;
+  hasOlder: boolean;
+  conversation: Conversation;
+  headerIdentity: ReturnType<typeof buildMessageViewHeaderIdentity>;
+  handleProfileClick: (profileId: string) => void;
+  renderPaginationSkeleton: (position: 'top' | 'bottom') => ReactNode;
+  showCachedHistoryFallback: boolean;
+  securityDetail?: string | null;
+}
+
+// Defined at module scope so Virtuoso sees stable component references and
+// never unmounts/remounts them on parent re-renders.
+const VirtuosoHeader = ({ context }: { context?: VirtuosoContext }) => {
+  if (!context) return null;
+  return (
+    <>
+      {context.loadingOlder && context.renderPaginationSkeleton('top')}
+      {context.hasOlder ? null : (
+        <MessageViewHeader
+          conversation={context.conversation}
+          headerIdentity={context.headerIdentity}
+          onProfileClick={context.handleProfileClick}
+        />
+      )}
+    </>
+  );
+};
+
+const VirtuosoFooter = ({ context }: { context?: VirtuosoContext }) => {
+  if (!context) return null;
+  return (
+    <>
+      {context.loadingNewer ? context.renderPaginationSkeleton('bottom') : null}
+    </>
+  );
+};
+
+const VirtuosoEmptyPlaceholder = ({ context }: { context?: VirtuosoContext }) => (
+  <p className="text-center text-void-text-muted text-sm py-8">
+    {context?.showCachedHistoryFallback
+      ? context.securityDetail || 'Cached history will appear here after this device regains the latest conversation keys.'
+      : 'No messages yet. Say something!'}
+  </p>
+);
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -263,15 +310,38 @@ const MessageView = ({
       ),
   );
 
+  // Stable Virtuoso component references — defined at module scope so Virtuoso
+  // never sees new component types on re-render (which causes unmount/remount blink).
+  // Dynamic data is passed through the context prop instead.
+  const virtuosoComponents = useMemo(() => ({
+    ScrollSeekPlaceholder: renderScrollSeekPlaceholder,
+    Header: VirtuosoHeader,
+    Footer: VirtuosoFooter,
+    EmptyPlaceholder: VirtuosoEmptyPlaceholder,
+  }), [renderScrollSeekPlaceholder]);
+
+  const virtuosoContext: VirtuosoContext = useMemo(() => ({
+    loadingOlder,
+    loadingNewer,
+    hasOlder,
+    conversation,
+    headerIdentity,
+    handleProfileClick,
+    renderPaginationSkeleton,
+    showCachedHistoryFallback,
+    securityDetail: conversationSecurityState?.detail,
+  }), [loadingOlder, loadingNewer, hasOlder, conversation, headerIdentity, handleProfileClick, renderPaginationSkeleton, showCachedHistoryFallback, conversationSecurityState?.detail]);
+
   if (loading && messages.length === 0) return <MessageViewSkeleton density={density} />;
 
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
-      <Virtuoso
+      <Virtuoso<MessageListItem, VirtuosoContext>
         key={headerIdentity.key}
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         className="flex-1 min-h-0"
+        context={virtuosoContext}
         data={listItems}
         computeItemKey={(_index, item) => item.kind === 'message' ? item.message.message_id : item.id}
         firstItemIndex={firstItemIndex}
@@ -327,27 +397,7 @@ const MessageView = ({
             />
           );
         }}
-        components={{
-          ScrollSeekPlaceholder: renderScrollSeekPlaceholder,
-          Header: () => (
-            <>
-              {loadingOlder && renderPaginationSkeleton('top')}
-              {hasOlder ? null : <MessageViewHeader conversation={conversation} headerIdentity={headerIdentity} onProfileClick={handleProfileClick} />}
-            </>
-          ),
-          Footer: () => (
-            <>
-              {loadingNewer ? renderPaginationSkeleton('bottom') : null}
-            </>
-          ),
-          EmptyPlaceholder: () => (
-            <p className="text-center text-void-text-muted text-sm py-8">
-              {showCachedHistoryFallback
-                ? conversationSecurityState?.detail || 'Cached history will appear here after this device regains the latest conversation keys.'
-                : 'No messages yet. Say something!'}
-            </p>
-          ),
-        }}
+        components={virtuosoComponents}
       />
 
       {!isAtBottom && (hasNewer || hasUnseenMessages) && (

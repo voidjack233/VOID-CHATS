@@ -318,6 +318,16 @@ export const useMessageList = (
   // within the same conversation (should preserve visible messages).
   const lastLoadedConversationIdRef = useRef<string | null>(null);
 
+  // Refs for values used inside the initial load effect that should NOT
+  // trigger a re-run on key rotation. On key rotation the messages are
+  // already displayed and new messages arrive via the WS MESSAGE_CREATE
+  // handler, so re-syncing from the server is unnecessary and causes a
+  // visible blink (Virtuoso re-renders from a new merged array).
+  const encryptionKeyRef = useRef(encryptionKey);
+  encryptionKeyRef.current = encryptionKey;
+  const currentKeyVersionRef = useRef(currentKeyVersion);
+  currentKeyVersionRef.current = currentKeyVersion;
+
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
@@ -431,14 +441,14 @@ export const useMessageList = (
       try {
         const { cached, syncPromise } = await messageSync.loadConversation(
           conversationId,
-          encryptionKey!,
+          encryptionKeyRef.current!,
           {
             preferSessionCache: true,
             initialLimit,
             syncLimit: INITIAL_FETCH_SIZE,
             conversation: decryptionConversation,
             userId,
-              currentKeyVersion,
+              currentKeyVersion: currentKeyVersionRef.current,
           }
         );
 
@@ -538,14 +548,19 @@ export const useMessageList = (
       }
     };
 
-    if (!encryptionKey) {
+    if (!encryptionKeyRef.current) {
       void loadLocalOnly();
       return () => { ignore = true; };
     }
 
     void load();
     return () => { ignore = true; };
-  }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, peerUserId, userId]);
+    // encryptionKey and currentKeyVersion are intentionally accessed via
+    // refs so that key rotation does not re-trigger this effect. On key
+    // rotation the messages are already displayed; new messages arrive
+    // via the WS MESSAGE_CREATE handler with the latest key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, decryptionConversation, peerUserId, userId]);
 
   // ============== Restore Persisted Queued Sends ==============
   // On conversation open, load any queued secure-send messages from the
@@ -761,12 +776,12 @@ export const useMessageList = (
         const localUI = sortMessages(localResult.messages.map(toUIMessage));
         applyOlderMessages(localUI, seamBreakBeforeId);
 
-        const serverResult = await getMessages(conversationId, encryptionKey, {
+        const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
           before: oldest.message_id,
           limit: fetchSize,
           conversation: decryptionConversation,
           userId,
-          currentKeyVersion,
+          currentKeyVersion: currentKeyVersionRef.current,
         });
         const localMsgs = toLocalMessages(serverResult.messages);
         if (localMsgs.length > 0) {
@@ -784,12 +799,12 @@ export const useMessageList = (
         });
 
         if (result.messages.length < fetchSize || !result.has_more || hasUndecryptableMessage(result.messages)) {
-          const serverResult = await getMessages(conversationId, encryptionKey, {
+          const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
             before: oldest.message_id,
             limit: fetchSize,
             conversation: decryptionConversation,
             userId,
-              currentKeyVersion,
+              currentKeyVersion: currentKeyVersionRef.current,
           });
           const localMsgs = toLocalMessages(serverResult.messages);
           if (localMsgs.length > 0) {
@@ -819,7 +834,8 @@ export const useMessageList = (
         setLoadingOlder(false);
       }
     }
-  }, [applyOlderMessages, conversationId, currentKeyVersion, decryptionConversation, encryptionKey, hasOlder, loadingOlder, peerUserId, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyOlderMessages, conversationId, decryptionConversation, hasOlder, loadingOlder, peerUserId, userId]);
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
@@ -847,7 +863,7 @@ export const useMessageList = (
 
   // ============== Load Newer (Scroll Down) ==============
   const loadNewer = useCallback(async () => {
-    if (!encryptionKey || loadingNewer || !hasNewer || messages.length === 0) return;
+    if (!encryptionKeyRef.current || loadingNewer || !hasNewer || messages.length === 0) return;
     setLoadingNewer(true);
 
     try {
@@ -861,12 +877,12 @@ export const useMessageList = (
       });
 
       if (result.messages.length < FETCH_SIZE || !result.has_more || hasUndecryptableMessage(result.messages)) {
-        const serverResult = await getMessages(conversationId, encryptionKey, {
+        const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
           after: newest.message_id,
           limit: FETCH_SIZE,
           conversation: decryptionConversation,
           userId,
-          currentKeyVersion,
+          currentKeyVersion: currentKeyVersionRef.current,
         });
         const localMsgs = toLocalMessages(serverResult.messages);
         if (localMsgs.length > 0) {
@@ -906,10 +922,11 @@ export const useMessageList = (
     } finally {
       setLoadingNewer(false);
     }
-  }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, decryptionConversation, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
 
   const reconcileRecentMessages = useCallback(async (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
-    if (!encryptionKey) return;
+    if (!encryptionKeyRef.current) return;
 
     const newest = getNewestServerBackedMessage(messagesRef.current);
     if (!newest) return;
@@ -921,12 +938,12 @@ export const useMessageList = (
     });
 
     try {
-      const serverResult = await getMessages(conversationId, encryptionKey, {
+      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
         after: newest.message_id,
         limit: FETCH_SIZE,
         conversation: decryptionConversation,
         userId,
-        currentKeyVersion,
+        currentKeyVersion: currentKeyVersionRef.current,
       });
 
       if (serverResult.messages.length === 0) {
@@ -954,7 +971,8 @@ export const useMessageList = (
     } catch (err) {
       console.error('Failed to reconcile missed messages after reconnect:', err);
     }
-  }, [conversationId, currentKeyVersion, decryptionConversation, encryptionKey, onMessagesLoaded, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, decryptionConversation, onMessagesLoaded, userId]);
 
   useEffect(() => {
     if (!encryptionKey) return;
@@ -1022,7 +1040,7 @@ export const useMessageList = (
 
   // Fetch missing replies
   useEffect(() => {
-    if (!encryptionKey) return;
+    if (!encryptionKeyRef.current) return;
     let ignore = false;
 
     const missingReplies = messages
@@ -1045,10 +1063,10 @@ export const useMessageList = (
           if (local && !isUndecryptableContent(local.content)) {
             setReplyCache((prev) => ({ ...prev, [replyToId]: toUIMessage(local) }));
           } else {
-            getMessageById(conversationId, replyToId, encryptionKey, {
+            getMessageById(conversationId, replyToId, encryptionKeyRef.current!, {
               conversation: decryptionConversation,
               userId,
-                  currentKeyVersion,
+                  currentKeyVersion: currentKeyVersionRef.current,
             })
               .then((msg: any) => {
                 if (ignore) return;
@@ -1071,7 +1089,8 @@ export const useMessageList = (
     });
 
     return () => { ignore = true; };
-  }, [messages, replyCache, conversationId, currentKeyVersion, decryptionConversation, encryptionKey, peerUserId, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, replyCache, conversationId, decryptionConversation, peerUserId, userId]);
 
   // ============== Delete (API + Local) ==============
   const handleDelete = async (messageId: string) => {

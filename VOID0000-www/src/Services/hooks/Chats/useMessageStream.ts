@@ -67,6 +67,15 @@ export const useMessageStream = ({
     conversationSecurityState.status === 'ready' ||
     conversationSecurityState.status === 'recovering';
 
+  // Refs for values used inside WS handlers so the effects don't re-register
+  // when these values change (e.g. during key rotation). This prevents the
+  // brief teardown gap that can drop WS events (like the owner's system
+  // message after a kick).
+  const encryptionKeyRef = useRef(encryptionKey);
+  encryptionKeyRef.current = encryptionKey;
+  const shouldAutoRecoverRef = useRef(shouldAutoRecover);
+  shouldAutoRecoverRef.current = shouldAutoRecover;
+
   const resolveMessageKey = async (data: any, fallbackKey: CryptoKey): Promise<CryptoKey> => {
     if (!activeConversation || !user?.id || activeConversation.type === 'dm') {
       return fallbackKey;
@@ -297,6 +306,10 @@ export const useMessageStream = ({
   }, [encryptionKey, activeConversation?.id]);
 
   // New Messages
+  // Refs are used for encryptionKey and shouldAutoRecover so this effect only
+  // re-registers when the conversation or user changes — NOT on key rotation.
+  // This eliminates the brief teardown gap that dropped WS events (e.g. the
+  // owner's system message arriving right after a kick triggered key rotation).
   useEffect(() => {
     if (!user?.id) return;
     const handleMessage = async (data: any) => {
@@ -305,28 +318,38 @@ export const useMessageStream = ({
           clearUserTyping(String(data.sender_id));
         }
 
-        if (encryptionKey) {
-          await attemptDecryption(data, encryptionKey);
-        } else if (shouldAutoRecover) {
+        // Plaintext system messages (no iv) don't need decryption — handle
+        // them immediately so they aren't dropped during key rotation when
+        // encryptionKey is briefly changing references.
+        if (data.message_type === 'system' && !data.iv) {
+          const content = data.content || data.encrypted_content || 'System event';
+          setNewMessage({ ...data, content });
+        } else if (encryptionKeyRef.current) {
+          await attemptDecryption(data, encryptionKeyRef.current);
+        } else if (shouldAutoRecoverRef.current) {
           pendingMessages.current.push(data);
         }
       }
     };
     gateway.on('MESSAGE_CREATE', handleMessage);
     return () => gateway.off('MESSAGE_CREATE', handleMessage);
-  }, [activeConversation?.id, conversationSecurityState?.reason, conversationSecurityState?.status, encryptionKey, user?.id]);
+    // encryptionKey and conversationSecurityState are accessed via refs so
+    // key rotation does not tear down and re-register this handler.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation?.id, user?.id]);
 
   // Message Edits
   useEffect(() => {
     if (!user?.id) return;
     const handleUpdate = async (data: any) => {
-      if (data.conversation_id === activeConversation?.id && encryptionKey) {
-        await attemptDecryption(data, encryptionKey, true);
+      if (data.conversation_id === activeConversation?.id && encryptionKeyRef.current) {
+        await attemptDecryption(data, encryptionKeyRef.current, true);
       }
     };
     gateway.on('MESSAGE_UPDATE', handleUpdate);
     return () => gateway.off('MESSAGE_UPDATE', handleUpdate);
-  }, [activeConversation?.id, encryptionKey, user?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation?.id, user?.id]);
 
   // Message Deletions
   useEffect(() => {
