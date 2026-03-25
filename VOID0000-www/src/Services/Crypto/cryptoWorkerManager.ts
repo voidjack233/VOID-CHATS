@@ -43,13 +43,6 @@ export class CryptoWorkerManager {
       });
     });
   }
-
-  public destroy() {
-    if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
-    }
-  }
 }
 
 export const cryptoWorker = new CryptoWorkerManager();

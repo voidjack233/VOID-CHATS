@@ -106,13 +106,6 @@ async function deleteRow(storeName: string, id: string): Promise<void> {
   await transactionComplete(tx);
 }
 
-async function clearStore(storeName: string): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(storeName, 'readwrite');
-  tx.objectStore(storeName).clear();
-  await transactionComplete(tx);
-}
-
 export const mlsStore = {
   async getAccountState(userId: string): Promise<MlsAccountStateRecord | null> {
     return getRow<MlsAccountStateRecord>(ACCOUNT_STORE, buildAccountKey(userId));
@@ -261,25 +254,5 @@ export const mlsStore = {
       groups,
       keyPackages,
     };
-  },
-
-  async importFromBackup(data: Omit<MlsBackupData, 'groupKeys'>): Promise<void> {
-    for (const account of data.accounts) {
-      await this.putAccountState(account);
-    }
-    for (const group of data.groups) {
-      await this.putGroupState(group);
-    }
-    for (const kp of data.keyPackages) {
-      await this.putKeyPackage(kp);
-    }
-  },
-
-  async clearAll(): Promise<void> {
-    await clearStore(ACCOUNT_STORE);
-    await clearStore(GROUP_STORE);
-    await clearStore(KEY_PACKAGE_STORE);
-    await clearStore(WELCOME_STORE);
-    await clearStore(COMMIT_STORE);
   },
 };
