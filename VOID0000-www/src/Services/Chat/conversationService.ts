@@ -3,7 +3,6 @@ import { keyManager } from '../Crypto/keyManager';
 import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove, reuploadGroupState } from './chatCryptoService';
 import type {
   Conversation,
-  ConversationCategory,
   ConversationMember,
 } from './chatTypes';
 import {
@@ -54,11 +53,9 @@ export async function getConversation(id: string): Promise<{
 }
 
 export async function createConversation(
-  type: 'group' | 'channel',
+  type: 'group',
   name: string,
   members: string[],
-  parentConversationId?: string,
-  categoryId?: string | null,
 ): Promise<{ conversation: Conversation }> {
   const response = await fetchWithAuth(CHAT_API_PREFIX, {
     method: 'POST',
@@ -66,8 +63,6 @@ export async function createConversation(
       type,
       name,
       members,
-      parent_conversation_id: parentConversationId || null,
-      category_id: categoryId || null,
     }),
   });
   const data = await response.json();
@@ -79,9 +74,6 @@ export async function updateConversation(
   id: string,
   updates: {
     name?: string;
-    topic?: string | null;
-    slowmode_seconds?: number;
-    is_age_restricted?: boolean;
   },
 ): Promise<{ conversation: Conversation }> {
   const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${id}`, {
@@ -119,28 +111,6 @@ export async function deleteConversation(id: string): Promise<void> {
   const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${id}`, { method: 'DELETE' });
   const data = await response.json();
   if (!data.success) throw new Error(data.error);
-}
-
-export async function getConversationCategories(
-  conversationId: string,
-): Promise<ConversationCategory[]> {
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/categories`);
-  const data = await response.json();
-  if (!data.success) throw new Error(data.error);
-  return data.categories;
-}
-
-export async function createConversationCategory(
-  conversationId: string,
-  name: string,
-): Promise<{ category: ConversationCategory }> {
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/categories`, {
-    method: 'POST',
-    body: JSON.stringify({ name }),
-  });
-  const data = await response.json();
-  if (!data.success) throw new Error(data.error);
-  return data;
 }
 
 export async function getOrCreateDM(userId: string): Promise<{

@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { cassandra } from '../../scylla.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
+import { resolveMessageStorageConversation } from '../../utils/messageConversation.js';
 
 const router = Router({ mergeParams: true });
 
@@ -69,6 +70,22 @@ function canAccessMessageForHistory(message, keyState) {
   return createdAt >= joinedAt;
 }
 
+async function resolveConversationContexts(conversationIdentifier) {
+  const conversation = await findConversationByIdentifier(conversationIdentifier);
+  if (!conversation) {
+    return null;
+  }
+
+  const storageConversation = await resolveMessageStorageConversation(conversation);
+
+  return {
+    conversation,
+    conversationId: conversation.id,
+    conversationPublicId: conversation.public_id ? String(conversation.public_id) : null,
+    storageConversationId: storageConversation?.id || conversation.id,
+  };
+}
+
 // GET /api/conversations/:conversationId/reactions?message_ids=id1,id2,id3
 router.get('/', async (req, res) => {
   const userId = req.user.id;
@@ -80,12 +97,17 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) {
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    const conversationId = conversation.id;
+    const {
+      conversation,
+      conversationId,
+      conversationPublicId,
+      storageConversationId,
+    } = resolvedConversation;
 
     const memberCheck = await pool.query(
       `SELECT role FROM conversation_members
@@ -103,7 +125,7 @@ router.get('/', async (req, res) => {
       return res.json({ success: true, reactions: {} });
     }
 
-    const convUuid = cassandra.types.Uuid.fromString(conversationId);
+    const convUuid = cassandra.types.Uuid.fromString(storageConversationId);
     const userUuid = cassandra.types.Uuid.fromString(userId);
 
     let msgUuids = ids
@@ -120,7 +142,7 @@ router.get('/', async (req, res) => {
       return res.json({
         success: true,
         conversation_id: conversationId,
-        conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+        conversation_public_id: conversationPublicId,
         reactions: {},
       });
     }
@@ -156,7 +178,7 @@ router.get('/', async (req, res) => {
         return res.json({
           success: true,
           conversation_id: conversationId,
-          conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+          conversation_public_id: conversationPublicId,
           reactions: {},
         });
       }
@@ -200,7 +222,7 @@ router.get('/', async (req, res) => {
     res.json({
       success: true,
       conversation_id: conversationId,
-      conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+      conversation_public_id: conversationPublicId,
       reactions,
     });
   } catch (err) {

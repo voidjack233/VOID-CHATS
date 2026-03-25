@@ -25,7 +25,6 @@ type GroupSettingsTab = 'profile' | 'members' | 'roles' | 'invites' | 'access';
 
 interface ConversationSettingsProps {
   conversation: Conversation;
-  activeChannel?: Conversation | null;
   currentUserId: string;
   members: ConversationMember[];
   onMessageCreated?: (message: Message) => void;
@@ -176,7 +175,6 @@ function readFileAsDataURL(file: File): Promise<string> {
 
 const ConversationSettings = ({
   conversation,
-  activeChannel = null,
   currentUserId,
   members,
   onMessageCreated,
@@ -214,9 +212,9 @@ const ConversationSettings = ({
     userId: string;
     action: 'role' | 'kick';
   } | null>(null);
-  const isGroup = conversation.type === 'group' || conversation.type === 'channel';
+  const isGroup = conversation.type === 'group';
   const isOwner = conversation.owner_id === currentUserId;
-  const rootConversationId = conversation.parent_conversation_id || conversation.id;
+  const rootConversationId = conversation.id;
   const currentUserRole =
     memberList.find((member) => member.user_id === currentUserId)?.role ||
     conversation.role ||
@@ -282,8 +280,7 @@ const ConversationSettings = ({
     keyVersion: number
   ) => {
     try {
-      const targetConversation = activeChannel || conversation;
-      const message = await sendSystemEvent(targetConversation.id, text, keyVersion);
+      const message = await sendSystemEvent(conversation.id, text, keyVersion);
       onMessageCreated?.(message);
     } catch (error) {
       console.warn('Failed to post membership system message:', error);
@@ -1207,7 +1204,7 @@ const ConversationSettings = ({
                       <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
                         <p className="text-sm font-semibold text-void-text">Permissions</p>
                         <p className="mt-2 text-sm text-void-text-muted">
-                          The owner will be able to decide which role can manage members, channels, and future history sharing.
+                          The owner will be able to decide which role can manage members and future history sharing.
                         </p>
                       </div>
                       <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">

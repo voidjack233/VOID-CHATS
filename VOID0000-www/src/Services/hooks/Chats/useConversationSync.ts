@@ -1,10 +1,7 @@
 // src/Services/hooks/Chats/useConversationSync.ts
 //
-// Owns the three gateway-driven sync effects for the active conversation:
-//   - Channel guard / auto-select: when activeGroup changes and the current
-//     activeConversation is not one of its channels, auto-selects the fallback.
-//   - CONVERSATION_UPDATE: patches state and triggers a group reload when the
-//     key version or member count changes.
+// Owns the gateway-driven sync effects for the active conversation:
+//   - CONVERSATION_UPDATE: patches state inline.
 //   - MEMBER_LEAVE: purges caches and navigates away when the current user
 //     is removed from the active conversation or group.
 //
@@ -18,7 +15,7 @@ import { messageStore } from '../../Chat/chatStore';
 import { messageSync } from '../../Chat/chatSync';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
 import { deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
-import { matchesConversationIdentifier, pickInitialChannel } from '../../Chat/utils/conversationUtils';
+import { matchesConversationIdentifier } from '../../Chat/utils/conversationUtils';
 import { keyManager } from '../../Crypto/keyManager';
 import { mlsStore } from '../../Crypto/mls/mlsStore';
 
@@ -26,26 +23,16 @@ interface UseConversationSyncParams {
   activeConversation: Conversation | null;
   activeGroup: Conversation | null;
   user: { id: string } | null | undefined;
-  lastActiveChannelRef: React.MutableRefObject<{ id: string; public_id?: string | null } | null>;
   onPatchConversation: (conversation: Conversation) => void;
-  onRefreshActiveGroup: (preferredChannelId?: string | null) => void;
   onBackToMe: () => void;
-  onResetLiveChatState: () => void;
-  onSetActiveConversation: (conversation: Conversation) => void;
-  getPreferredChannelIdentifier: (preferredChannelId?: string | null) => string | null;
 }
 
 export const useConversationSync = ({
   activeConversation,
   activeGroup,
   user,
-  lastActiveChannelRef: _lastActiveChannelRef,
   onPatchConversation,
-  onRefreshActiveGroup: _onRefreshActiveGroup,
   onBackToMe,
-  onResetLiveChatState,
-  onSetActiveConversation,
-  getPreferredChannelIdentifier,
 }: UseConversationSyncParams) => {
   // Callback refs: keep the latest function references without adding them
   // to effect dep arrays, matching the pattern in useConversationHandshake.
@@ -54,65 +41,6 @@ export const useConversationSync = ({
 
   const onBackToMeRef = useRef(onBackToMe);
   useEffect(() => { onBackToMeRef.current = onBackToMe; });
-
-  const onResetLiveChatStateRef = useRef(onResetLiveChatState);
-  useEffect(() => { onResetLiveChatStateRef.current = onResetLiveChatState; });
-
-  const onSetActiveConversationRef = useRef(onSetActiveConversation);
-  useEffect(() => { onSetActiveConversationRef.current = onSetActiveConversation; });
-
-  const getPreferredChannelIdentifierRef = useRef(getPreferredChannelIdentifier);
-  useEffect(() => { getPreferredChannelIdentifierRef.current = getPreferredChannelIdentifier; });
-
-  // Channel guard: when the active group changes and the current conversation
-  // is not one of its channels, auto-select the preferred fallback channel.
-  useEffect(() => {
-    if (!activeGroup) return;
-
-    const channels = activeGroup.channels || [];
-    if (channels.length === 0) return;
-
-    const activeIsChannelInGroup = !!(
-      activeConversation &&
-      activeConversation.type === 'channel' &&
-      channels.some((channel) =>
-        matchesConversationIdentifier(channel, activeConversation.id) || (
-          activeConversation.public_id && matchesConversationIdentifier(channel, activeConversation.public_id)
-        )
-      )
-    );
-
-    if (activeIsChannelInGroup) {
-      return;
-    }
-
-    const preferredIdentifier =
-      getPreferredChannelIdentifierRef.current(null) ||
-      activeGroup.default_channel_public_id ||
-      activeGroup.default_channel_id ||
-      null;
-    const fallbackChannel = pickInitialChannel(activeGroup, preferredIdentifier);
-
-    if (fallbackChannel.type !== 'channel') {
-      return;
-    }
-
-    if (activeConversation?.id === fallbackChannel.id) {
-      return;
-    }
-
-    onResetLiveChatStateRef.current();
-    onSetActiveConversationRef.current(fallbackChannel);
-  }, [
-    activeConversation?.id,
-    activeConversation?.public_id,
-    activeConversation?.type,
-    activeGroup?.id,
-    activeGroup?.public_id,
-    activeGroup?.default_channel_id,
-    activeGroup?.default_channel_public_id,
-    activeGroup?.channels,
-  ]);
 
   // CONVERSATION_UPDATE: patch state inline. The patch updates activeGroup
   // with the new current_key_version / member_count, which is enough for the
@@ -169,23 +97,10 @@ export const useConversationSync = ({
         affected_user_id: affectedUserId || user.id,
       });
 
-      // Clear the local IndexedDB message cache for this conversation
-      // (and its channels if it was a group) so the user won't see
-      // pre-kick messages if they rejoin.
+      // Clear the local IndexedDB message cache for this conversation so
+      // the user won't see pre-kick messages if they rejoin.
       messageStore.clearConversation(conversationId).catch(() => {});
       messageSync.invalidateConversation(conversationId);
-      if (activeGroup && matchesConversationIdentifier(activeGroup, conversationId)) {
-        (activeGroup.channels || []).forEach((channel) => {
-          messageStore.clearConversation(channel.id).catch(() => {});
-          messageSync.invalidateConversation(channel.id);
-          if (channel.public_id) {
-            deleteHandshakeEntry(channel.public_id);
-          deleteConversationDetails(channel.public_id);
-          }
-          deleteHandshakeEntry(channel.id);
-          deleteConversationDetails(channel.id);
-        });
-      }
 
       void (async () => {
         try {

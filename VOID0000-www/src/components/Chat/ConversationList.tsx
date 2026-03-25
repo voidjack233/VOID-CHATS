@@ -1,6 +1,6 @@
 // src/components/Chat/ConversationList.tsx
 import { useState, useEffect, useRef } from 'react';
-import { Hash as HashIcon, MessageCircle, Users, Plus, Search } from 'lucide-react';
+import { MessageCircle, Users, Plus, Search } from 'lucide-react';
 import { getConversations, getConversation, Conversation } from '../../Services/Chat/chatService';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
@@ -200,7 +200,6 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     switch (type) {
       case 'dm': return <MessageCircle className="w-4 h-4 opacity-60" />;
       case 'group': return <Users className="w-4 h-4 opacity-60" />;
-      case 'channel': return <HashIcon className="w-4 h-4 opacity-60" />;
       default: return null;
     }
   };

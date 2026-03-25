@@ -1,10 +1,10 @@
 // src/Services/hooks/Chats/useChatManager.ts
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import { Conversation, Message, getOrCreateDM } from '../../Chat/chatService';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 import { ConversationDetails } from '../../Chat/chatTypes';
 import { getConversationDetails, storeConversationDetails } from '../../Chat/conversationCache';
-import { matchesConversationIdentifier, hasLoadedChannel, pickInitialChannel } from '../../Chat/utils/conversationUtils';
+import { matchesConversationIdentifier } from '../../Chat/utils/conversationUtils';
 import { useTypingIndicator } from './useTypingIndicator';
 import { useConversationHandshake } from './useConversationHandshake';
 import { useMessageStream } from './useMessageStream';
@@ -17,8 +17,6 @@ export const useChatManager = (user: any) => {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
 
   const { typingUsers, clearUserTyping } = useTypingIndicator({ activeConversation, user });
-
-  const lastActiveChannelRef = useRef<{ id: string; public_id?: string | null } | null>(null);
 
   const getCachedConversationDetails = (identifier?: string | null) => {
     if (!identifier) return null;
@@ -100,40 +98,6 @@ export const useChatManager = (user: any) => {
         };
       }
 
-      const existingChannels = prev.channels || [];
-      const isExistingChannel = existingChannels.some((channel) =>
-        matchesConversationIdentifier(channel, conversationIdentifier)
-      );
-
-      if (isExistingChannel) {
-        const nextChannels = existingChannels.map((channel) =>
-          matchesConversationIdentifier(channel, conversationIdentifier)
-            ? (hasPatchChanges(channel) ? { ...channel, ...updatedConversation } : channel)
-            : channel
-        );
-
-        const didChange = nextChannels.some((channel, index) => channel !== existingChannels[index]);
-        if (!didChange) return prev;
-
-        return {
-          ...prev,
-          channels: nextChannels,
-        };
-      }
-
-      // New channel belonging to this group — append it
-      const isNewChannel =
-        updatedConversation.type === 'channel' &&
-        (matchesConversationIdentifier(prev, updatedConversation.parent_conversation_id) ||
-          matchesConversationIdentifier(prev, updatedConversation.parent_public_id));
-
-      if (isNewChannel) {
-        return {
-          ...prev,
-          channels: [...existingChannels, updatedConversation],
-        };
-      }
-
       return prev;
     });
 
@@ -203,47 +167,25 @@ export const useChatManager = (user: any) => {
     resetMessageStream();
   };
 
-  const getPreferredChannelIdentifier = (preferredChannelId?: string | null) => {
-    if (preferredChannelId) return preferredChannelId;
-
-    if (activeConversation?.type === 'channel') {
-      return activeConversation.public_id || activeConversation.id;
-    }
-
-    return (
-      lastActiveChannelRef.current?.public_id ||
-      lastActiveChannelRef.current?.id ||
-      null
-    );
-  };
-
   const openGroupByIdentifier = async (
     groupIdentifier: string,
-    preferredChannelId?: string | null,
+    _preferredChannelId?: string | null,
     seedConversation?: Conversation,
     options?: { forceReload?: boolean }
   ) => {
-    const preferredIdentifier = getPreferredChannelIdentifier(preferredChannelId);
-    const shouldReuseLoadedGroup =
+    const hasConversationChanges = (target: Conversation | null | undefined, nextConversation: Conversation) =>
+      !!target &&
+      Object.entries(nextConversation).some(([key, value]) => (target as any)[key] !== value);
+    const shouldReuseLoadedGroup = (
       !options?.forceReload &&
       activeGroup &&
+      activeConversation?.type === 'group' &&
       matchesConversationIdentifier(activeGroup, groupIdentifier) &&
-      (!preferredIdentifier || hasLoadedChannel(activeGroup, preferredIdentifier));
+      matchesConversationIdentifier(activeConversation, activeGroup.public_id || activeGroup.id)
+    );
 
     if (shouldReuseLoadedGroup) {
-      const selectedChannel = pickInitialChannel(activeGroup, preferredIdentifier);
-      const keepCurrentChannel =
-        selectedChannel.type === 'group' &&
-        activeConversation?.type === 'channel' &&
-        (matchesConversationIdentifier(activeGroup, activeConversation.parent_conversation_id) ||
-          matchesConversationIdentifier(activeGroup, activeConversation.parent_public_id));
-      const nextChannel = keepCurrentChannel ? activeConversation : selectedChannel;
-
-      if (activeConversation?.id !== nextChannel.id) {
-        resetLiveChatState();
-        setActiveConversation(nextChannel);
-      }
-      return { group: activeGroup, conversation: nextChannel };
+      return { group: activeGroup, conversation: activeConversation as Conversation };
     }
 
     const cachedGroup = !options?.forceReload ? getCachedConversationDetails(groupIdentifier) : null;
@@ -252,52 +194,39 @@ export const useChatManager = (user: any) => {
       throw new Error('Requested conversation is not a group');
     }
 
-    const fallbackChannels = matchesConversationIdentifier(activeGroup, groupIdentifier)
-      ? (activeGroup?.channels || [])
-      : (seedConversation?.channels || []);
-    const fetchedChannels = Array.isArray(groupConversation.channels) ? groupConversation.channels : [];
-    const hydratedChannels = fetchedChannels.length > 0 ? fetchedChannels : fallbackChannels;
-
     const hydratedGroup: Conversation = {
       ...seedConversation,
       ...groupConversation,
-      channels: hydratedChannels,
+      channels: [],
     };
+    const isSameGroup =
+      activeConversation?.type === 'group' &&
+      matchesConversationIdentifier(activeConversation, hydratedGroup.public_id || hydratedGroup.id);
 
-    const selectedChannel = pickInitialChannel(hydratedGroup, preferredIdentifier);
-    const activeChannelBelongsToGroup = !!(
-      activeConversation?.type === 'channel' &&
-      (
-        matchesConversationIdentifier(hydratedGroup, activeConversation.parent_conversation_id) ||
-        matchesConversationIdentifier(hydratedGroup, activeConversation.parent_public_id) ||
-        hydratedChannels.some((channel) =>
-          matchesConversationIdentifier(channel, activeConversation.id) ||
-          (activeConversation.public_id
-            ? matchesConversationIdentifier(channel, activeConversation.public_id)
-            : false)
-        )
-      )
-    );
-    const shouldKeepCurrentChannel =
-      selectedChannel.type === 'group' &&
-      activeChannelBelongsToGroup;
-    const nextChannel = shouldKeepCurrentChannel ? activeConversation : selectedChannel;
-    const isSameChannel = activeConversation?.id === nextChannel.id;
-
-    if (!isSameChannel) {
+    if (!isSameGroup) {
       resetLiveChatState();
     }
 
-    setActiveGroup(hydratedGroup);
+    setActiveGroup((prev) => (
+      matchesConversationIdentifier(prev, hydratedGroup.public_id || hydratedGroup.id) &&
+      !hasConversationChanges(prev, hydratedGroup)
+        ? prev
+        : hydratedGroup
+    ));
+    setActiveConversation((prev) => {
+      if (!isSameGroup) {
+        return hydratedGroup;
+      }
 
-    // Only update activeConversation if the channel actually changed.
-    // Setting a new object reference for the same channel triggers
-    // useMessageList to clear messages and re-fetch unnecessarily.
-    if (!isSameChannel) {
-      setActiveConversation(nextChannel);
-    }
+      return hasConversationChanges(prev, hydratedGroup)
+        ? {
+            ...prev,
+            ...hydratedGroup,
+          }
+        : prev;
+    });
 
-    return { group: hydratedGroup, conversation: isSameChannel ? (activeConversation as Conversation) : nextChannel };
+    return { group: hydratedGroup, conversation: hydratedGroup };
   };
 
   const openConversationByIdentifier = async (identifier: string) => {
@@ -321,18 +250,12 @@ export const useChatManager = (user: any) => {
     return conversation;
   };
 
-  const refreshActiveGroup = async (preferredChannelId?: string | null) => {
+  const refreshActiveGroup = async (_preferredChannelId?: string | null) => {
     if (!activeGroup) return;
     try {
-      const preferredIdentifier =
-        getPreferredChannelIdentifier(preferredChannelId) ||
-        activeGroup.default_channel_public_id ||
-        activeGroup.default_channel_id ||
-        null;
-
       await openGroupByIdentifier(
         activeGroup.public_id || activeGroup.id,
-        preferredIdentifier,
+        null,
         activeGroup,
         { forceReload: true }
       );
@@ -347,30 +270,12 @@ export const useChatManager = (user: any) => {
     setActiveGroup(null);
   };
 
-  // Tracks the last active channel so that group navigation and sync events
-  // can restore to the same channel after a reload.
-  useEffect(() => {
-    if (activeConversation?.type !== 'channel') {
-      return;
-    }
-
-    lastActiveChannelRef.current = {
-      id: activeConversation.id,
-      public_id: activeConversation.public_id || null,
-    };
-  }, [activeConversation?.id, activeConversation?.public_id, activeConversation?.type]);
-
   useConversationSync({
     activeConversation,
     activeGroup,
     user,
-    lastActiveChannelRef,
     onPatchConversation: patchConversationInState,
-    onRefreshActiveGroup: refreshActiveGroup,
     onBackToMe: handleBackToMe,
-    onResetLiveChatState: resetLiveChatState,
-    onSetActiveConversation: setActiveConversation,
-    getPreferredChannelIdentifier,
   });
 
   // Handlers
@@ -391,12 +296,6 @@ export const useChatManager = (user: any) => {
     setActiveConversation(conv);
   };
 
-  const handleSelectChannel = (channel: Conversation) => {
-    if (activeConversation?.id === channel.id) return;
-    resetLiveChatState();
-    setActiveConversation(channel);
-  };
-
   const handleStartDM = async (targetId: string) => {
     const { conversation_public_id, conversation_id } = await getOrCreateDM(targetId);
     return conversation_public_id || conversation_id;
@@ -407,7 +306,7 @@ export const useChatManager = (user: any) => {
     typingUsers,
     newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
-    handleSelectConversation, handleSelectChannel, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,
+    handleSelectConversation, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,
     handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
     handleEncryptionKeyResolved: updateKey,
     retryHandshake,

@@ -25,7 +25,6 @@ const ROUTE_CONFIG = {
     { path: '/chats', component: Chat },
     { path: '/chats/@me/:dmConversationId', component: Chat },
     { path: '/chats/:groupConversationId', component: Chat },
-    { path: '/chats/:groupConversationId/:channelConversationId', component: Chat },
   ]
 };
 

@@ -228,7 +228,6 @@ export const useMessageInput = ({
   const isSlowmodeBlocked =
     !editingMessage &&
     slowmodeRemaining > 0 &&
-    conversation.type === 'channel' &&
     !['owner', 'admin'].includes(conversation.role);
 
   const hasSendCrypto = !!encryptionKey || canBootstrapDmOnSend;
@@ -450,7 +449,7 @@ export const useMessageInput = ({
           local_client_id: localClientId,
         } : msg);
         onCancelReply?.();
-        if (conversation.type === 'channel' && conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
+        if (conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);
         }
       } else if (uploadedUrls.length > 0) {
@@ -465,7 +464,7 @@ export const useMessageInput = ({
           local_client_id: localClientId,
         } : msg);
         onCancelReply?.();
-        if (conversation.type === 'channel' && conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
+        if (conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);
         }
       }

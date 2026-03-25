@@ -1,6 +1,6 @@
 // src/Services/Chat/conversationCache.ts
 //
-// Module-level cache for conversation details (members, channels, DM peer info).
+// Module-level cache for conversation details (members and DM peer info).
 //
 // Previously this was a useRef<Record<string, ConversationDetails>> inside
 // useChatManager. Moving it here means the cache survives component remounts,
@@ -33,7 +33,7 @@ export const deleteConversationDetails = (id: string): void => {
 };
 
 /**
- * Writes a conversation (and its channels, if a group) into the cache,
+ * Writes a conversation into the cache,
  * keyed by both id and public_id so lookups succeed with either identifier.
  * Returns the normalised cache entry.
  */
@@ -49,20 +49,6 @@ export const storeConversationDetails = (
 
   if (cacheEntry.public_id) {
     setConversationDetails(cacheEntry.public_id, cacheEntry);
-  }
-
-  if (cacheEntry.type === 'group') {
-    (cacheEntry.channels || []).forEach((channel) => {
-      const channelEntry: ConversationDetails = {
-        ...channel,
-        members: cacheEntry.members,
-      };
-
-      setConversationDetails(channel.id, channelEntry);
-      if (channel.public_id) {
-        setConversationDetails(channel.public_id, channelEntry);
-      }
-    });
   }
 
   return cacheEntry;

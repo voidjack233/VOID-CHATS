@@ -98,7 +98,7 @@ const MessageInput = (props: MessageInputProps) => {
         </div>
       )}
 
-      {!sendError && slowmodeRemaining > 0 && props.conversation.type === 'channel' && (
+      {!sendError && slowmodeRemaining > 0 && (
         <div
           className={`flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-void-text-muted ${
             hasBanner || hasAttachments ? 'bg-void-bg-hover/50' : ''

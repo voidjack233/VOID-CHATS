@@ -5,6 +5,7 @@ import scylla, { generateTimeUUID, cassandra } from '../../scylla.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { messageEventId } from '../../utils/eventIdentity.js';
+import { resolveMessageStorageConversation } from '../../utils/messageConversation.js';
 
 const router = Router({ mergeParams: true });
 
@@ -63,6 +64,23 @@ async function getConversationKeyState(conversation, userId) {
     historyStartVersion: normalizeKeyVersion(result.rows[0].history_start_version, 1),
     joinedAt: result.rows[0].joined_at ? new Date(result.rows[0].joined_at).toISOString() : null,
     role: result.rows[0].role || null,
+  };
+}
+
+async function resolveConversationContexts(conversationIdentifier) {
+  const conversation = await findConversationByIdentifier(conversationIdentifier);
+  if (!conversation) {
+    return null;
+  }
+
+  const storageConversation = await resolveMessageStorageConversation(conversation);
+
+  return {
+    conversation,
+    storageConversation,
+    conversationId: conversation.id,
+    conversationPublic: conversationPublicId(conversation),
+    storageConversationId: storageConversation?.id || conversation.id,
   };
 }
 
@@ -183,11 +201,15 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
-    const conversationId = conversation.id;
-    const conversationPublic = conversationPublicId(conversation);
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
     if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send messages' });
@@ -209,27 +231,6 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const slowmodeSeconds = Number(conversation.slowmode_seconds || 0);
-    const isSlowmodeExempt = ['owner', 'admin'].includes(member.role);
-
-    if (
-      conversation.type === 'channel' &&
-      slowmodeSeconds > 0 &&
-      !isSlowmodeExempt &&
-      member.last_message_sent_at
-    ) {
-      const elapsedSeconds = Math.floor((Date.now() - new Date(member.last_message_sent_at).getTime()) / 1000);
-      const retryAfterSeconds = slowmodeSeconds - elapsedSeconds;
-
-      if (retryAfterSeconds > 0) {
-        return res.status(429).json({
-          error: `Slowmode is enabled. Wait ${retryAfterSeconds}s before sending another message.`,
-          retry_after_seconds: retryAfterSeconds,
-          slowmode_seconds: slowmodeSeconds,
-        });
-      }
-    }
-
     const messageId = generateTimeUUID();
     const now = new Date();
     const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
@@ -243,7 +244,7 @@ router.post('/', async (req, res) => {
         key_version, message_type, reply_to, attachments, is_edited, is_deleted, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
       [
-        cassandra.types.Uuid.fromString(conversationId),
+        cassandra.types.Uuid.fromString(storageConversationId),
         messageId,
         cassandra.types.Uuid.fromString(userId),
         storedContent,
@@ -311,11 +312,15 @@ router.get('/', async (req, res) => {
   const maxFetchIterations = 12;
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
-    const conversationId = conversation.id;
-    const conversationPublic = conversationPublicId(conversation);
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
 
@@ -352,20 +357,20 @@ router.get('/', async (req, res) => {
       if (afterCursor) {
         query = 'SELECT * FROM messages WHERE conversation_id = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?';
         params = [
-          cassandra.types.Uuid.fromString(conversationId),
+          cassandra.types.Uuid.fromString(storageConversationId),
           afterCursor,
           fetchChunkSize,
         ];
       } else if (beforeCursor) {
         query = 'SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?';
         params = [
-          cassandra.types.Uuid.fromString(conversationId),
+          cassandra.types.Uuid.fromString(storageConversationId),
           beforeCursor,
           fetchChunkSize,
         ];
       } else {
         query = 'SELECT * FROM messages WHERE conversation_id = ? ORDER BY message_id DESC LIMIT ?';
-        params = [cassandra.types.Uuid.fromString(conversationId), fetchChunkSize];
+        params = [cassandra.types.Uuid.fromString(storageConversationId), fetchChunkSize];
       }
 
       const result = await scylla.execute(query, params, { prepare: true });
@@ -428,7 +433,7 @@ router.get('/', async (req, res) => {
       : collectedVisibleMessages;
 
     const messageIds = visibleMessages.map((m) => m.message_id);
-    const reactions = await batchFetchReactions(conversationId, messageIds, userId);
+	    const reactions = await batchFetchReactions(storageConversationId, messageIds, userId);
 
     const messagesWithReactions = visibleMessages.map((m) => ({
       ...m,
@@ -452,11 +457,15 @@ router.post('/typing', async (req, res) => {
   const { conversationId: conversationIdentifier } = req.params;
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
-    const conversationId = conversation.id;
-    const conversationPublic = conversationPublicId(conversation);
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
     if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send typing indicators' });
@@ -501,7 +510,7 @@ router.get('/:messageId', async (req, res) => {
 
     const result = await scylla.execute(
       `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
-      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
+      [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
@@ -542,9 +551,13 @@ router.put('/read', async (req, res) => {
   const { message_id } = req.body;
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
+    const {
+      conversation,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversation.id, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
 
@@ -564,7 +577,7 @@ router.put('/read', async (req, res) => {
 
         const result = await scylla.execute(
           'SELECT message_id, key_version, created_at FROM messages WHERE conversation_id = ? AND message_id = ?',
-          [cassandra.types.Uuid.fromString(conversation.id), parsedMessageId],
+          [cassandra.types.Uuid.fromString(storageConversationId), parsedMessageId],
           { prepare: true }
         );
 
@@ -611,11 +624,15 @@ router.put('/:messageId', async (req, res) => {
   }
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
-    const conversationId = conversation.id;
-    const conversationPublic = conversationPublicId(conversation);
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
@@ -638,7 +655,7 @@ router.put('/:messageId', async (req, res) => {
 
     const msgResult = await scylla.execute(
       `SELECT sender_id, is_deleted, message_type FROM messages WHERE conversation_id = ? AND message_id = ?`,
-      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
+      [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
@@ -660,7 +677,7 @@ router.put('/:messageId', async (req, res) => {
       `INSERT INTO message_edits (conversation_id, message_id, edit_id, encrypted_content, iv, key_version, edited_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
-        cassandra.types.Uuid.fromString(conversationId),
+        cassandra.types.Uuid.fromString(storageConversationId),
         cassandra.types.TimeUuid.fromString(messageId),
         editId,
         encrypted_content,
@@ -680,7 +697,7 @@ router.put('/:messageId', async (req, res) => {
         requestedKeyVersion,
         nextMessageType,
         now,
-        cassandra.types.Uuid.fromString(conversationId),
+        cassandra.types.Uuid.fromString(storageConversationId),
         cassandra.types.TimeUuid.fromString(messageId),
       ],
       { prepare: true }
@@ -722,17 +739,21 @@ router.delete('/:messageId', async (req, res) => {
   const { conversationId: conversationIdentifier, messageId } = req.params;
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
 
-    const conversationId = conversation.id;
-    const conversationPublic = conversationPublicId(conversation);
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member' });
 
     const msgResult = await scylla.execute(
       `SELECT sender_id FROM messages WHERE conversation_id = ? AND message_id = ?`,
-      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
+      [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 
@@ -745,7 +766,7 @@ router.delete('/:messageId', async (req, res) => {
     await scylla.execute(
       `UPDATE messages SET is_deleted = true, encrypted_content = null, iv = null
        WHERE conversation_id = ? AND message_id = ?`,
-      [cassandra.types.Uuid.fromString(conversationId), cassandra.types.TimeUuid.fromString(messageId)],
+      [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }
     );
 

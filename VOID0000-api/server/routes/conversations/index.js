@@ -9,11 +9,6 @@ import { EVENTS } from '../../gateway/index.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { minioClient, BUCKET, GROUP_AVATAR_BUCKET } from '../../minio.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
-import {
-  ensureDefaultCategory,
-  getGroupCategories,
-  resolveGroupCategory,
-} from '../../utils/conversationCategories.js';
 import dmRouter from './dm.js';
 import membersRouter from './members.js';
 import messagesRouter from './messages.js';
@@ -22,13 +17,11 @@ import batchReactionsRouter from './batchReactions.js';
 import keysRouter from './keys.js';
 import mlsRouter from './mls.js';
 import attachmentsRouter from './attachments.js';
-import categoriesRouter from './categories.js';
 import invitesRouter from './invites.js';
 import inviteLinksRouter from './inviteLinks.js';
 
 const router = Router();
 
-const CHANNEL_SLOWMODE_OPTIONS = new Set([0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600]);
 const MAX_ICON_PAYLOAD_SIZE = 10 * 1024 * 1024;
 const MAX_ICON_DIMENSION = 4096;
 const ALLOWED_ICON_MIME_PREFIXES = [
@@ -54,7 +47,6 @@ router.use('/:conversationId/messages', authenticateUser, messagesRouter);
 router.use('/:conversationId/messages/:messageId/reactions', authenticateUser, reactionsRouter);
 router.use('/:conversationId/reactions', authenticateUser, batchReactionsRouter);
 router.use('/:conversationId/attachments', authenticateUser, attachmentsRouter);
-router.use('/:conversationId/categories', authenticateUser, categoriesRouter);
 router.use('/keys', authenticateUser, keysRouter);
 
 const baseUrl = process.env.CDN_URL || 'https://cdn.void0000.online';
@@ -117,45 +109,6 @@ function normalizeConversationRow(conv) {
   };
 }
 
-async function getAccessibleChannels(groupId, userId) {
-  const result = await pool.query(
-    `SELECT
-       c.id,
-       c.public_id,
-       c.type,
-       c.name,
-       c.topic,
-       c.slowmode_seconds,
-       c.is_age_restricted,
-       c.icon_filename,
-       c.owner_id,
-       c.parent_conversation_id,
-       c.current_key_version,
-       c.category_id,
-       parent.public_id AS parent_public_id,
-       c.created_at,
-       c.updated_at,
-       cm.role,
-       cm.last_read_message_id,
-       NULL::text AS dm_username,
-       NULL::text AS dm_avatar,
-       NULL::text AS dm_display_name,
-       (SELECT COUNT(*) FROM conversation_members WHERE conversation_id = c.id) AS member_count
-     FROM conversations c
-     LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id
-     JOIN conversation_members cm ON cm.conversation_id = c.id
-     WHERE c.parent_conversation_id = $1
-       AND cm.user_id = $2
-     ORDER BY
-       CASE WHEN LOWER(c.name) = 'general' THEN 0 ELSE 1 END,
-       LOWER(c.name),
-       c.created_at ASC`,
-    [groupId, userId]
-  );
-
-  return result.rows.map(normalizeConversationRow);
-}
-
 router.get('/', authenticateUser, async (req, res) => {
   const userId = req.user.id;
 
@@ -213,6 +166,7 @@ router.get('/', authenticateUser, async (req, res) => {
        LEFT JOIN conversations parent ON parent.id = c.parent_conversation_id
        JOIN conversation_members cm ON cm.conversation_id = c.id
        WHERE cm.user_id = $1
+         AND c.type != 'channel'
        ORDER BY c.updated_at DESC`,
       [userId]
     );
@@ -230,12 +184,10 @@ router.post('/', authenticateUser, async (req, res) => {
     type,
     name,
     members = [],
-    parent_conversation_id,
-    category_id,
   } = req.body;
 
-  if (!type || !['group', 'channel'].includes(type)) {
-    return res.status(400).json({ error: 'Type must be "group" or "channel"' });
+  if (type !== 'group') {
+    return res.status(400).json({ error: 'Type must be "group"' });
   }
 
   if (!name || typeof name !== 'string' || name.trim().length === 0 || name.length > 100) {
@@ -246,111 +198,11 @@ router.post('/', authenticateUser, async (req, res) => {
     return res.status(400).json({ error: 'Maximum 50 members on creation' });
   }
 
-  if (type === 'channel' && !parent_conversation_id) {
-    return res.status(400).json({ error: 'parent_conversation_id is required for channels' });
-  }
-
-  if (type === 'group' && parent_conversation_id) {
-    return res.status(400).json({ error: 'Groups cannot have a parent conversation' });
-  }
-
   let client;
 
   try {
     client = await pool.connect();
     await client.query('BEGIN');
-
-    if (type === 'channel') {
-      const parent = await findConversationByIdentifier(parent_conversation_id, client);
-      if (!parent) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Parent group not found' });
-      }
-
-      const parentMemberResult = await client.query(
-        `SELECT role FROM conversation_members
-         WHERE conversation_id = $1 AND user_id = $2`,
-        [parent.id, userId]
-      );
-
-      if (parentMemberResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Not allowed to create a channel in this group' });
-      }
-
-      if (parent.type !== 'group') {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Channels can only be created under a group' });
-      }
-
-      if (!['owner', 'admin'].includes(parentMemberResult.rows[0].role)) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Only owner or admin can create channels' });
-      }
-
-      const targetCategory = category_id
-        ? await resolveGroupCategory(client, parent.id, category_id)
-        : null;
-      if (category_id && !targetCategory) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ error: 'Category not found for this group' });
-      }
-
-      const existingChannel = await client.query(
-        `SELECT id
-         FROM conversations
-         WHERE parent_conversation_id = $1
-           AND LOWER(name) = LOWER($2)
-         LIMIT 1`,
-        [parent.id, name.trim()]
-      );
-
-      if (existingChannel.rows.length > 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'A channel with that name already exists in this group' });
-      }
-
-      const convResult = await client.query(
-        `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, category_id, public_id)
-         VALUES ('channel', $1, $2, $3, $4, $5)
-         RETURNING *`,
-        [name.trim(), parent.owner_id || userId, parent.id, targetCategory?.id || null, conversationSnowflake.nextId()]
-      );
-
-      const channel = convResult.rows[0];
-
-      await client.query(
-        `INSERT INTO conversation_members (conversation_id, user_id, role)
-         SELECT $1, user_id, role
-         FROM conversation_members
-         WHERE conversation_id = $2
-         ON CONFLICT DO NOTHING`,
-        [channel.id, parent.id]
-      );
-
-      await client.query('COMMIT');
-
-      const channelPayload = {
-        ...channel,
-        public_id: channel.public_id ? String(channel.public_id) : null,
-        parent_public_id: parent.public_id ? String(parent.public_id) : null,
-      };
-
-      // Broadcast the new channel to all parent group members so it appears in real time
-      const parentMemberIds = await getConversationMemberIds(parent.id);
-      parentMemberIds.forEach((memberId) => {
-        if (memberId !== userId) {
-          sendLiveEventToUser(memberId, EVENTS.CONVERSATION_UPDATE, {
-            conversation: channelPayload,
-          });
-        }
-      });
-
-      return res.status(201).json({
-        success: true,
-        conversation: channelPayload,
-      });
-    }
 
     const convResult = await client.query(
       `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, public_id, current_key_version)
@@ -387,24 +239,6 @@ router.post('/', authenticateUser, async (req, res) => {
       }
     }
 
-    const defaultChannelResult = await client.query(
-      `INSERT INTO conversations (type, name, owner_id, parent_conversation_id, category_id, public_id)
-       VALUES ('channel', 'general', $1, $2, NULL, $3)
-       RETURNING *`,
-      [userId, conversation.id, conversationSnowflake.nextId()]
-    );
-
-    const defaultChannel = defaultChannelResult.rows[0];
-
-    await client.query(
-      `INSERT INTO conversation_members (conversation_id, user_id, role)
-       SELECT $1, user_id, role
-       FROM conversation_members
-       WHERE conversation_id = $2
-       ON CONFLICT DO NOTHING`,
-      [defaultChannel.id, conversation.id]
-    );
-
     await client.query(
       `INSERT INTO conversation_key_rotations (
          conversation_id,
@@ -425,9 +259,6 @@ router.post('/', authenticateUser, async (req, res) => {
       conversation: {
         ...conversation,
         public_id: conversation.public_id ? String(conversation.public_id) : null,
-        default_channel_id: defaultChannel.id,
-        default_channel_public_id: defaultChannel.public_id ? String(defaultChannel.public_id) : null,
-        default_category_id: null,
       },
     });
   } catch (err) {
@@ -505,13 +336,7 @@ router.get('/:conversationId', authenticateUser, async (req, res) => {
       conversation.dm_avatar_url = peer?.avatar_url || null;
     }
 
-    if (conversation.type === 'group') {
-      conversation.categories = await getGroupCategories(pool, conversation.id);
-      conversation.channels = await getAccessibleChannels(conversation.id, userId);
-    } else {
-      conversation.categories = [];
-      conversation.channels = [];
-    }
+    conversation.channels = [];
 
     res.json({ success: true, conversation });
   } catch (err) {
@@ -523,11 +348,8 @@ router.get('/:conversationId', authenticateUser, async (req, res) => {
 router.put('/:conversationId', authenticateUser, async (req, res) => {
   const userId = req.user.id;
   const { conversationId } = req.params;
-  const { name, topic, slowmode_seconds, is_age_restricted } = req.body;
+  const { name } = req.body;
   const hasName = Object.prototype.hasOwnProperty.call(req.body, 'name');
-  const hasTopic = Object.prototype.hasOwnProperty.call(req.body, 'topic');
-  const hasSlowmode = Object.prototype.hasOwnProperty.call(req.body, 'slowmode_seconds');
-  const hasAgeRestricted = Object.prototype.hasOwnProperty.call(req.body, 'is_age_restricted');
 
   try {
     const resolvedConversation = await findConversationByIdentifier(conversationId);
@@ -549,7 +371,7 @@ router.put('/:conversationId', authenticateUser, async (req, res) => {
       return res.status(403).json({ error: 'Only owner or admin can update' });
     }
 
-    if (!hasName && !hasTopic && !hasSlowmode && !hasAgeRestricted) {
+    if (!hasName) {
       return res.status(400).json({ error: 'No updates provided' });
     }
 
@@ -558,64 +380,15 @@ router.put('/:conversationId', authenticateUser, async (req, res) => {
       return res.status(400).json({ error: 'Name is required (max 100 characters)' });
     }
 
-    if ((hasTopic || hasSlowmode || hasAgeRestricted) && resolvedConversation.type !== 'channel') {
-      return res.status(400).json({ error: 'Only channels support topic, slowmode, or age restriction' });
-    }
-
-    const normalizedTopic = hasTopic
-      ? typeof topic === 'string'
-        ? topic.trim() || null
-        : topic == null
-          ? null
-          : undefined
-      : undefined;
-
-    if (hasTopic && (normalizedTopic === undefined || (typeof topic === 'string' && topic.length > 1024))) {
-      return res.status(400).json({ error: 'Topic must be text up to 1024 characters' });
-    }
-
-    if (hasSlowmode && (!Number.isInteger(slowmode_seconds) || !CHANNEL_SLOWMODE_OPTIONS.has(slowmode_seconds))) {
-      return res.status(400).json({ error: 'Invalid slowmode value' });
-    }
-
-    if (hasAgeRestricted && typeof is_age_restricted !== 'boolean') {
-      return res.status(400).json({ error: 'is_age_restricted must be true or false' });
-    }
-
-    if (hasName && resolvedConversation.type === 'channel' && resolvedConversation.parent_conversation_id) {
-      const duplicateChannel = await pool.query(
-        `SELECT id
-         FROM conversations
-         WHERE parent_conversation_id = $1
-           AND LOWER(name) = LOWER($2)
-           AND id != $3
-         LIMIT 1`,
-        [resolvedConversation.parent_conversation_id, normalizedName, resolvedConversation.id]
-      );
-
-      if (duplicateChannel.rows.length > 0) {
-        return res.status(400).json({ error: 'A channel with that name already exists in this group' });
-      }
-    }
-
     const result = await pool.query(
       `UPDATE conversations
        SET name = CASE WHEN $1 THEN $2 ELSE name END,
-           topic = CASE WHEN $3 THEN $4 ELSE topic END,
-           slowmode_seconds = CASE WHEN $5 THEN $6 ELSE slowmode_seconds END,
-           is_age_restricted = CASE WHEN $7 THEN $8 ELSE is_age_restricted END,
            updated_at = NOW()
-       WHERE id = $9
+       WHERE id = $3
        RETURNING *`,
       [
         hasName,
         normalizedName || null,
-        hasTopic,
-        normalizedTopic,
-        hasSlowmode,
-        slowmode_seconds ?? 0,
-        hasAgeRestricted,
-        is_age_restricted ?? false,
         resolvedConversation.id,
       ]
     );

@@ -5,6 +5,7 @@ import scylla, { cassandra } from '../../scylla.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { reactionEventId } from '../../utils/eventIdentity.js';
+import { resolveMessageStorageConversation } from '../../utils/messageConversation.js';
 
 const router = Router({ mergeParams: true });
 
@@ -87,6 +88,22 @@ function canAccessMessageForHistory(message, keyState) {
   return createdAt >= joinedAt;
 }
 
+async function resolveConversationContexts(conversationIdentifier) {
+  const conversation = await findConversationByIdentifier(conversationIdentifier);
+  if (!conversation) {
+    return null;
+  }
+
+  const storageConversation = await resolveMessageStorageConversation(conversation);
+
+  return {
+    conversation,
+    conversationId: conversation.id,
+    conversationPublic: conversationPublicId(conversation),
+    storageConversationId: storageConversation?.id || conversation.id,
+  };
+}
+
 // PUT /:emoji — toggle reaction
 router.put('/:emoji', async (req, res) => {
   const userId = req.user.id;
@@ -98,19 +115,23 @@ router.put('/:emoji', async (req, res) => {
   }
 
   try {
-    const conversation = await findConversationByIdentifier(conversationIdentifier);
-    if (!conversation) {
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) {
       return res.status(404).json({ error: 'Conversation not found' });
     }
 
-    const conversationId = conversation.id;
-    const conversationPublic = conversationPublicId(conversation);
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
     const member = await verifyMembership(conversationId, userId);
     if (!member) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
     }
 
-    const convUuid = cassandra.types.Uuid.fromString(conversationId);
+    const convUuid = cassandra.types.Uuid.fromString(storageConversationId);
     const msgUuid = cassandra.types.TimeUuid.fromString(messageId);
     const userUuid = cassandra.types.Uuid.fromString(userId);
 

@@ -3,16 +3,13 @@ export interface Conversation {
   public_id?: string | null;
   type: 'dm' | 'group' | 'channel';
   name: string | null;
-  topic?: string | null;
   slowmode_seconds?: number;
-  is_age_restricted?: boolean;
   owner_id: string | null;
   current_key_version?: number | null;
   icon_filename: string | null;
   icon_url?: string | null;
   parent_conversation_id?: string | null;
   parent_public_id?: string | null;
-  category_id?: string | null;
   created_at: string;
   updated_at: string;
   role: string;
@@ -23,9 +20,6 @@ export interface Conversation {
   dm_avatar_url: string | null;
   member_count: number;
   channels?: Conversation[];
-  categories?: ConversationCategory[];
-  default_channel_id?: string;
-  default_channel_public_id?: string | null;
 }
 
 export interface Attachment {
@@ -136,16 +130,6 @@ export interface InvitePreview {
   owner_username: string | null;
   owner_avatar_url: string | null;
   member_count: number;
-}
-
-export interface ConversationCategory {
-  id: string;
-  group_conversation_id: string;
-  name: string;
-  position: number;
-  is_default: boolean;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface ConversationDetails extends Conversation {
