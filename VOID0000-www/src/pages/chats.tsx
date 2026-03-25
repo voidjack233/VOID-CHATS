@@ -22,6 +22,7 @@ import { matchesConversationIdentifier } from '../Services/Chat/utils/conversati
 import { useUser } from '../Services/Auth/UserContext';
 import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
 import UserAvatar from '../components/common/UserAvatar';
+import { ConversationPaneSkeleton } from '../components/common/Skeleton';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -209,6 +210,17 @@ const ChatDashboard = () => {
   }, [setMessageUpdate]);
 
   const displayConversation = activeGroup || activeConversation;
+  const isPendingDmRoute = Boolean(dmConversationId) && (
+    activeGroup !== null ||
+    activeConversation?.type !== 'dm' ||
+    !matchesConversationIdentifier(activeConversation, dmConversationId)
+  );
+  const isPendingGroupRoute = Boolean(groupConversationId) && (
+    activeConversation?.type !== 'group' ||
+    !matchesConversationIdentifier(activeConversation, groupConversationId) ||
+    !matchesConversationIdentifier(activeGroup, groupConversationId)
+  );
+  const isConversationRoutePending = !loading && Boolean(user?.id) && (isPendingDmRoute || isPendingGroupRoute);
   const typingParticipants = useMemo(() => {
     if (!activeConversation) return [];
 
@@ -598,7 +610,9 @@ const ChatDashboard = () => {
 
       {/* Main Area */}
       <div className={`flex-1 flex flex-col bg-void-bg-sec min-w-0 ${!isMobileSidebarOpen ? 'flex' : 'hidden md:flex'}`}>
-        {activeConversation ? (
+        {isConversationRoutePending ? (
+          <ConversationPaneSkeleton showMobileBack density="compact" />
+        ) : activeConversation ? (
           <div className="flex flex-1 min-h-0">
             <div className="flex min-w-0 flex-1 flex-col">
               <nav className="h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm">

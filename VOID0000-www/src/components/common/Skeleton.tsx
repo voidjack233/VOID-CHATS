@@ -393,6 +393,44 @@ export const MessageViewSkeleton = ({ density = 'compact' }: { density?: 'compac
   );
 };
 
+/** Skeleton for the full conversation pane while a route is opening */
+export const ConversationPaneSkeleton = ({
+  showMobileBack = false,
+  density = 'compact',
+}: {
+  showMobileBack?: boolean;
+  density?: Density;
+}) => (
+  <div className="flex flex-1 min-h-0">
+    <div className="flex min-w-0 flex-1 flex-col">
+      <nav className="h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm">
+        <div className="flex items-center min-w-0 flex-1">
+          {showMobileBack && (
+            <Skeleton className="mr-3 h-7 w-7 md:hidden" rounded="lg" />
+          )}
+          <Skeleton className="h-9 w-9 shrink-0" rounded="full" />
+          <div className="ml-3 min-w-0 flex-1">
+            <Skeleton className="h-5 w-32 max-w-[70%]" />
+            <Skeleton className="mt-2 h-3 w-24 max-w-[50%]" />
+          </div>
+        </div>
+        <Skeleton className="ml-2 h-8 w-8 shrink-0" rounded="lg" />
+      </nav>
+
+      <div className="flex-1 min-h-0">
+        <MessageViewSkeleton density={density} />
+      </div>
+
+      <div className="border-t border-void-bg-hover px-4 py-3 shrink-0 bg-void-bg-sec">
+        <div className="flex items-end gap-3">
+          <Skeleton className="h-11 flex-1" rounded="2xl" />
+          <Skeleton className="h-11 w-11" rounded="xl" />
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
 /** Skeleton for the friend-select list in group create modal */
 export const FriendSelectSkeleton = () => (
   <div className="space-y-1">
