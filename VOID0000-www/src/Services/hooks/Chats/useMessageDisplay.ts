@@ -1,5 +1,5 @@
 // src/hooks/useMessageDisplay.ts
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useUser } from '../../Auth/UserContext';
 import { ConversationMember } from '../../Chat/chatService';
 
@@ -14,25 +14,36 @@ export const useMessageDisplay = (
 ) => {
   const { user } = useUser();
 
+  // Refs keep callback references stable so downstream memoized components
+  // (MessageItem) don't re-render when members/user objects change identity.
+  const membersRef = useRef(members);
+  membersRef.current = members;
+  const userRef = useRef(user);
+  userRef.current = user;
+  const userAvatarRef = useRef(userAvatar);
+  userAvatarRef.current = userAvatar;
+
   const formatTime = useCallback((dateStr: string) => {
     return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }, []);
 
-const getSenderName = useCallback((senderId: string) => {
-    if (senderId === user?.id) {
-      return normalizeName(user?.display_name) || normalizeName(user?.username) || 'You';
+  const getSenderName = useCallback((senderId: string) => {
+    const u = userRef.current;
+    if (senderId === u?.id) {
+      return normalizeName(u?.display_name) || normalizeName(u?.username) || 'You';
     }
 
-    const member = members[senderId];
+    const member = membersRef.current[senderId];
     return normalizeName(member?.display_name) || normalizeName(member?.username) || senderId.substring(0, 8);
-  }, [user, members]);
+  }, []);
 
   const getSenderAvatarUrl = useCallback((senderId: string) => {
-    if (senderId === user?.id && userAvatar) return userAvatar;
+    const u = userRef.current;
+    if (senderId === u?.id && userAvatarRef.current) return userAvatarRef.current;
 
-    const member = members[senderId];
+    const member = membersRef.current[senderId];
     return member?.avatar_url || null;
-  }, [user, userAvatar, members]);
+  }, []);
 
   return { formatTime, getSenderName, getSenderAvatarUrl };
 };

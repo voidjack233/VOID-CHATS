@@ -57,13 +57,32 @@ interface MessageItemProps {
     anchor: HTMLElement,
     placement?: 'top' | 'bottom',
   ) => void;
-  onContextMenu?: (event: React.MouseEvent) => void;
+  onContextMenu?: (event: React.MouseEvent, message: Message) => void;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
   onToggleReaction: (messageId: string, emoji: string) => void;
   onOpenImageViewer: (urls: string[], index: number) => void;
 }
+
+const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
+  prev.message === next.message &&
+  prev.startsGroup === next.startsGroup &&
+  prev.showDateSeparator === next.showDateSeparator &&
+  prev.density === next.density &&
+  prev.messageGroupSpacing === next.messageGroupSpacing &&
+  prev.metaFontSize === next.metaFontSize &&
+  prev.replyFontSize === next.replyFontSize &&
+  prev.bubbleFontSize === next.bubbleFontSize &&
+  prev.encryptedFontSize === next.encryptedFontSize &&
+  prev.currentUserId === next.currentUserId &&
+  prev.replyParent === next.replyParent &&
+  prev.messageReactions === next.messageReactions &&
+  prev.formatTime === next.formatTime &&
+  prev.getSenderName === next.getSenderName &&
+  prev.getSenderUsername === next.getSenderUsername &&
+  prev.getSenderAvatarUrl === next.getSenderAvatarUrl
+);
 
 const MessageItem = memo(function MessageItem({
   message,
@@ -201,7 +220,7 @@ const MessageItem = memo(function MessageItem({
         )}
 
         <div
-          onContextMenu={isPending ? undefined : onContextMenu}
+          onContextMenu={isPending ? undefined : (e) => onContextMenu?.(e, message)}
           className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}
         >
           {message.reply_to && (
@@ -377,6 +396,6 @@ const MessageItem = memo(function MessageItem({
       </div>
     </div>
   );
-});
+}, areMessageItemPropsEqual);
 
 export default MessageItem;

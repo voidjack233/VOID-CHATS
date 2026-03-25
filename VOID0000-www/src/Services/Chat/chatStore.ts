@@ -20,6 +20,7 @@ export interface LocalMessage {
   message_id: string;
   sender_id: string;
   content: string | null;
+  key_version?: number | null;
   message_type: string;
   reply_to: string | null;
   is_edited: boolean;

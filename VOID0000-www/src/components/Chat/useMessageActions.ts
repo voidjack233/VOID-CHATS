@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Message, ConversationMember } from '../../Services/Chat/chatService';
 import type { Friend } from '../../Services/hooks/Friends/useFriends';
 
@@ -38,6 +38,14 @@ export function useMessageActions({
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [selectedFriend, setSelectedFriend] = useState<Friend | null>(null);
   const [imageViewer, setImageViewer] = useState<ImageViewerState | null>(null);
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const userProfileIdRef = useRef(userProfileId);
+  userProfileIdRef.current = userProfileId;
+  const friendsRef = useRef(friends);
+  friendsRef.current = friends;
+  const membersRef = useRef(members);
+  membersRef.current = members;
 
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
@@ -96,25 +104,25 @@ export function useMessageActions({
   }, []);
 
   const handleProfileClick = useCallback((senderId: string) => {
-    if (senderId === userId && userProfileId) {
-      setSelectedProfileId(userProfileId);
+    if (senderId === userIdRef.current && userProfileIdRef.current) {
+      setSelectedProfileId(userProfileIdRef.current);
       return;
     }
 
-    const friend = friends.find((entry) => entry.id === senderId);
+    const friend = friendsRef.current.find((entry) => entry.id === senderId);
     if (friend) {
       setSelectedFriend(friend);
       return;
     }
 
-    const member = members[senderId];
+    const member = membersRef.current[senderId];
     if (member?.profile_id) {
       setSelectedProfileId(member.profile_id);
       return;
     }
 
     setSelectedProfileId(senderId);
-  }, [friends, members, userId, userProfileId]);
+  }, []);
 
   const openEmojiPicker = useCallback((
     messageId: string,

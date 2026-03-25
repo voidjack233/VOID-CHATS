@@ -8,6 +8,7 @@ import {
   resolveMessageCryptoMetadata,
   Message,
   type Conversation,
+  type ConversationMember,
 } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
@@ -57,6 +58,11 @@ interface MessageDelete {
   message_id: string;
 }
 
+interface HistoryAccessFence {
+  joinedAtMs: number | null;
+  keyVersionFloor: number | null;
+}
+
 function toUIMessage(local: LocalMessage): Message {
   return {
     conversation_id: local.conversation_id,
@@ -64,7 +70,7 @@ function toUIMessage(local: LocalMessage): Message {
     sender_id: local.sender_id,
     encrypted_content: null,
     iv: null,
-    key_version: 1,
+    key_version: local.key_version ?? 1,
     message_type: local.message_type,
     reply_to: local.reply_to,
     is_edited: local.is_edited,
@@ -108,6 +114,7 @@ const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
       message_id: msg.message_id,
       sender_id: msg.sender_id,
       content: msg.content ?? null,
+      key_version: msg.key_version ?? null,
       message_type: msg.message_type,
       reply_to: msg.reply_to,
       is_edited: msg.is_edited,
@@ -145,8 +152,50 @@ const normalizeMessageContent = (content?: string | null) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+const normalizeHistoryVersion = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
+};
+
 const getAttachmentSignature = (message: Pick<Message, 'attachments'>) =>
   JSON.stringify(message.attachments || []);
+
+const getReactionSignature = (message: Pick<Message, 'reactions'>) =>
+  JSON.stringify(message.reactions || {});
+
+const isEquivalentMessage = (
+  existingMessage: Message,
+  nextMessage: Message,
+) => (
+  String(existingMessage.conversation_id) === String(nextMessage.conversation_id) &&
+  existingMessage.sender_id === nextMessage.sender_id &&
+  existingMessage.encrypted_content === nextMessage.encrypted_content &&
+  existingMessage.iv === nextMessage.iv &&
+  existingMessage.key_version === nextMessage.key_version &&
+  existingMessage.message_type === nextMessage.message_type &&
+  (existingMessage.reply_to ?? null) === (nextMessage.reply_to ?? null) &&
+  existingMessage.is_edited === nextMessage.is_edited &&
+  (existingMessage.edited_at ?? null) === (nextMessage.edited_at ?? null) &&
+  existingMessage.is_deleted === nextMessage.is_deleted &&
+  existingMessage.created_at === nextMessage.created_at &&
+  (existingMessage.content ?? null) === (nextMessage.content ?? null) &&
+  (existingMessage.protocol ?? null) === (nextMessage.protocol ?? null) &&
+  (existingMessage.protocol_version ?? null) === (nextMessage.protocol_version ?? null) &&
+  (existingMessage.local_status ?? null) === (nextMessage.local_status ?? null) &&
+  (existingMessage.local_client_id ?? null) === (nextMessage.local_client_id ?? null) &&
+  getAttachmentSignature(existingMessage) === getAttachmentSignature(nextMessage) &&
+  getReactionSignature(existingMessage) === getReactionSignature(nextMessage)
+);
 
 const findOptimisticReplacementId = (
   messages: Message[],
@@ -188,17 +237,22 @@ const mergeMessagesWithReconciliation = ({
   allowOptimisticFallback?: boolean;
 }): Message[] => {
   const next = [...existing];
+  let didChange = false;
 
   incoming.forEach((message) => {
     const existingIndex = next.findIndex((entry) => String(entry.message_id) === String(message.message_id));
     if (existingIndex >= 0) {
       const existingMessage = next[existingIndex]!;
-      next[existingIndex] = {
+      const mergedMessage: Message = {
         ...existingMessage,
         ...message,
         local_client_id: message.local_client_id ?? existingMessage.local_client_id,
         local_status: message.local_status ?? existingMessage.local_status,
       };
+      if (!isEquivalentMessage(existingMessage, mergedMessage)) {
+        next[existingIndex] = mergedMessage;
+        didChange = true;
+      }
       return;
     }
 
@@ -216,12 +270,18 @@ const mergeMessagesWithReconciliation = ({
           getLocalClientId(candidate) === replacementId
         ) {
           next.splice(index, 1);
+          didChange = true;
         }
       }
     }
 
     next.push(message);
+    didChange = true;
   });
+
+  if (!didChange) {
+    return existing;
+  }
 
   return trimMessages(next, trimFrom);
 };
@@ -261,9 +321,78 @@ const resolveInitialHasOlder = ({
   return localHasMore || syncHasMore || localCount >= requestedLimit;
 };
 
+const createHistoryAccessFence = (
+  conversation: Conversation,
+  currentMember?: ConversationMember | null,
+): HistoryAccessFence | null => {
+  if (conversation.type === 'dm' || !currentMember) {
+    return null;
+  }
+
+  const joinedAtMs = currentMember.joined_at
+    ? new Date(currentMember.joined_at).getTime()
+    : Number.NaN;
+  const safeJoinedAtMs = Number.isFinite(joinedAtMs) ? joinedAtMs : null;
+  const joinedKeyVersion = normalizeHistoryVersion(currentMember.joined_key_version);
+  const historyStartVersion = normalizeHistoryVersion(currentMember.history_start_version);
+  const keyVersionFloor = Math.max(joinedKeyVersion || 0, historyStartVersion || 0) || null;
+
+  if (safeJoinedAtMs === null && keyVersionFloor === null) {
+    return null;
+  }
+
+  return {
+    joinedAtMs: safeJoinedAtMs,
+    keyVersionFloor,
+  };
+};
+
+const isMessageVisibleForHistoryFence = (
+  message: { created_at: string; key_version?: number | null },
+  historyAccessFence: HistoryAccessFence | null,
+): boolean => {
+  if (!historyAccessFence) {
+    return true;
+  }
+
+  if (
+    historyAccessFence.keyVersionFloor !== null &&
+    typeof message.key_version === 'number' &&
+    message.key_version > 0 &&
+    message.key_version < historyAccessFence.keyVersionFloor
+  ) {
+    return false;
+  }
+
+  if (historyAccessFence.joinedAtMs !== null) {
+    const createdAtMs = new Date(message.created_at).getTime();
+    if (Number.isFinite(createdAtMs) && createdAtMs < historyAccessFence.joinedAtMs) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+const filterMessagesByHistoryFence = <T extends { created_at: string; key_version?: number | null }>(
+  messages: T[],
+  historyAccessFence: HistoryAccessFence | null,
+): T[] => {
+  if (!historyAccessFence || messages.length === 0) {
+    return messages;
+  }
+
+  const filtered = messages.filter((message) =>
+    isMessageVisibleForHistoryFence(message, historyAccessFence)
+  );
+
+  return filtered.length === messages.length ? messages : filtered;
+};
+
 export const useMessageList = (
   conversation: Conversation,
   userId: string | undefined,
+  currentMember: ConversationMember | null | undefined,
   encryptionKey: CryptoKey | null,
   currentKeyVersion = 1,
   newMessage?: Message | null,
@@ -272,6 +401,19 @@ export const useMessageList = (
   onMessagesLoaded?: (messages: Message[]) => void
 ) => {
   const conversationId = conversation.id;
+  const hasEncryptionKey = Boolean(encryptionKey);
+  const historyAccessFence = useMemo(
+    () => createHistoryAccessFence(conversation, currentMember),
+    [
+      conversation.type,
+      currentMember?.history_start_version,
+      currentMember?.joined_at,
+      currentMember?.joined_key_version,
+    ]
+  );
+  const historyAccessFenceSignature = historyAccessFence
+    ? `${historyAccessFence.joinedAtMs ?? ''}:${historyAccessFence.keyVersionFloor ?? ''}`
+    : 'none';
   // Keep decryption context stable across non-key metadata updates
   // (e.g. member_count / updated_at) to avoid unnecessary reload loops.
   const decryptionConversation = useMemo(
@@ -314,8 +456,9 @@ export const useMessageList = (
   );
 
   // Track which conversation we last loaded so we can distinguish between
-  // a genuine conversation switch (needs full reset) and a key rotation
-  // within the same conversation (should preserve visible messages).
+  // a genuine conversation switch (needs full reset) and a same-conversation
+  // reload (initial key resolution or key rotation), which should preserve
+  // any visible messages while the refresh completes.
   const lastLoadedConversationIdRef = useRef<string | null>(null);
 
   // Refs for values used inside the initial load effect that should NOT
@@ -364,10 +507,10 @@ export const useMessageList = (
     const initialLimit = Math.max(INITIAL_FETCH_SIZE, sessionSnapshot?.loadedCount ?? 0);
 
     const loadLocalOnly = async () => {
-      const isKeyRotation = lastLoadedConversationIdRef.current === conversationId;
+      const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
       lastLoadedConversationIdRef.current = conversationId;
 
-      if (!isKeyRotation) {
+      if (!shouldPreserveMessages) {
         setMessages([]);
         setHasOlder(false);
         setHasNewer(false);
@@ -382,9 +525,10 @@ export const useMessageList = (
         const cached = await messageSync.readLocal(conversationId, { limit: initialLimit });
         if (ignore) return;
 
-        const uiMessages = sortMessages(cached.messages.map(toUIMessage));
+        const visibleCachedMessages = filterMessagesByHistoryFence(cached.messages, historyAccessFence);
+        const uiMessages = sortMessages(visibleCachedMessages.map(toUIMessage));
         if (uiMessages.length > 0) {
-          if (isKeyRotation) {
+          if (shouldPreserveMessages) {
             setMessages((prev) => {
               if (prev.length === 0) return uiMessages;
               return mergeMessagesWithReconciliation({
@@ -399,7 +543,7 @@ export const useMessageList = (
             setMessages(uiMessages);
           }
           onMessagesLoaded?.(uiMessages);
-        } else if (!isKeyRotation) {
+        } else if (!shouldPreserveMessages) {
           setMessages([]);
         }
 
@@ -422,12 +566,13 @@ export const useMessageList = (
     };
 
     const load = async () => {
-      // If the conversation hasn't changed, this is a key rotation —
-      // keep existing messages visible while we re-sync from the server.
-      const isKeyRotation = lastLoadedConversationIdRef.current === conversationId;
+      // If the conversation hasn't changed, we're refreshing the same thread
+      // after initial key resolution or key rotation. Preserve visible
+      // messages while we re-sync instead of clearing the list.
+      const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
       lastLoadedConversationIdRef.current = conversationId;
 
-      if (!isKeyRotation) {
+      if (!shouldPreserveMessages) {
         setMessages([]);
         setHasOlder(false);
         setHasNewer(false);
@@ -455,8 +600,9 @@ export const useMessageList = (
         if (ignore) return;
 
         if (cached.messages.length > 0) {
-          const uiMessages = sortMessages(cached.messages.map(toUIMessage));
-          if (isKeyRotation) {
+          const visibleCachedMessages = filterMessagesByHistoryFence(cached.messages, historyAccessFence);
+          const uiMessages = sortMessages(visibleCachedMessages.map(toUIMessage));
+          if (shouldPreserveMessages) {
             setMessages((prev) => {
               if (prev.length === 0) return uiMessages;
               return mergeMessagesWithReconciliation({
@@ -488,7 +634,8 @@ export const useMessageList = (
           if (syncResult.newMessages.length > 0) {
             const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
             if (ignore) return;
-            const freshUI = sortMessages(fresh.messages.map(toUIMessage));
+            const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+            const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
             setMessages((prev) => {
               return mergeMessagesWithReconciliation({
                 existing: prev,
@@ -515,8 +662,9 @@ export const useMessageList = (
 
           const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
           if (ignore) return;
-          const freshUI = sortMessages(fresh.messages.map(toUIMessage));
-          if (isKeyRotation) {
+          const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+          const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
+          if (shouldPreserveMessages) {
             setMessages((prev) => {
               if (freshUI.length === 0) return prev;
               return mergeMessagesWithReconciliation({
@@ -555,12 +703,12 @@ export const useMessageList = (
 
     void load();
     return () => { ignore = true; };
-    // encryptionKey and currentKeyVersion are intentionally accessed via
-    // refs so that key rotation does not re-trigger this effect. On key
-    // rotation the messages are already displayed; new messages arrive
-    // via the WS MESSAGE_CREATE handler with the latest key.
+    // The key object/version are intentionally accessed via refs so a
+    // non-null -> non-null key rotation does not re-trigger this effect.
+    // We only depend on hasEncryptionKey so a newly opened conversation
+    // reruns once when the handshake upgrades null -> ready key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, decryptionConversation, peerUserId, userId]);
+  }, [conversationId, decryptionConversation, hasEncryptionKey, historyAccessFenceSignature, peerUserId, userId]);
 
   // ============== Restore Persisted Queued Sends ==============
   // On conversation open, load any queued secure-send messages from the
@@ -647,6 +795,10 @@ export const useMessageList = (
       local_client_id: localClientId,
     };
 
+    if (!isMessageVisibleForHistoryFence(normalizedMessage, historyAccessFence)) {
+      return;
+    }
+
     const isLocalPendingOnly = (normalizedMessage.local_status === 'sending' || normalizedMessage.local_status === 'queued') && Boolean(localClientId);
     if (!isLocalPendingOnly) {
       const localMsg: LocalMessage = {
@@ -654,6 +806,7 @@ export const useMessageList = (
         message_id: normalizedMessage.message_id,
         sender_id: normalizedMessage.sender_id,
         content: normalizedMessage.content ?? null,
+        key_version: normalizedMessage.key_version ?? null,
         message_type: normalizedMessage.message_type,
         reply_to: normalizedMessage.reply_to,
         is_edited: normalizedMessage.is_edited,
@@ -679,7 +832,7 @@ export const useMessageList = (
         allowOptimisticFallback: true,
       });
     });
-  }, [newMessage, conversationId, userId]);
+  }, [newMessage, conversationId, historyAccessFence, userId]);
 
   // ============== Handle Edits ==============
   useEffect(() => {
@@ -745,7 +898,7 @@ export const useMessageList = (
     const fetchSize = isSilent ? MESSAGE_PREFETCH_SIZE : FETCH_SIZE;
 
     if (
-      !encryptionKey ||
+      !encryptionKeyRef.current ||
       loadingOlder ||
       prefetchingOlderRef.current ||
       !hasOlder ||
@@ -817,7 +970,8 @@ export const useMessageList = (
         }
       }
 
-      const olderUI = sortMessages(result.messages.map(toUIMessage));
+      const visibleOlderMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
+      const olderUI = sortMessages(visibleOlderMessages.map(toUIMessage));
       if (olderUI.length > 0) {
         applyOlderMessages(olderUI, seamBreakBeforeId);
         setHasOlder(result.has_more);
@@ -835,7 +989,7 @@ export const useMessageList = (
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyOlderMessages, conversationId, decryptionConversation, hasOlder, loadingOlder, peerUserId, userId]);
+  }, [applyOlderMessages, conversationId, decryptionConversation, hasOlder, historyAccessFenceSignature, loadingOlder, peerUserId, userId]);
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
@@ -894,7 +1048,8 @@ export const useMessageList = (
         };
       }
 
-      const newerUI = sortMessages(result.messages.map(toUIMessage));
+      const visibleNewerMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
+      const newerUI = sortMessages(visibleNewerMessages.map(toUIMessage));
       if (newerUI.length > 0) {
         setMessages((prev) => {
           return mergeMessagesWithReconciliation({
@@ -923,7 +1078,7 @@ export const useMessageList = (
       setLoadingNewer(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, decryptionConversation, hasNewer, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
+  }, [conversationId, decryptionConversation, hasNewer, historyAccessFenceSignature, loadingNewer, messages, onMessagesLoaded, peerUserId, userId]);
 
   const reconcileRecentMessages = useCallback(async (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
     if (!encryptionKeyRef.current) return;
@@ -955,7 +1110,8 @@ export const useMessageList = (
         await messageStore.putMessages(localMsgs);
       }
 
-      const newerUI = sortMessages(serverResult.messages);
+      const visibleServerMessages = filterMessagesByHistoryFence(serverResult.messages, historyAccessFence);
+      const newerUI = sortMessages(visibleServerMessages);
       setMessages((prev) => {
         return mergeMessagesWithReconciliation({
           existing: prev,
@@ -972,7 +1128,7 @@ export const useMessageList = (
       console.error('Failed to reconcile missed messages after reconnect:', err);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, decryptionConversation, onMessagesLoaded, userId]);
+  }, [conversationId, decryptionConversation, historyAccessFenceSignature, onMessagesLoaded, userId]);
 
   useEffect(() => {
     if (!encryptionKey) return;
@@ -1014,7 +1170,8 @@ export const useMessageList = (
 
     try {
       const fresh = await messageSync.readLocal(conversationId, { limit: FETCH_SIZE });
-      const freshUI = sortMessages(fresh.messages.map(toUIMessage));
+      const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+      const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
 
       setMessages(freshUI);
       setFirstItemIndex(MESSAGE_LIST_BASE_INDEX);
@@ -1028,7 +1185,7 @@ export const useMessageList = (
     } finally {
       setLoadingNewer(false);
     }
-  }, [encryptionKey, conversationId, onMessagesLoaded]);
+  }, [encryptionKey, conversationId, historyAccessFenceSignature, onMessagesLoaded]);
 
   // ============== Reply Parent Lookup ==============
   const getReplyParent = useCallback((replyToId: string): Message | null => {
@@ -1061,7 +1218,13 @@ export const useMessageList = (
         .then((local) => {
           if (ignore) return;
           if (local && !isUndecryptableContent(local.content)) {
-            setReplyCache((prev) => ({ ...prev, [replyToId]: toUIMessage(local) }));
+            const localReply = toUIMessage(local);
+            setReplyCache((prev) => ({
+              ...prev,
+              [replyToId]: isMessageVisibleForHistoryFence(localReply, historyAccessFence)
+                ? localReply
+                : { message_id: replyToId, content: '[deleted or unavailable]', is_deleted: true } as any,
+            }));
           } else {
             getMessageById(conversationId, replyToId, encryptionKeyRef.current!, {
               conversation: decryptionConversation,
@@ -1073,7 +1236,9 @@ export const useMessageList = (
                 const actualMsg = msg?.message || msg;
                 setReplyCache((prev) => ({
                   ...prev,
-                  [replyToId]: actualMsg || { message_id: replyToId, content: '[deleted or unavailable]', is_deleted: true } as any
+                  [replyToId]: actualMsg && isMessageVisibleForHistoryFence(actualMsg, historyAccessFence)
+                    ? actualMsg
+                    : { message_id: replyToId, content: '[deleted or unavailable]', is_deleted: true } as any
                 }));
               })
               .catch(() => {
@@ -1090,10 +1255,10 @@ export const useMessageList = (
 
     return () => { ignore = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, replyCache, conversationId, decryptionConversation, peerUserId, userId]);
+  }, [messages, replyCache, conversationId, decryptionConversation, historyAccessFenceSignature, peerUserId, userId]);
 
   // ============== Delete (API + Local) ==============
-  const handleDelete = async (messageId: string) => {
+  const handleDelete = useCallback(async (messageId: string) => {
     try {
       await deleteMessage(conversationId, messageId);
       await messageSync.handleDelete(conversationId, messageId);
@@ -1101,7 +1266,7 @@ export const useMessageList = (
     } catch (err) {
       console.error('Delete failed:', err);
     }
-  };
+  }, [conversationId]);
 
   return {
     messages,

@@ -17,6 +17,20 @@ interface ReactionEvent {
   action: 'add' | 'remove';
 }
 
+const areReactionMapsEqual = (a?: ReactionMap, b?: ReactionMap): boolean => {
+  const aEntries = Object.entries(a || {});
+  const bEntries = Object.entries(b || {});
+
+  if (aEntries.length !== bEntries.length) {
+    return false;
+  }
+
+  return aEntries.every(([emoji, data]) => {
+    const other = (b || {})[emoji];
+    return !!other && other.count === data.count && other.me === data.me;
+  });
+};
+
 const normalizeReactionMap = (rawReactions: any, currentUserId?: string): ReactionMap => {
   if (!rawReactions || typeof rawReactions !== 'object') {
     return {};
@@ -112,7 +126,30 @@ export const useReactions = (
           reactionsMap[msg.message_id] = normalized;
         }
       }
-      setReactions((prev) => ({ ...prev, ...reactionsMap }));
+      setReactions((prev) => {
+        const entries = Object.entries(reactionsMap);
+        if (entries.length === 0) {
+          return prev;
+        }
+
+        let next = prev;
+        let didChange = false;
+
+        for (const [messageId, normalized] of entries) {
+          if (areReactionMapsEqual(prev[messageId], normalized)) {
+            continue;
+          }
+
+          if (!didChange) {
+            next = { ...prev };
+            didChange = true;
+          }
+
+          next[messageId] = normalized;
+        }
+
+        return didChange ? next : prev;
+      });
     },
     [currentUserId]
   );

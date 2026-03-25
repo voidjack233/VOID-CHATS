@@ -15,6 +15,7 @@ import { useEffect, useRef } from 'react';
 import { Conversation } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { messageStore } from '../../Chat/chatStore';
+import { messageSync } from '../../Chat/chatSync';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
 import { deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
 import { matchesConversationIdentifier, pickInitialChannel } from '../../Chat/utils/conversationUtils';
@@ -172,9 +173,11 @@ export const useConversationSync = ({
       // (and its channels if it was a group) so the user won't see
       // pre-kick messages if they rejoin.
       messageStore.clearConversation(conversationId).catch(() => {});
+      messageSync.invalidateConversation(conversationId);
       if (activeGroup && matchesConversationIdentifier(activeGroup, conversationId)) {
         (activeGroup.channels || []).forEach((channel) => {
           messageStore.clearConversation(channel.id).catch(() => {});
+          messageSync.invalidateConversation(channel.id);
           if (channel.public_id) {
             deleteHandshakeEntry(channel.public_id);
           deleteConversationDetails(channel.public_id);

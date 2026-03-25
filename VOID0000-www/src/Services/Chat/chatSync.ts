@@ -122,6 +122,7 @@ class MessageSync {
           message_id: msg.message_id,
           sender_id: msg.sender_id,
           content: msg.content ?? null,
+          key_version: msg.key_version ?? null,
           message_type: msg.message_type,
           reply_to: msg.reply_to,
           is_edited: msg.is_edited,
@@ -210,6 +211,10 @@ class MessageSync {
 
   async handleDelete(conversationId: string, messageId: string): Promise<void> {
     await messageStore.markDeleted(conversationId, messageId);
+  }
+
+  invalidateConversation(conversationId: string): void {
+    this.sessionValidatedConversations.delete(conversationId);
   }
 }
 

@@ -1,5 +1,5 @@
 // src/pages/Chats.tsx
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Settings, Users, Hash, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../components/Chat/ConversationSettings';
@@ -20,7 +20,7 @@ import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
 import AddFriend from '../components/common/Friends/AddFriend';
 import { gateway } from '../Services/Gateway/gateway';
-import { Conversation } from '../Services/Chat/chatService';
+import { Conversation, Message } from '../Services/Chat/chatService';
 import { matchesConversationIdentifier } from '../Services/Chat/utils/conversationUtils';
 import { useUser } from '../Services/Auth/UserContext';
 import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
@@ -211,14 +211,22 @@ const ChatDashboard = () => {
     [members, activeConversation?.id]
   );
 
-  const handleEditComplete = (messageId: string, newContent: string) => {
+  const handleReply = useCallback((message: Message) => {
+    setReplyTo(message);
+  }, [setReplyTo]);
+
+  const handleEdit = useCallback((message: Message) => {
+    setEditingMessage(message);
+  }, [setEditingMessage]);
+
+  const handleEditComplete = useCallback((messageId: string, newContent: string) => {
     setMessageUpdate({
       message_id: messageId,
       content: newContent,
       is_edited: true,
       edited_at: new Date().toISOString(),
     });
-  };
+  }, [setMessageUpdate]);
 
   const displayConversation = activeGroup || activeConversation;
   const activeChannels = activeGroup?.channels || [];
@@ -703,8 +711,8 @@ const ChatDashboard = () => {
                   conversationSecurityState={conversationSecurityState}
                   members={messageDisplayMembers}
                   typingParticipants={typingParticipants}
-                  onReply={(msg) => setReplyTo(msg)}
-                  onEdit={(msg) => setEditingMessage(msg)}
+                  onReply={handleReply}
+                  onEdit={handleEdit}
                   newMessage={newMessage}
                   userAvatar={myProfile?.avatar_url || undefined}
                   gateway={gateway}
