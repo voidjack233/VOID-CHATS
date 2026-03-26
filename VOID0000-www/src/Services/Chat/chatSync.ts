@@ -13,6 +13,12 @@ import {
   type MessageDecryptionContext,
 } from './chatService';
 import { MESSAGE_PAGE_SIZE } from './chatConstants';
+import {
+  ENCRYPTED_PLACEHOLDER_CONTENTS,
+  getPersistableMessageContent,
+  hasReadableMessageContent,
+  isTransientUndecryptableMessage,
+} from './messageDecryptionState';
 
 interface SyncResult {
   newMessages: LocalMessage[];
@@ -27,21 +33,7 @@ interface LoadConversationOptions extends MessageDecryptionContext {
 }
 
 function hasUndecryptablePlaceholder(messages: LocalMessage[]): boolean {
-  return messages.some((message) => message.content === '[unable to decrypt]');
-}
-
-function isTransientUndecryptableMessage(message: {
-  content?: string | null;
-  decryption_failed?: boolean;
-}): boolean {
-  return message.decryption_failed === true || message.content === '[unable to decrypt]';
-}
-
-function getPersistableMessageContent(message: {
-  content?: string | null;
-  decryption_failed?: boolean;
-}): string | null {
-  return isTransientUndecryptableMessage(message) ? null : (message.content ?? null);
+  return messages.some((message) => isTransientUndecryptableMessage(message));
 }
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -155,16 +147,20 @@ class MessageSync {
       // Preserve locally-readable plaintext when a freshly fetched message yields placeholders.
       const PLACEHOLDER_CONTENTS = new Set([
         '[legacy message unavailable]',
-        '[encrypted]',
+        ...ENCRYPTED_PLACEHOLDER_CONTENTS,
       ]);
 
       const staleIndexes: number[] = [];
       localMsgs.forEach((msg, i) => {
         const serverMsg = serverMsgs[i] as { content?: string | null; decryption_failed?: boolean } | undefined;
-        if (
-          isTransientUndecryptableMessage(serverMsg || {}) ||
-          (msg.content && PLACEHOLDER_CONTENTS.has(msg.content))
-        ) {
+        const transientServerMessage = isTransientUndecryptableMessage({
+          ...msg,
+          decryption_failed: serverMsg?.decryption_failed,
+          encrypted_content: (serverMsg as { encrypted_content?: string | null } | undefined)?.encrypted_content ?? null,
+          iv: (serverMsg as { iv?: string | null } | undefined)?.iv ?? null,
+          protocol: (serverMsg as { protocol?: string | null } | undefined)?.protocol ?? msg.protocol ?? null,
+        });
+        if (transientServerMessage || (msg.content && PLACEHOLDER_CONTENTS.has(msg.content))) {
           staleIndexes.push(i);
         }
       });
@@ -180,7 +176,7 @@ class MessageSync {
         for (let j = 0; j < existingLookups.length; j++) {
           const existing = existingLookups[j];
           const idx = staleIndexes[j]!;
-          if (existing?.content && !PLACEHOLDER_CONTENTS.has(existing.content)) {
+          if (existing && hasReadableMessageContent(existing)) {
             localMsgs[idx] = { ...localMsgs[idx]!, content: existing.content };
           }
         }

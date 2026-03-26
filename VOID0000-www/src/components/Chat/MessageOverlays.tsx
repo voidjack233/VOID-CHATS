@@ -1,3 +1,4 @@
+import { Suspense, lazy } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft,
@@ -15,12 +16,13 @@ import type { Message } from '../../Services/Chat/chatService';
 import type { Friend } from '../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../common/Friends/FriendProfile';
 import UserProfile from '../common/Profile/userProfile';
-import EmojiPicker from './EmojiPicker';
 import type {
   ContextMenuState,
   EmojiPickerTarget,
   ImageViewerState,
 } from './useMessageActions';
+
+const EmojiPicker = lazy(() => import('./EmojiPicker'));
 
 interface MessageOverlaysProps {
   contextMenu: ContextMenuState | null;
@@ -70,11 +72,13 @@ export default function MessageOverlays({
   return (
     <>
       {emojiPickerTarget && (
-        <EmojiPicker
-          onSelect={onEmojiSelect}
-          onClose={onCloseEmojiPicker}
-          position={emojiPickerTarget.position}
-        />
+        <Suspense fallback={null}>
+          <EmojiPicker
+            onSelect={onEmojiSelect}
+            onClose={onCloseEmojiPicker}
+            position={emojiPickerTarget.position}
+          />
+        </Suspense>
       )}
 
       {contextMenu && !contextMenu.msg.is_deleted && createPortal(

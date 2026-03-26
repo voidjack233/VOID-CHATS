@@ -12,6 +12,11 @@ import {
 } from '../../Chat/chatService';
 import { messageSync } from '../../Chat/chatSync';
 import { messageStore, LocalMessage } from '../../Chat/chatStore';
+import {
+  getPersistableMessageContent,
+  hasReadableMessageContent,
+  isTransientUndecryptableMessage,
+} from '../../Chat/messageDecryptionState';
 import { queuedSendStore } from '../../Chat/queuedSendStore';
 import { gateway } from '../../Gateway/gateway';
 import {
@@ -100,20 +105,18 @@ const sortMessages = (msgs: Message[]) =>
 const sortLocalMessages = (msgs: LocalMessage[]) =>
   [...msgs].sort(compareByCreatedAtAsc);
 
-const isUndecryptableContent = (content: string | null | undefined) =>
-  content === '[unable to decrypt]';
-
-const isTransientUndecryptableMessage = (message: { content?: string | null; decryption_failed?: boolean }) =>
-  message.decryption_failed === true || isUndecryptableContent(message.content);
-
 const hasUndecryptableMessage = (
-  messages: Array<{ content?: string | null; decryption_failed?: boolean }>
+  messages: Array<{
+    content?: string | null;
+    decryption_failed?: boolean;
+    is_deleted?: boolean;
+    attachments?: string[] | null;
+    message_type?: string | null;
+    protocol?: string | null;
+    encrypted_content?: string | null;
+    iv?: string | null;
+  }>
 ) => messages.some((message) => isTransientUndecryptableMessage(message));
-
-const getPersistableMessageContent = (message: {
-  content?: string | null;
-  decryption_failed?: boolean;
-}) => (isTransientUndecryptableMessage(message) ? null : (message.content ?? null));
 
 const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
   msgs.map((msg) => {
@@ -136,6 +139,47 @@ const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
       protocol_version: cryptoMetadata.protocol_version,
     };
   });
+
+const preserveReadableLocalContent = async (messages: LocalMessage[]): Promise<LocalMessage[]> => {
+  const staleIndexes = messages.reduce<number[]>((indexes, message, index) => {
+    if (isTransientUndecryptableMessage(message)) {
+      indexes.push(index);
+    }
+    return indexes;
+  }, []);
+
+  if (staleIndexes.length === 0) {
+    return messages;
+  }
+
+  const existingMessages = await Promise.all(
+    staleIndexes.map((index) => {
+      const message = messages[index]!;
+      return messageStore.getMessage(message.conversation_id, message.message_id);
+    })
+  );
+
+  const nextMessages = [...messages];
+  staleIndexes.forEach((staleIndex, lookupIndex) => {
+    const existing = existingMessages[lookupIndex];
+    if (existing && hasReadableMessageContent(existing)) {
+      nextMessages[staleIndex] = {
+        ...nextMessages[staleIndex]!,
+        content: existing.content,
+      };
+    }
+  });
+
+  return nextMessages;
+};
+
+const persistFetchedMessagesSafely = async (messages: Message[]): Promise<LocalMessage[]> => {
+  const localMessages = await preserveReadableLocalContent(toLocalMessages(messages));
+  if (localMessages.length > 0) {
+    await messageStore.putMessages(localMessages);
+  }
+  return localMessages;
+};
 
 const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] => {
   const merged = new Map<string, LocalMessage>();
@@ -429,6 +473,7 @@ export const useMessageList = (
   onMessagesLoaded?: (messages: Message[]) => void
 ) => {
   const conversationId = conversation.id;
+  const conversationKeyVersion = normalizeHistoryVersion(conversation.current_key_version) ?? 1;
   const hasEncryptionKey = Boolean(encryptionKey);
   const historyAccessFence = useMemo(
     () => createHistoryAccessFence(conversation, currentMember),
@@ -498,13 +543,27 @@ export const useMessageList = (
   encryptionKeyRef.current = encryptionKey;
   const currentKeyVersionRef = useRef(currentKeyVersion);
   currentKeyVersionRef.current = currentKeyVersion;
+  const observedConversationKeyVersionRef = useRef(conversationKeyVersion);
+  const pendingConversationKeyRefreshRef = useRef<number | null>(null);
+  const keyVersionRefreshInFlightRef = useRef<number | null>(null);
 
   useEffect(() => {
     setReplyCache({});
     fetchingReplies.current.clear();
     prefetchingOlderRef.current = false;
     prefetchedAfterLoadRef.current = false;
+    observedConversationKeyVersionRef.current = conversationKeyVersion;
+    pendingConversationKeyRefreshRef.current = null;
+    keyVersionRefreshInFlightRef.current = null;
   }, [conversationId]);
+
+  useEffect(() => {
+    const previousVersion = observedConversationKeyVersionRef.current;
+    if (conversationKeyVersion > previousVersion) {
+      pendingConversationKeyRefreshRef.current = conversationKeyVersion;
+    }
+    observedConversationKeyVersionRef.current = conversationKeyVersion;
+  }, [conversationId, conversationKeyVersion]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -738,6 +797,106 @@ export const useMessageList = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, decryptionConversation, hasEncryptionKey, historyAccessFenceSignature, peerUserId, userId]);
 
+  useEffect(() => {
+    const pendingVersion = pendingConversationKeyRefreshRef.current;
+    if (
+      !pendingVersion ||
+      !encryptionKeyRef.current ||
+      currentKeyVersionRef.current < pendingVersion ||
+      keyVersionRefreshInFlightRef.current === pendingVersion
+    ) {
+      return;
+    }
+
+    let ignore = false;
+    keyVersionRefreshInFlightRef.current = pendingVersion;
+
+    const refreshForKeyVersionBump = async () => {
+      const sessionSnapshot = conversationWindowCache.get(conversationId);
+      const refreshLimit = Math.max(
+        INITIAL_FETCH_SIZE,
+        sessionSnapshot?.loadedCount ?? 0,
+        messagesRef.current.length,
+      );
+
+      console.log('[KEY_VERSION_REFRESH] forcing current window refresh after conversation key bump', {
+        conversation_id: conversationId,
+        conversation_key_version: pendingVersion,
+        resolved_key_version: currentKeyVersionRef.current,
+        refresh_limit: refreshLimit,
+      });
+
+      setSyncing(true);
+      try {
+        messageSync.invalidateConversation(conversationId);
+        const { syncPromise } = await messageSync.loadConversation(
+          conversationId,
+          encryptionKeyRef.current!,
+          {
+            forceSync: true,
+            preferSessionCache: true,
+            initialLimit: refreshLimit,
+            syncLimit: refreshLimit,
+            conversation: decryptionConversation,
+            userId,
+            currentKeyVersion: currentKeyVersionRef.current,
+          }
+        );
+
+        const syncResult = await syncPromise;
+        if (ignore) return;
+
+        const fresh = await messageSync.readLocal(conversationId, { limit: refreshLimit });
+        if (ignore) return;
+
+        const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+        const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
+        if (freshUI.length > 0) {
+          setMessages((prev) =>
+            mergeMessagesWithReconciliation({
+              existing: prev,
+              incoming: freshUI,
+              currentUserId: userId,
+              trimFrom: 'old',
+              allowOptimisticFallback: true,
+            })
+          );
+        }
+        setHasOlder(resolveInitialHasOlder({
+          localHasMore: fresh.has_more,
+          localCount: freshUI.length,
+          requestedLimit: refreshLimit,
+          sessionSnapshot,
+          syncHasMore: syncResult.hasMore,
+        }));
+        onMessagesLoaded?.(freshUI);
+        pendingConversationKeyRefreshRef.current = null;
+      } catch (err) {
+        console.error('Failed to refresh current window after key version bump:', err);
+      } finally {
+        if (!ignore) {
+          setSyncing(false);
+        }
+        if (keyVersionRefreshInFlightRef.current === pendingVersion) {
+          keyVersionRefreshInFlightRef.current = null;
+        }
+      }
+    };
+
+    void refreshForKeyVersionBump();
+    return () => {
+      ignore = true;
+    };
+  }, [
+    conversationId,
+    conversationKeyVersion,
+    currentKeyVersion,
+    decryptionConversation,
+    historyAccessFenceSignature,
+    onMessagesLoaded,
+    userId,
+  ]);
+
   // ============== Restore Persisted Queued Sends ==============
   // On conversation open, load any queued secure-send messages from the
   // persistent store and inject them into the message list.  These survive
@@ -964,10 +1123,7 @@ export const useMessageList = (
           userId,
           currentKeyVersion: currentKeyVersionRef.current,
         });
-        const localMsgs = toLocalMessages(serverResult.messages);
-        if (localMsgs.length > 0) {
-          await messageStore.putMessages(localMsgs);
-        }
+        const localMsgs = await persistFetchedMessagesSafely(serverResult.messages);
         result = {
           messages: mergeLocalMessages(localResult.messages, localMsgs),
           has_more: localResult.has_more || serverResult.has_more || serverResult.messages.length >= fetchSize,
@@ -987,10 +1143,7 @@ export const useMessageList = (
             userId,
               currentKeyVersion: currentKeyVersionRef.current,
           });
-          const localMsgs = toLocalMessages(serverResult.messages);
-          if (localMsgs.length > 0) {
-            await messageStore.putMessages(localMsgs);
-          }
+          const localMsgs = await persistFetchedMessagesSafely(serverResult.messages);
           result = {
             messages: mergeLocalMessages(result.messages, localMsgs),
             has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= fetchSize,
@@ -1066,10 +1219,7 @@ export const useMessageList = (
           userId,
           currentKeyVersion: currentKeyVersionRef.current,
         });
-        const localMsgs = toLocalMessages(serverResult.messages);
-        if (localMsgs.length > 0) {
-          await messageStore.putMessages(localMsgs);
-        }
+        const localMsgs = await persistFetchedMessagesSafely(serverResult.messages);
         result = {
           messages: mergeLocalMessages(result.messages, localMsgs),
           has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
@@ -1133,13 +1283,9 @@ export const useMessageList = (
         return;
       }
 
-      const localMsgs = toLocalMessages(serverResult.messages);
-      if (localMsgs.length > 0) {
-        await messageStore.putMessages(localMsgs);
-      }
-
-      const visibleServerMessages = filterMessagesByHistoryFence(serverResult.messages, historyAccessFence);
-      const newerUI = sortMessages(visibleServerMessages);
+      const localMsgs = await persistFetchedMessagesSafely(serverResult.messages);
+      const visibleServerMessages = filterMessagesByHistoryFence(localMsgs, historyAccessFence);
+      const newerUI = sortMessages(visibleServerMessages.map(toUIMessage));
       setMessages((prev) => {
         return mergeMessagesWithReconciliation({
           existing: prev,
@@ -1245,7 +1391,7 @@ export const useMessageList = (
       messageStore.getMessage(conversationId, replyToId)
         .then((local) => {
           if (ignore) return;
-          if (local && !isUndecryptableContent(local.content)) {
+          if (local && hasReadableMessageContent(local)) {
             const localReply = toUIMessage(local);
             setReplyCache((prev) => ({
               ...prev,
