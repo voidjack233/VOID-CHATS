@@ -15,9 +15,11 @@ import { messageStore } from '../../Chat/chatStore';
 import { messageSync } from '../../Chat/chatSync';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
 import { deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
+import { normalizeKeyVersion } from '../../Chat/chatUtils';
 import { matchesConversationIdentifier } from '../../Chat/utils/conversationUtils';
 import { keyManager } from '../../Crypto/keyManager';
 import { mlsStore } from '../../Crypto/mls/mlsStore';
+import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 
 interface UseConversationSyncParams {
   activeConversation: Conversation | null;
@@ -25,6 +27,7 @@ interface UseConversationSyncParams {
   user: { id: string } | null | undefined;
   onPatchConversation: (conversation: Conversation) => void;
   onBackToMe: () => void;
+  retryHandshake: () => void;
 }
 
 export const useConversationSync = ({
@@ -33,6 +36,7 @@ export const useConversationSync = ({
   user,
   onPatchConversation,
   onBackToMe,
+  retryHandshake,
 }: UseConversationSyncParams) => {
   // Callback refs: keep the latest function references without adding them
   // to effect dep arrays, matching the pattern in useConversationHandshake.
@@ -41,6 +45,17 @@ export const useConversationSync = ({
 
   const onBackToMeRef = useRef(onBackToMe);
   useEffect(() => { onBackToMeRef.current = onBackToMe; });
+
+  const retryHandshakeRef = useRef(retryHandshake);
+  useEffect(() => { retryHandshakeRef.current = retryHandshake; });
+
+  const activeConversationRef = useRef(activeConversation);
+  useEffect(() => { activeConversationRef.current = activeConversation; });
+
+  const activeGroupRef = useRef(activeGroup);
+  useEffect(() => { activeGroupRef.current = activeGroup; });
+
+  const recoveringKeyVersionRef = useRef<Record<string, number>>({});
 
   // CONVERSATION_UPDATE: patch state inline. The patch updates activeGroup
   // with the new current_key_version / member_count, which is enough for the
@@ -53,8 +68,76 @@ export const useConversationSync = ({
     const handleConversationUpdate = (data: any) => {
       const updatedConversation = data?.conversation as Conversation | undefined;
       if (!updatedConversation) return;
+      const updatedIdentifier = updatedConversation.public_id || updatedConversation.id;
+      const activeConversationSnapshot = activeConversationRef.current;
+      const activeGroupSnapshot = activeGroupRef.current;
+      const matchedActiveConversation =
+        (matchesConversationIdentifier(activeConversationSnapshot, updatedIdentifier)
+          ? activeConversationSnapshot
+          : null) ||
+        (matchesConversationIdentifier(activeGroupSnapshot, updatedIdentifier)
+          ? activeGroupSnapshot
+          : null);
+      const previousKeyVersion = matchedActiveConversation
+        ? normalizeKeyVersion(matchedActiveConversation.current_key_version, 1)
+        : null;
+      const nextKeyVersion = normalizeKeyVersion(
+        updatedConversation.current_key_version,
+        previousKeyVersion ?? 1,
+      );
 
       onPatchConversationRef.current(updatedConversation);
+
+      if (!matchedActiveConversation || previousKeyVersion == null || nextKeyVersion <= previousKeyVersion) {
+        return;
+      }
+
+      const recoveryConversationId = matchedActiveConversation.id;
+      if (recoveringKeyVersionRef.current[recoveryConversationId] === nextKeyVersion) {
+        return;
+      }
+      recoveringKeyVersionRef.current[recoveryConversationId] = nextKeyVersion;
+
+      messageSync.invalidateConversation(recoveryConversationId);
+
+      [
+        matchedActiveConversation.id,
+        matchedActiveConversation.public_id,
+        updatedConversation.id,
+        updatedConversation.public_id,
+      ]
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .forEach((identifier) => {
+          deleteHandshakeEntry(identifier);
+        });
+
+      console.log('[MLS_KEY_BUMP] proactive recovery after conversation update', {
+        conversation_id: recoveryConversationId,
+        previous_key_version: previousKeyVersion,
+        next_key_version: nextKeyVersion,
+      });
+
+      void chatCryptoProtocolService
+        .syncInbox(user.id, true)
+        .catch((error) => {
+          console.warn('[MLS_KEY_BUMP] proactive sync failed', {
+            conversation_id: recoveryConversationId,
+            next_key_version: nextKeyVersion,
+            error: error instanceof Error ? error.message : String(error || ''),
+          });
+        })
+        .finally(() => {
+          delete recoveringKeyVersionRef.current[recoveryConversationId];
+          const currentActiveConversation = activeConversationRef.current;
+          const currentActiveGroup = activeGroupRef.current;
+          const stillActive =
+            matchesConversationIdentifier(currentActiveConversation, updatedIdentifier) ||
+            matchesConversationIdentifier(currentActiveGroup, updatedIdentifier);
+
+          if (stillActive) {
+            retryHandshakeRef.current();
+          }
+        });
     };
 
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);

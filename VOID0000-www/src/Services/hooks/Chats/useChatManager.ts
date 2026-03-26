@@ -276,6 +276,7 @@ export const useChatManager = (user: any) => {
     user,
     onPatchConversation: patchConversationInState,
     onBackToMe: handleBackToMe,
+    retryHandshake,
   });
 
   // Handlers

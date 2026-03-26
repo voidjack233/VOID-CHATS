@@ -74,20 +74,29 @@ export async function validateFriendships(db, requesterId, memberIds) {
   return null;
 }
 
-export async function emitConversationUpdate(conversation, memberIds, currentKeyVersion, memberCount) {
-  const payload = {
-    conversation: {
-      id: conversation.id,
-      public_id: conversation.public_id ? String(conversation.public_id) : null,
-      type: conversation.type,
-      owner_id: conversation.owner_id || null,
-      current_key_version: currentKeyVersion,
-      member_count: memberCount,
-      updated_at: new Date().toISOString(),
-    },
-  };
-
+export async function emitConversationUpdate(
+  conversation,
+  memberIds,
+  currentKeyVersion,
+  memberCount,
+  memberRolesById = null,
+) {
   memberIds.forEach((memberId) => {
+    const payload = {
+      conversation: {
+        id: conversation.id,
+        public_id: conversation.public_id ? String(conversation.public_id) : null,
+        type: conversation.type,
+        owner_id: conversation.owner_id || null,
+        current_key_version: currentKeyVersion,
+        member_count: memberCount,
+        updated_at: new Date().toISOString(),
+        ...(memberRolesById && memberRolesById[memberId]
+          ? { role: memberRolesById[memberId] }
+          : {}),
+      },
+    };
+
     sendLiveEventToUser(memberId, EVENTS.CONVERSATION_UPDATE, payload);
   });
 }

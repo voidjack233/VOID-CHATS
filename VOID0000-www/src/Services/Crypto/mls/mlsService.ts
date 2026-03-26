@@ -34,6 +34,7 @@ export class MlsService {
   private readonly minimumKeyPackages = MLS_MINIMUM_KEY_PACKAGES;
   private readonly keyPackageTarget = MLS_KEY_PACKAGE_TARGET;
   private readonly syncInboxPromises = new Map<string, Promise<MlsInboxSyncResult>>();
+  private readonly pendingForcedSyncInboxUsers = new Set<string>();
   private readonly reserveTopUpPromises = new Map<string, Promise<{ published: number; serverCount: number }>>();
   private readonly groupService = new MlsGroupService({
     getServerCapabilities: () => this.getServerCapabilities(),
@@ -366,14 +367,36 @@ export class MlsService {
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
     const inflight = this.syncInboxPromises.get(userId);
     if (inflight) {
+      if (force) {
+        this.pendingForcedSyncInboxUsers.add(userId);
+      }
       return inflight;
     }
 
-    const promise = this._syncInboxWork(userId, force).finally(() => {
+    const promise = this._syncInboxLoop(userId, force).finally(() => {
       this.syncInboxPromises.delete(userId);
+      this.pendingForcedSyncInboxUsers.delete(userId);
     });
     this.syncInboxPromises.set(userId, promise);
     return promise;
+  }
+
+  private async _syncInboxLoop(userId: string, force = false): Promise<MlsInboxSyncResult> {
+    let shouldForce = force;
+    let result: MlsInboxSyncResult = { ...EMPTY_MLS_SYNC_RESULT };
+
+    do {
+      this.pendingForcedSyncInboxUsers.delete(userId);
+      result = await this._syncInboxWork(userId, shouldForce);
+      shouldForce = this.pendingForcedSyncInboxUsers.has(userId);
+      if (shouldForce) {
+        console.log('[MLS_SYNC] running queued forced inbox sync after inflight request', {
+          user_id: userId,
+        });
+      }
+    } while (shouldForce);
+
+    return result;
   }
 
   private async _syncInboxWork(userId: string, force = false): Promise<MlsInboxSyncResult> {
@@ -410,10 +433,6 @@ export class MlsService {
 
     const impl = await getMlsCiphersuiteImpl();
     const keyPackageStateChanged = await this.syncKeyPackageInventory(userId, payload.keyPackages);
-
-    for (const groupState of payload.groupStates) {
-      await this.groupService.importSyncedGroupState(groupState, impl, userId);
-    }
 
     for (const welcome of payload.welcomes) {
       await mlsStorageService.persistWelcome({
@@ -517,6 +536,16 @@ export class MlsService {
         imported: importedArchivedKeys,
         total: payload.archivedKeys.length,
       });
+    }
+
+    // Import latest synced group states last. This is a catch-up fallback for
+    // conversations with missing or stale local state, but it must not run
+    // before welcome/commit replay. Jumping to the newest epoch first causes
+    // intermediate commits to look stale, which strands exact historical keys
+    // for messages sent during membership rotations (for example, the first
+    // survivor-visible message right after a member removal).
+    for (const groupState of payload.groupStates) {
+      await this.groupService.importSyncedGroupState(groupState, impl, userId);
     }
 
     let ackCount = 0;

@@ -46,6 +46,7 @@ const ROLE_STYLES: Record<string, string> = {
   member: 'bg-void-bg-hover text-void-text-muted ring-1 ring-void-bg-hover',
   viewer: 'bg-sky-500/10 text-sky-300 ring-1 ring-sky-500/25',
 };
+const EDITABLE_ROLE_OPTIONS = ['admin', 'member'] as const;
 
 const VALID_ICON_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_ICON_FILE_SIZE = 7 * 1024 * 1024;
@@ -254,7 +255,10 @@ const ConversationSettings = ({
     trimmedProfileName !== (conversation.name || '') ||
     !!pendingIconFile ||
     removeCurrentIcon;
-  const canManageMembers = isOwner && conversation.type === 'group';
+  const canChangeMemberRoles =
+    conversation.type === 'group' &&
+    (isOwner || currentUserRole === 'admin');
+  const canKickMembers = isOwner && conversation.type === 'group';
   const dmPeerUserId = useMemo(() => {
     if (conversation.type !== 'dm') return null;
     return (
@@ -619,7 +623,7 @@ const ConversationSettings = ({
 
   const handleChangeMemberRole = async (
     targetMember: ConversationMember,
-    nextRole: 'admin' | 'member' | 'viewer'
+    nextRole: 'admin' | 'member'
   ) => {
     if (targetMember.role === nextRole) {
       setMemberMenuUserId(null);
@@ -639,6 +643,7 @@ const ConversationSettings = ({
       );
       setExpandedRoleEditorUserId(null);
       setMemberMenuUserId(null);
+      void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to update member role:', error);
       setMemberActionError(
@@ -1053,7 +1058,7 @@ const ConversationSettings = ({
                               >
                                 {getRoleLabel(member.role)}
                               </span>
-                              {canManageMembers && member.user_id !== currentUserId && member.role !== 'owner' && (
+                              {(canChangeMemberRoles || canKickMembers) && member.user_id !== currentUserId && member.role !== 'owner' && (
                                 <div className="relative shrink-0">
                                   <button
                                     type="button"
@@ -1070,46 +1075,53 @@ const ConversationSettings = ({
 
                                   {memberMenuUserId === member.user_id && (
                                     <div className="absolute right-0 top-11 z-20 w-52 rounded-xl border border-void-bg-hover bg-void-bg-main p-2 shadow-2xl">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setExpandedRoleEditorUserId((current) =>
-                                            current === member.user_id ? null : member.user_id
-                                          );
-                                          setMemberMenuUserId(null);
-                                        }}
-                                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-bg-hover"
-                                      >
-                                        <span>Change Role</span>
-                                        {isRoleEditorOpen ? (
-                                          <ChevronDown className="h-4 w-4 text-void-text-muted" />
-                                        ) : (
-                                          <ChevronRight className="h-4 w-4 text-void-text-muted" />
-                                        )}
-                                      </button>
+                                      {canChangeMemberRoles && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setExpandedRoleEditorUserId((current) =>
+                                              current === member.user_id ? null : member.user_id
+                                            );
+                                            setMemberMenuUserId(null);
+                                          }}
+                                          className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-bg-hover"
+                                        >
+                                          <span>Change Role</span>
+                                          {isRoleEditorOpen ? (
+                                            <ChevronDown className="h-4 w-4 text-void-text-muted" />
+                                          ) : (
+                                            <ChevronRight className="h-4 w-4 text-void-text-muted" />
+                                          )}
+                                        </button>
+                                      )}
 
-                                      <div className="my-2 h-px bg-void-bg-hover" />
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setMemberMenuUserId(null);
-                                          setKickConfirmMember(member);
-                                        }}
-                                        disabled={isKickBusy || MEMBER_REMOVAL_PAUSED}
-                                        className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
-                                      >
-                                        <span>{MEMBER_REMOVAL_PAUSED ? 'Member Removal Paused' : 'Kick Member'}</span>
-                                        {isKickBusy ? (
-                                          <Loader2 className="h-4 w-4 animate-spin" />
-                                        ) : null}
-                                      </button>
+                                      {canChangeMemberRoles && canKickMembers && (
+                                        <div className="my-2 h-px bg-void-bg-hover" />
+                                      )}
+
+                                      {canKickMembers && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setMemberMenuUserId(null);
+                                            setKickConfirmMember(member);
+                                          }}
+                                          disabled={isKickBusy || MEMBER_REMOVAL_PAUSED}
+                                          className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                          <span>{MEMBER_REMOVAL_PAUSED ? 'Member Removal Paused' : 'Kick Member'}</span>
+                                          {isKickBusy ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                          ) : null}
+                                        </button>
+                                      )}
                                     </div>
                                   )}
                                 </div>
                               )}
                             </div>
 
-                            {canManageMembers && member.user_id !== currentUserId && member.role !== 'owner' && isRoleEditorOpen && (
+                            {canChangeMemberRoles && member.user_id !== currentUserId && member.role !== 'owner' && isRoleEditorOpen && (
                               <div className="rounded-xl border border-void-bg-hover bg-void-bg-main/55 px-4 py-3">
                                 <div className="mb-3 flex items-center justify-between gap-3">
                                   <div>
@@ -1127,8 +1139,8 @@ const ConversationSettings = ({
                                   </button>
                                 </div>
 
-                                <div className="grid gap-2 sm:grid-cols-3">
-                                  {(['admin', 'member', 'viewer'] as const).map((roleOption) => (
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  {EDITABLE_ROLE_OPTIONS.map((roleOption) => (
                                     <button
                                       key={roleOption}
                                       type="button"

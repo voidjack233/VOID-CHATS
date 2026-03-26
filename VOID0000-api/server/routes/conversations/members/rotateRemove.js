@@ -1,0 +1,350 @@
+import { pool } from '../../../db.js';
+import { sendLiveEventToUser } from '../../../gateway/client.js';
+import {
+  emitConversationUpdate,
+  getChildChannelIds,
+  getGroupMembership,
+  normalizeKeyVersion,
+  resolveMembershipConversation,
+} from '../../../utils/groupMembership.js';
+
+export function registerMemberRotateRemoveRoutes(router) {
+  router.post('/rotate-remove', async (req, res) => {
+    const actorUserId = req.user.id;
+    const { conversationId } = req.params;
+    const targetUserId = typeof req.body?.target_user_id === 'string' ? req.body.target_user_id.trim() : '';
+    const newKeyVersion = normalizeKeyVersion(req.body?.new_key_version, 0);
+
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'target_user_id required' });
+    }
+
+    if (newKeyVersion <= 0) {
+      return res.status(400).json({ error: 'new_key_version required' });
+    }
+
+    let client;
+
+    try {
+      client = await pool.connect();
+      await client.query('BEGIN');
+
+      const conversation = await resolveMembershipConversation(client, conversationId);
+      if (!conversation) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+
+      if (conversation.type !== 'group') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Rotated membership changes are only supported for groups' });
+      }
+
+      const membership = await getGroupMembership(client, conversation.id, actorUserId);
+      if (!membership) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Not a member' });
+      }
+
+      if (membership.role !== 'owner') {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          error: 'Only the owner can remove members during key rotation',
+          code: actorUserId === targetUserId ? 'SELF_LEAVE_ROTATION_UNAVAILABLE' : 'OWNER_REQUIRED',
+        });
+      }
+
+      const targetMemberResult = await client.query(
+        `SELECT role
+         FROM conversation_members
+         WHERE conversation_id = $1 AND user_id = $2`,
+        [conversation.id, targetUserId]
+      );
+
+      if (targetMemberResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'User is not a member' });
+      }
+
+      if (targetMemberResult.rows[0].role === 'owner') {
+        await client.query('ROLLBACK');
+        return res.status(403).json({
+          error: 'Transfer ownership before leaving this group',
+          code: 'OWNER_TRANSFER_REQUIRED',
+        });
+      }
+
+      const lockedResult = await client.query(
+        `SELECT current_key_version,
+                pending_add_user_ids,
+                pending_add_key_version,
+                pending_remove_target,
+                pending_remove_key_version
+         FROM conversations WHERE id = $1 FOR UPDATE`,
+        [conversation.id]
+      );
+      const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
+      const existingPendingAddUserIds = Array.isArray(lockedResult.rows[0].pending_add_user_ids)
+        ? lockedResult.rows[0].pending_add_user_ids.map((value) => String(value))
+        : [];
+      const existingPendingAddVersion = lockedResult.rows[0].pending_add_key_version != null
+        ? Number(lockedResult.rows[0].pending_add_key_version)
+        : null;
+      const existingPendingTarget = lockedResult.rows[0].pending_remove_target
+        ? String(lockedResult.rows[0].pending_remove_target)
+        : null;
+      const existingPendingVersion = lockedResult.rows[0].pending_remove_key_version
+        ? Number(lockedResult.rows[0].pending_remove_key_version)
+        : null;
+
+      if (existingPendingAddUserIds.length > 0 && existingPendingAddVersion) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'A member add is already pending for this conversation',
+          code: 'PENDING_ADD_CONFLICT',
+          pending_members: existingPendingAddUserIds,
+          pending_key_version: existingPendingAddVersion,
+        });
+      }
+
+      if (existingPendingTarget && existingPendingVersion) {
+        if (existingPendingTarget === targetUserId && existingPendingVersion === newKeyVersion) {
+          await client.query('ROLLBACK');
+          return res.json({
+            success: true,
+            phase: 'prepared',
+            pending_key_version: existingPendingVersion,
+            current_key_version: currentKeyVersion,
+          });
+        }
+
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'Another member removal is already pending for this conversation',
+          code: 'PENDING_REMOVE_CONFLICT',
+          pending_remove_target: existingPendingTarget,
+          pending_remove_key_version: existingPendingVersion,
+        });
+      }
+
+      if (newKeyVersion !== currentKeyVersion + 1) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: `Expected new_key_version ${currentKeyVersion + 1}`,
+          code: 'INVALID_KEY_VERSION',
+          current_key_version: currentKeyVersion,
+        });
+      }
+
+      const currentMembersResult = await client.query(
+        `SELECT user_id
+         FROM conversation_members
+         WHERE conversation_id = $1`,
+        [conversation.id]
+      );
+      const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
+      const remainingMemberIds = currentMemberIds.filter((memberId) => memberId !== targetUserId);
+
+      if (remainingMemberIds.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Cannot remove the final group member' });
+      }
+
+      await client.query(
+        `UPDATE conversations
+         SET pending_remove_target = $2::UUID,
+             pending_remove_key_version = $3,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [conversation.id, targetUserId, newKeyVersion]
+      );
+
+      await client.query('COMMIT');
+
+      res.json({
+        success: true,
+        phase: 'prepared',
+        pending_key_version: newKeyVersion,
+        current_key_version: currentKeyVersion,
+      });
+    } catch (err) {
+      if (client) await client.query('ROLLBACK').catch(() => {});
+      console.error('Rotate-remove prepare error:', err);
+      res.status(500).json({ error: 'Failed to prepare member removal' });
+    } finally {
+      client?.release();
+    }
+  });
+
+  router.post('/rotate-remove/finalize', async (req, res) => {
+    const actorUserId = req.user.id;
+    const { conversationId } = req.params;
+
+    let client;
+
+    try {
+      client = await pool.connect();
+      await client.query('BEGIN');
+
+      const conversation = await resolveMembershipConversation(client, conversationId);
+      if (!conversation) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+
+      const membership = await getGroupMembership(client, conversation.id, actorUserId);
+      if (!membership || membership.role !== 'owner') {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'Only the owner can finalize member removal' });
+      }
+
+      const lockedResult = await client.query(
+        `SELECT current_key_version, pending_remove_target, pending_remove_key_version
+         FROM conversations WHERE id = $1 FOR UPDATE`,
+        [conversation.id]
+      );
+
+      const pendingTarget = lockedResult.rows[0].pending_remove_target
+        ? String(lockedResult.rows[0].pending_remove_target)
+        : null;
+      const pendingKeyVersion = lockedResult.rows[0].pending_remove_key_version
+        ? Number(lockedResult.rows[0].pending_remove_key_version)
+        : null;
+      const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
+
+      if (!pendingTarget || !pendingKeyVersion) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'No pending member removal to finalize',
+          code: 'NO_PENDING_REMOVE',
+        });
+      }
+
+      if (pendingKeyVersion !== currentKeyVersion + 1) {
+        await client.query(
+          `UPDATE conversations
+           SET pending_remove_target = NULL,
+               pending_remove_key_version = NULL,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [conversation.id]
+        );
+        await client.query('COMMIT');
+        return res.status(409).json({
+          error: 'Pending removal is stale — version has moved',
+          code: 'PENDING_REMOVE_STALE',
+          current_key_version: currentKeyVersion,
+        });
+      }
+
+      let snapshotExists = false;
+      try {
+        const snapshotCheck = await client.query(
+          `SELECT 1 FROM mls_group_states
+           WHERE conversation_id = $1
+             AND user_id = $2
+             AND key_version IS NOT NULL
+             AND key_version >= $3
+           LIMIT 1`,
+          [conversation.id, actorUserId, pendingKeyVersion]
+        );
+        snapshotExists = snapshotCheck.rows.length > 0;
+      } catch (snapshotErr) {
+        console.warn('Rotate-remove finalize snapshot check failed:', snapshotErr.message);
+      }
+
+      if (!snapshotExists) {
+        await client.query('ROLLBACK');
+        return res.status(428).json({
+          success: false,
+          error: 'Survivor group state snapshot for the new key version must be uploaded before finalizing remove',
+          code: 'SNAPSHOT_REQUIRED',
+          required_key_version: pendingKeyVersion,
+          current_key_version: currentKeyVersion,
+        });
+      }
+
+      const targetUserId = pendingTarget;
+      const newKeyVersion = pendingKeyVersion;
+
+      await client.query(
+        `DELETE FROM conversation_members
+         WHERE conversation_id = $1 AND user_id = $2`,
+        [conversation.id, targetUserId]
+      );
+
+      const childChannelIds = await getChildChannelIds(client, conversation.id);
+      for (const channelId of childChannelIds) {
+        await client.query(
+          `DELETE FROM conversation_members
+           WHERE conversation_id = $1 AND user_id = $2`,
+          [channelId, targetUserId]
+        );
+      }
+
+      await client.query(
+        `UPDATE conversations
+         SET current_key_version = $2,
+             pending_remove_target = NULL,
+             pending_remove_key_version = NULL,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [conversation.id, newKeyVersion]
+      );
+
+      await client.query(
+        `INSERT INTO conversation_key_rotations (
+           conversation_id,
+           previous_key_version,
+           new_key_version,
+           rotated_by_user_id,
+           reason,
+           affected_user_id
+        )
+        VALUES ($1, $2, $3, $4, 'member_remove', $5)`,
+        [conversation.id, currentKeyVersion, newKeyVersion, actorUserId, targetUserId]
+      );
+
+      const survivorMembersResult = await client.query(
+        `SELECT user_id
+         FROM conversation_members
+         WHERE conversation_id = $1`,
+        [conversation.id]
+      );
+      const survivorMemberIds = survivorMembersResult.rows.map((row) => row.user_id);
+
+      await client.query('COMMIT');
+
+      sendLiveEventToUser(targetUserId, 'MEMBER_LEAVE', {
+        conversation_id: conversation.id,
+        conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+        removed_by: actorUserId,
+      });
+
+      if (survivorMemberIds.length > 0) {
+        try {
+          await emitConversationUpdate(
+            conversation,
+            survivorMemberIds,
+            newKeyVersion,
+            survivorMemberIds.length,
+          );
+        } catch (emitErr) {
+          console.warn('Rotate-remove finalize survivor update emit failed:', emitErr);
+        }
+      }
+
+      res.json({
+        success: true,
+        key_version: newKeyVersion,
+        message: 'Member removed',
+      });
+    } catch (err) {
+      if (client) await client.query('ROLLBACK').catch(() => {});
+      console.error('Rotate-remove finalize error:', err);
+      res.status(500).json({ error: 'Failed to finalize member removal' });
+    } finally {
+      client?.release();
+    }
+  });
+}
