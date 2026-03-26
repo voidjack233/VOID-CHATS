@@ -76,7 +76,7 @@ export async function decryptMessages(
       } catch (err) {
         // Log locally for debugging, but return a placeholder so the UI doesn't crash
         console.warn('Decryption failed for message:', msg.message_id);
-        return { ...msg, content: '[unable to decrypt]' };
+        return { ...msg, content: '[unable to decrypt]', decryption_failed: true };
       }
     })
   );

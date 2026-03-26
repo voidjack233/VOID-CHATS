@@ -5,7 +5,7 @@ import {
   sendMessage,
   sendImageOnlyMessage,
   editMessage,
-  uploadAttachments,
+  uploadEncryptedAttachments,
   sendTypingStart,
   bootstrapDmKey,
   Message,
@@ -103,9 +103,9 @@ export const useMessageInput = ({
           prev.map((a) => (a.id === id ? { ...a, preview: data, uploading: true } : a))
         );
         try {
-          const { urls: [url], blurhashes: [blurhash] } = await uploadAttachments(conversation.id, [{ data }]);
+          const [attachment] = await uploadEncryptedAttachments(conversation.id, [file]);
           setAttachments((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, url: url ?? null, blurhash: blurhash || undefined, uploading: false } : a))
+            prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false } : a))
           );
         } catch {
           setAttachments((prev) =>
@@ -295,10 +295,10 @@ export const useMessageInput = ({
               key_version: keyVersion,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
-              attachments: queued.uploaded_urls,
+              secure_attachments: queued.uploaded_urls,
             });
           } else if (queued.uploaded_urls.length > 0) {
-            msg = await sendImageOnlyMessage(conversation.id, queued.uploaded_urls, {
+            msg = await sendImageOnlyMessage(conversation.id, encryptionKey, queued.uploaded_urls, {
               key_version: keyVersion,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
@@ -375,13 +375,10 @@ export const useMessageInput = ({
     const trimmed = text.trim();
     const previousText = text;
     const previousAttachments = attachments;
-    const uploadedUrls = attachments
+    const uploadedAttachments = attachments
       .filter((a) => a.url)
-      .map((a) => a.blurhash
-        ? JSON.stringify({ url: a.url!, blurhash: a.blurhash })
-        : a.url!
-      );
-    const shouldCreatePendingMessage = !editingMessage && (trimmed.length > 0 || uploadedUrls.length > 0);
+      .map((a) => a.url!);
+    const shouldCreatePendingMessage = !editingMessage && (trimmed.length > 0 || uploadedAttachments.length > 0);
     const localClientId = shouldCreatePendingMessage
       ? `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       : null;
@@ -397,7 +394,7 @@ export const useMessageInput = ({
           protocol: 'mls',
           protocol_version: 1,
           reply_to: replyTo?.message_id || null,
-          attachments: uploadedUrls,
+          attachments: uploadedAttachments,
           is_edited: false,
           edited_at: null,
           is_deleted: false,
@@ -432,6 +429,7 @@ export const useMessageInput = ({
           sendCrypto.version,
           {
             messageType: editingMessage.message_type || null,
+            secureAttachments: editingMessage.attachments,
           }
         );
         onEditComplete?.(editingMessage.message_id, trimmed);
@@ -441,7 +439,7 @@ export const useMessageInput = ({
           key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
-          attachments: uploadedUrls,
+          secure_attachments: uploadedAttachments,
         });
         onMessageSent(localClientId ? {
           ...msg,
@@ -452,8 +450,8 @@ export const useMessageInput = ({
         if (conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);
         }
-      } else if (uploadedUrls.length > 0) {
-        const msg = await sendImageOnlyMessage(conversation.id, uploadedUrls, {
+      } else if (uploadedAttachments.length > 0) {
+        const msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, uploadedAttachments, {
           key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
@@ -495,7 +493,7 @@ export const useMessageInput = ({
           local_client_id: localClientId,
           sender_id: currentUserId || 'local-user',
           text: trimmed,
-          uploaded_urls: uploadedUrls,
+          uploaded_urls: uploadedAttachments,
           reply_to_id: replyTo?.message_id || null,
           created_at: optimisticMessage.created_at,
         }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));

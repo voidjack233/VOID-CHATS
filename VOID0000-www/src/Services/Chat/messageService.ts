@@ -1,12 +1,19 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { decryptMessages, encryptMessage } from '../Crypto/messageEncryption';
+import { encryptAttachmentFile } from '../Crypto/attachmentEncryption';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import {
   createMessageKeyResolver,
   resolveMessageCryptoMetadata,
 } from './chatCryptoService';
+import {
+  applyEncryptedMessageEnvelope,
+  buildEncryptedMessagePayload,
+} from './messageEnvelope';
+import {
+  serializeAttachment,
+} from './messageAttachments';
 import type {
-  Attachment,
   Message,
   MessageCryptoProtocol,
   MessageDecryptionContext,
@@ -17,20 +24,7 @@ import {
   createApiError,
 } from './chatUtils';
 
-export function parseAttachment(raw: string): Attachment {
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.url === 'string') return parsed as Attachment;
-  } catch {
-    // Fall back to the raw URL format.
-  }
-
-  return { url: raw };
-}
-
-export function parseAttachments(raws?: string[]): Attachment[] {
-  return (raws || []).map(parseAttachment);
-}
+export { parseAttachment, parseAttachments } from './messageAttachments';
 
 export async function sendMessage(
   conversationId: string,
@@ -40,10 +34,15 @@ export async function sendMessage(
     reply_to?: string;
     key_version?: number;
     attachments?: string[];
+    secure_attachments?: string[];
     message_type?: string;
   },
 ): Promise<Message> {
-  const { encrypted_content, iv } = await encryptMessage(plaintext, encryptionKey);
+  const payload = buildEncryptedMessagePayload(
+    plaintext,
+    options?.secure_attachments,
+  );
+  const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const keyVersion = options?.key_version || 1;
   const messageType = options?.message_type || CHAT_DEFAULT_MLS_MESSAGE_TYPE;
   const protocol: MessageCryptoProtocol = 'mls';
@@ -77,6 +76,7 @@ export async function sendMessage(
   return {
     ...data.message,
     content: plaintext,
+    attachments: options?.secure_attachments || data.message.attachments,
     protocol: cryptoMetadata.protocol,
     protocol_version: cryptoMetadata.protocol_version,
   };
@@ -107,9 +107,12 @@ export async function sendSystemEvent(
 
 export async function sendImageOnlyMessage(
   conversationId: string,
-  attachments: string[],
+  encryptionKey: CryptoKey,
+  secureAttachments: string[],
   options?: { reply_to?: string; key_version?: number; message_type?: string },
 ): Promise<Message> {
+  const payload = buildEncryptedMessagePayload('', secureAttachments);
+  const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const messageType = options?.message_type || CHAT_DEFAULT_MLS_MESSAGE_TYPE;
   const protocol: MessageCryptoProtocol = 'mls';
   const protocolVersion = chatCryptoProtocolService.protocolVersion;
@@ -117,7 +120,8 @@ export async function sendImageOnlyMessage(
   const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
     method: 'POST',
     body: JSON.stringify({
-      attachments,
+      encrypted_content,
+      iv,
       key_version: options?.key_version || 1,
       message_type: messageType,
       protocol,
@@ -138,7 +142,7 @@ export async function sendImageOnlyMessage(
 
   return {
     ...data.message,
-    attachments,
+    attachments: secureAttachments,
     protocol: cryptoMetadata.protocol,
     protocol_version: cryptoMetadata.protocol_version,
   };
@@ -169,6 +173,37 @@ export async function uploadAttachments(
     urls: data.urls as string[],
     blurhashes: (data.blurhashes || data.urls.map(() => '')) as string[],
   };
+}
+
+export async function uploadEncryptedAttachments(
+  conversationId: string,
+  files: File[],
+): Promise<string[]> {
+  const prepared = await Promise.all(files.map((file) => encryptAttachmentFile(file)));
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify({
+      files: prepared.map(({ encryptedData }) => ({
+        data: encryptedData,
+        encrypted: true,
+      })),
+    }),
+  });
+
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error || 'Upload failed');
+
+  const urls = Array.isArray(data.urls) ? (data.urls as string[]) : [];
+  if (urls.length !== prepared.length) {
+    throw new Error('Encrypted upload response was incomplete');
+  }
+
+  return urls.map((url, index) =>
+    serializeAttachment({
+      ...prepared[index]!.attachment,
+      url,
+    }),
+  );
 }
 
 export async function getMessages(
@@ -202,10 +237,12 @@ export async function getMessages(
     decryptedByIndex[index] = message || null;
   });
 
-  const messagesWithReactions = sourceMessages.map((message, index) => ({
-    ...(decryptedByIndex[index] || message),
-    reactions: sourceMessages[index]?.reactions || {},
-  }));
+  const messagesWithReactions = sourceMessages.map((message, index) =>
+    applyEncryptedMessageEnvelope({
+      ...(decryptedByIndex[index] || message),
+      reactions: sourceMessages[index]?.reactions || {},
+    } as Message)
+  );
 
   return { messages: messagesWithReactions as Message[], has_more: data.has_more };
 }
@@ -218,9 +255,11 @@ export async function editMessage(
   keyVersion?: number,
   options?: {
     messageType?: string | null;
+    secureAttachments?: string[];
   },
 ): Promise<void> {
-  const { encrypted_content, iv } = await encryptMessage(newPlaintext, encryptionKey);
+  const payload = buildEncryptedMessagePayload(newPlaintext, options?.secureAttachments);
+  const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const payloadMessageType = options?.messageType || CHAT_DEFAULT_MLS_MESSAGE_TYPE;
   const protocol: MessageCryptoProtocol = 'mls';
   const protocolVersion = chatCryptoProtocolService.protocolVersion;
@@ -299,11 +338,11 @@ export async function getMessageById(
     const keyResolver = createMessageKeyResolver(encryptionKey, options);
     const [decrypted] = await decryptMessages([normalizedMessage], keyResolver || encryptionKey);
 
-    return {
+    return applyEncryptedMessageEnvelope({
       ...(decrypted as Message),
       protocol: cryptoMetadata.protocol,
       protocol_version: cryptoMetadata.protocol_version,
-    } as Message;
+    } as Message);
   } catch (error) {
     console.error('Failed to fetch single message:', error);
     return null;

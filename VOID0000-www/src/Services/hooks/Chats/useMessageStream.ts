@@ -19,6 +19,7 @@ import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { getHandshakeEntry, setHandshakeEntry, deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
+import { resolveDecryptedMessagePayload } from '../../Chat/messageEnvelope';
 import { keyManager } from '../../Crypto/keyManager';
 
 interface UseMessageStreamParams {
@@ -189,15 +190,16 @@ export const useMessageStream = ({
 
     const dmContent = await tryDmDecrypt(data, key);
     if (dmContent !== null) {
+      const resolvedPayload = resolveDecryptedMessagePayload(dmContent, data.attachments);
       if (isUpdate) {
         setMessageUpdate({
           message_id: data.message_id,
-          content: dmContent,
+          content: resolvedPayload.content || '',
           is_edited: true,
           edited_at: data.edited_at,
         });
       } else {
-        setNewMessage({ ...data, content: dmContent });
+        setNewMessage({ ...data, ...resolvedPayload });
       }
       return;
     }
@@ -211,11 +213,22 @@ export const useMessageStream = ({
             await resolveMessageKey(data, key),
           )
         : data.content;
+      const resolvedPayload = typeof content === 'string'
+        ? resolveDecryptedMessagePayload(content, data.attachments)
+        : {
+            content,
+            attachments: data.attachments,
+          };
 
       if (isUpdate) {
-        setMessageUpdate({ message_id: data.message_id, content, is_edited: true, edited_at: data.edited_at });
+        setMessageUpdate({
+          message_id: data.message_id,
+          content: resolvedPayload.content || '',
+          is_edited: true,
+          edited_at: data.edited_at,
+        });
       } else {
-        setNewMessage({ ...data, content });
+        setNewMessage({ ...data, ...resolvedPayload });
       }
     } catch (err) {
       if (!shouldAutoRecover) {

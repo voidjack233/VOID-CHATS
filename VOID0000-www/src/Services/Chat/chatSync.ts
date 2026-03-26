@@ -30,6 +30,20 @@ function hasUndecryptablePlaceholder(messages: LocalMessage[]): boolean {
   return messages.some((message) => message.content === '[unable to decrypt]');
 }
 
+function isTransientUndecryptableMessage(message: {
+  content?: string | null;
+  decryption_failed?: boolean;
+}): boolean {
+  return message.decryption_failed === true || message.content === '[unable to decrypt]';
+}
+
+function getPersistableMessageContent(message: {
+  content?: string | null;
+  decryption_failed?: boolean;
+}): string | null {
+  return isTransientUndecryptableMessage(message) ? null : (message.content ?? null);
+}
+
 const CACHE_TTL_MS = 60 * 1000;
 
 class MessageSync {
@@ -121,7 +135,7 @@ class MessageSync {
           conversation_id: msg.conversation_id,
           message_id: msg.message_id,
           sender_id: msg.sender_id,
-          content: msg.content ?? null,
+          content: getPersistableMessageContent(msg),
           key_version: msg.key_version ?? null,
           message_type: msg.message_type,
           reply_to: msg.reply_to,
@@ -140,14 +154,17 @@ class MessageSync {
       // During protocol transitions, old payloads may no longer decrypt after a reload.
       // Preserve locally-readable plaintext when a freshly fetched message yields placeholders.
       const PLACEHOLDER_CONTENTS = new Set([
-        '[unable to decrypt]',
         '[legacy message unavailable]',
         '[encrypted]',
       ]);
 
       const staleIndexes: number[] = [];
       localMsgs.forEach((msg, i) => {
-        if (msg.content && PLACEHOLDER_CONTENTS.has(msg.content)) {
+        const serverMsg = serverMsgs[i] as { content?: string | null; decryption_failed?: boolean } | undefined;
+        if (
+          isTransientUndecryptableMessage(serverMsg || {}) ||
+          (msg.content && PLACEHOLDER_CONTENTS.has(msg.content))
+        ) {
           staleIndexes.push(i);
         }
       });

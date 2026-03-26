@@ -25,6 +25,12 @@ export interface Conversation {
 export interface Attachment {
   url: string;
   blurhash?: string;
+  encrypted?: boolean;
+  iv?: string;
+  key?: string;
+  mime?: string;
+  name?: string;
+  size?: number;
 }
 
 export type MessageCryptoProtocol = 'legacy_aes' | 'mls';
@@ -52,6 +58,7 @@ export interface Message {
   reactions?: ReactionMap;
   protocol?: MessageCryptoProtocol | null;
   protocol_version?: number | null;
+  decryption_failed?: boolean;
   local_status?: 'sending' | 'sent' | 'failed' | 'queued';
   local_client_id?: string;
 }

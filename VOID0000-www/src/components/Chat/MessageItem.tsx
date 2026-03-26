@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import {
   CornerUpRight,
   Image,
@@ -10,9 +10,10 @@ import {
 import type { Message } from '../../Services/Chat/chatService';
 import type { Density } from '../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
-import BlurImage from '../common/BlurImage';
+import AttachmentImage from './AttachmentImage';
 import UserAvatar from '../common/UserAvatar';
 import { parseAttachments } from '../../Services/Chat/chatService';
+import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
 
 const DENSITY: Record<Density, {
@@ -111,6 +112,7 @@ const MessageItem = memo(function MessageItem({
   onOpenImageViewer,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
+  const [openingImageViewer, setOpeningImageViewer] = useState(false);
   const d = DENSITY[density];
   const isSystem = message.message_type === 'system';
   const isOwn = message.sender_id === currentUserId;
@@ -118,6 +120,22 @@ const MessageItem = memo(function MessageItem({
   const isQueued = message.local_status === 'queued';
   const isPending = isSending || isQueued;
   const isRightAligned = isOwn && density === 'comfortable';
+
+  const handleOpenAttachmentViewer = useCallback(async (attachmentUrls: string[], index: number) => {
+    if (isPending || openingImageViewer) return;
+
+    setOpeningImageViewer(true);
+    try {
+      const resolvedUrls = await Promise.all(
+        parseAttachments(attachmentUrls).map((attachment) => resolveAttachmentObjectUrl(attachment))
+      );
+      onOpenImageViewer(resolvedUrls, index);
+    } catch (error) {
+      console.error('Failed to open attachment viewer:', error);
+    } finally {
+      setOpeningImageViewer(false);
+    }
+  }, [isPending, onOpenImageViewer, openingImageViewer]);
   const showSenderMeta = startsGroup;
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
@@ -307,7 +325,6 @@ const MessageItem = memo(function MessageItem({
 
           {!message.is_deleted && message.attachments && message.attachments.length > 0 && (() => {
             const parsed = parseAttachments(message.attachments);
-            const rawUrls = parsed.map((attachment) => attachment.url);
 
             return (
               <div
@@ -320,13 +337,12 @@ const MessageItem = memo(function MessageItem({
                 {parsed.map((attachment, index) => (
                   <button
                     key={index}
-                    onClick={() => onOpenImageViewer(rawUrls, index)}
-                    disabled={isPending}
+                    onClick={() => { void handleOpenAttachmentViewer(message.attachments || [], index); }}
+                    disabled={isPending || openingImageViewer}
                     className={`block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square ${isPending ? 'cursor-not-allowed' : ''}`}
                   >
-                    <BlurImage
-                      src={attachment.url}
-                      blurhash={attachment.blurhash}
+                    <AttachmentImage
+                      attachment={attachment}
                       alt="attachment"
                       className="w-full h-full object-cover hover:opacity-90"
                     />

@@ -229,7 +229,9 @@ const MessageInput = (props: MessageInputProps) => {
             {props.conversationSecurityState.detail}
           </span>
         ) : (
-          <span className="text-[10px] text-void-text-muted">Messages are end-to-end encrypted</span>
+          <span className="text-[10px] text-void-text-muted">
+            Messages and new media are end-to-end encrypted. Older attachments may remain legacy.
+          </span>
         )}
       </div>
     </div>

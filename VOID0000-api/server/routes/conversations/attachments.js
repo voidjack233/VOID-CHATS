@@ -1,10 +1,11 @@
 // server/routes/conversations/attachments.js
 // POST /api/conversations/:conversationId/attachments
-// Uploads images directly to MinIO and returns CDN URLs.
-// Images are uploaded before the message is sent so the URL
-// can be included in the encrypted message payload.
+// Uploads legacy plaintext images or opaque encrypted blobs and returns URLs.
+// New encrypted-media uploads store ciphertext only; the file key/iv lives in
+// the message's encrypted payload, not in object storage.
 
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
 import sharp from 'sharp';
 import { encode } from 'blurhash';
 import { pool } from '../../db.js';
@@ -42,7 +43,9 @@ const isValidImage = (buf) =>
 const isGif = (buf) => MAGIC_BYTES.gif.every((byte, i) => buf[i] === byte);
 
 // POST /api/conversations/:conversationId/attachments
-// Body: { files: [{ data: 'data:image/...;base64,...', name: 'optional.jpg' }] }
+// Body:
+//   Legacy:    { files: [{ data: 'data:image/...;base64,...' }] }
+//   Encrypted: { files: [{ data: '<base64 ciphertext>', encrypted: true }] }
 // Returns: { urls: ['https://cdn.../chat-attachments/...'] }
 router.post('/', async (req, res) => {
   const userId = req.user.id;
@@ -81,6 +84,7 @@ router.post('/', async (req, res) => {
 
   for (const file of files) {
     const { data } = file;
+    const isEncryptedUpload = file?.encrypted === true;
 
     if (!data || typeof data !== 'string') {
       return res.status(400).json({ error: 'Each file must have a data field' });
@@ -90,21 +94,45 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'File too large. Maximum 10MB per image.' });
     }
 
-    const hasValidPrefix = ALLOWED_MIME_PREFIXES.some((p) =>
-      data.toLowerCase().startsWith(p)
-    );
-    if (!hasValidPrefix) {
-      return res.status(400).json({ error: 'Invalid image format. Use JPG, PNG, GIF, or WebP.' });
-    }
-
-    const base64 = data.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(base64, 'base64');
-
-    if (!isValidImage(buffer)) {
-      return res.status(400).json({ error: 'File is not a valid image' });
-    }
-
     try {
+      if (isEncryptedUpload) {
+        const encryptedBuffer = Buffer.from(data, 'base64');
+        if (!encryptedBuffer.length) {
+          return res.status(400).json({ error: 'Encrypted attachment payload was empty' });
+        }
+
+        const filename = `msg-${randomUUID()}.bin`;
+
+        await minioClient.putObject(
+          ATTACH_BUCKET,
+          filename,
+          encryptedBuffer,
+          encryptedBuffer.length,
+          {
+            'Content-Type': 'application/octet-stream',
+            'X-Amz-Meta-Encrypted': '1',
+          }
+        );
+
+        urls.push(`${CDN_BASE}/${ATTACH_BUCKET}/${filename}`);
+        blurhashes.push('');
+        continue;
+      }
+
+      const hasValidPrefix = ALLOWED_MIME_PREFIXES.some((p) =>
+        data.toLowerCase().startsWith(p)
+      );
+      if (!hasValidPrefix) {
+        return res.status(400).json({ error: 'Invalid image format. Use JPG, PNG, GIF, or WebP.' });
+      }
+
+      const base64 = data.replace(/^data:image\/\w+;base64,/, '');
+      const buffer = Buffer.from(base64, 'base64');
+
+      if (!isValidImage(buffer)) {
+        return res.status(400).json({ error: 'File is not a valid image' });
+      }
+
       let processed;
       let contentType;
       let ext;
@@ -126,7 +154,7 @@ router.post('/', async (req, res) => {
         ext = 'webp';
       }
 
-      const filename = `msg-${userId.substring(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.${ext}`;
+      const filename = `msg-${randomUUID()}.${ext}`;
 
       await minioClient.putObject(
         ATTACH_BUCKET,

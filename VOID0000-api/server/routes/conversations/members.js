@@ -900,10 +900,18 @@ router.post('/rotate-remove/finalize', async (req, res) => {
          rotated_by_user_id,
          reason,
          affected_user_id
-       )
-       VALUES ($1, $2, $3, $4, 'member_remove', $5)`,
+      )
+      VALUES ($1, $2, $3, $4, 'member_remove', $5)`,
       [conversation.id, currentKeyVersion, newKeyVersion, actorUserId, targetUserId]
     );
+
+    const survivorMembersResult = await client.query(
+      `SELECT user_id
+       FROM conversation_members
+       WHERE conversation_id = $1`,
+      [conversation.id]
+    );
+    const survivorMemberIds = survivorMembersResult.rows.map((row) => row.user_id);
 
     await client.query('COMMIT');
 
@@ -912,6 +920,19 @@ router.post('/rotate-remove/finalize', async (req, res) => {
       conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
       removed_by: actorUserId,
     });
+
+    if (survivorMemberIds.length > 0) {
+      try {
+        await emitConversationUpdate(
+          conversation,
+          survivorMemberIds,
+          newKeyVersion,
+          survivorMemberIds.length,
+        );
+      } catch (emitErr) {
+        console.warn('Rotate-remove finalize survivor update emit failed:', emitErr);
+      }
+    }
 
     res.json({
       success: true,

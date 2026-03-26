@@ -103,8 +103,17 @@ const sortLocalMessages = (msgs: LocalMessage[]) =>
 const isUndecryptableContent = (content: string | null | undefined) =>
   content === '[unable to decrypt]';
 
-const hasUndecryptableMessage = (messages: Array<{ content?: string | null }>) =>
-  messages.some((message) => isUndecryptableContent(message.content));
+const isTransientUndecryptableMessage = (message: { content?: string | null; decryption_failed?: boolean }) =>
+  message.decryption_failed === true || isUndecryptableContent(message.content);
+
+const hasUndecryptableMessage = (
+  messages: Array<{ content?: string | null; decryption_failed?: boolean }>
+) => messages.some((message) => isTransientUndecryptableMessage(message));
+
+const getPersistableMessageContent = (message: {
+  content?: string | null;
+  decryption_failed?: boolean;
+}) => (isTransientUndecryptableMessage(message) ? null : (message.content ?? null));
 
 const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
   msgs.map((msg) => {
@@ -113,7 +122,7 @@ const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
       conversation_id: msg.conversation_id,
       message_id: msg.message_id,
       sender_id: msg.sender_id,
-      content: msg.content ?? null,
+      content: getPersistableMessageContent(msg),
       key_version: msg.key_version ?? null,
       message_type: msg.message_type,
       reply_to: msg.reply_to,
@@ -128,14 +137,33 @@ const toLocalMessages = (msgs: Message[]): LocalMessage[] =>
     };
   });
 
-const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] =>
-  sortLocalMessages(
-    Array.from(
-      new Map(
-        pages.flat().map((msg) => [msg.message_id, msg])
-      ).values()
-    )
-  );
+const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] => {
+  const merged = new Map<string, LocalMessage>();
+
+  pages.flat().forEach((message) => {
+    const existing = merged.get(message.message_id);
+    if (!existing) {
+      merged.set(message.message_id, message);
+      return;
+    }
+
+    merged.set(message.message_id, {
+      ...existing,
+      ...message,
+      content: message.content ?? existing.content ?? null,
+      attachments: message.attachments ?? existing.attachments,
+      reactions:
+        Object.keys(message.reactions || {}).length > 0
+          ? message.reactions
+          : existing.reactions,
+      key_version: message.key_version ?? existing.key_version ?? null,
+      protocol: message.protocol ?? existing.protocol ?? null,
+      protocol_version: message.protocol_version ?? existing.protocol_version ?? null,
+    });
+  });
+
+  return sortLocalMessages(Array.from(merged.values()));
+};
 
 const getLocalClientId = (message: Pick<Message, 'message_id' | 'local_client_id'>): string | undefined => {
   if (message.local_client_id) return message.local_client_id;
