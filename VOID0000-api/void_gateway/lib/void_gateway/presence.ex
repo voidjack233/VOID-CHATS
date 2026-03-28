@@ -19,26 +19,16 @@ defmodule VoidGateway.Presence do
   Both keys are read by getLiveUserPresence() in gateway/client.js (REST path), so
   correct presence state here means REST callers also see live presence correctly.
 
-  ## Presence fanout gap
+  ## Presence fanout
 
-  PRESENCE_UPDATE events to friends are NOT published from this module.
-  Friend resolution requires a Postgres query (friendships table). Phoenix has
-  no Postgres access — keeping DB logic in Node is an explicit boundary.
-
-  The result: connected friends will not receive real-time PRESENCE_UPDATE pushes
-  for presence changes that originate from Phoenix sockets. The Valkey keys ARE
-  correct, so any REST call (e.g. getLiveUserPresence) returns accurate state,
-  and friends who reconnect will see the right presence.
-
-  To close this gap properly, one of the following is needed (future work):
-    a. A dedicated Node API worker subscriber on a separate Pub/Sub channel that
-       handles a \"broadcastPresenceUpdate\" command, resolving friends via Postgres
-       and calling publishToGateway() per friend.
-    b. A Node internal REST endpoint that Phoenix calls after writing presence,
-       which performs the fan-out.
-    c. Storing the friend list in Valkey (e.g. friends:{userId} Set) so Phoenix
-       can resolve it directly without Postgres.
+  Phoenix cannot resolve friend IDs (Postgres boundary). Instead, `publish_change/3`
+  publishes a signal to the `void:presence_change` Valkey channel. A Node subscriber
+  (`server/gateway/presence-fanout.js`) picks it up, resolves friends from Postgres,
+  and republishes individual PRESENCE_UPDATE events to `void:gateway`, which Phoenix
+  fans out via the existing EventDispatcher path.
   """
+
+  @presence_change_channel "void:presence_change"
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -73,6 +63,32 @@ defmodule VoidGateway.Presence do
       {:error, err} ->
         Logger.error("[Presence] write error user=#{user_id}: #{inspect(err)}")
         # Non-fatal — REST reads may be stale but the socket continues.
+        :ok
+    end
+  end
+
+  @doc """
+  Publish a presence-change signal to `void:presence_change`.
+
+  Node subscribes to this channel, resolves friend IDs from Postgres, and
+  republishes individual PRESENCE_UPDATE events to `void:gateway`.
+
+  Fire-and-forget — if Node is down or Valkey errors, the signal is lost.
+  REST presence reads are still accurate (Valkey keys are already written).
+  """
+  @spec publish_change(String.t(), String.t(), integer()) :: :ok
+  def publish_change(user_id, status, last_active_ms) do
+    payload =
+      Jason.encode!(%{
+        userId: user_id,
+        status: status,
+        lastActive: last_active_ms
+      })
+
+    case Redix.command(:redix, ["PUBLISH", @presence_change_channel, payload]) do
+      {:ok, _receivers} -> :ok
+      {:error, err} ->
+        Logger.error("[Presence] publish_change error user=#{user_id}: #{inspect(err)}")
         :ok
     end
   end

@@ -42,11 +42,15 @@ defmodule VoidGateway.EventDispatcher do
     if sockets == [] do
       Logger.debug("[EventDispatcher] No live connections for #{user_id}, dropping #{event}")
     else
-      # Send event + data unencoded. Each socket process assigns its own monotonic
-      # sequence number and buffers the encoded payload in Valkey for RESUME.
       Enum.each(sockets, fn {_device_id, pid} ->
         send(pid, {:push_event, event, data})
       end)
+
+      :telemetry.execute(
+        [:void_gateway, :event, :fanout],
+        %{},
+        %{event: event, user_id: user_id, sockets: length(sockets)}
+      )
     end
 
     :ok
@@ -72,12 +76,14 @@ defmodule VoidGateway.EventDispatcher do
 
     pids = resolve_pids(user_id, device_id)
 
-    Logger.debug(
-      "[EventDispatcher] disconnectSession user=#{user_id} device=#{inspect(device_id)} " <>
-        "targets=#{length(pids)} code=#{code}"
+    Enum.each(pids, fn pid -> send(pid, {:disconnect, code, reason}) end)
+
+    :telemetry.execute(
+      [:void_gateway, :command, :disconnect_session],
+      %{},
+      %{user_id: user_id, targets: length(pids)}
     )
 
-    Enum.each(pids, fn pid -> send(pid, {:disconnect, code, reason}) end)
     :ok
   end
 
@@ -92,12 +98,14 @@ defmodule VoidGateway.EventDispatcher do
     device_id = data["deviceId"]
     pids = resolve_pids(user_id, device_id)
 
-    Logger.debug(
-      "[EventDispatcher] updateTokenExpiry user=#{user_id} device=#{inspect(device_id)} " <>
-        "new_exp=#{new_exp} targets=#{length(pids)}"
+    Enum.each(pids, fn pid -> send(pid, {:update_token_expiry, new_exp}) end)
+
+    :telemetry.execute(
+      [:void_gateway, :command, :update_token_expiry],
+      %{},
+      %{user_id: user_id, targets: length(pids)}
     )
 
-    Enum.each(pids, fn pid -> send(pid, {:update_token_expiry, new_exp}) end)
     :ok
   end
 

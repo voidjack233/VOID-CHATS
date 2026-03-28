@@ -1,6 +1,6 @@
 defmodule VoidGateway.ConnectionRegistry do
   @moduledoc """
-  ETS-backed registry mapping {userId, deviceId, pid} -> :registered.
+  ETS-backed registry mapping {userId, deviceId, pid} -> clientInstanceId.
 
   Key design decisions vs the first version ({userId, deviceId} -> pid):
 
@@ -18,6 +18,13 @@ defmodule VoidGateway.ConnectionRegistry do
       before its terminate/2 callback fires (abnormal exit, VM fault), the
       {:DOWN} message cleans up the stale ETS entry. WebSock's terminate/2
       should always run, but the monitor closes the gap for free.
+
+    - Same-tab dedupe: register/4 is a synchronous GenServer.call so the
+      find-displaced + insert + monitor sequence is atomic. Two simultaneous
+      IDENTIFY/RESUME calls for the same {userId, deviceId, clientInstanceId}
+      are serialized — the second one always sees the first's entry and
+      returns it as displaced. This is only on IDENTIFY/RESUME, not on the
+      event-push hot path, so the serialization cost is negligible.
   """
 
   use GenServer
@@ -26,24 +33,30 @@ defmodule VoidGateway.ConnectionRegistry do
 
   # ---------------------------------------------------------------------------
   # Client API
-  # ETS reads/writes happen in the calling process — no GenServer round-trip
-  # on the hot path. Only monitor bookkeeping goes through the GenServer.
   # ---------------------------------------------------------------------------
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
-  @spec register(String.t(), String.t(), pid()) :: :ok
-  def register(user_id, device_id, pid)
+  @doc """
+  Register a socket and return any displaced pids.
+
+  Runs as a synchronous GenServer.call so that find-displaced + insert +
+  monitor is atomic — no race between concurrent IDENTIFY/RESUME calls.
+
+  Displaced = existing sockets for the same {userId, deviceId} whose
+  clientInstanceId matches the new one. When clientInstanceId is nil,
+  no dedupe occurs (client didn't provide one, so identity is unknown).
+  """
+  @spec register(String.t(), String.t(), String.t() | nil, pid()) :: [pid()]
+  def register(user_id, device_id, client_instance_id, pid)
       when is_binary(user_id) and is_binary(device_id) and is_pid(pid) do
-    :ets.insert(@table, {{user_id, device_id, pid}, :registered})
-    # Fire-and-forget cast — the ETS insert already happened.
-    # GenServer will monitor the pid and clean up the row if it crashes.
-    GenServer.cast(__MODULE__, {:monitor, user_id, device_id, pid})
-    :ok
+    GenServer.call(__MODULE__, {:register, user_id, device_id, client_instance_id, pid})
   end
 
   # Removes exactly the row for this {userId, deviceId, pid}.
   # All other pids for the same {userId, deviceId} are unaffected.
+  # Called from the socket process in terminate/2 — safe to do directly
+  # in the calling process since it only touches its own row.
   @spec unregister(String.t(), String.t(), pid()) :: :ok
   def unregister(user_id, device_id, pid)
       when is_binary(user_id) and is_binary(device_id) and is_pid(pid) do
@@ -52,16 +65,30 @@ defmodule VoidGateway.ConnectionRegistry do
   end
 
   # All pids currently registered for a specific {userId, deviceId} pair.
-  # Normally 0 or 1 entries; may be >1 transiently during reconnect overlap.
+  # ETS read in the calling process — no GenServer round-trip on the hot path.
   @spec lookup(String.t(), String.t()) :: [pid()]
   def lookup(user_id, device_id) do
     :ets.match_object(@table, {{user_id, device_id, :_}, :_})
     |> Enum.map(fn {{_uid, _did, pid}, _} -> pid end)
   end
 
+  # Total number of registered sockets across all users.
+  # Used by /health and telemetry — cheap O(1) ETS metadata read.
+  @spec count() :: non_neg_integer()
+  def count, do: :ets.info(@table, :size)
+
+  # All registered socket pids. Used by Drain to broadcast SHUTDOWN.
+  # Not on the hot path — only called once during graceful shutdown.
+  @spec all_pids() :: [pid()]
+  def all_pids do
+    :ets.match(@table, {{:_, :_, :"$1"}, :_})
+    |> Enum.map(fn [pid] -> pid end)
+  end
+
   # All {deviceId, pid} pairs for every socket belonging to a user.
   # Used by EventDispatcher to fan out a pub/sub event to all of a user's
   # connected sockets regardless of device.
+  # ETS read in the calling process — no GenServer round-trip on the hot path.
   @spec lookup_all_for_user(String.t()) :: [{String.t(), pid()}]
   def lookup_all_for_user(user_id) do
     :ets.match_object(@table, {{user_id, :_, :_}, :_})
@@ -69,7 +96,7 @@ defmodule VoidGateway.ConnectionRegistry do
   end
 
   # ---------------------------------------------------------------------------
-  # GenServer callbacks — monitor lifecycle only
+  # GenServer callbacks
   # ---------------------------------------------------------------------------
 
   @impl true
@@ -85,10 +112,22 @@ defmodule VoidGateway.ConnectionRegistry do
     {:ok, %{monitors: %{}}}
   end
 
+  # Atomic register-and-displace. All three steps (find displaced, insert,
+  # monitor) happen inside the GenServer so concurrent callers are serialized.
   @impl true
-  def handle_cast({:monitor, user_id, device_id, pid}, %{monitors: monitors} = state) do
+  def handle_call(
+        {:register, user_id, device_id, client_instance_id, pid},
+        _from,
+        %{monitors: monitors} = state
+      ) do
+    displaced = find_displaced(user_id, device_id, client_instance_id, pid)
+
+    :ets.insert(@table, {{user_id, device_id, pid}, client_instance_id})
+
     ref = Process.monitor(pid)
-    {:noreply, %{state | monitors: Map.put(monitors, ref, {user_id, device_id, pid})}}
+    new_monitors = Map.put(monitors, ref, {user_id, device_id, pid})
+
+    {:reply, displaced, %{state | monitors: new_monitors}}
   end
 
   # Socket process exited — remove its ETS row.
@@ -107,4 +146,21 @@ defmodule VoidGateway.ConnectionRegistry do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # ---------------------------------------------------------------------------
+  # Same-tab dedupe (private, called inside GenServer)
+  # ---------------------------------------------------------------------------
+
+  # Returns pids of existing sockets for the same {userId, deviceId} whose
+  # clientInstanceId matches, excluding the new pid itself.
+  # When client_instance_id is nil, returns [] (no dedupe possible).
+  defp find_displaced(_user_id, _device_id, nil, _new_pid), do: []
+
+  defp find_displaced(user_id, device_id, client_instance_id, new_pid) do
+    :ets.match_object(@table, {{user_id, device_id, :_}, :_})
+    |> Enum.filter(fn {{_uid, _did, pid}, cid} ->
+      pid != new_pid and cid == client_instance_id
+    end)
+    |> Enum.map(fn {{_uid, _did, pid}, _} -> pid end)
+  end
 end

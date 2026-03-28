@@ -65,6 +65,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   @close_unauthorized 4001
   @close_protocol_error 4002
   @close_invalid_session 4007
+  @close_session_replaced 4009
 
   # Timings (match gateway/index.js)
   @heartbeat_interval_ms 30_000
@@ -110,6 +111,12 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       token_expiry_close_ref: nil
     }
 
+    :telemetry.execute(
+      [:void_gateway, :socket, :connect],
+      %{},
+      %{user_id: user_id, device_id: device_id}
+    )
+
     # Send HELLO immediately. Client must respond with IDENTIFY or RESUME within 10 seconds.
     hello = encode!(%{op: @op_hello, d: %{heartbeat_interval: @heartbeat_interval_ms}})
     {:push, {:text, hello}, state}
@@ -136,7 +143,6 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Identify timeout — client did not send IDENTIFY or RESUME in time
   @impl WebSock
   def handle_info(:identify_timeout, %{status: :awaiting_identify} = state) do
-    Logger.debug("[SocketHandler] Identify timeout for #{state.user_id}/#{state.device_id}")
     do_close(state, @close_auth_timeout, "Identify timeout")
   end
 
@@ -167,7 +173,6 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Token hard expiry — close the socket.
   # Matches Node's tokenExpiryTimer callback: closeSocket(ws, CLOSE.UNAUTHORIZED, 'Token expired').
   def handle_info(:token_expired, state) do
-    Logger.debug("[SocketHandler] Token expired for #{state.user_id}/#{state.device_id}")
     do_close(state, @close_unauthorized, "Token expired")
   end
 
@@ -181,12 +186,18 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
 
   # Node commanded this socket to close (logout, session revoke, membership removal, etc.).
   # Matches the disconnectSession command dispatched via gateway/control.js disconnectLiveSession().
-  def handle_info({:disconnect, code, reason}, state) do
-    Logger.debug(
-      "[SocketHandler] Disconnect command for #{state.user_id}/#{state.device_id} " <>
-        "code=#{code} reason=#{reason}"
-    )
+  # Graceful drain: push SHUTDOWN event so the client can schedule a clean
+  # reconnect, then let the normal OTP shutdown close this socket.
+  # The frontend handler (gateway.ts) reads d.in as the reconnect delay,
+  # marks the session resumable, and reconnects after the delay.
+  def handle_info({:shutdown_event, delay_ms}, %{status: :identified} = state) do
+    {payload, new_state} = push_event("SHUTDOWN", %{in: delay_ms}, state)
+    {:push, {:text, payload}, new_state}
+  end
 
+  def handle_info({:shutdown_event, _delay_ms}, state), do: {:ok, state}
+
+  def handle_info({:disconnect, code, reason}, state) do
     do_close(state, code, reason)
   end
 
@@ -205,14 +216,10 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # Note: PRESENCE_UPDATE fanout to friends on offline is not implemented.
   # Friend IDs require Postgres; see VoidGateway.Presence for details.
   @impl WebSock
-  def terminate(reason, state) do
+  def terminate(_reason, state) do
     cancel_token_timers(state)
 
     if state.status == :identified do
-      Logger.debug(
-        "[SocketHandler] Socket closed for #{state.user_id}/#{state.device_id}: #{inspect(reason)}"
-      )
-
       ConnectionRegistry.unregister(state.user_id, state.device_id, self())
 
       remaining = length(ConnectionRegistry.lookup_all_for_user(state.user_id))
@@ -228,6 +235,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
           end
 
         Presence.write(state.user_id, "offline", last_active, 0)
+        Presence.publish_change(state.user_id, "offline", last_active)
       else
         # Other sockets remain — always rewrite with the new count and a normalized status.
         # Mirrors syncSharedPresence() in index.js line 1183: always rewrites count;
@@ -270,7 +278,16 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
 
         # Register this socket process in the connection registry.
         # EventDispatcher will use this to deliver events to this user/device.
-        ConnectionRegistry.register(state.user_id, state.device_id, self())
+        # Returns pids of stale sockets with the same clientInstanceId (same-tab dedupe).
+        displaced =
+          ConnectionRegistry.register(state.user_id, state.device_id, client_instance_id, self())
+
+        # Close displaced sockets with 4009 SESSION_REPLACED.
+        # This only fires when userId + deviceId + clientInstanceId all match,
+        # so parallel sessions from different tabs/devices are unaffected.
+        for pid <- displaced do
+          send(pid, {:disconnect, @close_session_replaced, "Session replaced"})
+        end
 
         # Persist session metadata and clear any stale event buffer.
         # Matches handleIdentify() in gateway/index.js:
@@ -281,13 +298,11 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
 
         # Write presence: user is now online.
         # Mirrors: syncSharedPresence(userId, { status: 'online', lastActive: Date.now() })
+        # Subtract displaced sockets — they're still in ETS but about to terminate.
         now_ms = System.system_time(:millisecond)
-        active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id))
+        active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id)) - length(displaced)
         Presence.write(state.user_id, "online", now_ms, active_count)
-
-        # Note: PRESENCE_UPDATE fanout to friends is not implemented.
-        # Node does: broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, { user_id, status: 'online' })
-        # Friend resolution requires Postgres — see VoidGateway.Presence for details.
+        Presence.publish_change(state.user_id, "online", now_ms)
 
         # READY is the first event (seq 1). Build it manually because session_id
         # is not in state yet so push_event/3 cannot be used here.
@@ -318,8 +333,11 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
           }
           |> setup_token_expiry()
 
-        Logger.info(
-          "[SocketHandler] Identified user=#{state.user_id} device=#{state.device_id} session=#{session_id}"
+        :telemetry.execute(
+          [:void_gateway, :socket, :identify],
+          %{},
+          %{user_id: state.user_id, device_id: state.device_id,
+            session_id: session_id, displaced: length(displaced)}
         )
 
         {:push, {:text, ready_payload}, new_state}
@@ -415,9 +433,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
 
             active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id))
             Presence.write(state.user_id, new_status, last_active, active_count)
-
-            # Note: PRESENCE_UPDATE fanout to friends is not implemented.
-            # Node does: broadcastToFriends(userId, EVENTS.PRESENCE_UPDATE, { user_id, status, last_active })
+            Presence.publish_change(state.user_id, new_status, last_active)
 
             {:ok, state}
 
@@ -426,6 +442,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
             last_active = now_ms
             active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id))
             Presence.write(state.user_id, new_status, last_active, active_count)
+            Presence.publish_change(state.user_id, new_status, last_active)
             {:ok, state}
         end
 
@@ -461,21 +478,27 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
            SessionBuffer.replay(session_id, last_sequence) do
       client_instance_id = Map.get(meta, "clientInstanceId")
 
-      ConnectionRegistry.register(state.user_id, state.device_id, self())
+      displaced =
+        ConnectionRegistry.register(state.user_id, state.device_id, client_instance_id, self())
+
+      for pid <- displaced do
+        send(pid, {:disconnect, @close_session_replaced, "Session replaced"})
+      end
 
       # Re-persist to refresh the TTL (matches handleResume() in gateway/index.js).
       SessionBuffer.persist_meta(session_id, state.user_id, state.device_id, client_instance_id)
 
       # Presence: read current status from Valkey to preserve idle if set.
       # Mirrors: status = currentPresence?.status === 'idle' ? 'idle' : 'online'
+      # Subtract displaced sockets — they're still in ETS but about to terminate.
       now_ms = System.system_time(:millisecond)
-      active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id))
-      {resume_status, _should_fanout} = resolve_resume_status(state.user_id)
+      active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id)) - length(displaced)
+      {resume_status, should_fanout} = resolve_resume_status(state.user_id)
       Presence.write(state.user_id, resume_status, now_ms, active_count)
 
-      # Note: conditional PRESENCE_UPDATE fanout is not implemented.
-      # Node does: if (!currentPresence || currentPresence.status !== resumedStatus)
-      #              broadcastToFriends(...)
+      if should_fanout do
+        Presence.publish_change(state.user_id, resume_status, now_ms)
+      end
 
       # seq must be the maximum of what the client reported and what we buffered,
       # so future events continue from the right point.
@@ -493,9 +516,11 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
         }
         |> setup_token_expiry()
 
-      Logger.info(
-        "[SocketHandler] Resumed user=#{state.user_id} device=#{state.device_id} " <>
-          "session=#{session_id} replayed=#{length(replay.events)} seq=#{new_seq}"
+      :telemetry.execute(
+        [:void_gateway, :socket, :resume],
+        %{},
+        %{user_id: state.user_id, device_id: state.device_id,
+          session_id: session_id, replayed: length(replay.events)}
       )
 
       # Send buffered events the client missed, then RESUMED.
@@ -506,11 +531,21 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       {:push, replay_frames ++ [{:text, resumed}], new_state}
     else
       {:ok, %{gap_detected: true}} ->
-        Logger.warning("[SocketHandler] Resume gap detected for #{state.user_id}/#{state.device_id}")
+        :telemetry.execute(
+          [:void_gateway, :socket, :resume_failed],
+          %{},
+          %{user_id: state.user_id, device_id: state.device_id, reason: :gap}
+        )
+
         do_close(state, @close_invalid_session, "Resume out of date")
 
       _ ->
-        Logger.warning("[SocketHandler] Resume rejected for #{state.user_id}/#{state.device_id}")
+        :telemetry.execute(
+          [:void_gateway, :socket, :resume_failed],
+          %{},
+          %{user_id: state.user_id, device_id: state.device_id, reason: :invalid_session}
+        )
+
         do_close(state, @close_invalid_session, "Invalid session")
     end
   end
@@ -640,6 +675,13 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
 
   # Send a WebSocket close frame with a custom close code before stopping.
   defp do_close(state, code, reason_str) do
+    :telemetry.execute(
+      [:void_gateway, :socket, :close],
+      %{},
+      %{user_id: state.user_id, device_id: state.device_id,
+        code: code, reason: reason_str}
+    )
+
     {:stop, :normal, {code, reason_str}, state}
   end
 

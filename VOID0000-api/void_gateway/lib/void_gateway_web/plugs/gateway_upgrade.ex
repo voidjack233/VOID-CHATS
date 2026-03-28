@@ -22,7 +22,8 @@ defmodule VoidGatewayWeb.Plugs.GatewayUpgrade do
 
   @impl Plug
   def call(conn, _opts) do
-    with :ok <- check_origin(conn),
+    with :ok <- check_draining(),
+         :ok <- check_origin(conn),
          {:ok, auth} <- VoidGateway.SocketAuth.verify_upgrade(conn) do
       conn
       |> WebSockAdapter.upgrade(
@@ -33,6 +34,19 @@ defmodule VoidGatewayWeb.Plugs.GatewayUpgrade do
       )
       |> Plug.Conn.halt()
     else
+      {:error, :draining} ->
+        retry_secs =
+          Application.get_env(:void_gateway, :drain_delay_ms, 5_000)
+          |> div(1_000)
+          |> max(1)
+          |> Integer.to_string()
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/plain")
+        |> Plug.Conn.put_resp_header("retry-after", retry_secs)
+        |> Plug.Conn.send_resp(503, "Service draining")
+        |> Plug.Conn.halt()
+
       {:error, :bad_origin} ->
         Logger.warning("[GatewayUpgrade] Rejected: bad origin #{origin_header(conn)}")
 
@@ -54,6 +68,10 @@ defmodule VoidGatewayWeb.Plugs.GatewayUpgrade do
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  defp check_draining do
+    if VoidGateway.Drain.draining?(), do: {:error, :draining}, else: :ok
+  end
 
   defp check_origin(conn) do
     origin = origin_header(conn)

@@ -99,6 +99,8 @@ import {
 let getConnectionStats;
 const { initPublisher } = await import('./valkey-pubsub.js');
 initPublisher();
+const { initPresenceFanout } = await import('./gateway/presence-fanout.js');
+initPresenceFanout();
 console.log(`📡 Phoenix gateway mode: API worker started (pub/sub publisher ready)`);
 getConnectionStats = () => ({
   mode: gatewayMode,
