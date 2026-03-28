@@ -1,6 +1,6 @@
 // src/components/common/Setting/Setting.tsx
-import { X, User, Shield, Info, Palette, AlertTriangle } from 'lucide-react';
-import { useState } from 'react';
+import { X, User, Shield, Info, Palette, AlertTriangle, ChevronRight, ArrowLeft } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import ProfileTab from './ProfileTab';
 import AccountTab from './AccountTab';
 import AboutTab from './AboutTab';
@@ -17,6 +17,7 @@ type SettingsTab = 'profile' | 'account' | 'about' | 'appearance';
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   useScrollLock(); // Lock scroll when settings modal is open
   const [activeTab, setActiveTab] = useState<SettingsTab>('profile');
+  const [mobileView, setMobileView] = useState<'menu' | 'detail'>('menu');
   const [showUnsavedDialog, setShowUnsavedDialog] = useState(false);
   const { hasChanges, revertChanges } = useTheme();
 
@@ -40,6 +41,32 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     { id: 'appearance' as SettingsTab, label: 'Appearance', icon: <Palette className="w-4 h-4" /> },
     { id: 'about' as SettingsTab, label: 'About', icon: <Info className="w-4 h-4" /> },
   ];
+
+  useEffect(() => {
+    const syncMobileView = () => {
+      if (window.innerWidth >= 768) {
+        setMobileView('detail');
+      } else {
+        setMobileView('menu');
+      }
+    };
+
+    syncMobileView();
+    window.addEventListener('resize', syncMobileView);
+
+    return () => {
+      window.removeEventListener('resize', syncMobileView);
+    };
+  }, []);
+
+  const openTab = (tab: SettingsTab) => {
+    setActiveTab(tab);
+    if (window.innerWidth < 768) {
+      setMobileView('detail');
+    }
+  };
+
+  const currentTabLabel = menuItems.find(item => item.id === activeTab)?.label || 'Settings';
 
   const renderTabContent = () => {
     switch (activeTab) {
@@ -71,10 +98,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             {menuItems.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => openTab(item.id)}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
                   activeTab === item.id
-                    ? 'bg-void-accent text-white'
+                    ? 'bg-void-accent/12 text-void-accent ring-1 ring-void-accent/25'
                     : 'text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
                 }`}
               >
@@ -92,31 +119,31 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         {/* Mobile Header - Sticky */}
         <div className="md:hidden sticky top-0 z-10 bg-void-bg-sec border-b border-void-bg-hover">
           <div className="p-4 flex items-center justify-between">
-            <h2 className="text-xl font-bold text-void-text">Settings</h2>
+            <div className="flex items-center gap-3 min-w-0">
+              {mobileView === 'detail' ? (
+                <button
+                  onClick={() => setMobileView('menu')}
+                  className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
+                  aria-label="Back to settings"
+                >
+                  <ArrowLeft className="w-5 h-5 text-void-text-muted" />
+                </button>
+              ) : null}
+              <div className="min-w-0">
+                <h2 className="text-xl font-bold text-void-text truncate">
+                  {mobileView === 'menu' ? 'Settings' : currentTabLabel}
+                </h2>
+                {mobileView === 'menu' ? (
+                  <p className="text-xs text-void-text-muted mt-0.5">Manage your account</p>
+                ) : null}
+              </div>
+            </div>
             <button
               onClick={handleClose}
               className="p-2 rounded-full bg-void-bg-main/80 hover:bg-void-bg-main"
             >
               <X className="w-5 h-5 text-void-text-muted" />
             </button>
-          </div>
-
-          {/* Mobile Tab Navigation */}
-          <div className="flex border-t border-void-bg-hover overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-            {menuItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 text-sm font-medium whitespace-nowrap ${
-                  activeTab === item.id
-                    ? 'text-void-accent border-b-2 border-void-accent'
-                    : 'text-void-text-muted hover:text-void-text'
-                }`}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
-            ))}
           </div>
         </div>
 
@@ -138,7 +165,37 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
           {/* Content - Scrollable */}
           <div className="flex-1 overflow-y-auto overscroll-contain">
             <div className="p-4 md:p-6">
-              {renderTabContent()}
+              <div className="md:hidden">
+                {mobileView === 'menu' ? (
+                  <div className="space-y-2">
+                    {menuItems.map((item) => {
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => openTab(item.id)}
+                          className="w-full flex items-center justify-between gap-3 rounded-2xl border border-void-bg-hover bg-void-bg-main/35 px-4 py-4 text-left text-void-text-muted transition-all hover:border-void-bg-hover/80 hover:bg-void-bg-hover/60 hover:text-void-text"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="shrink-0 text-void-text-muted">
+                              {item.icon}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-medium truncate">{item.label}</div>
+                            </div>
+                          </div>
+                          <ChevronRight className="h-4 w-4 shrink-0 text-void-text-muted" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  renderTabContent()
+                )}
+              </div>
+
+              <div className="hidden md:block">
+                {renderTabContent()}
+              </div>
             </div>
           </div>
         </div>

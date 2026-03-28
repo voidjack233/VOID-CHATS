@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useUser } from '../../Services/Auth/UserContext';
 import { useCheckAuth } from '../../Services/hooks/Auth/useCheckAuth';
 import { useIdleDetector } from '../../Services/hooks/useIdleDetector';
+import AppBootScreen from '../common/AppBootScreen';
 
 export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, loading } = useUser();
@@ -36,11 +37,7 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   }, [serverDown]);
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        Checking session...
-      </div>
-    );
+    return <AppBootScreen />;
   }
 
   if (!user) {

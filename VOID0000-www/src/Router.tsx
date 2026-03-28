@@ -8,6 +8,7 @@ import { PresenceProvider } from './Services/hooks/Friends/usePresence';
 import { FriendsProvider } from './Services/hooks/Friends';
 import { ThemeProvider, useThemeProvider } from './Services/hooks/Settings/useTheme';
 import { useVersionCheck } from './Services/hooks/common/useVersionCheck';
+import AppBootScreen from './components/common/AppBootScreen';
 
 // Lazy-loaded pages
 const Auth = lazy(() => import('./pages/Auth'));
@@ -34,12 +35,7 @@ function ThemeWrapper({ children }: { children: React.ReactNode }) {
   return <ThemeProvider value={theme}>{children}</ThemeProvider>;
 }
 
-// A simple loading placeholder
-const PageLoader = () => (
-  <div className="flex-1 bg-void-bg-main flex items-center justify-center">
-    <div className="w-8 h-8 border-2 border-void-accent border-t-transparent rounded-full animate-spin" />
-  </div>
-);
+const PageLoader = () => <AppBootScreen />;
 
 export default function Router() {
   useVersionCheck();

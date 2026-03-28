@@ -15,7 +15,6 @@ import MessageView from '../components/Chat/MessageView';
 import MessageInput from '../components/Chat/MessageInput';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
-import AddFriend from '../components/common/Friends/AddFriend';
 import { gateway } from '../Services/Gateway/gateway';
 import { Message } from '../Services/Chat/chatService';
 import { matchesConversationIdentifier } from '../Services/Chat/utils/conversationUtils';
@@ -57,9 +56,17 @@ const ChatDashboard = () => {
   const [showProfile, setShowProfile] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [showAddFriendView, setShowAddFriendView] = useState(false); // <-- New state to handle the view swap
   const [chatFilter, setChatFilter] = useState<'dm' | 'group'>('dm');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(true);
+  const [mobileSidebarMode, setMobileSidebarMode] = useState<'messages' | 'friends'>('messages');
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
+  const [chatViewportHeight, setChatViewportHeight] = useState<number | null>(() =>
+    typeof window !== 'undefined'
+      ? window.visualViewport?.height ?? window.innerHeight
+      : null
+  );
   const [convRefresh, setConvRefresh] = useState(0);
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
@@ -103,6 +110,38 @@ const ChatDashboard = () => {
     if (!groupRouteId) return '/chats';
     return `/chats/${groupRouteId}`;
   };
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const syncViewportHeight = () => {
+      setChatViewportHeight(window.visualViewport?.height ?? window.innerHeight);
+    };
+
+    syncViewportHeight();
+    window.addEventListener('resize', syncViewportHeight);
+    window.visualViewport?.addEventListener('resize', syncViewportHeight);
+    window.visualViewport?.addEventListener('scroll', syncViewportHeight);
+
+    return () => {
+      window.removeEventListener('resize', syncViewportHeight);
+      window.visualViewport?.removeEventListener('resize', syncViewportHeight);
+      window.visualViewport?.removeEventListener('scroll', syncViewportHeight);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -478,12 +517,28 @@ const ChatDashboard = () => {
     );
   }
 
-  const isFriendsActive = !displayConversation;
+  const isFriendsPaneVisible = !displayConversation;
+  const isFriendsMobileActive = mobileSidebarMode === 'friends';
   const securityBannerMessage = conversationSecurityState?.message || encryptionError;
   const securityBannerClasses = getSecurityBannerClasses();
 
+  const openFriendsPane = () => {
+    handleBackToMe();
+    navigate('/chats');
+    if (isMobile) {
+      setMobileSidebarMode('friends');
+      setIsMobileSidebarOpen(true);
+    }
+  };
+
   return (
-    <div className="relative flex h-screen bg-void-bg-main text-void-text overflow-hidden font-sans">
+    <div
+      className="relative flex overflow-hidden bg-void-bg-main font-sans text-void-text"
+      style={{
+        height: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
+        maxHeight: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
+      }}
+    >
       {/* Modals */}
       {showProfile && user?.profile_id && (
         <UserProfile profileId={user.profile_id} onClose={() => setShowProfile(false)} />
@@ -526,65 +581,125 @@ const ChatDashboard = () => {
           <span>Messages</span>
         </div>
 
-        <div className="px-3 pt-3 pb-2 shrink-0 border-b border-void-bg-sec">
+        <div className="px-3 pt-3 pb-2 shrink-0 border-b border-void-bg-sec md:hidden">
+          <div className="grid grid-cols-3 gap-1 rounded-2xl border border-void-bg-hover bg-void-bg-sec/80 p-1 shadow-[0_14px_32px_rgba(0,0,0,0.16)]">
+            <button
+              onClick={openFriendsPane}
+              className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
+                isFriendsMobileActive
+                  ? 'bg-void-accent/14 text-void-accent ring-1 ring-void-accent/30'
+                  : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
+              }`}
+              aria-pressed={isFriendsMobileActive}
+            >
+              <Users className="h-3.5 w-3.5" />
+              <span>Friends</span>
+            </button>
+            <button
+              onClick={() => {
+                setMobileSidebarMode('messages');
+                setChatFilter('dm');
+              }}
+              className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
+                chatFilter === 'dm' && !isFriendsMobileActive
+                  ? 'bg-void-bg-hover text-void-text ring-1 ring-white/5'
+                  : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
+              }`}
+              aria-pressed={chatFilter === 'dm' && !isFriendsMobileActive}
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              <span>DMs</span>
+            </button>
+            <button
+              onClick={() => {
+                setMobileSidebarMode('messages');
+                setChatFilter('group');
+              }}
+              className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
+                chatFilter === 'group' && !isFriendsMobileActive
+                  ? 'bg-void-bg-hover text-void-text ring-1 ring-white/5'
+                  : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
+              }`}
+              aria-pressed={chatFilter === 'group' && !isFriendsMobileActive}
+            >
+              <Users className="h-3.5 w-3.5" />
+              <span>Groups</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="hidden px-3 pt-3 pb-2 md:block shrink-0 border-b border-void-bg-sec">
           <button
-            onClick={() => {
-              handleBackToMe();
-              navigate('/chats');
-              setShowAddFriendView(false); // <-- Resets to the friends list view
-              setIsMobileSidebarOpen(false);
-            }}
-            className={`w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border font-medium text-sm transition-all shadow-sm ${
-              isFriendsActive
-                ? 'bg-void-accent/20 border-void-accent/50 text-void-accent'
-                : 'bg-transparent border-transparent text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
+            onClick={openFriendsPane}
+            className={`w-full flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-all ${
+              isFriendsPaneVisible
+                ? 'bg-void-accent/12 border-void-accent/45 text-void-accent ring-1 ring-void-accent/20'
+                : 'border-void-bg-hover bg-void-bg-sec/70 text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
             }`}
+            aria-pressed={isFriendsPaneVisible}
           >
-            <Users className="w-4 h-4" />
+            <Users className="h-4 w-4" />
             <span>Friends</span>
           </button>
         </div>
 
-        <div className="px-3 pt-3 pb-1 flex gap-1 shrink-0">
-          <button 
-            onClick={() => setChatFilter('dm')} 
+        <div className="hidden px-3 pt-3 pb-1 md:flex gap-1 shrink-0">
+          <button
+            onClick={() => setChatFilter('dm')}
             className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${
-              chatFilter === 'dm' 
-                ? 'bg-void-bg-hover text-void-text' 
+              chatFilter === 'dm'
+                ? 'bg-void-bg-hover text-void-text'
                 : 'text-void-text-muted hover:bg-void-bg-hover'
             }`}
+            aria-pressed={chatFilter === 'dm'}
           >
             <MessageCircle className="w-3.5 h-3.5" /> DMs
           </button>
-          <button 
-            onClick={() => setChatFilter('group')} 
+          <button
+            onClick={() => setChatFilter('group')}
             className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${
-              chatFilter === 'group' 
-                ? 'bg-void-bg-hover text-void-text' 
+              chatFilter === 'group'
+                ? 'bg-void-bg-hover text-void-text'
                 : 'text-void-text-muted hover:bg-void-bg-hover'
             }`}
+            aria-pressed={chatFilter === 'group'}
           >
             <Users className="w-3.5 h-3.5" /> Groups
           </button>
         </div>
 
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          <ConversationList
-            activeId={activeGroup?.id || activeConversation?.id || null}
-            onSelect={(conv) => {
-              if (conv.type === 'dm') {
-                navigate(getDmRoute(conv));
-              } else {
-                navigate(getGroupRoute(conv));
-              }
-              setIsMobileSidebarOpen(false);
-            }}
-            onCreateGroup={() => setShowCreateGroup(true)}
-            filter={chatFilter}
-            friends={friends}
-            refreshTrigger={convRefresh}
-            bumpConversationId={lastSentConversationId}
-          />
+          {isMobile && mobileSidebarMode === 'friends' ? (
+            <FriendsView
+              friends={friends}
+              onStartDM={(...args) => {
+                void handleStartDM(...args).then((routeId) => {
+                  if (routeId) navigate(`/chats/@me/${routeId}`);
+                  setConvRefresh((n) => n + 1);
+                  setMobileSidebarMode('messages');
+                  setIsMobileSidebarOpen(false);
+                });
+              }}
+            />
+          ) : (
+            <ConversationList
+              activeId={activeGroup?.id || activeConversation?.id || null}
+              onSelect={(conv) => {
+                if (conv.type === 'dm') {
+                  navigate(getDmRoute(conv));
+                } else {
+                  navigate(getGroupRoute(conv));
+                }
+                setMobileSidebarMode('messages');
+                setIsMobileSidebarOpen(false);
+              }}
+              onCreateGroup={() => setShowCreateGroup(true)}
+              filter={chatFilter}
+              friends={friends}
+              refreshTrigger={convRefresh}
+              bumpConversationId={lastSentConversationId}
+            />
+          )}
         </div>
 
         {/* User Mini Profile */}
@@ -615,9 +730,15 @@ const ChatDashboard = () => {
         ) : activeConversation ? (
           <div className="flex flex-1 min-h-0">
             <div className="flex min-w-0 flex-1 flex-col">
-              <nav className="h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm">
+              <nav className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:static md:bg-void-bg-sec">
                 <div className="flex items-center min-w-0 flex-1">
-                  <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors">
+                  <button
+                    onClick={() => {
+                      setMobileSidebarMode('messages');
+                      setIsMobileSidebarOpen(true);
+                    }}
+                    className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors"
+                  >
                     <ArrowLeft className="w-5 h-5" />
                   </button>
                   {getHeaderIcon()}
@@ -692,29 +813,30 @@ const ChatDashboard = () => {
           </div>
         ) : (
           <div className="flex-1 flex flex-col min-h-0 bg-void-bg-sec">
-            <div className="md:hidden h-16 border-b border-void-bg-hover flex items-center justify-between px-4 shrink-0 shadow-sm bg-void-bg-sec">
+            <div className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:hidden">
               <div className="flex items-center">
-                <button onClick={() => setIsMobileSidebarOpen(true)} className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md shrink-0 transition-colors">
+                <button
+                  onClick={() => {
+                    setMobileSidebarMode('messages');
+                    setIsMobileSidebarOpen(true);
+                  }}
+                  className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md shrink-0 transition-colors"
+                >
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <h1 className="text-lg font-bold">Friends</h1>
               </div>
             </div>
             
-            {/* ✨ The View Swap happens here! ✨ */}
-            {showAddFriendView ? (
-              <AddFriend />
-            ) : (
-              <FriendsView
-                friends={friends}
-                onStartDM={(...args) => {
-                  void handleStartDM(...args).then((routeId) => {
-                    if (routeId) navigate(`/chats/@me/${routeId}`);
-                    setConvRefresh((n) => n + 1);
-                  });
-                }}
-              />
-            )}
+            <FriendsView
+              friends={friends}
+              onStartDM={(...args) => {
+                void handleStartDM(...args).then((routeId) => {
+                  if (routeId) navigate(`/chats/@me/${routeId}`);
+                  setConvRefresh((n) => n + 1);
+                });
+              }}
+            />
 
           </div>
         )}

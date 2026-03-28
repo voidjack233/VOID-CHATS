@@ -371,7 +371,7 @@ const AppearanceTab = () => {
                       fontSize: `${previewBubbleCompact}px`,
                     }}
                   >
-                    Yes! The compact layout is perfect now 🎉
+                    Yes! The compact layout is perfect 🎉
                   </div>
                 </div>
               </div>
@@ -418,7 +418,7 @@ const AppearanceTab = () => {
                         fontSize: `${previewBubbleComfortable}px`,
                       }}
                     >
-                      Yes! Comfortable mode is super clean without avatars 🎉
+                      Yes! Comfortable layout is perfect 🎉
                     </div>
                     <span
                       className="px-1 font-medium"

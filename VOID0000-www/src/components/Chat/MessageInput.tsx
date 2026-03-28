@@ -69,7 +69,7 @@ const MessageInput = (props: MessageInputProps) => {
   }, [attachMenuOpen]);
 
   return (
-    <div className="p-4 shrink-0">
+    <div className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4">
       {/* Edit / Reply banner */}
       {hasBanner && (
         <div className="flex items-center gap-2 px-2 py-1.5 bg-void-bg-hover/50 rounded-t-lg text-sm text-void-text-muted">
@@ -230,7 +230,7 @@ const MessageInput = (props: MessageInputProps) => {
           </span>
         ) : (
           <span className="text-[10px] text-void-text-muted">
-            Messages and new media are end-to-end encrypted. Older attachments may remain legacy.
+            Messages are end-to-end encrypted.
           </span>
         )}
       </div>
