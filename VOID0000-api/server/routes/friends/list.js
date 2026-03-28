@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
+import { getLiveUserPresence } from '../../gateway/client.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
@@ -34,12 +35,18 @@ router.get('/', async (req, res) => {
       [userId]
     );
 
-    const friends = result.rows.map(friend => ({
-      ...friend,
-      avatar_url: resolveUserAvatarUrl(friend.avatar_filename, {
-        displayName: friend.display_name,
-        username: friend.username,
-      })
+    const friends = await Promise.all(result.rows.map(async (friend) => {
+      const presence = await getLiveUserPresence(friend.id);
+
+      return {
+        ...friend,
+        avatar_url: resolveUserAvatarUrl(friend.avatar_filename, {
+          displayName: friend.display_name,
+          username: friend.username,
+        }),
+        status: presence.status,
+        last_active: presence.lastActive,
+      };
     }));
 
     res.json({

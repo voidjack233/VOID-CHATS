@@ -1,0 +1,8 @@
+# Node
+node_modules/
+.env
+
+# Elixir / Phoenix (void_gateway)
+void_gateway/_build/
+void_gateway/deps/
+void_gateway/.elixir_ls/

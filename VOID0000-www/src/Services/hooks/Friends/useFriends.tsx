@@ -15,6 +15,8 @@ export interface Friend {
   avatar_url: string | null;
   bio: string | null;
   member_since: string | null;
+  status?: 'online' | 'idle' | 'offline';
+  last_active?: number | null;
 }
 
 interface FriendsContextType {
@@ -118,6 +120,8 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         avatar_url: string | null;
         bio: string | null;
         member_since: string | null;
+        status?: 'online' | 'idle' | 'offline';
+        last_active?: number | null;
       };
     }) => {
       setFriends(prev => {
@@ -135,6 +139,8 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
             avatar_url: data.friend.avatar_url,
             bio: data.friend.bio,
             member_since: data.friend.member_since,
+            status: data.friend.status,
+            last_active: data.friend.last_active,
           },
         ];
       });

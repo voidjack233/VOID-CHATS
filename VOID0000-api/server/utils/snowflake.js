@@ -31,5 +31,6 @@ class Snowflake {
   }
 }
 
+export const profileSnowflake = new Snowflake(1n);
 export const conversationSnowflake = new Snowflake(2n);
 export { Snowflake };

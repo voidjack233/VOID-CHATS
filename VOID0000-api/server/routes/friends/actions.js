@@ -1,9 +1,8 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
-import { EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/protocol.js';
 import {
   getLiveUserPresence,
-  invalidateLiveFriendCachePair,
   sendLiveEventToUser,
 } from '../../gateway/client.js';
 import { friendshipEventId } from '../../utils/eventIdentity.js';
@@ -124,8 +123,6 @@ router.post('/accept/:friendshipId', async (req, res) => {
       [userId]
     );
 
-    invalidateLiveFriendCachePair(userId, friendship.requester_id);
-
     const requesterInfo = await db.query(
       `SELECT u.username, u.profile_id, u.created_at, up.display_name, up.avatar_filename, up.bio
        FROM users u
@@ -138,9 +135,6 @@ router.post('/accept/:friendshipId', async (req, res) => {
       getLiveUserPresence(userId),
       getLiveUserPresence(friendship.requester_id),
     ]);
-    const accepterStatus = accepterPresence.status === 'offline' ? 'offline' : 'online';
-    const requesterStatus = requesterPresence.status === 'offline' ? 'offline' : 'online';
-
     sendLiveEventToUser(friendship.requester_id, EVENTS.FRIEND_ACCEPT, {
       event_id: friendshipEventId('accept', friendship.id),
       friendship_id: friendship.id,
@@ -155,7 +149,8 @@ router.post('/accept/:friendshipId', async (req, res) => {
         }),
         bio: accepterInfo.rows[0].bio,
         member_since: accepterInfo.rows[0].created_at,
-        status: accepterStatus,
+        status: accepterPresence.status,
+        last_active: accepterPresence.lastActive,
       },
       timestamp: Date.now(),
     });
@@ -174,7 +169,8 @@ router.post('/accept/:friendshipId', async (req, res) => {
         }),
         bio: requesterInfo.rows[0].bio,
         member_since: requesterInfo.rows[0].created_at,
-        status: requesterStatus,
+        status: requesterPresence.status,
+        last_active: requesterPresence.lastActive,
       },
       timestamp: Date.now(),
     });

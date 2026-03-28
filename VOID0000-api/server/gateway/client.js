@@ -1,9 +1,4 @@
-import { createRequire } from 'module';
 import valkey from '../valkey.js';
-
-const require = createRequire(import.meta.url);
-const config = require('../config.json');
-const isCluster = config.cluster.enabled;
 
 const PRESENCE_KEY_PREFIX = 'presence:';
 const PRESENCE_COUNT_KEY_PREFIX = 'presence_count:';
@@ -53,14 +48,8 @@ export function sendLiveEventToUser(userId, event, data) {
 
   void (async () => {
     try {
-      if (isCluster) {
-        const { publishToGateway } = await import('../valkey-pubsub.js');
-        publishToGateway(event, userId, data);
-        return;
-      }
-
-      const { sendToUser } = await import('./index.js');
-      sendToUser(userId, event, data);
+      const { publishToGateway } = await import('../valkey-pubsub.js');
+      publishToGateway(event, userId, data);
     } catch (err) {
       console.error('Gateway user dispatch error:', err);
     }
@@ -72,35 +61,26 @@ export function broadcastLiveEventToFriends(userId, event, data) {
 
   void (async () => {
     try {
-      if (isCluster) {
-        const { publishBroadcastToFriends } = await import('../valkey-pubsub.js');
-        publishBroadcastToFriends(userId, event, data);
-        return;
-      }
+      // Resolve friend IDs in Node so Phoenix receives explicit per-user events
+      // and never needs to touch Postgres itself.
+      const { publishToGateway } = await import('../valkey-pubsub.js');
+      const { pool } = await import('../db.js');
 
-      const { broadcastToFriends } = await import('./index.js');
-      await broadcastToFriends(userId, event, data);
+      const result = await pool.query(
+        `SELECT CASE WHEN requester_id = $1 THEN addressee_id
+                     ELSE requester_id
+                END AS friend_id
+         FROM friendships
+         WHERE (requester_id = $1 OR addressee_id = $1)
+           AND status = 'accepted'`,
+        [userId]
+      );
+
+      for (const row of result.rows) {
+        publishToGateway(event, row.friend_id, data);
+      }
     } catch (err) {
       console.error('Gateway friend broadcast error:', err);
-    }
-  })();
-}
-
-export function invalidateLiveFriendCachePair(userId1, userId2) {
-  if (!userId1 || !userId2) return;
-
-  void (async () => {
-    try {
-      if (isCluster) {
-        const { publishGatewayCommand } = await import('../valkey-pubsub.js');
-        publishGatewayCommand('invalidateFriendCachePair', { userId1, userId2 });
-        return;
-      }
-
-      const { invalidateFriendCachePair } = await import('./index.js');
-      invalidateFriendCachePair(userId1, userId2);
-    } catch (err) {
-      console.error('Gateway friend cache invalidation error:', err);
     }
   })();
 }
@@ -126,13 +106,6 @@ export async function getLiveUserPresence(userId) {
     );
   } catch (err) {
     console.error('Gateway presence lookup error:', err);
-  }
-
-  if (!isCluster) {
-    const { getUserPresence } = await import('./index.js');
-    const localPresence = getUserPresence(userId);
-    const localActiveCount = localPresence?.status === 'offline' ? 0 : 1;
-    return normalizePresence(localPresence, localActiveCount);
   }
 
   return { status: 'offline', lastActive: null, activeCount: 0 };

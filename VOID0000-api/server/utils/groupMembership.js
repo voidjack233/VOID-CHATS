@@ -1,4 +1,4 @@
-import { EVENTS } from '../gateway/index.js';
+import { EVENTS } from '../gateway/protocol.js';
 import { sendLiveEventToUser } from '../gateway/client.js';
 import { findConversationByIdentifier } from './conversationIdentity.js';
 

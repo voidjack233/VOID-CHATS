@@ -84,28 +84,6 @@ export function publishToGateway(event, targetUserId, data) {
   });
 }
 
-/**
- * Publish a broadcast-to-friends event
- */
-export function publishBroadcastToFriends(userId, event, data) {
-  if (!publisher) {
-    console.warn('📡 Publisher not initialized, skipping broadcast');
-    return;
-  }
-
-  const message = JSON.stringify({
-    type: 'broadcastToFriends',
-    userId,
-    event,
-    data,
-    timestamp: Date.now(),
-  });
-
-  publisher.publish(CHANNEL, message).catch((err) => {
-    console.error('📡 Broadcast publish error:', err);
-  });
-}
-
 export function publishGatewayCommand(command, data) {
   if (!publisher) {
     console.warn('📡 Publisher not initialized, skipping gateway command');

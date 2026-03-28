@@ -1,6 +1,6 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
-import { EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/protocol.js';
 import { broadcastLiveEventToFriends } from '../../gateway/client.js';
 
 const router = express.Router();

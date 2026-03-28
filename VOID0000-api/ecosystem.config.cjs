@@ -11,11 +11,16 @@ const config = JSON.parse(
 
 const clusterEnabled = config.cluster.enabled;
 const workers = config.cluster.workers || 4;
+const gatewayMode = config.gateway?.mode || 'phoenix';
+
+if (gatewayMode !== 'phoenix') {
+  throw new Error(`Unsupported gateway.mode "${gatewayMode}". The Node gateway has been retired; use "phoenix".`);
+}
 
 const apps = [];
 
 if (clusterEnabled) {
-  // CLUSTER MODE: multiple API workers + separate gateway
+  // CLUSTER MODE: multiple API workers + external gateway transport
   apps.push({
     name: 'voidapp-api',
     script: 'server/server.js',
@@ -29,23 +34,10 @@ if (clusterEnabled) {
     watch: false,
     autorestart: true,
   });
-
-  apps.push({
-    name: 'voidapp-gateway',
-    script: 'server/gateway-server.js',
-    instances: 1,
-    exec_mode: 'fork',
-    env: {
-      NODE_ENV: 'production',
-    },
-    max_memory_restart: '200M',
-    watch: false,
-    autorestart: true,
-  });
 } else {
-  // SINGLE MODE: one process handles everything (current behavior)
+  // SINGLE INSTANCE API with external Phoenix gateway.
   apps.push({
-    name: 'voidapp',
+    name: 'voidapp-api',
     script: 'server/server.js',
     instances: 1,
     exec_mode: 'fork',
@@ -58,5 +50,21 @@ if (clusterEnabled) {
     autorestart: true,
   });
 }
+
+apps.push({
+  name: 'voidapp-gateway-phoenix',
+  script: 'scripts/run-phoenix-gateway.sh',
+  instances: 1,
+  exec_mode: 'fork',
+  interpreter: 'none',
+  env: {
+    NODE_ENV: 'production',
+    MIX_ENV: 'prod',
+    GATEWAY_PORT: 4001,
+  },
+  max_memory_restart: '300M',
+  watch: false,
+  autorestart: true,
+});
 
 module.exports = { apps };

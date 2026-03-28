@@ -5,7 +5,7 @@ import { pool } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
 import { conversationSnowflake } from '../../utils/snowflake.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
-import { EVENTS } from '../../gateway/index.js';
+import { EVENTS } from '../../gateway/protocol.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { minioClient, BUCKET, GROUP_AVATAR_BUCKET } from '../../minio.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';

@@ -15,11 +15,16 @@ const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
-// ================== CLUSTER CONFIG ==================
+// ================== CLUSTER / GATEWAY CONFIG ==================
 
 const require2 = createRequire(import.meta.url);
 const config = require2('./config.json');
 const isCluster = config.cluster.enabled;
+const gatewayMode = config.gateway?.mode || 'phoenix';
+
+if (gatewayMode !== 'phoenix') {
+  throw new Error(`Unsupported gateway.mode "${gatewayMode}". The Node gateway has been retired; use "phoenix".`);
+}
 
 // ================== APP SETUP ==================
 
@@ -92,16 +97,14 @@ import {
 // ================== GATEWAY / PUBSUB SETUP ==================
 
 let getConnectionStats;
-
-if (isCluster) {
-  const { initPublisher } = await import('./valkey-pubsub.js');
-  initPublisher();
-  console.log('📡 Cluster mode: API worker started (pub/sub publisher ready)');
-  getConnectionStats = () => ({ mode: 'cluster', pid: process.pid, note: 'Stats available on gateway' });
-} else {
-  const gateway = await import('./gateway/index.js');
-  getConnectionStats = gateway.getConnectionStats;
-}
+const { initPublisher } = await import('./valkey-pubsub.js');
+initPublisher();
+console.log(`📡 Phoenix gateway mode: API worker started (pub/sub publisher ready)`);
+getConnectionStats = () => ({
+  mode: gatewayMode,
+  pid: process.pid,
+  note: 'Stats available on external gateway',
+});
 
 // ================== API ROUTES ==================
 
@@ -185,13 +188,6 @@ setInterval(cleanupAllExpired, 6 * 60 * 60 * 1000);
 
 const httpServer = createServer(app);
 
-// ================== GATEWAY (SINGLE MODE ONLY) ==================
-
-if (!isCluster) {
-  const { setupGateway } = await import('./gateway/index.js');
-  setupGateway(httpServer);
-}
-
 // ================== IMAGE WORKER ==================
 
 startImageWorker();
@@ -199,6 +195,8 @@ startImageWorker();
 // ================== START ==================
 
 httpServer.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT} (${isCluster ? 'cluster worker PID ' + process.pid : 'single mode'})`);
-  if (!isCluster) console.log(`🔌 Gateway ready`);
+  const apiModeLabel = isCluster ? 'cluster API worker' : 'single API worker';
+  const gatewayLabel = `${gatewayMode} gateway`;
+
+  console.log(`✅ Server running on port ${PORT} (${apiModeLabel}, ${gatewayLabel}, PID ${process.pid})`);
 });
