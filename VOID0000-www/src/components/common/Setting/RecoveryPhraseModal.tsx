@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, RefreshCcw, ShieldAlert, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useUser } from '../../../Services/Auth/UserContext';
 import { keyManager } from '../../../Services/Crypto/keyManager';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
@@ -11,10 +12,12 @@ interface RecoveryPhraseModalProps {
 
 export default function RecoveryPhraseModal({ onClose, required = false }: RecoveryPhraseModalProps) {
   useScrollLock();
-  const { keyStatus, saveRecoveryPhrase } = useUser();
+  const navigate = useNavigate();
+  const { keyStatus, saveRecoveryPhrase, logout } = useUser();
   const [recoveryKey, setRecoveryKey] = useState('');
   const [hasAcknowledged, setHasAcknowledged] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
@@ -24,6 +27,7 @@ export default function RecoveryPhraseModal({ onClose, required = false }: Recov
   }, []);
 
   const keyChunks = useMemo(() => recoveryKey.split('-').filter(Boolean), [recoveryKey]);
+  const shouldShowSignOut = keyStatus !== 'SECURE' && !success;
 
   const handleRegenerate = () => {
     setRecoveryKey(keyManager.generateRecoveryPhrase());
@@ -56,6 +60,12 @@ export default function RecoveryPhraseModal({ onClose, required = false }: Recov
     } catch (err) {
       if (err instanceof Error && err.message === 'INVALID_RECOVERY_PHRASE') {
         setError('The generated recovery key was invalid. Generate a new one and try again.');
+      } else if (err instanceof Error && err.message === 'PASSWORD_BACKUP_REQUIRED') {
+        setError('Sign out and log in again with your account password on this device before saving a recovery key.');
+      } else if (err instanceof Error && err.message === 'KEY_ID_MISMATCH') {
+        setError('This device’s chat identity changed before the recovery key was saved. Refresh the app and try again.');
+      } else if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
+        setError('Your session expired. Sign in again and then save the recovery key.');
       } else {
         setError('Failed to save the recovery key. Try again.');
       }
@@ -69,8 +79,18 @@ export default function RecoveryPhraseModal({ onClose, required = false }: Recov
       return;
     }
 
-    if (!isSaving) {
+    if (!isSaving && !isLoggingOut) {
       onClose();
+    }
+  };
+
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
+    try {
+      await logout();
+      navigate('/auth', { replace: true });
+    } finally {
+      setIsLoggingOut(false);
     }
   };
 
@@ -188,20 +208,30 @@ export default function RecoveryPhraseModal({ onClose, required = false }: Recov
               )}
 
               <div className="flex flex-col-reverse gap-3 pt-1 sm:flex-row sm:justify-end">
-                {!required && (
+                {!required && !shouldShowSignOut && (
                   <button
                     type="button"
                     onClick={handleClose}
                     className="w-full rounded-xl border border-void-bg-hover bg-void-bg-main px-4 py-3 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover sm:w-auto"
-                    disabled={isSaving}
+                    disabled={isSaving || isLoggingOut}
                   >
                     Cancel
+                  </button>
+                )}
+                {shouldShowSignOut && (
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="w-full rounded-xl border border-void-bg-hover bg-void-bg-main px-4 py-3 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover sm:w-auto"
+                    disabled={isSaving || isLoggingOut}
+                  >
+                    {isLoggingOut ? 'Signing out...' : 'Sign Out'}
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={handleSave}
-                  disabled={isSaving || keyChunks.length === 0 || !hasAcknowledged}
+                  disabled={isSaving || isLoggingOut || keyChunks.length === 0 || !hasAcknowledged}
                   className="w-full rounded-xl bg-void-accent px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-void-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
                 >
                   {isSaving ? 'Saving...' : keyStatus === 'SECURE' ? 'Replace Key' : 'Save Recovery Key'}

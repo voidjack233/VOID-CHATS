@@ -280,7 +280,16 @@ export async function backupKeyToServer(data: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  if (!response.ok) throw new Error('Failed to backup key');
+  if (!response.ok) {
+    let errorCode = 'Failed to backup key';
+    try {
+      const payload = await response.json();
+      errorCode = payload?.code || payload?.error || errorCode;
+    } catch {
+      // Ignore JSON parsing failure and use fallback message.
+    }
+    throw new Error(errorCode);
+  }
 }
 
 export async function backupRecoveryKeyToServer(data: {
@@ -294,7 +303,16 @@ export async function backupRecoveryKeyToServer(data: {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  if (!response.ok) throw new Error('Failed to backup recovery key');
+  if (!response.ok) {
+    let errorCode = 'Failed to backup recovery key';
+    try {
+      const payload = await response.json();
+      errorCode = payload?.code || payload?.error || errorCode;
+    } catch {
+      // Ignore JSON parsing failure and use fallback message.
+    }
+    throw new Error(errorCode);
+  }
 }
 
 export async function fetchKeyBackup(): Promise<KeyBackupRecord | null> {
