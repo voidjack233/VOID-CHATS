@@ -240,6 +240,10 @@ const MessageView = memo(function MessageView({
   typingParticipantsRef.current = typingParticipants;
 
   const getSmartDisplayName = useCallback((senderId: string) => {
+    if (conversation.type !== 'dm') {
+      return getSenderName(senderId);
+    }
+
     const u = userRef.current;
     if (senderId === u?.id) {
       return normalizeText(myProfileRef.current?.display_name) || normalizeText(u?.username) || 'You';
@@ -250,7 +254,7 @@ const MessageView = memo(function MessageView({
     const friendUsername = normalizeText(friend?.username);
     if (friendUsername) return friendUsername;
     return getSenderName(senderId);
-  }, [getSenderName]);
+  }, [conversation.type, getSenderName]);
 
   const getSmartUsername = useCallback((senderId: string) => {
     const u = userRef.current;

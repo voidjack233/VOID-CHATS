@@ -4,7 +4,7 @@ import type {
   ConversationMember,
 } from '../../../../Services/Chat/chatService';
 
-export type GroupSettingsTab = 'profile' | 'members' | 'roles' | 'invites' | 'access';
+export type GroupSettingsTab = 'profile' | 'members' | 'roles' | 'invites' | 'access' | 'permissions';
 
 export const ROLE_ORDER: Record<string, number> = {
   owner: 0,
@@ -64,6 +64,16 @@ export const SETTINGS_SECTIONS: Array<{
         label: 'Access',
         description: 'Access controls are disabled for now.',
         disabled: true,
+      },
+    ],
+  },
+  {
+    label: 'Moderation',
+    tabs: [
+      {
+        id: 'permissions',
+        label: 'Permissions',
+        description: 'Control what admins and members can do in this group.',
       },
     ],
   },

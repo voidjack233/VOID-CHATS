@@ -422,6 +422,23 @@ export async function updateMemberRole(
   if (!data.success) throw new Error(data.error);
 }
 
+export async function updateConversationNickname(
+  conversationId: string,
+  userId: string,
+  nickname: string | null,
+): Promise<{ nickname: string | null }> {
+  const response = await fetchWithAuth(
+    `${CHAT_API_PREFIX}/${conversationId}/members/${userId}/conversation-nickname`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ nickname }),
+    },
+  );
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return { nickname: data.nickname };
+}
+
 export async function createSecureGroup(
   name: string,
   memberIds: string[],

@@ -15,6 +15,7 @@ import {
   revokeConversationInviteLink,
   sendSystemEvent,
   updateConversation,
+  updateConversationNickname,
   updateMemberRole,
   uploadConversationIcon,
 } from '../../../Services/Chat/chatService';
@@ -22,6 +23,7 @@ import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 import ConfirmDialog from './ConversationSettings/ConfirmDialog';
 import InvitesTab from './ConversationSettings/InvitesTab';
 import MembersTab from './ConversationSettings/MembersTab';
+import PermissionsTab from './ConversationSettings/PermissionsTab';
 import ProfileTab from './ConversationSettings/ProfileTab';
 import {
   getConversationInitial,
@@ -118,7 +120,7 @@ const GroupConversationSettings = ({
   const [kickConfirmMember, setKickConfirmMember] = useState<ConversationMember | null>(null);
   const [busyMemberAction, setBusyMemberAction] = useState<{
     userId: string;
-    action: 'role' | 'kick';
+    action: 'role' | 'kick' | 'nickname';
   } | null>(null);
   const isOwner = conversation.owner_id === currentUserId;
   const rootConversationId = conversation.id;
@@ -177,6 +179,25 @@ const GroupConversationSettings = ({
     } catch (error) {
       console.warn('Failed to post membership system message:', error);
     }
+  };
+
+  const buildNicknameSystemMessage = (
+    targetMember: ConversationMember,
+    nextNickname: string | null,
+  ) => {
+    const actorLabel = getActorLabel();
+    const targetLabel = getMemberLabel(targetMember);
+    const isSelfChange = targetMember.user_id === currentUserId;
+
+    if (nextNickname) {
+      return isSelfChange
+        ? `${targetLabel} changed their nickname to "${nextNickname}".`
+        : `${actorLabel} changed ${targetLabel}'s nickname to "${nextNickname}".`;
+    }
+
+    return isSelfChange
+      ? `${targetLabel} cleared their nickname.`
+      : `${actorLabel} cleared ${targetLabel}'s nickname.`;
   };
 
   useEffect(() => {
@@ -563,6 +584,45 @@ const GroupConversationSettings = ({
     }
   };
 
+  const handleUpdateNickname = async (
+    targetMember: ConversationMember,
+    nickname: string | null
+  ): Promise<boolean> => {
+    const normalizedCurrentNickname = targetMember.nickname?.trim() || null;
+    const normalizedNextNickname = nickname?.trim() || null;
+
+    if (normalizedCurrentNickname === normalizedNextNickname) {
+      return true;
+    }
+
+    try {
+      setBusyMemberAction({ userId: targetMember.user_id, action: 'nickname' });
+      setMemberActionError('');
+      const result = await updateConversationNickname(rootConversationId, targetMember.user_id, nickname);
+      setMemberList((current) =>
+        current.map((member) =>
+          member.user_id === targetMember.user_id
+            ? { ...member, nickname: result.nickname }
+            : member
+        )
+      );
+      void postMembershipSystemMessage(
+        buildNicknameSystemMessage(targetMember, result.nickname),
+        currentKeyVersion
+      );
+      void onMembershipChanged?.();
+      return true;
+    } catch (error) {
+      console.error('Failed to update nickname:', error);
+      setMemberActionError(
+        error instanceof Error ? error.message : 'Failed to update nickname'
+      );
+      return false;
+    } finally {
+      setBusyMemberAction(null);
+    }
+  };
+
   const handleKickMember = async (targetMember: ConversationMember) => {
     if (MEMBER_REMOVAL_PAUSED) {
       setMemberActionError('Member removal is temporarily paused while we stabilize encrypted key delivery.');
@@ -776,6 +836,9 @@ const GroupConversationSettings = ({
                   onChangeMemberRole={(member, nextRole) => {
                     void handleChangeMemberRole(member, nextRole);
                   }}
+                  onUpdateNickname={(member, nickname) =>
+                    handleUpdateNickname(member, nickname)
+                  }
                 />
               )}
 
@@ -841,6 +904,10 @@ const GroupConversationSettings = ({
                   onCopyInvite={handleCopyInvite}
                   onRevokeInvite={handleRevokeInvite}
                 />
+              )}
+
+              {activeTab === 'permissions' && (
+                <PermissionsTab isOwner={isOwner} />
               )}
 
               {activeTab === 'access' && (

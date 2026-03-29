@@ -27,15 +27,30 @@ export const useMessageDisplay = (
     return new Date(dateStr).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }, []);
 
+  const resolveMemberLabel = useCallback((
+    member?: ConversationMember,
+    fallbackUser?: { display_name?: string | null; username?: string | null } | null,
+  ) => {
+    return (
+      normalizeName(member?.nickname) ||
+      normalizeName(member?.display_name) ||
+      normalizeName(member?.username) ||
+      normalizeName(fallbackUser?.display_name) ||
+      normalizeName(fallbackUser?.username) ||
+      null
+    );
+  }, []);
+
   const getSenderName = useCallback((senderId: string) => {
     const u = userRef.current;
+    const member = membersRef.current[senderId];
+
     if (senderId === u?.id) {
-      return normalizeName(u?.display_name) || normalizeName(u?.username) || 'You';
+      return resolveMemberLabel(member, u) || 'You';
     }
 
-    const member = membersRef.current[senderId];
-    return normalizeName(member?.display_name) || normalizeName(member?.username) || senderId.substring(0, 8);
-  }, []);
+    return resolveMemberLabel(member) || senderId.substring(0, 8);
+  }, [resolveMemberLabel]);
 
   const getSenderAvatarUrl = useCallback((senderId: string) => {
     const u = userRef.current;

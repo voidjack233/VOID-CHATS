@@ -1,4 +1,5 @@
-import { Check, ChevronDown, ChevronRight, Loader2, LogOut, MoreHorizontal, Users } from 'lucide-react';
+import { useState } from 'react';
+import { Check, ChevronDown, ChevronRight, Loader2, LogOut, MoreHorizontal, Pencil, Users } from 'lucide-react';
 import UserAvatar from '../../../common/UserAvatar';
 import type { ConversationMember } from '../../../../Services/Chat/chatService';
 import {
@@ -10,7 +11,7 @@ import {
 
 interface BusyMemberAction {
   userId: string;
-  action: 'role' | 'kick';
+  action: 'role' | 'kick' | 'nickname';
 }
 
 interface MembersTabProps {
@@ -30,6 +31,7 @@ interface MembersTabProps {
   onCloseRoleEditor: () => void;
   onRequestKickMember: (member: ConversationMember) => void;
   onChangeMemberRole: (member: ConversationMember, nextRole: 'admin' | 'member') => void;
+  onUpdateNickname: (member: ConversationMember, nickname: string | null) => Promise<boolean>;
 }
 
 export default function MembersTab({
@@ -49,7 +51,28 @@ export default function MembersTab({
   onCloseRoleEditor,
   onRequestKickMember,
   onChangeMemberRole,
+  onUpdateNickname,
 }: MembersTabProps) {
+  const [nicknameEditorUserId, setNicknameEditorUserId] = useState<string | null>(null);
+  const [nicknameInput, setNicknameInput] = useState('');
+
+  const openNicknameEditor = (member: ConversationMember) => {
+    setNicknameEditorUserId(member.user_id);
+    setNicknameInput(member.nickname || '');
+    onToggleMemberMenu(member.user_id);
+  };
+
+  const closeNicknameEditor = () => {
+    setNicknameEditorUserId(null);
+    setNicknameInput('');
+  };
+
+  const handleNicknameSave = async (member: ConversationMember) => {
+    const trimmed = nicknameInput.trim();
+    const ok = await onUpdateNickname(member, trimmed === '' ? null : trimmed);
+    if (ok) closeNicknameEditor();
+  };
+
   return (
     <div className="space-y-6">
       {memberActionError && (
@@ -81,12 +104,26 @@ export default function MembersTab({
 
           {sortedMembers.map((member) => {
             const isRoleEditorOpen = expandedRoleEditorUserId === member.user_id;
+            const isNicknameEditorOpen = nicknameEditorUserId === member.user_id;
             const isRoleBusy =
               busyMemberAction?.userId === member.user_id &&
               busyMemberAction.action === 'role';
             const isKickBusy =
               busyMemberAction?.userId === member.user_id &&
               busyMemberAction.action === 'kick';
+            const isNicknameBusy =
+              busyMemberAction?.userId === member.user_id &&
+              busyMemberAction.action === 'nickname';
+
+            const hasModActions =
+              (canChangeMemberRoles || canKickMembers) &&
+              member.user_id !== currentUserId &&
+              member.role !== 'owner';
+
+            const primaryLabel = member.nickname || getMemberLabel(member);
+            const secondaryLabel = member.nickname
+              ? getMemberLabel(member)
+              : null;
 
             return (
               <div key={member.user_id} className="space-y-2">
@@ -101,7 +138,7 @@ export default function MembersTab({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="truncate font-medium text-void-text">
-                        {getMemberLabel(member)}
+                        {primaryLabel}
                       </p>
                       {member.user_id === currentUserId && (
                         <span className="rounded-full bg-void-accent/15 px-2 py-0.5 text-[11px] font-semibold text-void-accent">
@@ -109,63 +146,130 @@ export default function MembersTab({
                         </span>
                       )}
                     </div>
-                    <p className="truncate text-sm text-void-text-muted">@{member.username}</p>
+                    {secondaryLabel ? (
+                      <p className="truncate text-sm text-void-text-muted">
+                        {secondaryLabel} &middot; @{member.username}
+                      </p>
+                    ) : (
+                      <p className="truncate text-sm text-void-text-muted">@{member.username}</p>
+                    )}
                   </div>
                   <span
                     className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${ROLE_STYLES[member.role] || ROLE_STYLES.member}`}
                   >
                     {getRoleLabel(member.role)}
                   </span>
-                  {(canChangeMemberRoles || canKickMembers) && member.user_id !== currentUserId && member.role !== 'owner' && (
-                    <div className="relative shrink-0">
+                  <div className="relative shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onToggleMemberMenu(member.user_id)}
+                      className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
+                      title="Member actions"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+
+                    {memberMenuUserId === member.user_id && (
+                      <div className="absolute right-0 top-11 z-20 w-52 rounded-xl border border-void-bg-hover bg-void-bg-main p-2 shadow-2xl">
+                        <button
+                          type="button"
+                          onClick={() => openNicknameEditor(member)}
+                          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-bg-hover"
+                        >
+                          <Pencil className="h-3.5 w-3.5 text-void-text-muted" />
+                          <span>{member.nickname ? 'Edit Nickname' : 'Set Nickname'}</span>
+                        </button>
+
+                        {hasModActions && (
+                          <div className="my-2 h-px bg-void-bg-hover" />
+                        )}
+
+                        {canChangeMemberRoles && hasModActions && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleRoleEditor(member.user_id)}
+                            className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-bg-hover"
+                          >
+                            <span>Change Role</span>
+                            {isRoleEditorOpen ? (
+                              <ChevronDown className="h-4 w-4 text-void-text-muted" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 text-void-text-muted" />
+                            )}
+                          </button>
+                        )}
+
+                        {canKickMembers && hasModActions && (
+                          <button
+                            type="button"
+                            onClick={() => onRequestKickMember(member)}
+                            disabled={isKickBusy || memberRemovalPaused}
+                            className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <span>{memberRemovalPaused ? 'Member Removal Paused' : 'Kick Member'}</span>
+                            {isKickBusy ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : null}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {isNicknameEditorOpen && (
+                  <div className="rounded-xl border border-void-bg-hover bg-void-bg-main/55 px-4 py-3">
+                    <p className="mb-2 text-sm font-semibold text-void-text">
+                      Nickname for {getMemberLabel(member)}
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={nicknameInput}
+                        onChange={(e) => setNicknameInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleNicknameSave(member);
+                          if (e.key === 'Escape') closeNicknameEditor();
+                        }}
+                        maxLength={32}
+                        placeholder="Enter a nickname..."
+                        autoFocus
+                        className="min-w-0 flex-1 rounded-lg border border-void-bg-hover bg-void-bg-sec px-3 py-2 text-sm text-void-text placeholder-void-text-muted outline-none focus:border-void-accent/50 focus:ring-1 focus:ring-void-accent/25"
+                      />
                       <button
                         type="button"
-                        onClick={() => onToggleMemberMenu(member.user_id)}
-                        className="rounded-lg p-2 text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
-                        title="Member actions"
+                        onClick={() => handleNicknameSave(member)}
+                        disabled={isNicknameBusy}
+                        className="rounded-lg bg-void-accent/15 px-4 py-2 text-sm font-medium text-void-accent transition-colors hover:bg-void-accent/25 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        <MoreHorizontal className="h-4 w-4" />
+                        {isNicknameBusy ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          'Save'
+                        )}
                       </button>
-
-                      {memberMenuUserId === member.user_id && (
-                        <div className="absolute right-0 top-11 z-20 w-52 rounded-xl border border-void-bg-hover bg-void-bg-main p-2 shadow-2xl">
-                          {canChangeMemberRoles && (
-                            <button
-                              type="button"
-                              onClick={() => onToggleRoleEditor(member.user_id)}
-                              className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-bg-hover"
-                            >
-                              <span>Change Role</span>
-                              {isRoleEditorOpen ? (
-                                <ChevronDown className="h-4 w-4 text-void-text-muted" />
-                              ) : (
-                                <ChevronRight className="h-4 w-4 text-void-text-muted" />
-                              )}
-                            </button>
-                          )}
-
-                          {canChangeMemberRoles && canKickMembers && (
-                            <div className="my-2 h-px bg-void-bg-hover" />
-                          )}
-
-                          {canKickMembers && (
-                            <button
-                              type="button"
-                              onClick={() => onRequestKickMember(member)}
-                              disabled={isKickBusy || memberRemovalPaused}
-                              className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              <span>{memberRemovalPaused ? 'Member Removal Paused' : 'Kick Member'}</span>
-                              {isKickBusy ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : null}
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        onClick={closeNicknameEditor}
+                        className="rounded-lg px-3 py-2 text-sm text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
+                      >
+                        Cancel
+                      </button>
                     </div>
-                  )}
-                </div>
+                    {member.nickname && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const ok = await onUpdateNickname(member, null);
+                          if (ok) closeNicknameEditor();
+                        }}
+                        className="mt-2 text-xs text-void-text-muted transition-colors hover:text-red-300"
+                      >
+                        Remove nickname
+                      </button>
+                    )}
+                  </div>
+                )}
 
                 {canChangeMemberRoles && member.user_id !== currentUserId && member.role !== 'owner' && isRoleEditorOpen && (
                   <div className="rounded-xl border border-void-bg-hover bg-void-bg-main/55 px-4 py-3">

@@ -1,7 +1,7 @@
 // src/components/common/Setting/AppearanceTab.tsx
 import { useState } from 'react';
 import { useTheme, Theme, THEME_PRESETS } from '../../../Services/hooks/Settings/useTheme';
-import { Check, Save, Moon, Sun, Sparkles, RotateCcw } from 'lucide-react';
+import { Check, Save, Moon, Sun, Sparkles, RotateCcw, Pipette } from 'lucide-react';
 import { AppearanceTabSkeleton } from '../Skeleton';
 
 const themePresets = [
@@ -14,6 +14,50 @@ const themePresets = [
 
 const messageGroupSpacingOptions = [0, 4, 8, 16, 24] as const;
 const chatFontScaleOptions = [12, 14, 15, 16, 18, 20, 24] as const;
+
+function NativeColorRow({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex items-center justify-between gap-4 rounded-lg bg-void-bg-sec p-4">
+      <div>
+        <h4 className="text-sm font-medium text-void-text">{label}</h4>
+        <p className="text-xs text-void-text-muted">{description}</p>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <span className="rounded-full border border-void-bg-hover bg-void-bg-main px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-void-text-muted">
+          {value}
+        </span>
+
+        <div className="relative h-10 w-10 overflow-hidden rounded-full border border-void-bg-hover bg-void-bg-main shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]">
+          <input
+            type="color"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            aria-label={`${label} color picker`}
+          />
+          <div
+            className="absolute inset-[5px] rounded-full"
+            style={{ backgroundColor: value }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center text-white/90 mix-blend-difference pointer-events-none">
+            <Pipette className="h-4 w-4" />
+          </div>
+        </div>
+      </div>
+    </label>
+  );
+}
 
 const isDarkBackground = (bgColor: string): boolean => {
   if (!bgColor) return true;
@@ -190,57 +234,33 @@ const AppearanceTab = () => {
         </h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="flex items-center justify-between bg-void-bg-sec p-4 rounded-lg">
-            <div>
-              <h4 className="text-void-text font-medium text-sm">Accent</h4>
-              <p className="text-xs text-void-text-muted">Buttons & highlights</p>
-            </div>
-            <input
-              type="color"
-              value={accentColor}
-              onChange={(e) => handleAccentChange(e.target.value)}
-              className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
-            />
-          </div>
+          <NativeColorRow
+            label="Accent"
+            description="Buttons & highlights"
+            value={accentColor}
+            onChange={handleAccentChange}
+          />
 
-          <div className="flex items-center justify-between bg-void-bg-sec p-4 rounded-lg">
-            <div>
-              <h4 className="text-void-text font-medium text-sm">Text Color</h4>
-              <p className="text-xs text-void-text-muted">Primary typography</p>
-            </div>
-            <input
-              type="color"
-              value={textColor}
-              onChange={(e) => handleTextChange(e.target.value)}
-              className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
-            />
-          </div>
+          <NativeColorRow
+            label="Text Color"
+            description="Primary typography"
+            value={textColor}
+            onChange={handleTextChange}
+          />
 
-          <div className="flex items-center justify-between bg-void-bg-sec p-4 rounded-lg">
-            <div>
-              <h4 className="text-void-text font-medium text-sm">Background</h4>
-              <p className="text-xs text-void-text-muted">Main app base</p>
-            </div>
-            <input
-              type="color"
-              value={bgColor}
-              onChange={(e) => handleBgChange(e.target.value)}
-              className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
-            />
-          </div>
+          <NativeColorRow
+            label="Background"
+            description="Main app base"
+            value={bgColor}
+            onChange={handleBgChange}
+          />
 
-          <div className="flex items-center justify-between bg-void-bg-sec p-4 rounded-lg">
-            <div>
-              <h4 className="text-void-text font-medium text-sm">Hover State</h4>
-              <p className="text-xs text-void-text-muted">Menus & active items</p>
-            </div>
-            <input
-              type="color"
-              value={hoverColor}
-              onChange={(e) => handleHoverChange(e.target.value)}
-              className="w-8 h-8 rounded cursor-pointer bg-transparent border-0"
-            />
-          </div>
+          <NativeColorRow
+            label="Hover State"
+            description="Menus & active items"
+            value={hoverColor}
+            onChange={handleHoverChange}
+          />
         </div>
       </div>
 

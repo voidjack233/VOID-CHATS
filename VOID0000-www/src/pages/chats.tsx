@@ -270,7 +270,7 @@ const ChatDashboard = () => {
         const member = messageDisplayMembers[typingUserId] || members[typingUserId];
         return {
           userId: typingUserId,
-          displayName: member?.display_name || member?.username || 'Someone',
+          displayName: member?.nickname || member?.display_name || member?.username || 'Someone',
           username: member?.username || null,
           avatarUrl: member?.avatar_url || null,
         };

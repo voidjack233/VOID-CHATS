@@ -38,6 +38,7 @@ import {
 } from '../../Chat/handshakeKeyCache';
 import { keyManager } from '../../Crypto/keyManager';
 import { mlsStore } from '../../Crypto/mls/mlsStore';
+import { gateway } from '../../Gateway/gateway';
 
 interface UseConversationHandshakeProps {
   activeConversation: Conversation | null;
@@ -219,6 +220,36 @@ export const useConversationHandshake = ({
       parent_conversation_id: parentConversationId,
       parent_public_id: parentPublicId,
     };
+  };
+
+  const patchCachedConversationNickname = (
+    identifier: string | null | undefined,
+    targetUserId: string,
+    nickname: string | null,
+  ) => {
+    if (!identifier) return;
+
+    const cachedConversation = getConversationDetails(identifier);
+    if (!cachedConversation?.members?.length) {
+      return;
+    }
+
+    const hasTarget = cachedConversation.members.some(
+      (member) => member.user_id === targetUserId,
+    );
+
+    if (!hasTarget) {
+      return;
+    }
+
+    storeConversationDetails({
+      ...cachedConversation,
+      members: cachedConversation.members.map((member) =>
+        member.user_id === targetUserId
+          ? { ...member, nickname }
+          : member,
+      ),
+    });
   };
 
   // Handshake setup
@@ -739,6 +770,96 @@ export const useConversationHandshake = ({
     handshakeRetryToken,
     mlsRecoveryGate.active,
     mlsRecoveryGate.pending,
+    user?.id,
+  ]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const handleMemberNicknameUpdate = (data: any) => {
+      const targetUserId = data?.user_id;
+      const eventConversationId = data?.conversation_id;
+      const eventConversationPublicId = data?.conversation_public_id || null;
+      const nickname =
+        typeof data?.nickname === 'string' && data.nickname.trim().length > 0
+          ? data.nickname.trim()
+          : null;
+
+      if (!targetUserId || !eventConversationId) {
+        return;
+      }
+
+      const activeConversationSnapshot = activeConversation;
+      const activeGroupSnapshot = activeGroup;
+      if (!activeConversationSnapshot) {
+        return;
+      }
+
+      const membershipConversationId =
+        activeConversationSnapshot.type === 'channel'
+          ? activeConversationSnapshot.parent_conversation_id || activeGroupSnapshot?.id || null
+          : activeGroupSnapshot?.id || activeConversationSnapshot.id;
+      const membershipConversationPublicId =
+        activeConversationSnapshot.type === 'channel'
+          ? activeConversationSnapshot.parent_public_id || activeGroupSnapshot?.public_id || null
+          : activeGroupSnapshot?.public_id || activeConversationSnapshot.public_id || null;
+
+      const matchesMembershipConversation =
+        String(eventConversationId) === String(membershipConversationId) ||
+        (eventConversationPublicId && membershipConversationPublicId
+          ? String(eventConversationPublicId) === String(membershipConversationPublicId)
+          : false);
+
+      if (!matchesMembershipConversation) {
+        return;
+      }
+
+      setMembers((current) => {
+        const member = current[targetUserId];
+        if (!member || member.nickname === nickname) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [targetUserId]: {
+            ...member,
+            nickname,
+          },
+        };
+      });
+
+      patchCachedConversationNickname(activeConversationSnapshot.id, targetUserId, nickname);
+      patchCachedConversationNickname(activeConversationSnapshot.public_id, targetUserId, nickname);
+      patchCachedConversationNickname(activeGroupSnapshot?.id, targetUserId, nickname);
+      patchCachedConversationNickname(activeGroupSnapshot?.public_id, targetUserId, nickname);
+      patchCachedConversationNickname(eventConversationId, targetUserId, nickname);
+      patchCachedConversationNickname(eventConversationPublicId, targetUserId, nickname);
+
+      const keyScopeId = getConversationKeyScopeId(activeConversationSnapshot);
+      if (keyScopeId) {
+        const handshakeEntry = getHandshakeEntry(keyScopeId);
+        const cachedMember = handshakeEntry?.members?.[targetUserId];
+        if (handshakeEntry && cachedMember) {
+          setHandshakeEntry(keyScopeId, {
+            ...handshakeEntry,
+            members: {
+              ...handshakeEntry.members,
+              [targetUserId]: {
+                ...cachedMember,
+                nickname,
+              },
+            },
+          });
+        }
+      }
+    };
+
+    gateway.on('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
+    return () => gateway.off('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
+  }, [
+    activeConversation,
+    activeGroup,
     user?.id,
   ]);
 
