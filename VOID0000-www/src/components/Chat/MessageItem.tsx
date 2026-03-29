@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   CornerUpRight,
   Image,
@@ -34,6 +34,10 @@ const DENSITY: Record<Density, {
 };
 
 const AVATAR_OFFSET = 'pl-10';
+const SWIPE_START_THRESHOLD = 12;
+const SWIPE_START_THRESHOLD_ATTACHMENT = 18;
+const SWIPE_ACTION_THRESHOLD = 68;
+const SWIPE_ACTION_THRESHOLD_ATTACHMENT = 84;
 
 interface MessageItemProps {
   message: Message;
@@ -59,6 +63,7 @@ interface MessageItemProps {
     placement?: 'top' | 'bottom',
   ) => void;
   onContextMenu?: (event: React.MouseEvent, message: Message) => void;
+  onOpenContextMenuAtPosition?: (message: Message, position: { x: number; y: number }) => void;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
@@ -105,6 +110,7 @@ const MessageItem = memo(function MessageItem({
   onProfileClick,
   onOpenEmojiPicker,
   onContextMenu,
+  onOpenContextMenuAtPosition,
   onReply,
   onEdit,
   onDelete,
@@ -113,6 +119,26 @@ const MessageItem = memo(function MessageItem({
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isSwiping, setIsSwiping] = useState(false);
+  const longPressTimerRef = useRef<number | null>(null);
+  const touchStateRef = useRef<{
+    active: boolean;
+    swiping: boolean;
+    longPressTriggered: boolean;
+    startedOnAttachment: boolean;
+    startX: number;
+    startY: number;
+    touchId: number | null;
+  }>({
+    active: false,
+    swiping: false,
+    longPressTriggered: false,
+    startedOnAttachment: false,
+    startX: 0,
+    startY: 0,
+    touchId: null,
+  });
   const d = DENSITY[density];
   const isSystem = message.message_type === 'system';
   const isOwn = message.sender_id === currentUserId;
@@ -120,6 +146,29 @@ const MessageItem = memo(function MessageItem({
   const isQueued = message.local_status === 'queued';
   const isPending = isSending || isQueued;
   const isRightAligned = isOwn && density === 'comfortable';
+  const canSwipeReply = Boolean(onReply);
+  const canSwipeEdit = Boolean(isOwn && onEdit);
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+
+  const blurActiveComposer = useCallback(() => {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      (activeElement.tagName === 'TEXTAREA' ||
+        activeElement.tagName === 'INPUT' ||
+        activeElement.isContentEditable)
+    ) {
+      activeElement.blur();
+    }
+  }, []);
 
   const handleOpenAttachmentViewer = useCallback(async (attachmentUrls: string[], index: number) => {
     if (isPending || openingImageViewer) return;
@@ -140,6 +189,149 @@ const MessageItem = memo(function MessageItem({
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
   const rowIndent = !isRightAligned && !showAvatar ? AVATAR_OFFSET : '';
+
+  const resetTouchGesture = useCallback(() => {
+    touchStateRef.current.active = false;
+    touchStateRef.current.swiping = false;
+    touchStateRef.current.longPressTriggered = false;
+    touchStateRef.current.startedOnAttachment = false;
+    touchStateRef.current.touchId = null;
+    setIsSwiping(false);
+    setSwipeOffset(0);
+  }, []);
+
+  const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    if (isPending || event.touches.length !== 1) return;
+
+    const target = event.target as HTMLElement | null;
+    const gestureTarget = target?.closest('[data-message-gesture-target]');
+    const allowsMessageGesture = gestureTarget?.getAttribute('data-message-gesture-target') === 'attachment';
+
+    if (!allowsMessageGesture && target?.closest('button, a, input, textarea')) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStateRef.current = {
+      active: true,
+      swiping: false,
+      longPressTriggered: false,
+      startedOnAttachment: allowsMessageGesture,
+      startX: touch.clientX,
+      startY: touch.clientY,
+      touchId: touch.identifier,
+    };
+
+    clearLongPressTimer();
+    longPressTimerRef.current = window.setTimeout(() => {
+      const state = touchStateRef.current;
+      if (!state.active || state.swiping || state.longPressTriggered) return;
+
+      state.longPressTriggered = true;
+      blurActiveComposer();
+      window.getSelection?.()?.removeAllRanges();
+      onOpenContextMenuAtPosition?.(message, {
+        x: touch.clientX,
+        y: touch.clientY,
+      });
+      navigator.vibrate?.(10);
+    }, 360);
+  }, [blurActiveComposer, clearLongPressTimer, isPending, message, onOpenContextMenuAtPosition]);
+
+  const handleTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
+    const state = touchStateRef.current;
+    if (!state.active) return;
+
+    const touch = Array.from(event.touches).find((item) => item.identifier === state.touchId) || event.touches[0];
+    if (!touch) return;
+
+    const deltaX = touch.clientX - state.startX;
+    const deltaY = touch.clientY - state.startY;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+    const swipeStartThreshold = state.startedOnAttachment
+      ? SWIPE_START_THRESHOLD_ATTACHMENT
+      : SWIPE_START_THRESHOLD;
+
+    if (state.longPressTriggered) {
+      event.preventDefault();
+      return;
+    }
+
+    if (absY > 18 && absY > absX) {
+      clearLongPressTimer();
+      resetTouchGesture();
+      return;
+    }
+
+    if (absX > swipeStartThreshold && absX > absY * 1.25) {
+      clearLongPressTimer();
+      state.swiping = true;
+      setIsSwiping(true);
+
+      let nextOffset = deltaX;
+      if (nextOffset > 0 && !canSwipeReply) nextOffset = 0;
+      if (nextOffset < 0 && !canSwipeEdit) nextOffset = 0;
+      nextOffset = Math.max(-88, Math.min(88, nextOffset));
+      setSwipeOffset(nextOffset);
+      event.preventDefault();
+      return;
+    }
+
+    if (absX > 8 || absY > 8) {
+      clearLongPressTimer();
+    }
+  }, [canSwipeEdit, canSwipeReply, clearLongPressTimer, resetTouchGesture]);
+
+  const handleTouchEnd = useCallback(() => {
+    const state = touchStateRef.current;
+    clearLongPressTimer();
+
+    if (!state.active) {
+      resetTouchGesture();
+      return;
+    }
+
+    if (state.longPressTriggered) {
+      resetTouchGesture();
+      return;
+    }
+
+    if (state.swiping) {
+      const swipeActionThreshold = state.startedOnAttachment
+        ? SWIPE_ACTION_THRESHOLD_ATTACHMENT
+        : SWIPE_ACTION_THRESHOLD;
+
+      if (swipeOffset >= swipeActionThreshold && onReply) {
+        onReply(message);
+      } else if (swipeOffset <= -swipeActionThreshold && isOwn && onEdit) {
+        onEdit(message);
+      }
+    }
+
+    resetTouchGesture();
+  }, [clearLongPressTimer, isOwn, message, onEdit, onReply, resetTouchGesture, swipeOffset]);
+
+  const handleTouchCancel = useCallback(() => {
+    clearLongPressTimer();
+    resetTouchGesture();
+  }, [clearLongPressTimer, resetTouchGesture]);
+
+  const handleOpenEmojiPickerFromButton = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    blurActiveComposer();
+    onOpenEmojiPicker(message.message_id, event.currentTarget);
+  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker]);
+
+  const handleOpenEmojiPickerFromReactionBar = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    blurActiveComposer();
+    onOpenEmojiPicker(message.message_id, event.currentTarget, 'bottom');
+  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker]);
+
+  const handleToggleReactionWithBlur = useCallback((emoji: string) => {
+    blurActiveComposer();
+    onToggleReaction(message.message_id, emoji);
+  }, [blurActiveComposer, message.message_id, onToggleReaction]);
 
   if (isSystem) {
     const hasContent = typeof message.content === 'string' && message.content.trim().length > 0;
@@ -221,6 +413,23 @@ const MessageItem = memo(function MessageItem({
         onMouseLeave={() => setIsHovered(false)}
         className={`relative flex ${isRightAligned ? 'flex-row-reverse' : 'flex-row'} items-end gap-2 max-w-full ${rowIndent} ${isPending ? 'opacity-65 saturate-50' : ''}`}
       >
+        {canSwipeReply && (
+          <div
+            className={`pointer-events-none absolute inset-y-0 ${isRightAligned ? 'right-2' : 'left-2'} flex items-center text-void-accent transition-opacity`}
+            style={{ opacity: swipeOffset > 8 ? Math.min(1, swipeOffset / 56) : 0 }}
+          >
+            <Reply className="h-4 w-4" />
+          </div>
+        )}
+        {canSwipeEdit && (
+          <div
+            className={`pointer-events-none absolute inset-y-0 ${isRightAligned ? 'left-2' : 'right-2'} flex items-center text-void-accent transition-opacity`}
+            style={{ opacity: swipeOffset < -8 ? Math.min(1, Math.abs(swipeOffset) / 56) : 0 }}
+          >
+            <Pencil className="h-4 w-4" />
+          </div>
+        )}
+
         {showAvatar && (
           <div
             className="w-8 h-8 rounded-full overflow-hidden flex-shrink-0 bg-void-bg-hover cursor-pointer hover:opacity-80 transition-opacity self-start"
@@ -239,7 +448,15 @@ const MessageItem = memo(function MessageItem({
 
         <div
           onContextMenu={isPending ? undefined : (e) => onContextMenu?.(e, message)}
-          className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0`}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchCancel}
+          className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0 select-none md:select-text ${isSwiping ? '' : 'transition-transform duration-200 ease-out'}`}
+          style={{
+            transform: `translateX(${swipeOffset}px)`,
+            WebkitTouchCallout: 'none',
+          }}
         >
           {message.reply_to && (
             <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
@@ -338,6 +555,7 @@ const MessageItem = memo(function MessageItem({
                   <button
                     key={index}
                     onClick={() => { void handleOpenAttachmentViewer(message.attachments || [], index); }}
+                    data-message-gesture-target="attachment"
                     disabled={isPending || openingImageViewer}
                     className={`block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square ${isPending ? 'cursor-not-allowed' : ''}`}
                   >
@@ -357,8 +575,8 @@ const MessageItem = memo(function MessageItem({
               <ReactionBar
                 reactions={messageReactions as any}
                 currentUserId={currentUserId || ''}
-                onToggle={(emoji) => onToggleReaction(message.message_id, emoji)}
-                onAddReaction={(event) => onOpenEmojiPicker(message.message_id, event.currentTarget, 'bottom')}
+                onToggle={handleToggleReactionWithBlur}
+                onAddReaction={handleOpenEmojiPickerFromReactionBar}
               />
             </div>
           )}
@@ -377,7 +595,7 @@ const MessageItem = memo(function MessageItem({
             className={`flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           >
             <button
-              onClick={(event) => onOpenEmojiPicker(message.message_id, event.currentTarget)}
+              onClick={handleOpenEmojiPickerFromButton}
               className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text"
               title="React"
             >

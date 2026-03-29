@@ -177,6 +177,7 @@ const MessageView = memo(function MessageView({
     setSelectedProfileId,
     setSelectedFriend,
     handleContextMenu,
+    openContextMenuAtPosition,
     handleProfileClick,
     openEmojiPicker,
     openEmojiPickerAtPosition,
@@ -423,6 +424,7 @@ const MessageView = memo(function MessageView({
             ? undefined
             : handleContextMenu
         }
+        onOpenContextMenuAtPosition={openContextMenuAtPosition}
         onReply={onReply}
         onEdit={onEdit}
         onDelete={handleDelete}
@@ -448,6 +450,7 @@ const MessageView = memo(function MessageView({
     onEdit,
     onReply,
     openEmojiPicker,
+    openContextMenuAtPosition,
     openImageViewer,
     reactions,
     replyFontSize,

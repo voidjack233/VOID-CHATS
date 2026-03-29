@@ -103,6 +103,29 @@ export function useMessageActions({
     setContextMenu({ msg, x, y });
   }, []);
 
+  const openContextMenuAtPosition = useCallback((
+    msg: Message,
+    position: { x: number; y: number },
+  ) => {
+    let x = position.x;
+    let y = position.y;
+    if (window.innerWidth - x < 200) x -= 180;
+    if (window.innerHeight - y < 200) y -= 150;
+    setContextMenu({ msg, x, y });
+  }, []);
+
+  const blurActiveTextInput = useCallback(() => {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      (activeElement.tagName === 'TEXTAREA' ||
+        activeElement.tagName === 'INPUT' ||
+        activeElement.isContentEditable)
+    ) {
+      activeElement.blur();
+    }
+  }, []);
+
   const handleProfileClick = useCallback((senderId: string) => {
     if (senderId === userIdRef.current && userProfileIdRef.current) {
       setSelectedProfileId(userProfileIdRef.current);
@@ -129,6 +152,7 @@ export function useMessageActions({
     anchor: HTMLElement,
     placement: 'top' | 'bottom' = 'top',
   ) => {
+    blurActiveTextInput();
     const rect = anchor.getBoundingClientRect();
     setEmojiPickerTarget({
       messageId,
@@ -137,14 +161,15 @@ export function useMessageActions({
         y: placement === 'bottom' ? rect.bottom + 8 : rect.top,
       },
     });
-  }, []);
+  }, [blurActiveTextInput]);
 
   const openEmojiPickerAtPosition = useCallback((
     messageId: string,
     position: { x: number; y: number },
   ) => {
+    blurActiveTextInput();
     setEmojiPickerTarget({ messageId, position });
-  }, []);
+  }, [blurActiveTextInput]);
 
   const closeEmojiPicker = useCallback(() => {
     setEmojiPickerTarget(null);
@@ -181,6 +206,7 @@ export function useMessageActions({
     setSelectedProfileId,
     setSelectedFriend,
     handleContextMenu,
+    openContextMenuAtPosition,
     handleProfileClick,
     openEmojiPicker,
     openEmojiPickerAtPosition,
