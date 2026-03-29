@@ -1,4 +1,4 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ChevronLeft,
@@ -69,6 +69,22 @@ export default function MessageOverlays({
   onNextImage,
   onSelectImageIndex,
 }: MessageOverlaysProps) {
+  const [contextMenuInteractive, setContextMenuInteractive] = useState(false);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      setContextMenuInteractive(false);
+      return;
+    }
+
+    setContextMenuInteractive(false);
+    const timer = window.setTimeout(() => {
+      setContextMenuInteractive(true);
+    }, 180);
+
+    return () => window.clearTimeout(timer);
+  }, [contextMenu]);
+
   return (
     <>
       {emojiPickerTarget && (
@@ -83,7 +99,7 @@ export default function MessageOverlays({
 
       {contextMenu && !contextMenu.msg.is_deleted && createPortal(
         <div
-          className="fixed z-[70] w-48 bg-void-bg-main border border-void-bg-hover rounded-lg shadow-2xl py-1.5 overflow-hidden flex flex-col"
+          className={`fixed z-[70] w-48 overflow-hidden rounded-lg border border-void-bg-hover bg-void-bg-main py-1.5 shadow-2xl flex flex-col select-none ${contextMenuInteractive ? 'pointer-events-auto' : 'pointer-events-none'}`}
           style={{ top: contextMenu.y, left: contextMenu.x }}
         >
           <button
@@ -94,7 +110,8 @@ export default function MessageOverlays({
               });
               onCloseContextMenu();
             }}
-            className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+            className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
+            style={{ WebkitTapHighlightColor: 'transparent' }}
           >
             <Smile className="w-4 h-4" />
             Add Reaction
@@ -104,7 +121,8 @@ export default function MessageOverlays({
               await onCopyMessageText(contextMenu.msg.content);
               onCloseContextMenu();
             }}
-            className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+            className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
+            style={{ WebkitTapHighlightColor: 'transparent' }}
           >
             <Copy className="w-4 h-4" />
             Copy Text
@@ -115,7 +133,8 @@ export default function MessageOverlays({
                 onReply(contextMenu.msg);
                 onCloseContextMenu();
               }}
-              className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+              className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
+              style={{ WebkitTapHighlightColor: 'transparent' }}
             >
               <Reply className="w-4 h-4" />
               Reply
@@ -123,7 +142,8 @@ export default function MessageOverlays({
           )}
           <button
             disabled
-            className="w-full text-left px-3 py-2 text-sm text-void-text-muted/60 flex items-center gap-2 cursor-not-allowed"
+            className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-2 text-left text-sm text-void-text-muted/60"
+            style={{ WebkitTapHighlightColor: 'transparent' }}
           >
             <Forward className="w-4 h-4" />
             Forward Message
@@ -134,10 +154,11 @@ export default function MessageOverlays({
               {onEdit && (
                 <button
                   onClick={() => {
-                    onEdit(contextMenu.msg);
-                    onCloseContextMenu();
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-void-text hover:bg-void-accent hover:text-white flex items-center gap-2 transition-colors"
+                  onEdit(contextMenu.msg);
+                  onCloseContextMenu();
+                }}
+                  className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
                 >
                   <Pencil className="w-4 h-4" />
                   Edit Message
@@ -148,7 +169,8 @@ export default function MessageOverlays({
                   onDelete(contextMenu.msg.message_id);
                   onCloseContextMenu();
                 }}
-                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-500 hover:text-white flex items-center gap-2 transition-colors"
+                className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500 hover:text-white"
+                style={{ WebkitTapHighlightColor: 'transparent' }}
               >
                 <Trash2 className="w-4 h-4" />
                 Delete Message
