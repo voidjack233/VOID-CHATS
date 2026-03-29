@@ -53,7 +53,7 @@ if (clusterEnabled) {
 
 apps.push({
   name: 'voidapp-gateway-phoenix',
-  script: 'scripts/run-phoenix-gateway.sh',
+  script: 'startup/run-phoenix-gateway.sh',
   instances: 1,
   exec_mode: 'fork',
   interpreter: 'none',
