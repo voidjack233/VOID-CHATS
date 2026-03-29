@@ -62,6 +62,7 @@ router.get('/', async (req, res) => {
        JOIN conversation_members cm ON cm.conversation_id = c.id
        WHERE cm.user_id = $1
          AND c.type != 'channel'
+         AND (c.type != 'dm' OR c.first_message_at IS NOT NULL OR c.owner_id = $1)
        ORDER BY c.updated_at DESC`,
       [userId]
     );

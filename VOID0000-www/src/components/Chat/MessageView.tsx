@@ -461,7 +461,6 @@ const MessageView = memo(function MessageView({
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
       <Virtuoso<MessageListItem, VirtuosoContext>
-        key={headerIdentity.key}
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         className="flex-1 min-h-0"

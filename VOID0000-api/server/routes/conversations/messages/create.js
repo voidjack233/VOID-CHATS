@@ -94,7 +94,7 @@ router.post('/', async (req, res) => {
       { prepare: true }
     );
 
-    await pool.query('UPDATE conversations SET updated_at = NOW() WHERE id = $1', [conversationId]);
+    await pool.query('UPDATE conversations SET updated_at = NOW(), first_message_at = COALESCE(first_message_at, NOW()) WHERE id = $1', [conversationId]);
     await pool.query(
       `UPDATE conversation_members
        SET last_message_sent_at = NOW()

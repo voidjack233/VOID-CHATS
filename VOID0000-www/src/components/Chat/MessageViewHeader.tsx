@@ -41,7 +41,6 @@ const findDmIntroMember = ({
 };
 
 export interface MessageViewHeaderIdentity {
-  key: string;
   label: string;
   avatar: string | null;
   username: string | null;
@@ -107,13 +106,6 @@ export function buildMessageViewHeaderIdentity(params: {
     : null;
 
   return {
-    key: [
-      conversation.id,
-      userId || '',
-      username || '',
-      label || '',
-      avatar || '',
-    ].join(':'),
     label,
     avatar,
     username,
