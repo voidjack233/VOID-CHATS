@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
 import { findConversationByIdentifier } from '../../../utils/conversationIdentity.js';
+import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
   broadcastConversationUpdate,
   getConversationMemberRole,
@@ -26,7 +27,12 @@ router.put('/:conversationId', async (req, res) => {
       return res.status(403).json({ error: 'Not a member' });
     }
 
-    if (!['owner', 'admin'].includes(memberRole)) {
+    if (resolvedConversation.type === 'group') {
+      const perms = resolvePermissions(resolvedConversation.permissions);
+      if (!meetsWhoThreshold(memberRole, perms.who_can_edit_group_profile)) {
+        return res.status(403).json({ error: 'You do not have permission to edit the group profile' });
+      }
+    } else if (!['owner', 'admin'].includes(memberRole)) {
       return res.status(403).json({ error: 'Only owner or admin can update' });
     }
 

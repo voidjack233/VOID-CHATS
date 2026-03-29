@@ -2,6 +2,7 @@ import { pool } from '../../../db.js';
 import { EVENTS } from '../../../gateway/protocol.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { resolveMembershipConversation } from '../../../utils/groupMembership.js';
+import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 
 const MAX_NICKNAME_LENGTH = 32;
 
@@ -36,6 +37,22 @@ export function registerConversationNicknameRoutes(router) {
 
       if (actorCheck.rows.length === 0) {
         return res.status(403).json({ error: 'Not a member' });
+      }
+
+      const actorRole = actorCheck.rows[0].role;
+      const isSelf = userId === targetUserId;
+
+      if (membershipConversation.type === 'group') {
+        const perms = resolvePermissions(membershipConversation.permissions);
+        if (isSelf) {
+          if (!meetsWhoThreshold(actorRole, perms.who_can_edit_own_nickname)) {
+            return res.status(403).json({ error: 'You do not have permission to edit your own nickname' });
+          }
+        } else {
+          if (!meetsWhoThreshold(actorRole, perms.who_can_edit_other_nicknames)) {
+            return res.status(403).json({ error: 'You do not have permission to edit other members\' nicknames' });
+          }
+        }
       }
 
       const targetCheck = await pool.query(

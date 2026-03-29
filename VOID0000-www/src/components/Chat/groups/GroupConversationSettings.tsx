@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Lock, Shield, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Lock, Shield, X } from 'lucide-react';
 import {
   approveConversationJoinRequest,
   Conversation,
@@ -92,6 +92,7 @@ const GroupConversationSettings = ({
   useScrollLock();
 
   const [activeTab, setActiveTab] = useState<GroupSettingsTab>('profile');
+  const [mobileView, setMobileView] = useState<'menu' | 'detail'>('menu');
   const [memberList, setMemberList] = useState<ConversationMember[]>(members);
   const [currentKeyVersion, setCurrentKeyVersion] = useState<number>(conversation.current_key_version || 1);
   const [inviteLinks, setInviteLinks] = useState<ConversationInviteLink[]>([]);
@@ -202,11 +203,29 @@ const GroupConversationSettings = ({
 
   useEffect(() => {
     setActiveTab('profile');
+    setMobileView(window.innerWidth >= 768 ? 'detail' : 'menu');
     setMemberMenuUserId(null);
     setExpandedRoleEditorUserId(null);
     setKickConfirmMember(null);
     setMemberActionError('');
   }, [conversation.id]);
+
+  useEffect(() => {
+    const syncMobileView = () => {
+      if (window.innerWidth >= 768) {
+        setMobileView('detail');
+      } else {
+        setMobileView('menu');
+      }
+    };
+
+    syncMobileView();
+    window.addEventListener('resize', syncMobileView);
+
+    return () => {
+      window.removeEventListener('resize', syncMobileView);
+    };
+  }, []);
 
   useEffect(() => {
     setMemberList(members);
@@ -672,6 +691,165 @@ const GroupConversationSettings = ({
     }
   };
 
+  const openTab = (tab: GroupSettingsTab) => {
+    setActiveTab(tab);
+    if (window.innerWidth < 768) {
+      setMobileView('detail');
+    }
+  };
+
+  const renderActiveTabContent = () => {
+    if (activeTab === 'profile') {
+      return (
+        <ProfileTab
+          profileError={profileError}
+          profileSuccess={profileSuccess}
+          displayedIconUrl={displayedIconUrl}
+          profileInitial={profileInitial}
+          canManageProfile={canManageProfile}
+          profileSaving={profileSaving}
+          hasRemovableIcon={Boolean(conversation.icon_url || pendingIconFile)}
+          onProfileFileSelect={handleProfileFileSelect}
+          onRequestRemoveProfileIcon={handleRequestRemoveProfileIcon}
+          profileName={profileName}
+          onProfileNameChange={(value) => {
+            setProfileName(value);
+            setProfileError('');
+            setProfileSuccess('');
+          }}
+          onProfileNameFocus={() => setIsProfileNameFocused(true)}
+          onProfileNameBlur={() => setIsProfileNameFocused(false)}
+          isProfileNameFocused={isProfileNameFocused}
+          isProfileDirty={isProfileDirty}
+          onRequestSaveProfile={handleRequestSaveProfile}
+        />
+      );
+    }
+
+    if (activeTab === 'members') {
+      return (
+        <MembersTab
+          memberActionError={memberActionError}
+          sortedMembers={sortedMembers}
+          memberRemovalPaused={MEMBER_REMOVAL_PAUSED}
+          currentUserId={currentUserId}
+          canChangeMemberRoles={canChangeMemberRoles}
+          canKickMembers={canKickMembers}
+          memberMenuUserId={memberMenuUserId}
+          expandedRoleEditorUserId={expandedRoleEditorUserId}
+          busyMemberAction={busyMemberAction}
+          leaveBlockedReason={leaveBlockedReason}
+          isOwner={isOwner}
+          onToggleMemberMenu={(userId) =>
+            setMemberMenuUserId((current) => (current === userId ? null : userId))
+          }
+          onToggleRoleEditor={(userId) => {
+            setExpandedRoleEditorUserId((current) => (current === userId ? null : userId));
+            setMemberMenuUserId(null);
+          }}
+          onCloseRoleEditor={() => setExpandedRoleEditorUserId(null)}
+          onRequestKickMember={(member) => {
+            setMemberMenuUserId(null);
+            setKickConfirmMember(member);
+          }}
+          onChangeMemberRole={(member, nextRole) => {
+            void handleChangeMemberRole(member, nextRole);
+          }}
+          onUpdateNickname={(member, nickname) =>
+            handleUpdateNickname(member, nickname)
+          }
+        />
+      );
+    }
+
+    if (activeTab === 'roles') {
+      return (
+        <div className="space-y-6">
+          <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-5">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-void-accent/15 text-void-accent">
+                <Shield className="h-5 w-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-void-text">Ranked Roles</h3>
+                <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
+                  This screen is the next step after member controls. It will let the owner
+                  define ranked roles and choose which powers each role can exercise.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
+                <p className="text-sm font-semibold text-void-text">Hierarchy</p>
+                <p className="mt-2 text-sm text-void-text-muted">
+                  Roles will depend on rank, not just labels, so higher roles can manage lower ones cleanly.
+                </p>
+              </div>
+              <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
+                <p className="text-sm font-semibold text-void-text">Permissions</p>
+                <p className="mt-2 text-sm text-void-text-muted">
+                  The owner will be able to decide which role can manage members and future history sharing.
+                </p>
+              </div>
+              <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
+                <p className="text-sm font-semibold text-void-text">Owner-Only Powers</p>
+                <p className="mt-2 text-sm text-void-text-muted">
+                  Ownership transfer and the highest-rank powers will stay non-delegable.
+                </p>
+              </div>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    if (activeTab === 'invites') {
+      return (
+        <InvitesTab
+          canManageInvites={canManageInvites}
+          invitesLoading={invitesLoading}
+          invitesLoaded={invitesLoaded}
+          inviteError={inviteError}
+          inviteActionError={inviteActionError}
+          isCreatingInvite={isCreatingInvite}
+          busyInviteId={busyInviteId}
+          busyRequestId={busyRequestId}
+          copiedInviteId={copiedInviteId}
+          pendingRequests={pendingRequests}
+          inviteLinks={inviteLinks}
+          joinApprovalsPaused={JOIN_APPROVALS_PAUSED}
+          joinApprovalsPausedMessage={JOIN_APPROVALS_PAUSED_MESSAGE}
+          onRefreshInvites={refreshInvites}
+          onCreateInvite={handleCreateInvite}
+          onDeclineRequest={handleDeclineRequest}
+          onApproveRequest={handleApproveRequest}
+          onCopyInvite={handleCopyInvite}
+          onRevokeInvite={handleRevokeInvite}
+        />
+      );
+    }
+
+    if (activeTab === 'permissions') {
+      return <PermissionsTab isOwner={isOwner} conversationId={rootConversationId} />;
+    }
+
+    return (
+      <section className="rounded-2xl border border-dashed border-void-bg-hover bg-void-bg-main/30 p-6 text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-void-bg-hover text-void-text-muted">
+          <Lock className="h-5 w-5" />
+        </div>
+        <h3 className="mt-4 text-base font-semibold text-void-text">
+          Access Disabled For Now
+        </h3>
+        <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-void-text-muted">
+          This section is intentionally visible so the server settings structure is in place, but the controls
+          stay disabled until the member and role flows are fully settled.
+        </p>
+      </section>
+    );
+  };
+
   return (
     <div className="fixed inset-0 z-[320] bg-black/55 backdrop-blur-sm">
       <div className="flex h-full items-center justify-center p-0 md:p-4">
@@ -737,16 +915,32 @@ const GroupConversationSettings = ({
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="sticky top-0 z-10 border-b border-void-bg-hover bg-void-bg-sec px-5 py-4 md:px-6">
               <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-void-text-muted md:hidden">
-                    Server Settings
-                  </p>
-                  <h2 className="text-lg font-semibold text-void-text">
-                    {activeTabMeta?.label}
-                  </h2>
-                  <p className="mt-1 text-sm text-void-text-muted">
-                    {activeTabMeta?.description}
-                  </p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {mobileView === 'detail' ? (
+                      <button
+                        type="button"
+                        onClick={() => setMobileView('menu')}
+                        className="rounded-full bg-void-bg-main/80 p-2 text-void-text-muted transition-colors hover:bg-void-bg-main hover:text-void-text md:hidden"
+                        aria-label="Back to server settings"
+                      >
+                        <ArrowLeft className="h-5 w-5" />
+                      </button>
+                    ) : null}
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-void-text-muted md:hidden">
+                        Server Settings
+                      </p>
+                      <h2 className="text-lg font-semibold text-void-text">
+                        {mobileView === 'menu' ? 'Server Settings' : activeTabMeta?.label}
+                      </h2>
+                      <p className="mt-1 text-sm text-void-text-muted">
+                        {mobileView === 'menu'
+                          ? 'Choose a section to manage this group.'
+                          : activeTabMeta?.description}
+                      </p>
+                    </div>
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -756,174 +950,74 @@ const GroupConversationSettings = ({
                   <X className="h-5 w-5" />
                 </button>
               </div>
-
-              <div className="mt-4 flex gap-2 overflow-x-auto md:hidden">
-                {SETTINGS_TABS.map((tab) => {
-                  const isActive = activeTab === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      disabled={tab.disabled}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-colors ${
-                        tab.disabled
-                          ? 'cursor-not-allowed bg-void-bg-main text-void-text-muted/50'
-                          : isActive
-                            ? 'bg-void-accent text-white'
-                            : 'bg-void-bg-main text-void-text-muted'
-                      }`}
-                    >
-                      <span>{tab.label}</span>
-                      {tab.disabled && <Lock className="h-3.5 w-3.5" />}
-                    </button>
-                  );
-                })}
-              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 md:p-6">
-              {activeTab === 'profile' && (
-                <ProfileTab
-                  profileError={profileError}
-                  profileSuccess={profileSuccess}
-                  displayedIconUrl={displayedIconUrl}
-                  profileInitial={profileInitial}
-                  canManageProfile={canManageProfile}
-                  profileSaving={profileSaving}
-                  hasRemovableIcon={Boolean(conversation.icon_url || pendingIconFile)}
-                  onProfileFileSelect={handleProfileFileSelect}
-                  onRequestRemoveProfileIcon={handleRequestRemoveProfileIcon}
-                  profileName={profileName}
-                  onProfileNameChange={(value) => {
-                    setProfileName(value);
-                    setProfileError('');
-                    setProfileSuccess('');
-                  }}
-                  onProfileNameFocus={() => setIsProfileNameFocused(true)}
-                  onProfileNameBlur={() => setIsProfileNameFocused(false)}
-                  isProfileNameFocused={isProfileNameFocused}
-                  isProfileDirty={isProfileDirty}
-                  onRequestSaveProfile={handleRequestSaveProfile}
-                />
-              )}
-
-              {activeTab === 'members' && (
-                <MembersTab
-                  memberActionError={memberActionError}
-                  sortedMembers={sortedMembers}
-                  memberRemovalPaused={MEMBER_REMOVAL_PAUSED}
-                  currentUserId={currentUserId}
-                  canChangeMemberRoles={canChangeMemberRoles}
-                  canKickMembers={canKickMembers}
-                  memberMenuUserId={memberMenuUserId}
-                  expandedRoleEditorUserId={expandedRoleEditorUserId}
-                  busyMemberAction={busyMemberAction}
-                  leaveBlockedReason={leaveBlockedReason}
-                  isOwner={isOwner}
-                  onToggleMemberMenu={(userId) =>
-                    setMemberMenuUserId((current) => (current === userId ? null : userId))
-                  }
-                  onToggleRoleEditor={(userId) => {
-                    setExpandedRoleEditorUserId((current) => (current === userId ? null : userId));
-                    setMemberMenuUserId(null);
-                  }}
-                  onCloseRoleEditor={() => setExpandedRoleEditorUserId(null)}
-                  onRequestKickMember={(member) => {
-                    setMemberMenuUserId(null);
-                    setKickConfirmMember(member);
-                  }}
-                  onChangeMemberRole={(member, nextRole) => {
-                    void handleChangeMemberRole(member, nextRole);
-                  }}
-                  onUpdateNickname={(member, nickname) =>
-                    handleUpdateNickname(member, nickname)
-                  }
-                />
-              )}
-
-              {activeTab === 'roles' && (
-                <div className="space-y-6">
-                  <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-5">
-                    <div className="flex items-start gap-3">
-                      <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-void-accent/15 text-void-accent">
-                        <Shield className="h-5 w-5" />
+              <div className="md:hidden">
+                {mobileView === 'menu' ? (
+                  <div className="space-y-5">
+                    <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-4">
+                      <div className="flex items-center gap-3">
+                        {conversation.icon_url ? (
+                          <img
+                            src={conversation.icon_url}
+                            alt=""
+                            className="h-12 w-12 rounded-2xl object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-void-accent/15 text-sm font-semibold text-void-accent">
+                            {getConversationInitial(conversation.name)}
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-void-text">{conversation.name || 'Unnamed Group'}</p>
+                          <p className="text-xs text-void-text-muted">{memberList.length} members</p>
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="text-sm font-semibold text-void-text">Ranked Roles</h3>
-                        <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
-                          This screen is the next step after member controls. It will let the owner
-                          define ranked roles and choose which powers each role can exercise.
+                    </section>
+
+                    {SETTINGS_SECTIONS.map((section) => (
+                      <div key={section.label}>
+                        <p className="px-1 pb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-void-text-muted">
+                          {section.label}
                         </p>
+                        <div className="space-y-2">
+                          {section.tabs.map((tab) => (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              disabled={tab.disabled}
+                              onClick={() => openTab(tab.id)}
+                              className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-4 py-4 text-left transition-all ${
+                                tab.disabled
+                                  ? 'cursor-not-allowed border-void-bg-hover bg-void-bg-main/25 text-void-text-muted/50'
+                                  : 'border-void-bg-hover bg-void-bg-main/35 text-void-text-muted hover:border-void-bg-hover/80 hover:bg-void-bg-hover/60 hover:text-void-text'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate font-medium">{tab.label}</span>
+                                  {tab.disabled && <Lock className="h-3.5 w-3.5 flex-shrink-0" />}
+                                </div>
+                                <p className="mt-1 text-xs leading-relaxed text-void-text-muted">
+                                  {tab.description}
+                                </p>
+                              </div>
+                              <ChevronRight className="h-4 w-4 flex-shrink-0 text-void-text-muted" />
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-
-                    <div className="mt-5 grid gap-3 md:grid-cols-3">
-                      <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
-                        <p className="text-sm font-semibold text-void-text">Hierarchy</p>
-                        <p className="mt-2 text-sm text-void-text-muted">
-                          Roles will depend on rank, not just labels, so higher roles can manage lower ones cleanly.
-                        </p>
-                      </div>
-                      <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
-                        <p className="text-sm font-semibold text-void-text">Permissions</p>
-                        <p className="mt-2 text-sm text-void-text-muted">
-                          The owner will be able to decide which role can manage members and future history sharing.
-                        </p>
-                      </div>
-                      <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
-                        <p className="text-sm font-semibold text-void-text">Owner-Only Powers</p>
-                        <p className="mt-2 text-sm text-void-text-muted">
-                          Ownership transfer and the highest-rank powers will stay non-delegable.
-                        </p>
-                      </div>
-                    </div>
-                  </section>
-                </div>
-              )}
-
-              {activeTab === 'invites' && (
-                <InvitesTab
-                  canManageInvites={canManageInvites}
-                  invitesLoading={invitesLoading}
-                  invitesLoaded={invitesLoaded}
-                  inviteError={inviteError}
-                  inviteActionError={inviteActionError}
-                  isCreatingInvite={isCreatingInvite}
-                  busyInviteId={busyInviteId}
-                  busyRequestId={busyRequestId}
-                  copiedInviteId={copiedInviteId}
-                  pendingRequests={pendingRequests}
-                  inviteLinks={inviteLinks}
-                  joinApprovalsPaused={JOIN_APPROVALS_PAUSED}
-                  joinApprovalsPausedMessage={JOIN_APPROVALS_PAUSED_MESSAGE}
-                  onRefreshInvites={refreshInvites}
-                  onCreateInvite={handleCreateInvite}
-                  onDeclineRequest={handleDeclineRequest}
-                  onApproveRequest={handleApproveRequest}
-                  onCopyInvite={handleCopyInvite}
-                  onRevokeInvite={handleRevokeInvite}
-                />
-              )}
-
-              {activeTab === 'permissions' && (
-                <PermissionsTab isOwner={isOwner} />
-              )}
-
-              {activeTab === 'access' && (
-                <section className="rounded-2xl border border-dashed border-void-bg-hover bg-void-bg-main/30 p-6 text-center">
-                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-void-bg-hover text-void-text-muted">
-                    <Lock className="h-5 w-5" />
+                    ))}
                   </div>
-                  <h3 className="mt-4 text-base font-semibold text-void-text">
-                    Access Disabled For Now
-                  </h3>
-                  <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-void-text-muted">
-                    This section is intentionally visible so the server settings structure is in place, but the controls
-                    stay disabled until the member and role flows are fully settled.
-                  </p>
-                </section>
-              )}
+                ) : (
+                  renderActiveTabContent()
+                )}
+              </div>
+
+              <div className="hidden md:block">
+                {renderActiveTabContent()}
+              </div>
             </div>
           </div>
         </div>

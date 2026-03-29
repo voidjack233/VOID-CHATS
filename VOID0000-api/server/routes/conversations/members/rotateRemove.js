@@ -7,6 +7,7 @@ import {
   normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../../utils/groupMembership.js';
+import { meetsAdminToggle, resolvePermissions } from '../../../utils/groupPermissions.js';
 
 export function registerMemberRotateRemoveRoutes(router) {
   router.post('/rotate-remove', async (req, res) => {
@@ -46,11 +47,12 @@ export function registerMemberRotateRemoveRoutes(router) {
         return res.status(403).json({ error: 'Not a member' });
       }
 
-      if (membership.role !== 'owner') {
+      const perms = resolvePermissions(conversation.permissions);
+      if (!meetsAdminToggle(membership.role, perms.admin_can_remove_members)) {
         await client.query('ROLLBACK');
         return res.status(403).json({
-          error: 'Only the owner can remove members during key rotation',
-          code: actorUserId === targetUserId ? 'SELF_LEAVE_ROTATION_UNAVAILABLE' : 'OWNER_REQUIRED',
+          error: 'You do not have permission to remove members',
+          code: actorUserId === targetUserId ? 'SELF_LEAVE_ROTATION_UNAVAILABLE' : 'PERMISSION_DENIED',
         });
       }
 
@@ -193,9 +195,15 @@ export function registerMemberRotateRemoveRoutes(router) {
       }
 
       const membership = await getGroupMembership(client, conversation.id, actorUserId);
-      if (!membership || membership.role !== 'owner') {
+      if (!membership) {
         await client.query('ROLLBACK');
-        return res.status(403).json({ error: 'Only the owner can finalize member removal' });
+        return res.status(403).json({ error: 'Not a member' });
+      }
+
+      const perms = resolvePermissions(conversation.permissions);
+      if (!meetsAdminToggle(membership.role, perms.admin_can_remove_members)) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'You do not have permission to remove members' });
       }
 
       const lockedResult = await client.query(

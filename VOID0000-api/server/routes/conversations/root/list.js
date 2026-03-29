@@ -22,6 +22,7 @@ router.get('/', async (req, res) => {
          c.parent_conversation_id,
          c.current_key_version,
          c.category_id,
+         c.permissions,
          parent.public_id AS parent_public_id,
          c.created_at,
          c.updated_at,

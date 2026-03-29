@@ -8,6 +8,7 @@ import {
   normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../utils/groupMembership.js';
+import { meetsAdminToggle, meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import { generateInviteCode } from './inviteLinks.js';
 
 const router = Router({ mergeParams: true });
@@ -52,25 +53,71 @@ async function ensureOwnerConversation(db, conversationId, userId) {
 
   if (membership.role !== 'owner') {
     if (!isConversationOwner) {
-      return { error: { status: 403, body: { error: 'Only the owner can manage invite links' } } };
+      return { conversation, membership };
     }
 
     await db.query(
       `UPDATE conversation_members SET role = 'owner' WHERE conversation_id = $1 AND user_id = $2`,
       [conversation.id, userId]
     );
+    membership = { role: 'owner' };
   }
 
-  return { conversation };
+  return { conversation, membership };
+}
+
+async function ensureConversationMember(db, conversationId, userId) {
+  const conversation = await resolveMembershipConversation(db, conversationId);
+  if (!conversation) {
+    return { error: { status: 404, body: { error: 'Conversation not found' } } };
+  }
+
+  if (conversation.type !== 'group') {
+    return { error: { status: 400, body: { error: 'Invites are only supported for groups' } } };
+  }
+
+  const isConversationOwner =
+    conversation.owner_id != null &&
+    String(conversation.owner_id) === String(userId);
+
+  let membership = await getGroupMembership(db, conversation.id, userId);
+
+  if (!membership) {
+    if (!isConversationOwner) {
+      return { error: { status: 403, body: { error: 'Not a member' } } };
+    }
+
+    const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+    await db.query(
+      `INSERT INTO conversation_members (conversation_id, user_id, role, joined_key_version, history_start_version) VALUES ($1, $2, 'owner', $3, 1) ON CONFLICT (conversation_id, user_id) DO UPDATE SET role = 'owner'`,
+      [conversation.id, userId, currentKeyVersion]
+    );
+    membership = { role: 'owner' };
+  }
+
+  if (isConversationOwner && membership.role !== 'owner') {
+    await db.query(
+      `UPDATE conversation_members SET role = 'owner' WHERE conversation_id = $1 AND user_id = $2`,
+      [conversation.id, userId]
+    );
+    membership = { role: 'owner' };
+  }
+
+  return { conversation, membership };
 }
 
 router.get('/', async (req, res) => {
   const userId = req.user.id;
 
   try {
-    const { conversation, error } = await ensureOwnerConversation(pool, req.params.conversationId, userId);
+    const { conversation, membership, error } = await ensureConversationMember(pool, req.params.conversationId, userId);
     if (error) {
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsAdminToggle(membership.role, perms.admin_can_manage_invite_links)) {
+      return res.status(403).json({ error: 'You do not have permission to manage invite links' });
     }
 
     const [linksResult, requestsResult] = await Promise.all([
@@ -155,10 +202,16 @@ router.post('/', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    const { conversation, error } = await ensureOwnerConversation(client, req.params.conversationId, userId);
+    const { conversation, membership, error } = await ensureConversationMember(client, req.params.conversationId, userId);
     if (error) {
       await client.query('ROLLBACK');
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsWhoThreshold(membership.role, perms.who_can_create_invite_links)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'You do not have permission to create invite links' });
     }
 
     const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
@@ -237,10 +290,16 @@ router.post('/requests/:requestId/approve', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    const { conversation, error } = await ensureOwnerConversation(client, req.params.conversationId, actorUserId);
+    const { conversation, membership, error } = await ensureConversationMember(client, req.params.conversationId, actorUserId);
     if (error) {
       await client.query('ROLLBACK');
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'You do not have permission to approve join requests' });
     }
 
     const requestResult = await client.query(
@@ -382,10 +441,16 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    const { conversation, error } = await ensureOwnerConversation(client, req.params.conversationId, actorUserId);
+    const { conversation, membership, error } = await ensureConversationMember(client, req.params.conversationId, actorUserId);
     if (error) {
       await client.query('ROLLBACK');
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'You do not have permission to approve join requests' });
     }
 
     const requestResult = await client.query(
@@ -658,10 +723,16 @@ router.post('/requests/:requestId/rollback-approval', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
-    const { conversation, error } = await ensureOwnerConversation(client, req.params.conversationId, actorUserId);
+    const { conversation, membership, error } = await ensureConversationMember(client, req.params.conversationId, actorUserId);
     if (error) {
       await client.query('ROLLBACK');
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'You do not have permission to manage join requests' });
     }
 
     const lockedVersionResult = await client.query(
@@ -843,9 +914,14 @@ router.post('/requests/:requestId/decline', async (req, res) => {
   }
 
   try {
-    const { conversation, error } = await ensureOwnerConversation(pool, req.params.conversationId, actorUserId);
+    const { conversation, membership, error } = await ensureConversationMember(pool, req.params.conversationId, actorUserId);
     if (error) {
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+      return res.status(403).json({ error: 'You do not have permission to manage join requests' });
     }
 
     const result = await pool.query(
@@ -880,9 +956,14 @@ router.post('/:inviteId/revoke', async (req, res) => {
   }
 
   try {
-    const { conversation, error } = await ensureOwnerConversation(pool, req.params.conversationId, actorUserId);
+    const { conversation, membership, error } = await ensureConversationMember(pool, req.params.conversationId, actorUserId);
     if (error) {
       return res.status(error.status).json(error.body);
+    }
+
+    const perms = resolvePermissions(conversation.permissions);
+    if (!meetsAdminToggle(membership.role, perms.admin_can_manage_invite_links)) {
+      return res.status(403).json({ error: 'You do not have permission to manage invite links' });
     }
 
     const result = await pool.query(

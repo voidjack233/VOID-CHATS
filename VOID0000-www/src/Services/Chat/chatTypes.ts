@@ -1,3 +1,18 @@
+export interface GroupPermissions {
+  admin_can_remove_members: boolean;
+  admin_can_approve_join_requests: boolean;
+  admin_can_edit_member_nicknames: boolean;
+  admin_can_edit_group_profile: boolean;
+  admin_can_manage_invite_links: boolean;
+  members_can_set_own_nickname: boolean;
+  who_can_send_attachments: 'everyone' | 'admins' | 'owner';
+  who_can_create_invite_links: 'everyone' | 'admins' | 'owner';
+  who_can_approve_requests: 'everyone' | 'admins' | 'owner';
+  who_can_edit_other_nicknames: 'everyone' | 'admins' | 'owner';
+  who_can_edit_own_nickname: 'everyone' | 'admins' | 'owner';
+  who_can_edit_group_profile: 'everyone' | 'admins' | 'owner';
+}
+
 export interface Conversation {
   id: string;
   public_id?: string | null;
@@ -20,6 +35,7 @@ export interface Conversation {
   dm_avatar_url: string | null;
   member_count: number;
   channels?: Conversation[];
+  permissions?: GroupPermissions;
 }
 
 export interface Attachment {

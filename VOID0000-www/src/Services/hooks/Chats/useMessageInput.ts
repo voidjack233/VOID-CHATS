@@ -40,6 +40,33 @@ interface UseMessageInputProps {
 const MAX_ATTACHMENTS = 5;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MLS_MESSAGE_TYPE = 'mls_application';
+const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
+
+const resolveAttachmentAccess = (conversation: Conversation) => {
+  if (conversation.type === 'dm') {
+    return {
+      allowed: true,
+      required: DEFAULT_ATTACHMENT_PERMISSION as 'everyone' | 'admins' | 'owner',
+    };
+  }
+
+  const required = conversation.permissions?.who_can_send_attachments ?? DEFAULT_ATTACHMENT_PERMISSION;
+  const role = conversation.role;
+
+  if (role === 'owner') {
+    return { allowed: true, required };
+  }
+
+  if (required === 'everyone') {
+    return { allowed: role !== 'viewer', required };
+  }
+
+  if (required === 'admins') {
+    return { allowed: role === 'admin', required };
+  }
+
+  return { allowed: false, required };
+};
 
 export const useMessageInput = ({
   currentUserId,
@@ -61,6 +88,14 @@ export const useMessageInput = ({
   const [sendError, setSendError] = useState('');
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
+  const attachmentAccess = resolveAttachmentAccess(conversation);
+  const attachmentsAllowed = attachmentAccess.allowed;
+  const attachmentsRestrictionLabel =
+    attachmentAccess.required === 'everyone'
+      ? null
+      : attachmentAccess.required === 'admins'
+        ? 'Admins'
+        : 'Owner';
 
   // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -119,6 +154,8 @@ export const useMessageInput = ({
   }, [conversation.id]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
+    if (!attachmentsAllowed) return;
+
     const arr = Array.from(files).filter((f) => ALLOWED_TYPES.includes(f.type));
     const slots = MAX_ATTACHMENTS - attachments.length;
     if (slots <= 0) return;
@@ -133,13 +170,15 @@ export const useMessageInput = ({
 
     setAttachments((prev) => [...prev, ...toAdd.map(({ file: _f, ...a }) => a)]);
     toAdd.forEach(({ id, file }) => uploadFile(file, id));
-  }, [attachments.length, uploadFile]);
+  }, [attachments.length, attachmentsAllowed, uploadFile]);
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (!attachmentsAllowed) return;
+
     const items = Array.from(e.clipboardData.items).filter(
       (item) => item.kind === 'file' && ALLOWED_TYPES.includes(item.type)
     );
@@ -147,18 +186,24 @@ export const useMessageInput = ({
     e.preventDefault();
     const files = items.map((item) => item.getAsFile()!).filter(Boolean);
     addFiles(files);
-  }, [addFiles]);
+  }, [addFiles, attachmentsAllowed]);
 
   const openFilePicker = useCallback(() => {
+    if (!attachmentsAllowed) return;
     fileInputRef.current?.click();
-  }, []);
+  }, [attachmentsAllowed]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!attachmentsAllowed) {
+      e.target.value = '';
+      return;
+    }
+
     if (e.target.files) {
       addFiles(e.target.files);
       e.target.value = '';
     }
-  }, [addFiles]);
+  }, [addFiles, attachmentsAllowed]);
 
   const canBootstrapDmOnSend =
     conversation.type === 'dm' &&
@@ -562,6 +607,8 @@ export const useMessageInput = ({
     sendError,
     slowmodeRemaining,
     attachments,
+    attachmentsAllowed,
+    attachmentsRestrictionLabel,
     inputRef,
     fileInputRef,
     getPlaceholder,

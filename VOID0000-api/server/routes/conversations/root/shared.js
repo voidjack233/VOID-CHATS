@@ -3,6 +3,7 @@ import { EVENTS } from '../../../gateway/protocol.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { BUCKET, GROUP_AVATAR_BUCKET } from '../../../minio.js';
 import { resolveUserAvatarUrl } from '../../../utils/avatarFallback.js';
+import { resolvePermissions } from '../../../utils/groupPermissions.js';
 
 export const MAX_ICON_PAYLOAD_SIZE = 10 * 1024 * 1024;
 export const MAX_ICON_DIMENSION = 4096;
@@ -90,6 +91,7 @@ export function normalizeConversationRow(conv) {
     slowmode_seconds: conv.slowmode_seconds != null ? parseInt(conv.slowmode_seconds, 10) : 0,
     is_age_restricted: !!conv.is_age_restricted,
     icon_url: buildGroupIconUrl(conv.icon_filename),
+    permissions: conv.type === 'group' ? resolvePermissions(conv.permissions) : undefined,
     dm_avatar_url: resolveUserAvatarUrl(conv.dm_avatar, {
       displayName: conv.dm_display_name,
       username: conv.dm_username,

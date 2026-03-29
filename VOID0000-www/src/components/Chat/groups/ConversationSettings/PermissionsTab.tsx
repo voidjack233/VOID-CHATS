@@ -1,7 +1,11 @@
-import { useState } from 'react';
-import { Search, ShieldAlert } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2, Search, ShieldAlert } from 'lucide-react';
+import type { GroupPermissions } from '../../../../Services/Chat/chatTypes';
+import {
+  getConversationPermissions,
+  updateConversationPermissions,
+} from '../../../../Services/Chat/conversationService';
 
-type YesNo = boolean;
 type WhoOption = 'everyone' | 'admins' | 'owner';
 
 const WHO_OPTIONS: Array<{ value: WhoOption; label: string }> = [
@@ -10,35 +14,14 @@ const WHO_OPTIONS: Array<{ value: WhoOption; label: string }> = [
   { value: 'owner', label: 'Owner' },
 ];
 
-interface PermissionsState {
-  // Admins section
-  adminCanRemoveMembers: YesNo;
-  adminCanApproveJoinRequests: YesNo;
-  adminCanEditMemberNicknames: YesNo;
-  adminCanEditGroupProfile: YesNo;
-  adminCanManageInviteLinks: YesNo;
-  // Members section
-  membersCanSetOwnNickname: YesNo;
-  // Attachments section
-  whoCanSendAttachments: WhoOption;
-  // Invites section
-  whoCanCreateInviteLinks: WhoOption;
-  whoCanApproveRequests: WhoOption;
-  // Nickname Rules section
-  whoCanEditOtherNicknames: WhoOption;
-  whoCanEditOwnNickname: WhoOption;
-  // Group Profile section
-  whoCanEditGroupProfile: WhoOption;
-}
-
 function ToggleRow({
   label,
   value,
   onChange,
 }: {
   label: string;
-  value: YesNo;
-  onChange: (next: YesNo) => void;
+  value: boolean;
+  onChange: (next: boolean) => void;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 py-3">
@@ -113,24 +96,120 @@ function SectionCard({
   );
 }
 
-export default function PermissionsTab({ isOwner }: { isOwner: boolean }) {
-  const [perms, setPerms] = useState<PermissionsState>({
-    adminCanRemoveMembers: true,
-    adminCanApproveJoinRequests: true,
-    adminCanEditMemberNicknames: true,
-    adminCanEditGroupProfile: true,
-    adminCanManageInviteLinks: true,
-    membersCanSetOwnNickname: true,
-    whoCanSendAttachments: 'everyone',
-    whoCanCreateInviteLinks: 'admins',
-    whoCanApproveRequests: 'admins',
-    whoCanEditOtherNicknames: 'admins',
-    whoCanEditOwnNickname: 'everyone',
-    whoCanEditGroupProfile: 'admins',
-  });
+// Camel-to-snake key mapping
+function toSnake(perms: Record<string, any>): Partial<GroupPermissions> {
+  const map: Record<string, keyof GroupPermissions> = {
+    adminCanRemoveMembers: 'admin_can_remove_members',
+    adminCanApproveJoinRequests: 'admin_can_approve_join_requests',
+    adminCanEditMemberNicknames: 'admin_can_edit_member_nicknames',
+    adminCanEditGroupProfile: 'admin_can_edit_group_profile',
+    adminCanManageInviteLinks: 'admin_can_manage_invite_links',
+    membersCanSetOwnNickname: 'members_can_set_own_nickname',
+    whoCanSendAttachments: 'who_can_send_attachments',
+    whoCanCreateInviteLinks: 'who_can_create_invite_links',
+    whoCanApproveRequests: 'who_can_approve_requests',
+    whoCanEditOtherNicknames: 'who_can_edit_other_nicknames',
+    whoCanEditOwnNickname: 'who_can_edit_own_nickname',
+    whoCanEditGroupProfile: 'who_can_edit_group_profile',
+  };
+  const result: Record<string, any> = {};
+  for (const [camel, value] of Object.entries(perms)) {
+    const snake = map[camel];
+    if (snake) result[snake] = value;
+  }
+  return result as Partial<GroupPermissions>;
+}
 
-  function set<K extends keyof PermissionsState>(key: K, value: PermissionsState[K]) {
-    setPerms((prev) => ({ ...prev, [key]: value }));
+function fromSnake(perms: GroupPermissions) {
+  return {
+    adminCanRemoveMembers: perms.admin_can_remove_members,
+    adminCanApproveJoinRequests: perms.admin_can_approve_join_requests,
+    adminCanEditMemberNicknames: perms.admin_can_edit_member_nicknames,
+    adminCanEditGroupProfile: perms.admin_can_edit_group_profile,
+    adminCanManageInviteLinks: perms.admin_can_manage_invite_links,
+    membersCanSetOwnNickname: perms.members_can_set_own_nickname,
+    whoCanSendAttachments: perms.who_can_send_attachments,
+    whoCanCreateInviteLinks: perms.who_can_create_invite_links,
+    whoCanApproveRequests: perms.who_can_approve_requests,
+    whoCanEditOtherNicknames: perms.who_can_edit_other_nicknames,
+    whoCanEditOwnNickname: perms.who_can_edit_own_nickname,
+    whoCanEditGroupProfile: perms.who_can_edit_group_profile,
+  };
+}
+
+interface CamelPermissions {
+  adminCanRemoveMembers: boolean;
+  adminCanApproveJoinRequests: boolean;
+  adminCanEditMemberNicknames: boolean;
+  adminCanEditGroupProfile: boolean;
+  adminCanManageInviteLinks: boolean;
+  membersCanSetOwnNickname: boolean;
+  whoCanSendAttachments: WhoOption;
+  whoCanCreateInviteLinks: WhoOption;
+  whoCanApproveRequests: WhoOption;
+  whoCanEditOtherNicknames: WhoOption;
+  whoCanEditOwnNickname: WhoOption;
+  whoCanEditGroupProfile: WhoOption;
+}
+
+export default function PermissionsTab({
+  isOwner,
+  conversationId,
+}: {
+  isOwner: boolean;
+  conversationId: string;
+}) {
+  const [perms, setPerms] = useState<CamelPermissions | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getConversationPermissions(conversationId)
+      .then((data) => {
+        if (!cancelled) {
+          setPerms(fromSnake(data));
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err.message || 'Failed to load permissions');
+          setLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [conversationId]);
+
+  const save = useCallback(
+    (updated: CamelPermissions) => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(async () => {
+        setSaving(true);
+        try {
+          const result = await updateConversationPermissions(conversationId, toSnake(updated));
+          setPerms(fromSnake(result));
+          setError(null);
+        } catch (err: any) {
+          setError(err.message || 'Failed to save permissions');
+        } finally {
+          setSaving(false);
+        }
+      }, 400);
+    },
+    [conversationId],
+  );
+
+  function set<K extends keyof CamelPermissions>(key: K, value: CamelPermissions[K]) {
+    setPerms((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, [key]: value };
+      save(next);
+      return next;
+    });
   }
 
   if (!isOwner) {
@@ -147,8 +226,36 @@ export default function PermissionsTab({ isOwner }: { isOwner: boolean }) {
     );
   }
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-5 w-5 animate-spin text-void-text-muted" />
+      </div>
+    );
+  }
+
+  if (!perms) {
+    return (
+      <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-6 text-center">
+        <p className="text-sm text-void-text-muted">{error || 'Could not load permissions.'}</p>
+      </section>
+    );
+  }
+
   return (
     <div className="space-y-5">
+      {error && (
+        <div className="rounded-xl border border-red-500/20 bg-red-500/8 px-4 py-2.5 text-xs text-red-300/80">
+          {error}
+        </div>
+      )}
+
+      {saving && (
+        <div className="flex items-center gap-2 text-xs text-void-text-muted">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          Saving...
+        </div>
+      )}
 
       {/* Admins */}
       <SectionCard title="Admins">
@@ -256,7 +363,6 @@ export default function PermissionsTab({ isOwner }: { isOwner: boolean }) {
           </p>
         </div>
       </section>
-
     </div>
   );
 }

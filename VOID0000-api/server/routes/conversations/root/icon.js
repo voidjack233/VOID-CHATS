@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import { pool } from '../../../db.js';
 import { findConversationByIdentifier } from '../../../utils/conversationIdentity.js';
 import { minioClient, GROUP_AVATAR_BUCKET } from '../../../minio.js';
+import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
   ALLOWED_ICON_MIME_PREFIXES,
   MAX_ICON_DIMENSION,
@@ -51,8 +52,9 @@ router.put('/:conversationId/icon', async (req, res) => {
       return res.status(403).json({ error: 'Not a member' });
     }
 
-    if (!['owner', 'admin'].includes(memberRole)) {
-      return res.status(403).json({ error: 'Only owner or admin can update the group profile' });
+    const perms = resolvePermissions(resolvedConversation.permissions);
+    if (!meetsWhoThreshold(memberRole, perms.who_can_edit_group_profile)) {
+      return res.status(403).json({ error: 'You do not have permission to edit the group profile' });
     }
 
     const buffer = Buffer.from(icon.replace(/^data:image\/\w+;base64,/, ''), 'base64');
@@ -133,8 +135,9 @@ router.delete('/:conversationId/icon', async (req, res) => {
       return res.status(403).json({ error: 'Not a member' });
     }
 
-    if (!['owner', 'admin'].includes(memberRole)) {
-      return res.status(403).json({ error: 'Only owner or admin can update the group profile' });
+    const perms = resolvePermissions(resolvedConversation.permissions);
+    if (!meetsWhoThreshold(memberRole, perms.who_can_edit_group_profile)) {
+      return res.status(403).json({ error: 'You do not have permission to edit the group profile' });
     }
 
     const updateResult = await pool.query(

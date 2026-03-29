@@ -29,6 +29,8 @@ const MessageInput = (props: MessageInputProps) => {
     sendError,
     slowmodeRemaining,
     attachments,
+    attachmentsAllowed,
+    attachmentsRestrictionLabel,
     inputRef,
     fileInputRef,
     getPlaceholder,
@@ -170,11 +172,30 @@ const MessageInput = (props: MessageInputProps) => {
             <div className="absolute bottom-full left-0 mb-2 w-44 bg-void-bg-main border border-void-bg-hover rounded-xl shadow-2xl py-1.5 z-50">
               {/* Media */}
               <button
-                onClick={() => { openFilePicker(); setAttachMenuOpen(false); }}
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-void-text hover:bg-void-bg-hover transition-colors"
+                onClick={() => {
+                  if (!attachmentsAllowed) return;
+                  openFilePicker();
+                  setAttachMenuOpen(false);
+                }}
+                disabled={!attachmentsAllowed || attachments.length >= 5}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors ${
+                  attachmentsAllowed && attachments.length < 5
+                    ? 'text-void-text hover:bg-void-bg-hover'
+                    : 'text-void-text-muted opacity-50 cursor-not-allowed'
+                }`}
+                title={
+                  !attachmentsAllowed && attachmentsRestrictionLabel
+                    ? `Only ${attachmentsRestrictionLabel.toLowerCase()} can send media in this group`
+                    : undefined
+                }
               >
-                <Image className="w-4 h-4 text-void-accent" />
+                <Image className={`w-4 h-4 ${attachmentsAllowed ? 'text-void-accent' : 'text-void-text-muted'}`} />
                 Media
+                {!attachmentsAllowed && attachmentsRestrictionLabel && (
+                  <span className="ml-auto text-[10px] bg-void-bg-hover px-1.5 py-0.5 rounded-full">
+                    {attachmentsRestrictionLabel}
+                  </span>
+                )}
               </button>
               {/* Files — disabled */}
               <button

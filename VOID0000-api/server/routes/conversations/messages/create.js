@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
+import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
   cassandra,
   getConversationKeyState,
@@ -49,6 +50,23 @@ router.post('/', async (req, res) => {
     const member = await verifyMembership(conversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
     if (member.role === 'viewer') return res.status(403).json({ error: 'Viewers cannot send messages' });
+
+    if ((conversation.type === 'group' || conversation.type === 'channel') && Array.isArray(attachments) && attachments.length > 0) {
+      let permissionsSource = conversation.permissions;
+      if (conversation.type === 'channel' && conversation.parent_conversation_id) {
+        const parentResult = await pool.query(
+          'SELECT permissions FROM conversations WHERE id = $1 LIMIT 1',
+          [conversation.parent_conversation_id]
+        );
+        if (parentResult.rows.length > 0) {
+          permissionsSource = parentResult.rows[0].permissions;
+        }
+      }
+      const perms = resolvePermissions(permissionsSource);
+      if (!meetsWhoThreshold(member.role, perms.who_can_send_attachments)) {
+        return res.status(403).json({ error: 'You do not have permission to send attachments' });
+      }
+    }
 
     const keyState = await getConversationKeyState(conversation, userId);
     if (!keyState) {

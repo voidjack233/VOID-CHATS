@@ -35,7 +35,7 @@ export async function resolveMembershipConversation(db, requestedConversationId)
   }
 
   const parentResult = await db.query(
-    `SELECT id, public_id, type, owner_id, parent_conversation_id, current_key_version
+    `SELECT id, public_id, type, owner_id, parent_conversation_id, current_key_version, permissions
      FROM conversations
      WHERE id = $1
      LIMIT 1`,

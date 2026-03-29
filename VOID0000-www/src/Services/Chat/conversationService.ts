@@ -4,6 +4,7 @@ import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove, reuploadGro
 import type {
   Conversation,
   ConversationMember,
+  GroupPermissions,
 } from './chatTypes';
 import {
   CHAT_API_PREFIX,
@@ -437,6 +438,28 @@ export async function updateConversationNickname(
   const data = await response.json();
   if (!data.success) throw new Error(data.error);
   return { nickname: data.nickname };
+}
+
+export async function getConversationPermissions(
+  conversationId: string,
+): Promise<GroupPermissions> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/permissions`);
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.permissions;
+}
+
+export async function updateConversationPermissions(
+  conversationId: string,
+  permissions: Partial<GroupPermissions>,
+): Promise<GroupPermissions> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/permissions`, {
+    method: 'PUT',
+    body: JSON.stringify({ permissions }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return data.permissions;
 }
 
 export async function createSecureGroup(

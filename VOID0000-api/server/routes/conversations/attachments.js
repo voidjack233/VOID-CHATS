@@ -11,6 +11,7 @@ import { encode } from 'blurhash';
 import { pool } from '../../db.js';
 import { minioClient, ATTACH_BUCKET } from '../../minio.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
+import { meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 
 const router = Router({ mergeParams: true });
 
@@ -74,6 +75,23 @@ router.post('/', async (req, res) => {
     );
     if (member.rows.length === 0) {
       return res.status(403).json({ error: 'Not a member of this conversation' });
+    }
+
+    if (conversation.type === 'group' || conversation.type === 'channel') {
+      let permissionsSource = conversation.permissions;
+      if (conversation.type === 'channel' && conversation.parent_conversation_id) {
+        const parentResult = await pool.query(
+          'SELECT permissions FROM conversations WHERE id = $1 LIMIT 1',
+          [conversation.parent_conversation_id]
+        );
+        if (parentResult.rows.length > 0) {
+          permissionsSource = parentResult.rows[0].permissions;
+        }
+      }
+      const perms = resolvePermissions(permissionsSource);
+      if (!meetsWhoThreshold(member.rows[0].role, perms.who_can_send_attachments)) {
+        return res.status(403).json({ error: 'You do not have permission to send attachments' });
+      }
     }
   } catch (err) {
     return res.status(500).json({ error: 'Membership check failed' });

@@ -9,6 +9,7 @@ import keysRouter from './keys.js';
 import membersRouter from './members.js';
 import messagesRouter from './messages.js';
 import mlsRouter from './mls.js';
+import permissionsRouter from './permissions.js';
 import reactionsRouter from './reactions.js';
 import rootRouter from './root/index.js';
 
@@ -23,6 +24,7 @@ router.use('/:conversationId/messages', authenticateUser, messagesRouter);
 router.use('/:conversationId/messages/:messageId/reactions', authenticateUser, reactionsRouter);
 router.use('/:conversationId/reactions', authenticateUser, batchReactionsRouter);
 router.use('/:conversationId/attachments', authenticateUser, attachmentsRouter);
+router.use('/:conversationId/permissions', authenticateUser, permissionsRouter);
 router.use('/keys', authenticateUser, keysRouter);
 router.use('/', authenticateUser, rootRouter);
 
