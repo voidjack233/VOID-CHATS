@@ -29,6 +29,10 @@ export interface Conversation {
   updated_at: string;
   role: string;
   last_read_message_id: string | null;
+  unread_count?: number;
+  last_message_id?: string | null;
+  last_message_sender_id?: string | null;
+  last_message_preview?: string | null;
   dm_user_id?: string;
   dm_username: string | null;
   dm_display_name: string | null;

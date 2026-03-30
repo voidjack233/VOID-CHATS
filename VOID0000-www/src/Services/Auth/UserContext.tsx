@@ -30,6 +30,15 @@ interface MlsRecoveryGateState {
   reason: MlsRecoveryGateReason | null;
 }
 
+function createEmptyRestoreSummary(): MlsRestoreSummary {
+  return {
+    outcome: 'skipped',
+    backupGroupStateCount: 0,
+    backupGroupKeyCount: 0,
+    hasConversationArtifacts: false,
+  };
+}
+
 function hasMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
   return Boolean(
     backup?.mls_state_encrypted &&
@@ -324,6 +333,7 @@ interface UserContextType {
   refreshKeyStatus: () => Promise<KeyStatus>;
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;
+  retryMlsRecoveryWithPassword: (password: string) => Promise<void>;
   saveRecoveryPhrase: (recoveryPhrase: string) => Promise<void>;
   unlockWithRecoveryPhrase: (recoveryPhrase: string) => Promise<void>;
 }
@@ -493,6 +503,80 @@ export function UserProvider({ children }: { children: ReactNode }) {
     setKeyStatus('SECURE');
   };
 
+  const retryMlsRecoveryWithPassword = async (password: string) => {
+    if (!user?.id) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    const normalizedPassword = password.trim();
+    if (!normalizedPassword) {
+      throw new Error('PASSWORD_REQUIRED');
+    }
+
+    loginPasswordRef.current = normalizedPassword;
+    setKeyStatusLoading(true);
+    clearMlsRecoveryGate();
+
+    try {
+      const backup = await fetchKeyBackup();
+      if (backup) {
+        setKeyStatus(resolveKeyStatusFromBackup(backup));
+      }
+
+      let restoreSummary = createEmptyRestoreSummary();
+      if (backup) {
+        restoreSummary = await restoreMlsStateFromBackup(user.id, backup, normalizedPassword);
+      }
+
+      const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
+      const localChatState = await inspectLocalMlsChatState();
+      const hasLocalChatState =
+        localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
+      const hasRecoverableServerState =
+        restoreSummary.hasConversationArtifacts ||
+        syncResult.syncedGroupStates > 0 ||
+        syncResult.syncedWelcomes > 0 ||
+        syncResult.syncedCommits > 0;
+
+      console.log('[MLS_RECOVERY_GATE] password retry inspection', {
+        user_id: user.id,
+        restore_outcome: restoreSummary.outcome,
+        backup_group_state_count: restoreSummary.backupGroupStateCount,
+        backup_group_key_count: restoreSummary.backupGroupKeyCount,
+        has_backup_conversation_artifacts: restoreSummary.hasConversationArtifacts,
+        synced_group_states: syncResult.syncedGroupStates,
+        synced_welcomes: syncResult.syncedWelcomes,
+        synced_commits: syncResult.syncedCommits,
+        local_group_states: localChatState.groupStateCount,
+        local_group_keys: localChatState.groupKeyCount,
+      });
+
+      if (restoreSummary.outcome === 'failed') {
+        loginPasswordRef.current = null;
+        activateMlsRecoveryGate('password_required', {
+          user_id: user.id,
+          retry_source: 'inline_password_prompt',
+        });
+        throw new Error('INVALID_ACCOUNT_PASSWORD');
+      }
+
+      if (hasRecoverableServerState && !hasLocalChatState) {
+        markMlsRecoveryPending('sync_import_missing', {
+          user_id: user.id,
+          retry_source: 'inline_password_prompt',
+          synced_group_states: syncResult.syncedGroupStates,
+          synced_welcomes: syncResult.syncedWelcomes,
+          synced_commits: syncResult.syncedCommits,
+        });
+      } else {
+        clearMlsRecoveryGate();
+      }
+    } finally {
+      setKeyStatusLoading(false);
+      setKeyInitResolved(true);
+    }
+  };
+
   const unlockWithRecoveryPhrase = async (recoveryPhrase: string) => {
     if (!user?.id) {
       throw new Error('AUTH_REQUIRED');
@@ -586,12 +670,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         try {
           const backup = await callbacks.fetchBackup();
           const hasMlsBackup = hasMlsBackupPayload(backup);
-          let restoreSummary: MlsRestoreSummary = {
-            outcome: 'skipped',
-            backupGroupStateCount: 0,
-            backupGroupKeyCount: 0,
-            hasConversationArtifacts: false,
-          };
+          let restoreSummary: MlsRestoreSummary = createEmptyRestoreSummary();
           if (!cancelled) {
             setKeyStatus(resolveKeyStatusFromBackup(backup));
           }
@@ -607,7 +686,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
             localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
           const hasBackupConversationArtifacts = password
             ? restoreSummary.hasConversationArtifacts
-            : hasMlsBackup;
+            : false;
           const hasRecoverableServerState =
             hasBackupConversationArtifacts ||
             syncResult.syncedGroupStates > 0 ||
@@ -881,6 +960,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       refreshKeyStatus,
       logout,
       setLoginPassword,
+      retryMlsRecoveryWithPassword,
       saveRecoveryPhrase,
       unlockWithRecoveryPhrase,
     }}>

@@ -295,7 +295,7 @@ export async function markAsRead(
   conversationId: string,
   messageId: string,
 ): Promise<void> {
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/read`, {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages/read`, {
     method: 'PUT',
     body: JSON.stringify({ message_id: messageId }),
   });

@@ -1,6 +1,6 @@
 // src/pages/Chats.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, Users, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal } from 'lucide-react';
+import { Settings, Users, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal, KeyRound } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../components/Chat/ConversationSettings';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
@@ -44,6 +44,7 @@ const ChatDashboard = () => {
     keyStatusLoading,
     mlsRecoveryGate,
     isLoggingOut,
+    retryMlsRecoveryWithPassword,
     unlockWithRecoveryPhrase,
     logout,
   } = useUser();
@@ -70,6 +71,9 @@ const ChatDashboard = () => {
   const [convRefresh, setConvRefresh] = useState(0);
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
+  const [mlsRecoveryPassword, setMlsRecoveryPassword] = useState('');
+  const [mlsRecoveryError, setMlsRecoveryError] = useState('');
+  const [isSubmittingMlsRecoveryPassword, setIsSubmittingMlsRecoveryPassword] = useState(false);
   const memberDisplayCacheRef = useRef<Record<string, any>>({});
 
   const {
@@ -123,6 +127,16 @@ const ChatDashboard = () => {
       window.removeEventListener('resize', handleResize);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setIsMobileSidebarOpen(true);
+      return;
+    }
+
+    const hasConversationRoute = Boolean(dmConversationId || groupConversationId);
+    setIsMobileSidebarOpen(!hasConversationRoute);
+  }, [isMobile, dmConversationId, groupConversationId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -222,6 +236,12 @@ const ChatDashboard = () => {
       };
     });
   }, [members]);
+
+  useEffect(() => {
+    setMlsRecoveryPassword('');
+    setMlsRecoveryError('');
+    setIsSubmittingMlsRecoveryPassword(false);
+  }, [mlsRecoveryGate.active, mlsRecoveryGate.reason]);
 
   const messageDisplayMembers = useMemo(
     () => ({
@@ -417,13 +437,13 @@ const ChatDashboard = () => {
         return {
           title: 'Secure chat recovery needs your password',
           body:
-            'This device restored your sign-in state, but it still does not have the MLS conversation state needed to decrypt existing chats. Sign out and log in again with your account password on this device so secure chat recovery can complete. Recovery-key unlock currently restores identity only.',
+            'This device has secure chat state to restore, but it needs your account password to decrypt that MLS backup. Enter your password below to continue without signing out.',
         };
       case 'restore_failed':
         return {
           title: 'Secure chat recovery did not complete',
           body:
-            'The server has MLS recovery data for this account, but this device could not restore it cleanly. Sign out and log in again with your latest password. If that still fails, use a device that can still read your chats before continuing here.',
+            'The previous MLS restore attempt did not unlock the secure backup cleanly. Try your current account password again below. If that still fails, use a device that can still read your chats before continuing here.',
         };
       default:
         return {
@@ -472,6 +492,8 @@ const ChatDashboard = () => {
 
   if (mlsRecoveryGate.active) {
     const gateCopy = getMlsRecoveryGateCopy();
+    const canRetryWithPassword =
+      mlsRecoveryGate.reason === 'password_required' || mlsRecoveryGate.reason === 'restore_failed';
     return (
       <div className="min-h-screen bg-void-bg-main text-void-text flex items-center justify-center p-6">
         <div className="w-full max-w-xl bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl p-8 space-y-6">
@@ -487,14 +509,74 @@ const ChatDashboard = () => {
             </div>
           </div>
 
+          {canRetryWithPassword && (
+            <div className="space-y-3">
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-void-text">Account Password</span>
+                <input
+                  type="password"
+                  value={mlsRecoveryPassword}
+                  onChange={(e) => {
+                    setMlsRecoveryPassword(e.target.value);
+                    if (mlsRecoveryError) setMlsRecoveryError('');
+                  }}
+                  placeholder="Enter your password"
+                  autoComplete="current-password"
+                  className="w-full rounded-xl border border-void-border bg-gray-900 px-4 py-3 text-sm text-void-text placeholder-void-text-muted focus:outline-none focus:border-blue-500"
+                  disabled={isSubmittingMlsRecoveryPassword}
+                />
+              </label>
+
+              {mlsRecoveryError && (
+                <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3">
+                  <p className="text-sm text-red-400">{mlsRecoveryError}</p>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row gap-3">
+            {canRetryWithPassword && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!mlsRecoveryPassword.trim()) {
+                    setMlsRecoveryError('Enter your account password to continue secure chat recovery.');
+                    return;
+                  }
+
+                  setIsSubmittingMlsRecoveryPassword(true);
+                  setMlsRecoveryError('');
+
+                  try {
+                    await retryMlsRecoveryWithPassword(mlsRecoveryPassword);
+                  } catch (err) {
+                    if (err instanceof Error && err.message === 'INVALID_ACCOUNT_PASSWORD') {
+                      setMlsRecoveryError('That password could not unlock your secure chat backup. Try your current password again.');
+                    } else if (err instanceof Error && err.message === 'PASSWORD_REQUIRED') {
+                      setMlsRecoveryError('Enter your account password to continue secure chat recovery.');
+                    } else {
+                      setMlsRecoveryError('Secure chat recovery could not continue yet. Try again.');
+                    }
+                  } finally {
+                    setIsSubmittingMlsRecoveryPassword(false);
+                  }
+                }}
+                disabled={isSubmittingMlsRecoveryPassword}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white px-4 py-3 font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <KeyRound className="w-4 h-4" />
+                {isSubmittingMlsRecoveryPassword ? 'Trying password...' : 'Continue with Password'}
+              </button>
+            )}
             <button
               type="button"
               onClick={async () => {
                 await logout();
                 navigate('/auth', { replace: true });
               }}
-              className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-border bg-gray-900 text-void-text px-4 py-3 font-medium"
+              disabled={isSubmittingMlsRecoveryPassword}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-border bg-gray-900 text-void-text px-4 py-3 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Sign Out
             </button>
@@ -529,6 +611,13 @@ const ChatDashboard = () => {
       setMobileSidebarMode('friends');
       setIsMobileSidebarOpen(true);
     }
+  };
+
+  const openMobileMessageList = () => {
+    handleBackToMe();
+    navigate('/chats', { replace: true });
+    setMobileSidebarMode('messages');
+    setIsMobileSidebarOpen(true);
   };
 
   return (
@@ -698,6 +787,7 @@ const ChatDashboard = () => {
               friends={friends}
               refreshTrigger={convRefresh}
               bumpConversationId={lastSentConversationId}
+              currentUserId={user?.id || null}
             />
           )}
         </div>
@@ -733,10 +823,7 @@ const ChatDashboard = () => {
               <nav className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:static md:bg-void-bg-sec">
                 <div className="flex items-center min-w-0 flex-1">
                   <button
-                    onClick={() => {
-                      setMobileSidebarMode('messages');
-                      setIsMobileSidebarOpen(true);
-                    }}
+                    onClick={openMobileMessageList}
                     className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors"
                   >
                     <ArrowLeft className="w-5 h-5" />

@@ -25,7 +25,8 @@ router.put('/read', async (req, res) => {
       conversation,
       storageConversationId,
     } = resolvedConversation;
-    const member = await verifyMembership(conversation.id, userId);
+    const membershipConversationId = conversation.parent_conversation_id || conversation.id;
+    const member = await verifyMembership(membershipConversationId, userId);
     if (!member) return res.status(403).json({ error: 'Not a member of this conversation' });
 
     let parsedMessageId = null;
@@ -65,8 +66,11 @@ router.put('/read', async (req, res) => {
     }
 
     await pool.query(
-      'UPDATE conversation_members SET last_read_message_id = $1 WHERE conversation_id = $2 AND user_id = $3',
-      [message_id || null, conversation.id, userId]
+      `UPDATE conversation_members
+       SET last_read_message_id = $1,
+           unread_count = 0
+       WHERE conversation_id = $2 AND user_id = $3`,
+      [message_id || null, membershipConversationId, userId]
     );
 
     res.json({

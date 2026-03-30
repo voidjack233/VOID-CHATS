@@ -1,10 +1,11 @@
 // src/components/common/Setting/Setting.tsx
-import { X, User, Shield, Info, Palette, AlertTriangle, ChevronRight, ArrowLeft } from 'lucide-react';
+import { X, User, Shield, Info, Palette, BellRing, AlertTriangle, ChevronRight, ArrowLeft } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import ProfileTab from './ProfileTab';
 import AccountTab from './AccountTab';
 import AboutTab from './AboutTab';
 import AppearanceTab from './AppearanceTab';
+import NotificationsTab from './NotificationsTab';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 import { useTheme } from '../../../Services/hooks/Settings/useTheme';
 
@@ -12,7 +13,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type SettingsTab = 'profile' | 'account' | 'about' | 'appearance';
+type SettingsTab = 'profile' | 'account' | 'about' | 'appearance' | 'notifications';
 
 const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
   useScrollLock(); // Lock scroll when settings modal is open
@@ -39,6 +40,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
     { id: 'profile' as SettingsTab, label: 'Profile', icon: <User className="w-4 h-4" /> },
     { id: 'account' as SettingsTab, label: 'Account', icon: <Shield className="w-4 h-4" /> },
     { id: 'appearance' as SettingsTab, label: 'Appearance', icon: <Palette className="w-4 h-4" /> },
+    { id: 'notifications' as SettingsTab, label: 'Notifications', icon: <BellRing className="w-4 h-4" /> },
     { id: 'about' as SettingsTab, label: 'About', icon: <Info className="w-4 h-4" /> },
   ];
 
@@ -76,6 +78,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
         return <AccountTab />;
       case 'appearance':
         return <AppearanceTab />;
+      case 'notifications':
+        return <NotificationsTab />;
       case 'about':
         return <AboutTab />;
       default:

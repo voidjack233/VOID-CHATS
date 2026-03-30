@@ -86,6 +86,7 @@ router.post('/', async (req, res) => {
     }
 
     const messageId = cassandra.types.TimeUuid.now();
+    const messageIdString = messageId.toString();
     const now = new Date();
     const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
 
@@ -112,19 +113,41 @@ router.post('/', async (req, res) => {
       { prepare: true }
     );
 
-    await pool.query('UPDATE conversations SET updated_at = NOW(), first_message_at = COALESCE(first_message_at, NOW()) WHERE id = $1', [conversationId]);
+    const membershipConversationId = conversation.parent_conversation_id || conversationId;
+    const touchedConversationIds = [...new Set(
+      [conversationId, storageConversationId, conversation.parent_conversation_id].filter(Boolean)
+    )];
+
+    await pool.query(
+      `UPDATE conversations
+       SET updated_at = NOW(),
+           first_message_at = COALESCE(first_message_at, NOW())
+       WHERE id = ANY($1::uuid[])`,
+      [touchedConversationIds]
+    );
     await pool.query(
       `UPDATE conversation_members
-       SET last_message_sent_at = NOW()
-       WHERE conversation_id = $1 AND user_id = $2`,
-      [conversationId, userId]
+       SET unread_count = CASE
+             WHEN user_id = $2 THEN 0
+             ELSE COALESCE(unread_count, 0) + 1
+           END,
+           last_read_message_id = CASE
+             WHEN user_id = $2 THEN $3
+             ELSE last_read_message_id
+           END,
+           last_message_sent_at = CASE
+             WHEN user_id = $2 THEN NOW()
+             ELSE last_message_sent_at
+           END
+       WHERE conversation_id = $1`,
+      [membershipConversationId, userId, messageIdString]
     );
 
     const message = {
       event_id: messageEventId(messageId.toString()),
       conversation_id: conversationId,
       conversation_public_id: conversationPublic,
-      message_id: messageId.toString(),
+      message_id: messageIdString,
       sender_id: userId,
       encrypted_content: storedContent,
       iv: storedIv,

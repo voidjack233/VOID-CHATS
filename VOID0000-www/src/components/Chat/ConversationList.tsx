@@ -1,7 +1,19 @@
 // src/components/Chat/ConversationList.tsx
-import { useState, useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MessageCircle, Users, Plus, Search } from 'lucide-react';
-import { getConversations, getConversation, Conversation } from '../../Services/Chat/chatService';
+import { Conversation, getConversations, markAsRead } from '../../Services/Chat/chatService';
+import {
+  applyLiveMessageDeletePreview,
+  applyLiveMessageEditPreview,
+  applyLiveMessagePreview,
+  getConversationPreview,
+  hydrateConversationPreviewsFromStore,
+  subscribeConversationPreviewCache,
+} from '../../Services/Chat/conversationPreviewCache';
+import {
+  playIncomingMessageSound,
+  primeIncomingMessageSound,
+} from '../../Services/Chat/messageNotificationSound';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
 import { gateway } from '../../Services/Gateway/gateway';
@@ -16,141 +28,59 @@ interface ConversationListProps {
   friends: any[];
   refreshTrigger?: number;
   bumpConversationId?: string | null;
+  currentUserId?: string | null;
 }
 
-const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, refreshTrigger, bumpConversationId }: ConversationListProps) => {
+const ConversationList = ({
+  activeId,
+  onSelect,
+  onCreateGroup,
+  filter,
+  friends,
+  refreshTrigger,
+  bumpConversationId,
+  currentUserId,
+}: ConversationListProps) => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [, setPreviewVersion] = useState(0);
   const knownIdsRef = useRef<Set<string>>(new Set());
-  
+  const conversationsRef = useRef<Conversation[]>([]);
+  const activeIdRef = useRef<string | null>(activeId);
+  const currentUserIdRef = useRef<string | null>(currentUserId || null);
+  const readReceiptInFlightRef = useRef<Set<string>>(new Set());
+
   const { getPresence } = usePresence();
 
-  // Keep ref in sync
   useEffect(() => {
+    conversationsRef.current = conversations;
     knownIdsRef.current = new Set(conversations.map((c) => c.id));
   }, [conversations]);
 
-  // Move a conversation to the top when the parent signals a sent message
   useEffect(() => {
-    if (!bumpConversationId) return;
-    setConversations((prev) => {
-      const idx = prev.findIndex((c) => c.id === bumpConversationId);
-      if (idx <= 0) return prev;
-      const next = [...prev];
-      const moved = next.splice(idx, 1)[0] as Conversation;
-      next.unshift(moved);
-      return next;
-    });
-  }, [bumpConversationId]);
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
-
-  // Initial load
   useEffect(() => {
-    loadConversations();
+    currentUserIdRef.current = currentUserId || null;
+  }, [currentUserId]);
+
+  useEffect(() => subscribeConversationPreviewCache(() => {
+    setPreviewVersion((value) => value + 1);
+  }), []);
+
+  useEffect(() => {
+    primeIncomingMessageSound();
   }, []);
 
-  // Refresh when trigger changes
   useEffect(() => {
-    if (refreshTrigger) loadConversations();
-  }, [refreshTrigger]);
-
-  // Listen for WebSocket events — patch local state instead of refetching
-  useEffect(() => {
-    const handleMessageCreate = async (data: any) => {
-      const conversationId = data?.conversation_id;
-      if (!conversationId) return;
-
-      if (knownIdsRef.current.has(conversationId)) {
-        // Existing conversation — move it to the top
-        setConversations((prev) => {
-          const idx = prev.findIndex((c) => c.id === conversationId);
-          if (idx <= 0) return prev; // already first or not found
-          const next = [...prev];
-          const moved = next.splice(idx, 1)[0] as Conversation;
-          next.unshift(moved);
-          return next;
-        });
-      } else {
-        // New conversation — fetch just this one and prepend it
-        try {
-          const { conversation } = await getConversation(conversationId);
-          setConversations((prev) =>
-            prev.some((c) => c.id === conversationId) ? prev : [conversation, ...prev]
-          );
-        } catch {}
-      }
-    };
-
-    const handleConversationUpdate = async (data: any) => {
-      const updated = data?.conversation as Conversation | undefined;
-      if (!updated) return;
-
-      const alreadyKnown = knownIdsRef.current.has(updated.id);
-
-      if (alreadyKnown) {
-        // Existing conversation — merge the partial update in place
-        setConversations((prev) =>
-          prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c))
-        );
-      } else {
-        // New conversation (e.g. just approved into a group).
-        // The broadcast payload is partial (no name/icon), so fetch the
-        // full conversation before adding it to the list.
-        try {
-          const { conversation } = await getConversation(updated.public_id || updated.id);
-          // The single-conversation endpoint doesn't compute member_count;
-          // derive it from the members array when it's missing or zero.
-          const hydrated: Conversation = {
-            ...conversation,
-            member_count: conversation.member_count || (conversation as any).members?.length || updated.member_count || 0,
-          };
-          setConversations((prev) =>
-            prev.some((c) => c.id === hydrated.id) ? prev : [hydrated, ...prev]
-          );
-        } catch {
-          // Fallback: use the partial payload so the entry at least appears
-          setConversations((prev) =>
-            prev.some((c) => c.id === updated.id) ? prev : [updated, ...prev]
-          );
-        }
-      }
-    };
-
-    const handleMemberLeave = (data: any) => {
-      const conversationId = data?.conversation_id;
-      const userId = data?.user_id || data?.member_user_id || data?.target_user_id || null;
-      if (!conversationId) return;
-      setConversations((prev) =>
-        prev
-          .filter((c) => !(c.id === conversationId && userId == null))
-          .map((c) =>
-            c.id === conversationId
-              ? { ...c, member_count: Math.max(0, (c.member_count ?? 1) - 1) }
-              : c
-          )
-      );
-    };
-
-    const handleGatewayResync = () => {
-      console.log('[WS_RESYNC] refreshing conversation list after gateway resume/ready');
-      void loadConversations();
-    };
-
-    gateway.on('MESSAGE_CREATE', handleMessageCreate);
-    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
-    gateway.on('MEMBER_LEAVE', handleMemberLeave);
-    gateway.on('READY', handleGatewayResync);
-    gateway.on('RESUMED', handleGatewayResync);
-
-    return () => {
-      gateway.off('MESSAGE_CREATE', handleMessageCreate);
-      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
-      gateway.off('MEMBER_LEAVE', handleMemberLeave);
-      gateway.off('READY', handleGatewayResync);
-      gateway.off('RESUMED', handleGatewayResync);
-    };
-  }, []);
+    if (conversations.length === 0) return;
+    void hydrateConversationPreviewsFromStore(
+      conversations.map((conversation) => conversation.id),
+      currentUserId || null,
+    );
+  }, [conversations, currentUserId]);
 
   const loadConversations = async () => {
     try {
@@ -163,32 +93,230 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
     }
   };
 
-  const tabFilteredConversations = conversations.filter((c) => c.type === filter);
+  const markConversationAsRead = async (
+    conversationId: string,
+    routeId: string,
+    messageId: string,
+  ) => {
+    const requestKey = `${conversationId}:${messageId}`;
+    if (readReceiptInFlightRef.current.has(requestKey)) return;
+
+    readReceiptInFlightRef.current.add(requestKey);
+    setConversations((prev) =>
+      prev.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              unread_count: 0,
+              last_read_message_id: messageId,
+            }
+          : conversation
+      )
+    );
+
+    try {
+      await markAsRead(routeId, messageId);
+    } catch (err) {
+      console.error('Failed to mark conversation as read:', err);
+      void loadConversations();
+    } finally {
+      readReceiptInFlightRef.current.delete(requestKey);
+    }
+  };
+
+  useEffect(() => {
+    void loadConversations();
+  }, []);
+
+  useEffect(() => {
+    if (refreshTrigger) {
+      void loadConversations();
+    }
+  }, [refreshTrigger]);
+
+  useEffect(() => {
+    if (!bumpConversationId) return;
+    setConversations((prev) => {
+      const idx = prev.findIndex((c) => c.id === bumpConversationId);
+      if (idx <= 0) return prev;
+      const next = [...prev];
+      const moved = next.splice(idx, 1)[0] as Conversation;
+      next.unshift(moved);
+      return next;
+    });
+  }, [bumpConversationId]);
+
+  useEffect(() => {
+    const activeConversation = conversations.find((conversation) => conversation.id === activeId);
+    if (!activeConversation || !activeConversation.last_message_id || (activeConversation.unread_count ?? 0) <= 0) {
+      return;
+    }
+
+    const routeId = activeConversation.public_id || activeConversation.id;
+    void markConversationAsRead(activeConversation.id, routeId, activeConversation.last_message_id);
+  }, [activeId, conversations]);
+
+  useEffect(() => {
+    const handleMessageCreate = (data: any) => {
+      const conversationId = data?.conversation_id;
+      if (!conversationId) return;
+
+      const currentUserIdValue = currentUserIdRef.current;
+      const activeConversationId = activeIdRef.current;
+      const isSender = Boolean(currentUserIdValue && data?.sender_id === currentUserIdValue);
+      const shouldPlayIncomingSound = !isSender
+        && (document.visibilityState === 'hidden' || activeConversationId !== conversationId);
+
+      if (shouldPlayIncomingSound) {
+        void playIncomingMessageSound();
+      }
+
+      if (!knownIdsRef.current.has(conversationId)) {
+        void loadConversations();
+        return;
+      }
+
+      const knownConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+      const nextMessageId = typeof data?.message_id === 'string' ? data.message_id : null;
+
+      setConversations((prev) => {
+        const idx = prev.findIndex((conversation) => conversation.id === conversationId);
+        if (idx === -1) return prev;
+
+        const next = [...prev];
+        const conversation = next.splice(idx, 1)[0] as Conversation;
+        const isActiveConversation = activeConversationId === conversationId;
+        const unreadCount = isSender || isActiveConversation
+          ? 0
+          : Math.max(0, (conversation.unread_count ?? 0) + 1);
+
+        next.unshift({
+          ...conversation,
+          updated_at: data?.created_at || new Date().toISOString(),
+          unread_count: unreadCount,
+          last_message_id: nextMessageId || conversation.last_message_id || null,
+          last_message_sender_id: data?.sender_id || conversation.last_message_sender_id || null,
+          last_read_message_id: isSender
+            ? nextMessageId || conversation.last_read_message_id
+            : conversation.last_read_message_id,
+        });
+
+        return next;
+      });
+
+      if (!isSender && activeConversationId === conversationId && nextMessageId && knownConversation) {
+        const routeId = knownConversation.public_id || knownConversation.id;
+        void markConversationAsRead(knownConversation.id, routeId, nextMessageId);
+      }
+
+      void applyLiveMessagePreview(data, currentUserIdValue).catch((error) => {
+        console.warn('[CONVERSATION_LIST] failed to update live preview', error);
+      });
+    };
+
+    const handleConversationUpdate = (data: any) => {
+      const updated = data?.conversation as Conversation | undefined;
+      if (!updated?.id) return;
+
+      if (!knownIdsRef.current.has(updated.id)) {
+        void loadConversations();
+        return;
+      }
+
+      setConversations((prev) =>
+        prev.map((conversation) => (conversation.id === updated.id ? { ...conversation, ...updated } : conversation))
+      );
+    };
+
+    const handleMessageUpdate = (data: any) => {
+      const conversationId = data?.conversation_id;
+      if (!conversationId || !knownIdsRef.current.has(conversationId)) return;
+
+      void applyLiveMessageEditPreview(data, currentUserIdRef.current).catch((error) => {
+        console.warn('[CONVERSATION_LIST] failed to update edited preview', error);
+      });
+    };
+
+    const handleMessageDelete = (data: any) => {
+      const conversationId = data?.conversation_id;
+      if (!conversationId || !knownIdsRef.current.has(conversationId)) return;
+
+      void applyLiveMessageDeletePreview(data, currentUserIdRef.current).catch((error) => {
+        console.warn('[CONVERSATION_LIST] failed to update deleted preview', error);
+      });
+    };
+
+    const handleMemberLeave = (data: any) => {
+      const conversationId = data?.conversation_id;
+      const userId = data?.user_id || data?.member_user_id || data?.target_user_id || null;
+      if (!conversationId) return;
+
+      setConversations((prev) =>
+        prev
+          .filter((conversation) => !(conversation.id === conversationId && userId == null))
+          .map((conversation) =>
+            conversation.id === conversationId
+              ? { ...conversation, member_count: Math.max(0, (conversation.member_count ?? 1) - 1) }
+              : conversation
+          )
+      );
+    };
+
+    const handleGatewayResync = () => {
+      console.log('[WS_RESYNC] refreshing conversation list after gateway resume/ready');
+      void loadConversations();
+    };
+
+    gateway.on('MESSAGE_CREATE', handleMessageCreate);
+    gateway.on('MESSAGE_UPDATE', handleMessageUpdate);
+    gateway.on('MESSAGE_DELETE', handleMessageDelete);
+    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
+    gateway.on('MEMBER_LEAVE', handleMemberLeave);
+    gateway.on('READY', handleGatewayResync);
+    gateway.on('RESUMED', handleGatewayResync);
+
+    return () => {
+      gateway.off('MESSAGE_CREATE', handleMessageCreate);
+      gateway.off('MESSAGE_UPDATE', handleMessageUpdate);
+      gateway.off('MESSAGE_DELETE', handleMessageDelete);
+      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
+      gateway.off('MEMBER_LEAVE', handleMemberLeave);
+      gateway.off('READY', handleGatewayResync);
+      gateway.off('RESUMED', handleGatewayResync);
+    };
+  }, []);
+
+  const tabFilteredConversations = conversations.filter((conversation) => conversation.type === filter);
 
   const searchFiltered = search.trim()
-    ? tabFilteredConversations.filter((c) => {
-        const name = c.type === 'dm'
-          ? (c.dm_display_name || c.dm_username || '')
-          : (c.name || '');
+    ? tabFilteredConversations.filter((conversation) => {
+        const name = conversation.type === 'dm'
+          ? (conversation.dm_display_name || conversation.dm_username || '')
+          : (conversation.name || '');
         return name.toLowerCase().includes(search.toLowerCase());
       })
     : tabFilteredConversations;
 
-  const getDisplayName = (conv: Conversation) => {
-    if (conv.type === 'dm') {
-      return conv.dm_display_name || conv.dm_username || 'Unknown';
+  const getDisplayName = (conversation: Conversation) => {
+    if (conversation.type === 'dm') {
+      return conversation.dm_display_name || conversation.dm_username || 'Unknown';
     }
-    return conv.name || 'Unnamed';
+    return conversation.name || 'Unnamed';
   };
 
-  const getAvatar = (conv: Conversation) => {
-    if (conv.type === 'dm' && conv.dm_avatar_url) {
-      return conv.dm_avatar_url;
+  const getAvatar = (conversation: Conversation) => {
+    if (conversation.type === 'dm' && conversation.dm_avatar_url) {
+      return conversation.dm_avatar_url;
     }
-    if (conv.type === 'group' && conv.icon_url) {
-      return conv.icon_url;
+    if (conversation.type === 'group' && conversation.icon_url) {
+      return conversation.icon_url;
     }
     return null;
+  };
+
+  const getPreview = (conversation: Conversation) => {
+    const preview = getConversationPreview(conversation.id);
+    return preview || null;
   };
 
   const getInitial = (name: string | null | undefined) => {
@@ -198,22 +326,29 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
 
   const getIcon = (type: string) => {
     switch (type) {
-      case 'dm': return <MessageCircle className="w-4 h-4 opacity-60" />;
-      case 'group': return <Users className="w-4 h-4 opacity-60" />;
-      default: return null;
+      case 'dm':
+        return <MessageCircle className="w-4 h-4 opacity-60" />;
+      case 'group':
+        return <Users className="w-4 h-4 opacity-60" />;
+      default:
+        return null;
     }
   };
 
   const ConvItem = ({ conv }: { conv: Conversation }) => {
     const isActive = activeId === conv.id;
     const avatar = getAvatar(conv);
+    const preview = getPreview(conv);
+    const unreadCount = Math.max(0, conv.unread_count ?? 0);
+    const unreadLabel = unreadCount > 99 ? '99+' : String(unreadCount);
+    const hasUnread = unreadCount > 0 && !isActive;
 
-    const friend = conv.type === 'dm' 
-      ? friends.find(f => f.username === conv.dm_username) 
+    const friend = conv.type === 'dm'
+      ? friends.find((friendItem) => friendItem.username === conv.dm_username)
       : null;
 
-    const presence = friend 
-      ? getPresence(friend.id || friend.user_id || friend.profile_id) 
+    const presence = friend
+      ? getPresence(friend.id || friend.user_id || friend.profile_id)
       : { status: 'offline' as const };
 
     return (
@@ -245,23 +380,35 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
               {getIcon(conv.type)}
             </div>
           )}
-          
+
           {conv.type === 'dm' && (
             <div className="absolute bottom-0 right-0 translate-x-1/4 translate-y-1/4 z-10">
-              <PresenceDot 
-                status={presence.status as 'online' | 'idle' | 'offline'} 
+              <PresenceDot
+                status={presence.status as 'online' | 'idle' | 'offline'}
                 size="sm"
               />
             </div>
           )}
         </div>
 
-        <div className="flex-1 min-w-0 text-left">
-          <div className="text-sm font-medium truncate text-void-text">{getDisplayName(conv)}</div>
-          {conv.type !== 'dm' && (
-            <div className="text-xs text-void-text-muted">{conv.member_count} members</div>
+        <div className="min-w-0 flex-1 text-left">
+          <div className={`truncate text-sm ${hasUnread ? 'font-semibold text-void-text' : 'font-medium text-void-text'}`}>
+            {getDisplayName(conv)}
+          </div>
+          {preview && (
+            <div className={`truncate text-xs ${hasUnread ? 'text-void-text/90' : 'text-void-text-muted'}`}>
+              {preview}
+            </div>
           )}
         </div>
+
+        {unreadCount > 0 && (
+          <div className="ml-auto shrink-0">
+            <span className="inline-flex min-w-[1.35rem] justify-center rounded-full bg-void-accent px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm">
+              {unreadLabel}
+            </span>
+          </div>
+        )}
       </button>
     );
   };
@@ -293,10 +440,10 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         <p className="text-xs font-bold text-void-text-muted uppercase tracking-wider">
           {filter === 'dm' ? 'Direct Messages' : 'Your Groups'}
         </p>
-        
+
         {filter === 'group' && (
-          <button 
-            onClick={onCreateGroup} 
+          <button
+            onClick={onCreateGroup}
             className="text-void-text-muted hover:text-void-text transition-colors p-1 hover:bg-void-bg-hover rounded-md"
             title="Create new group"
           >
@@ -309,8 +456,8 @@ const ConversationList = ({ activeId, onSelect, onCreateGroup, filter, friends, 
         {searchFiltered.length === 0 ? (
           <div className="text-center px-4 py-8">
             <p className="text-sm text-void-text-muted">
-              {search.trim() 
-                ? 'No results found' 
+              {search.trim()
+                ? 'No results found'
                 : `No ${filter === 'dm' ? 'DMs' : 'groups'} yet.`}
             </p>
           </div>

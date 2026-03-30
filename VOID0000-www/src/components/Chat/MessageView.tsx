@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Virtuoso, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
 import { ArrowDown } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
@@ -10,6 +10,7 @@ import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
 import { useTheme } from '../../Services/hooks/Settings/useTheme';
+import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
 import {
   ChatMessageSkeletonRow,
   getMessageSkeletonBubbleWidth,
@@ -364,6 +365,17 @@ const MessageView = memo(function MessageView({
     showCachedHistoryFallback,
     securityDetail: conversationSecurityState?.detail,
   };
+
+  useEffect(() => {
+    const latestMessage = [...messages].reverse().find((message) =>
+      String(message.conversation_id || conversation.id) === String(conversation.id)
+    ) || null;
+
+    setConversationPreview(
+      [conversation.id, conversation.public_id],
+      formatConversationPreview(latestMessage, user?.id),
+    );
+  }, [conversation.id, conversation.public_id, messages, user?.id]);
 
   // Stable Virtuoso component references — defined at module scope so Virtuoso
   // never sees new component types on re-render (which causes unmount/remount blink).

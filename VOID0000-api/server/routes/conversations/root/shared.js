@@ -88,8 +88,12 @@ export function normalizeConversationRow(conv) {
     parent_public_id: conv.parent_public_id ? String(conv.parent_public_id) : null,
     current_key_version: conv.current_key_version != null ? parseInt(conv.current_key_version, 10) : null,
     member_count: conv.member_count != null ? parseInt(conv.member_count, 10) : 0,
+    unread_count: conv.unread_count != null ? parseInt(conv.unread_count, 10) : 0,
     slowmode_seconds: conv.slowmode_seconds != null ? parseInt(conv.slowmode_seconds, 10) : 0,
     is_age_restricted: !!conv.is_age_restricted,
+    last_message_id: conv.last_message_id ? String(conv.last_message_id) : null,
+    last_message_sender_id: conv.last_message_sender_id ? String(conv.last_message_sender_id) : null,
+    last_message_preview: typeof conv.last_message_preview === 'string' ? conv.last_message_preview : null,
     icon_url: buildGroupIconUrl(conv.icon_filename),
     permissions: conv.type === 'group' ? resolvePermissions(conv.permissions) : undefined,
     dm_avatar_url: resolveUserAvatarUrl(conv.dm_avatar, {
