@@ -1,7 +1,7 @@
 // src/components/Chat/ConversationList.tsx
 import { useEffect, useRef, useState } from 'react';
 import { MessageCircle, Users, Plus, Search } from 'lucide-react';
-import { Conversation, getConversations, markAsRead } from '../../Services/Chat/chatService';
+import { Conversation, getConversations, markAsRead, closeDM, muteDM } from '../../Services/Chat/chatService';
 import {
   applyLiveMessageDeletePreview,
   applyLiveMessageEditPreview,
@@ -45,17 +45,27 @@ const ConversationList = ({
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [, setPreviewVersion] = useState(0);
+  const [contextMenu, setContextMenu] = useState<{ conv: Conversation; x: number; y: number } | null>(null);
   const knownIdsRef = useRef<Set<string>>(new Set());
   const conversationsRef = useRef<Conversation[]>([]);
   const activeIdRef = useRef<string | null>(activeId);
   const currentUserIdRef = useRef<string | null>(currentUserId || null);
   const readReceiptInFlightRef = useRef<Set<string>>(new Set());
+  // Tracks muted_until per conversation ID. Survives the conversation being
+  // removed from the list (e.g. after Close Chat or DM_HIDDEN), so the sound
+  // gate still works for hidden-but-muted DMs.
+  const mutedUntilMapRef = useRef<Map<string, string | null>>(new Map());
 
   const { getPresence } = usePresence();
 
   useEffect(() => {
     conversationsRef.current = conversations;
     knownIdsRef.current = new Set(conversations.map((c) => c.id));
+    // Keep muted_until map in sync. We never delete entries here so that
+    // the mute state survives a conversation being hidden from the list.
+    conversations.forEach((c) => {
+      mutedUntilMapRef.current.set(c.id, c.muted_until ?? null);
+    });
   }, [conversations]);
 
   useEffect(() => {
@@ -69,6 +79,14 @@ const ConversationList = ({
   useEffect(() => subscribeConversationPreviewCache(() => {
     setPreviewVersion((value) => value + 1);
   }), []);
+
+  // Close context menu on any mousedown outside of it.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [contextMenu]);
 
   useEffect(() => {
     primeIncomingMessageSound();
@@ -168,7 +186,11 @@ const ConversationList = ({
         && (document.visibilityState === 'hidden' || activeConversationId !== conversationId);
 
       if (shouldPlayIncomingSound) {
-        void playIncomingMessageSound();
+        const mutedUntil = mutedUntilMapRef.current.get(conversationId);
+        const isMuted = !!mutedUntil && new Date(mutedUntil) > new Date();
+        if (!isMuted) {
+          void playIncomingMessageSound();
+        }
       }
 
       if (!knownIdsRef.current.has(conversationId)) {
@@ -267,6 +289,12 @@ const ConversationList = ({
       void loadConversations();
     };
 
+    const handleDmHidden = (data: any) => {
+      const conversationId = data?.conversation_id;
+      if (!conversationId) return;
+      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+    };
+
     gateway.on('MESSAGE_CREATE', handleMessageCreate);
     gateway.on('MESSAGE_UPDATE', handleMessageUpdate);
     gateway.on('MESSAGE_DELETE', handleMessageDelete);
@@ -274,6 +302,7 @@ const ConversationList = ({
     gateway.on('MEMBER_LEAVE', handleMemberLeave);
     gateway.on('READY', handleGatewayResync);
     gateway.on('RESUMED', handleGatewayResync);
+    gateway.on('DM_HIDDEN', handleDmHidden);
 
     return () => {
       gateway.off('MESSAGE_CREATE', handleMessageCreate);
@@ -283,6 +312,7 @@ const ConversationList = ({
       gateway.off('MEMBER_LEAVE', handleMemberLeave);
       gateway.off('READY', handleGatewayResync);
       gateway.off('RESUMED', handleGatewayResync);
+      gateway.off('DM_HIDDEN', handleDmHidden);
     };
   }, []);
 
@@ -335,6 +365,35 @@ const ConversationList = ({
     }
   };
 
+  const handleCloseChat = async (conv: Conversation) => {
+    setContextMenu(null);
+    setConversations((prev) => prev.filter((c) => c.id !== conv.id));
+    try {
+      await closeDM(conv.id);
+    } catch (err) {
+      console.error('Failed to close DM:', err);
+      void loadConversations();
+    }
+  };
+
+  const handleToggleMute = async (conv: Conversation) => {
+    setContextMenu(null);
+    const isMuted = !!conv.muted_until && new Date(conv.muted_until) > new Date();
+    const nextMutedUntil = isMuted ? null : '2099-12-31T23:59:59Z';
+    // Write to the ref first so the sound gate picks it up immediately,
+    // even before the state update propagates.
+    mutedUntilMapRef.current.set(conv.id, nextMutedUntil);
+    setConversations((prev) =>
+      prev.map((c) => c.id === conv.id ? { ...c, muted_until: nextMutedUntil } : c)
+    );
+    try {
+      await muteDM(conv.id, !isMuted);
+    } catch (err) {
+      console.error('Failed to update DM mute:', err);
+      void loadConversations();
+    }
+  };
+
   const ConvItem = ({ conv }: { conv: Conversation }) => {
     const isActive = activeId === conv.id;
     const avatar = getAvatar(conv);
@@ -342,6 +401,7 @@ const ConversationList = ({
     const unreadCount = Math.max(0, conv.unread_count ?? 0);
     const unreadLabel = unreadCount > 99 ? '99+' : String(unreadCount);
     const hasUnread = unreadCount > 0 && !isActive;
+    const isMuted = !!conv.muted_until && new Date(conv.muted_until) > new Date();
 
     const friend = conv.type === 'dm'
       ? friends.find((friendItem) => friendItem.username === conv.dm_username)
@@ -351,9 +411,16 @@ const ConversationList = ({
       ? getPresence(friend.id || friend.user_id || friend.profile_id)
       : { status: 'offline' as const };
 
+    const handleContextMenu = (e: React.MouseEvent) => {
+      if (conv.type !== 'dm') return;
+      e.preventDefault();
+      setContextMenu({ conv, x: e.clientX, y: e.clientY });
+    };
+
     return (
       <button
         onClick={() => onSelect(conv)}
+        onContextMenu={handleContextMenu}
         className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
           isActive
             ? 'bg-void-bg-hover text-void-text'
@@ -402,13 +469,22 @@ const ConversationList = ({
           )}
         </div>
 
-        {unreadCount > 0 && (
-          <div className="ml-auto shrink-0">
+        <div className="ml-auto shrink-0 flex items-center gap-1">
+          {isMuted && (
+            <svg className="w-3 h-3 text-void-text-muted opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="1" y1="1" x2="23" y2="23" />
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          )}
+          {unreadCount > 0 && (
             <span className="inline-flex min-w-[1.35rem] justify-center rounded-full bg-void-accent px-1.5 py-0.5 text-[10px] font-bold leading-none text-white shadow-sm">
               {unreadLabel}
             </span>
-          </div>
-        )}
+          )}
+        </div>
       </button>
     );
   };
@@ -465,6 +541,29 @@ const ConversationList = ({
           searchFiltered.map((conv) => <ConvItem key={conv.id} conv={conv} />)
         )}
       </div>
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[160px] rounded-md border border-void-border bg-void-bg-secondary py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="w-full px-3 py-1.5 text-left text-sm text-void-text-muted hover:bg-void-bg-hover hover:text-void-text transition-colors"
+            onClick={() => handleCloseChat(contextMenu.conv)}
+          >
+            Close Chat
+          </button>
+          <button
+            className="w-full px-3 py-1.5 text-left text-sm text-void-text-muted hover:bg-void-bg-hover hover:text-void-text transition-colors"
+            onClick={() => handleToggleMute(contextMenu.conv)}
+          >
+            {contextMenu.conv.muted_until && new Date(contextMenu.conv.muted_until) > new Date()
+              ? `Unmute ${getDisplayName(contextMenu.conv)}`
+              : `Mute ${getDisplayName(contextMenu.conv)}`}
+          </button>
+        </div>
+      )}
     </div>
   );
 };

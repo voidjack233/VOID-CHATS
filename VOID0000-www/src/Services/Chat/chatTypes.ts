@@ -38,6 +38,7 @@ export interface Conversation {
   dm_display_name: string | null;
   dm_avatar_url: string | null;
   member_count: number;
+  muted_until?: string | null;
   channels?: Conversation[];
   permissions?: GroupPermissions;
 }

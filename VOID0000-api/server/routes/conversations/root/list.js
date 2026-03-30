@@ -128,6 +128,7 @@ router.get('/', async (req, res) => {
          cm.role,
          cm.last_read_message_id,
          COALESCE(cm.unread_count, 0) AS unread_count,
+         cm.muted_until,
          COALESCE(storage.storage_conversation_id, c.id) AS storage_conversation_id,
          CASE
            WHEN c.type = 'dm' THEN (
@@ -174,7 +175,13 @@ router.get('/', async (req, res) => {
        JOIN conversation_members cm ON cm.conversation_id = c.id
        WHERE cm.user_id = $1
          AND c.type != 'channel'
-         AND (c.type != 'dm' OR c.first_message_at IS NOT NULL OR c.owner_id = $1)
+         AND (
+           c.type != 'dm'
+           OR (
+             (c.first_message_at IS NOT NULL OR c.owner_id = $1)
+             AND cm.is_hidden = FALSE
+           )
+         )
        ORDER BY c.updated_at DESC`,
       [userId]
     );

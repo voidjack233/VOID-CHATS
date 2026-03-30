@@ -7,6 +7,8 @@
     "dev": "nodemon server/server.js",
     "start": "node server/server.js",
     "lint": "eslint .",
+    "migrate": "node scripts/migrate.js",
+    "migrate:status": "node scripts/migrate.js --status",
     "backfill:conversation-public-ids": "node server/scripts/backfillConversationPublicIds.js",
     "migrate:legacy-group-to-general": "node server/scripts/migrateLegacyGroupToGeneral.js"
   },

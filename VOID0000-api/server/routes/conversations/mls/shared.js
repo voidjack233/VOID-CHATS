@@ -16,6 +16,26 @@ export const MLS_KEY_PACKAGE_TARGET = 10;
 export const MLS_KEY_PACKAGE_LOW_WATERMARK = 3;
 
 let schemaReadyPromise = null;
+const REQUIRED_MLS_TABLES = [
+  'mls_key_packages',
+  'mls_group_states',
+  'mls_welcome_messages',
+  'mls_commit_messages',
+  'mls_group_key_archive',
+];
+const REQUIRED_MLS_COLUMNS = [
+  ['mls_group_states', 'user_id'],
+  ['mls_group_states', 'key_version'],
+  ['mls_group_key_archive', 'user_id'],
+];
+const REQUIRED_MLS_INDEXES = [
+  'idx_mls_key_packages_user_id',
+  'idx_mls_group_states_updated_at',
+  'idx_mls_group_states_user_unique',
+  'idx_mls_welcome_messages_user_id',
+  'idx_mls_commit_messages_conversation_id',
+  'idx_mls_group_key_archive_user_unique',
+];
 
 export function parseBoolean(value, fallback = false) {
   if (value == null) return fallback;
@@ -87,112 +107,57 @@ export function notEnabled(res, feature) {
 export async function ensureSchema() {
   if (!schemaReadyPromise) {
     schemaReadyPromise = (async () => {
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS mls_key_packages (
-           id BIGSERIAL PRIMARY KEY,
-           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-           package_ref TEXT NOT NULL,
-           package_data TEXT NOT NULL,
-           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           published_at TIMESTAMPTZ,
-           consumed_at TIMESTAMPTZ,
-           UNIQUE (user_id, package_ref)
-         )`
+      const missingTablesResult = await pool.query(
+        `SELECT name
+         FROM unnest($1::text[]) AS required(name)
+         WHERE to_regclass('public.' || name) IS NULL`,
+        [REQUIRED_MLS_TABLES]
       );
 
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS mls_group_states (
-           conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-           group_id TEXT NOT NULL,
-           epoch INTEGER NOT NULL,
-           key_version INTEGER,
-           state_blob TEXT NOT NULL,
-           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           PRIMARY KEY (conversation_id, user_id)
-         )`
+      const missingColumnsResult = await pool.query(
+        `SELECT required.table_name, required.column_name
+         FROM unnest($1::text[], $2::text[]) AS required(table_name, column_name)
+         LEFT JOIN information_schema.columns cols
+           ON cols.table_schema = 'public'
+          AND cols.table_name = required.table_name
+          AND cols.column_name = required.column_name
+         WHERE cols.column_name IS NULL`,
+        [
+          REQUIRED_MLS_COLUMNS.map(([tableName]) => tableName),
+          REQUIRED_MLS_COLUMNS.map(([, columnName]) => columnName),
+        ]
       );
 
-      await pool.query(
-        `ALTER TABLE mls_group_states ADD COLUMN IF NOT EXISTS key_version INTEGER`
+      const missingIndexesResult = await pool.query(
+        `SELECT name
+         FROM unnest($1::text[]) AS required(name)
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM pg_indexes
+           WHERE schemaname = 'public'
+             AND indexname = required.name
+         )`,
+        [REQUIRED_MLS_INDEXES]
       );
 
-      await pool.query(
-        `ALTER TABLE mls_group_states ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE`
+      const missingTables = missingTablesResult.rows.map((row) => row.name);
+      const missingColumns = missingColumnsResult.rows.map(
+        (row) => `${row.table_name}.${row.column_name}`
       );
-      await pool.query(
-        `DELETE FROM mls_group_states WHERE user_id IS NULL`
-      );
-      await pool.query(
-        `ALTER TABLE mls_group_states DROP CONSTRAINT IF EXISTS mls_group_states_pkey`
-      );
-      await pool.query(
-        `ALTER TABLE mls_group_states ALTER COLUMN user_id SET NOT NULL`
-      );
-      await pool.query(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_mls_group_states_user_unique
-         ON mls_group_states(conversation_id, user_id)`
-      );
+      const missingIndexes = missingIndexesResult.rows.map((row) => row.name);
 
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS mls_welcome_messages (
-           id BIGSERIAL PRIMARY KEY,
-           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-           welcome_ref TEXT NOT NULL,
-           conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
-           payload TEXT NOT NULL,
-           received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           consumed_at TIMESTAMPTZ,
-           UNIQUE (user_id, welcome_ref)
-         )`
-      );
+      if (missingTables.length || missingColumns.length || missingIndexes.length) {
+        const missingParts = [
+          missingTables.length ? `tables: ${missingTables.join(', ')}` : null,
+          missingColumns.length ? `columns: ${missingColumns.join(', ')}` : null,
+          missingIndexes.length ? `indexes: ${missingIndexes.join(', ')}` : null,
+        ].filter(Boolean);
 
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS mls_commit_messages (
-           id BIGSERIAL PRIMARY KEY,
-           conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-           commit_ref TEXT NOT NULL,
-           payload TEXT NOT NULL,
-           epoch INTEGER,
-           received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           applied_at TIMESTAMPTZ,
-           UNIQUE (conversation_id, commit_ref)
-         )`
-      );
-
-      await pool.query(
-        `CREATE TABLE IF NOT EXISTS mls_group_key_archive (
-           conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-           key_version INTEGER NOT NULL,
-           key_data TEXT NOT NULL,
-           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-           user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-           PRIMARY KEY (conversation_id, key_version, user_id)
-         )`
-      );
-
-      await pool.query(
-        `ALTER TABLE mls_group_key_archive ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE`
-      );
-      await pool.query(
-        `DELETE FROM mls_group_key_archive WHERE user_id IS NULL`
-      );
-      await pool.query(
-        `ALTER TABLE mls_group_key_archive DROP CONSTRAINT IF EXISTS mls_group_key_archive_pkey`
-      );
-      await pool.query(
-        `ALTER TABLE mls_group_key_archive ALTER COLUMN user_id SET NOT NULL`
-      );
-      await pool.query(
-        `CREATE UNIQUE INDEX IF NOT EXISTS idx_mls_group_key_archive_user_unique
-         ON mls_group_key_archive(conversation_id, key_version, user_id)`
-      );
-
-      await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_key_packages_user_id ON mls_key_packages(user_id)');
-      await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_group_states_updated_at ON mls_group_states(updated_at DESC)');
-      await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_welcome_messages_user_id ON mls_welcome_messages(user_id, consumed_at, received_at)');
-      await pool.query('CREATE INDEX IF NOT EXISTS idx_mls_commit_messages_conversation_id ON mls_commit_messages(conversation_id, applied_at, received_at)');
+        throw new Error(
+          `MLS schema is not migrated (${missingParts.join(' | ')}). ` +
+          'Run `npm run migrate` in VOID0000-api before using MLS routes.'
+        );
+      }
     })().catch((err) => {
       schemaReadyPromise = null;
       throw err;

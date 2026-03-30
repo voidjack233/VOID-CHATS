@@ -3,6 +3,7 @@ import { authenticateUser } from '../../middleware/jwt.js';
 import attachmentsRouter from './attachments.js';
 import batchReactionsRouter from './batchReactions.js';
 import dmRouter from './dm.js';
+import dmSettingsRouter from './dm-settings.js';
 import inviteLinksRouter from './inviteLinks.js';
 import invitesRouter from './invites.js';
 import keysRouter from './keys.js';
@@ -16,6 +17,7 @@ import rootRouter from './root/index.js';
 const router = Router();
 
 router.use('/dm', authenticateUser, dmRouter);
+router.use('/:conversationId/dm-settings', authenticateUser, dmSettingsRouter);
 router.use('/mls', authenticateUser, mlsRouter);
 router.use('/invite-links', inviteLinksRouter);
 router.use('/:conversationId/invites', authenticateUser, invitesRouter);

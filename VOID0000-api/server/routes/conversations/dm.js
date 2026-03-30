@@ -30,16 +30,9 @@ router.post('/:userId', async (req, res) => {
       [userA, userB]
     );
 
-    if (existing.rows.length > 0) {
-      await client.query('COMMIT');
-      return res.json({
-        success: true,
-        conversation_id: existing.rows[0].conversation_id,
-        conversation_public_id: existing.rows[0].public_id ? String(existing.rows[0].public_id) : null,
-        created: false,
-      });
-    }
-
+    // Friendship check runs for both paths: new DM and existing DM.
+    // dm_pairs persists after unfriend, so we must gate here rather than
+    // relying on the new-DM branch below being reached.
     const friendCheck = await client.query(
       `SELECT id FROM friendships
        WHERE ((requester_id = $1 AND addressee_id = $2) OR (requester_id = $2 AND addressee_id = $1))
@@ -50,6 +43,23 @@ router.post('/:userId', async (req, res) => {
     if (friendCheck.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You can only DM friends' });
+    }
+
+    if (existing.rows.length > 0) {
+      // Unhide the DM for the requesting user if they had previously closed it.
+      await client.query(
+        `UPDATE conversation_members
+         SET is_hidden = FALSE
+         WHERE conversation_id = $1 AND user_id = $2 AND is_hidden = TRUE`,
+        [existing.rows[0].conversation_id, currentUserId]
+      );
+      await client.query('COMMIT');
+      return res.json({
+        success: true,
+        conversation_id: existing.rows[0].conversation_id,
+        conversation_public_id: existing.rows[0].public_id ? String(existing.rows[0].public_id) : null,
+        created: false,
+      });
     }
 
     const convResult = await client.query(

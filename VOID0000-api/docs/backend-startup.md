@@ -38,6 +38,16 @@ Those services must already exist and be reachable:
 - ScyllaDB
 - MinIO
 
+Before starting the app processes, run:
+
+- `npm run migrate`
+
+That migration command now covers:
+
+- core user / auth / security tables
+- conversation tables
+- MLS tables
+
 ## Main Startup Files
 
 Main runtime files:

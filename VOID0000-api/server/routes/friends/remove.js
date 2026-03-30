@@ -4,6 +4,21 @@ import { EVENTS } from '../../gateway/protocol.js';
 import { sendLiveEventToUser } from '../../gateway/client.js';
 import { friendshipEventId } from '../../utils/eventIdentity.js';
 
+async function hideDmForBoth(requesterId, addresseeId) {
+  const [userA, userB] = [requesterId, addresseeId].sort();
+  const result = await db.query(
+    `UPDATE conversation_members cm
+     SET is_hidden = TRUE
+     FROM dm_pairs dp
+     WHERE dp.conversation_id = cm.conversation_id
+       AND dp.user_a = $1
+       AND dp.user_b = $2
+     RETURNING cm.conversation_id, cm.user_id`,
+    [userA, userB]
+  );
+  return result.rows;
+}
+
 const router = express.Router();
 
 // DELETE /api/friends/:friendshipId
@@ -27,8 +42,8 @@ router.delete('/:friendshipId', async (req, res) => {
 
     const friendship = result.rows[0];
 
-    const otherUserId = friendship.requester_id === userId 
-      ? friendship.addressee_id 
+    const otherUserId = friendship.requester_id === userId
+      ? friendship.addressee_id
       : friendship.requester_id;
 
     sendLiveEventToUser(otherUserId, EVENTS.FRIEND_REMOVE, {
@@ -37,6 +52,19 @@ router.delete('/:friendshipId', async (req, res) => {
       removed_by: userId,
       timestamp: Date.now(),
     });
+
+    // Hide the shared DM (if any) for both users.
+    try {
+      const hidden = await hideDmForBoth(userId, otherUserId);
+      if (hidden.length > 0) {
+        const conversationId = hidden[0].conversation_id;
+        sendLiveEventToUser(userId, EVENTS.DM_HIDDEN, { conversation_id: conversationId });
+        sendLiveEventToUser(otherUserId, EVENTS.DM_HIDDEN, { conversation_id: conversationId });
+      }
+    } catch (dmErr) {
+      // Non-fatal: friendship was already removed; just log.
+      console.error('Remove friend: failed to hide DM:', dmErr);
+    }
 
     res.json({
       success: true,

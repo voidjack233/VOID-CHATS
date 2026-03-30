@@ -114,6 +114,27 @@ export async function deleteConversation(id: string): Promise<void> {
   if (!data.success) throw new Error(data.error);
 }
 
+// DM_FOREVER is used for "mute until I turn it back on".
+const DM_MUTE_FOREVER = '2099-12-31T23:59:59Z';
+
+export async function closeDM(conversationId: string): Promise<void> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/dm-settings`, {
+    method: 'PATCH',
+    body: JSON.stringify({ hidden: true }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+}
+
+export async function muteDM(conversationId: string, mute: boolean): Promise<void> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/dm-settings`, {
+    method: 'PATCH',
+    body: JSON.stringify({ muted_until: mute ? DM_MUTE_FOREVER : null }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+}
+
 export async function getOrCreateDM(userId: string): Promise<{
   conversation_id: string;
   conversation_public_id?: string | null;
