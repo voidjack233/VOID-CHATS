@@ -356,7 +356,11 @@ export const useConversationHandshake = ({
                 dm_user_id: conversationDetails.dm_user_id || peer?.user_id,
                 dm_username: conversationDetails.dm_username || peer?.username || null,
                 dm_display_name:
-                  conversationDetails.dm_display_name || peer?.display_name || null,
+                  conversationDetails.dm_display_name ||
+                  peer?.nickname ||
+                  peer?.display_name ||
+                  peer?.username ||
+                  null,
                 dm_avatar_url: conversationDetails.dm_avatar_url || peer?.avatar_url || null,
               })
             : conversationDetails;
@@ -835,6 +839,34 @@ export const useConversationHandshake = ({
       patchCachedConversationNickname(activeGroupSnapshot?.public_id, targetUserId, nickname);
       patchCachedConversationNickname(eventConversationId, targetUserId, nickname);
       patchCachedConversationNickname(eventConversationPublicId, targetUserId, nickname);
+
+      if (
+        activeConversationSnapshot.type === 'dm' &&
+        user?.id &&
+        targetUserId !== user.id
+      ) {
+        const cachedConversation =
+          getConversationDetails(activeConversationSnapshot.id) ||
+          getConversationDetails(activeConversationSnapshot.public_id) ||
+          getConversationDetails(eventConversationId) ||
+          getConversationDetails(eventConversationPublicId) ||
+          null;
+        const cachedPeer = cachedConversation?.members?.find(
+          (member) => member.user_id === targetUserId,
+        );
+        const nextDmDisplayName =
+          nickname ||
+          cachedPeer?.display_name ||
+          cachedPeer?.username ||
+          activeConversationSnapshot.dm_username ||
+          activeConversationSnapshot.dm_display_name ||
+          'Direct Message';
+
+        onPatchConversationRef.current({
+          ...activeConversationSnapshot,
+          dm_display_name: nextDmDisplayName,
+        });
+      }
 
       const keyScopeId = getConversationKeyScopeId(activeConversationSnapshot);
       if (keyScopeId) {

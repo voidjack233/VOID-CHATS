@@ -85,7 +85,7 @@ export default function MembersTab({
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-semibold text-void-text">Current Members</h3>
-            <p className="mt-1 text-sm text-void-text-muted">
+            <p className="mt-1 hidden text-sm text-void-text-muted md:block">
               Manage roles here, and use this list to monitor current membership state.
             </p>
           </div>
@@ -322,7 +322,7 @@ export default function MembersTab({
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-semibold text-void-text">Leaving This Group</h3>
-            <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
+            <p className="mt-1 hidden text-sm leading-relaxed text-void-text-muted md:block">
               {leaveBlockedReason}
             </p>
           </div>

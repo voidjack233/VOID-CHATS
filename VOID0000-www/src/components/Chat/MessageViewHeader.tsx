@@ -68,9 +68,10 @@ export function buildMessageViewHeaderIdentity(params: {
 
   const label =
     conversation.type === 'dm'
-      ? normalizeText(dmIntroMember?.display_name) ||
-        normalizeText(dmIntroFriend?.display_name) ||
+      ? normalizeText(dmIntroMember?.nickname) ||
         normalizeText(conversation.dm_display_name) ||
+        normalizeText(dmIntroMember?.display_name) ||
+        normalizeText(dmIntroFriend?.display_name) ||
         normalizeText(dmIntroMember?.username) ||
         normalizeText(dmIntroFriend?.username) ||
         normalizeText(conversation.dm_username) ||

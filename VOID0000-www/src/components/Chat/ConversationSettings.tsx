@@ -26,6 +26,8 @@ export default function ConversationSettings(props: ConversationSettingsProps) {
       conversation={props.conversation}
       currentUserId={props.currentUserId}
       members={props.members}
+      onMessageCreated={props.onMessageCreated}
+      onConversationUpdated={props.onConversationUpdated}
       onClose={props.onClose}
     />
   );

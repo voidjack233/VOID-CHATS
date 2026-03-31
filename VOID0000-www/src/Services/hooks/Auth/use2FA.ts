@@ -60,24 +60,35 @@ export function use2FA() {
 
   // OTP input handlers
   const handleCodeChange = (value: string, index: number) => {
-    if (!/^[0-9]*$/.test(value)) return;
-
-    const newCode = [...code];
-
-    // Handle paste on first input
-    if (value.length > 1 && index === 0) {
-      const pasted = value.slice(0, 6).split('');
-      for (let i = 0; i < 6; i++) {
-        newCode[i] = pasted[i] || '';
-      }
+    const digits = value.replace(/\D/g, '');
+    if (!digits) {
+      const newCode = [...code];
+      newCode[index] = '';
       setCode(newCode);
-      inputs.current[Math.min(pasted.length, 5)]?.focus();
       return;
     }
 
-    newCode[index] = value;
+    if (digits.length > 1) {
+      handleCodePaste(digits, index);
+      return;
+    }
+
+    const newCode = [...code];
+    newCode[index] = digits;
     setCode(newCode);
-    if (value && index < 5) inputs.current[index + 1]?.focus();
+    if (digits && index < 5) inputs.current[index + 1]?.focus();
+  };
+
+  const handleCodePaste = (value: string, startIndex = 0) => {
+    const digits = value.replace(/\D/g, '').slice(0, 6 - startIndex);
+    if (!digits) return;
+
+    const newCode = [...code];
+    digits.split('').forEach((digit, offset) => {
+      newCode[startIndex + offset] = digit;
+    });
+    setCode(newCode);
+    inputs.current[Math.min(startIndex + digits.length, 5)]?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, index: number) => {
@@ -240,6 +251,7 @@ export function use2FA() {
     // Actions
     fetchStatus,
     handleCodeChange,
+    handleCodePaste,
     handleKeyDown,
     promptSetup,
     handlePasswordSubmit,

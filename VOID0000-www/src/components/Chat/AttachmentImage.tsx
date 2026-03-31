@@ -8,12 +8,14 @@ interface AttachmentImageProps {
   attachment: Attachment;
   alt?: string;
   className?: string;
+  onLoad?: () => void;
 }
 
 export default function AttachmentImage({
   attachment,
   alt = '',
   className = '',
+  onLoad,
 }: AttachmentImageProps) {
   const [src, setSrc] = useState<string | null>(
     isEncryptedAttachment(attachment) ? null : attachment.url,
@@ -65,6 +67,7 @@ export default function AttachmentImage({
         blurhash={attachment.blurhash}
         alt={alt}
         className={className}
+        onLoad={onLoad}
       />
     );
   }

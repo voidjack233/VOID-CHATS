@@ -67,34 +67,39 @@ export default function TwoFactorVerify({
 
   // --- OTP Handlers ---
   const handleCodeChange = (value: string, index: number) => {
-    if (!/^[0-9]*$/.test(value)) return;
-
-    const newCode = [...code];
-    
-    // Handle pasting a full 6-digit code
-    if (value.length > 1 && index === 0) {
-      const pastedCode = value.slice(0, 6).split('');
-      for (let i = 0; i < 6; i++) {
-        newCode[i] = pastedCode[i] || '';
-      }
+    const digits = value.replace(/\D/g, '');
+    if (!digits) {
+      const newCode = [...code];
+      newCode[index] = '';
       setCode(newCode);
-      const lastFilledIndex = pastedCode.length - 1;
-      if (lastFilledIndex < 5) {
-        inputs.current[lastFilledIndex + 1]?.focus();
-      } else {
-        inputs.current[5]?.focus();
-      }
       return;
     }
 
-    // Standard single digit entry
-    newCode[index] = value;
+    if (digits.length > 1) {
+      handleCodePaste(digits, index);
+      return;
+    }
+
+    const newCode = [...code];
+    newCode[index] = digits;
     setCode(newCode);
 
-    // Auto-advance to next input
-    if (value && index < 5) {
+    if (digits && index < 5) {
       inputs.current[index + 1]?.focus();
     }
+  };
+
+  const handleCodePaste = (value: string, startIndex = 0) => {
+    const digits = value.replace(/\D/g, '').slice(0, 6 - startIndex);
+    if (!digits) return;
+
+    const newCode = [...code];
+    digits.split('').forEach((digit, offset) => {
+      newCode[startIndex + offset] = digit;
+    });
+    setCode(newCode);
+
+    inputs.current[Math.min(startIndex + digits.length, 5)]?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, index: number) => {
@@ -226,28 +231,37 @@ export default function TwoFactorVerify({
             <input
               type="text"
               value={backupCode}
-              onChange={e => setBackupCode(e.target.value)}
+              onChange={e => setBackupCode(e.target.value.replace(/\D/g, ''))}
               onKeyDown={e => e.key === 'Enter' && handleSubmit()}
               placeholder="Enter 8-digit backup code"
               maxLength={8}
+              inputMode="numeric"
+              pattern="[0-9]*"
               className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white text-center text-2xl tracking-widest placeholder:text-base placeholder:tracking-normal placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
               autoFocus
               disabled={isLoading}
             />
           ) : (
-            <div className="flex justify-center gap-2 mb-6">
+            <div className="mx-auto mb-6 flex w-full max-w-[320px] justify-center gap-1.5 sm:gap-2">
               {code.map((digit, index) => (
                 <input
                   key={index}
                   type="text"
-                  maxLength={index === 0 ? 6 : 1}
+                  maxLength={1}
                   value={digit}
                   onChange={(e) => handleCodeChange(e.target.value, index)}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    handleCodePaste(e.clipboardData.getData('text'), index);
+                  }}
                   onKeyDown={(e) => handleKeyDown(e, index)}
                   ref={(el) => {
                     inputs.current[index] = el;
                   }}
-                  className="w-12 h-12 text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete={index === 0 ? 'one-time-code' : 'off'}
+                  className="flex-1 min-w-0 max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
                   disabled={isLoading}
                   autoFocus={index === 0}
                 />

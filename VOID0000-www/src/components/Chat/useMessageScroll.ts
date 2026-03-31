@@ -48,6 +48,7 @@ export function useMessageScroll({
   const scrollSeekActiveRef = useRef(false);
   const keepPinnedOnOpenRef = useRef(true);
   const forceFollowOutputRef = useRef(false);
+  const mediaPinWindowUntilRef = useRef(0);
   const prevConversationIdRef = useRef<string | null>(null);
   const lastVisibleTopMessageIdRef = useRef<string | null>(null);
   const scrollRestoredRef = useRef(false);
@@ -80,6 +81,7 @@ export function useMessageScroll({
     scrollSeekActiveRef.current = false;
     keepPinnedOnOpenRef.current = true;
     forceFollowOutputRef.current = false;
+    mediaPinWindowUntilRef.current = 0;
   }, [conversationId]);
 
   useEffect(() => {
@@ -92,6 +94,11 @@ export function useMessageScroll({
     if (!newMessage) return;
     if (String(newMessage.conversation_id || conversationId) !== String(conversationId)) {
       return;
+    }
+
+    const hasAttachments = Array.isArray(newMessage.attachments) && newMessage.attachments.length > 0;
+    if (hasAttachments && (newMessage.sender_id === currentUserId || atBottomRef.current)) {
+      mediaPinWindowUntilRef.current = Date.now() + 4000;
     }
 
     if (newMessage.sender_id === currentUserId) {
@@ -276,9 +283,32 @@ export function useMessageScroll({
     if (atBottom) {
       setHasUnseenMessages(false);
       forceFollowOutputRef.current = false;
+      mediaPinWindowUntilRef.current = 0;
     }
     setIsAtPresent(atBottom && !hasNewer);
   }, [hasNewer, setIsAtPresent]);
+
+  const handleAttachmentLoad = useCallback(() => {
+    const shouldStickToBottom =
+      atBottomRef.current ||
+      forceFollowOutputRef.current ||
+      keepPinnedOnOpenRef.current ||
+      mediaPinWindowUntilRef.current > Date.now();
+
+    if (!shouldStickToBottom) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({
+          index: 'LAST',
+          align: 'end',
+          behavior: 'auto',
+        });
+      });
+    });
+  }, []);
 
   return {
     virtuosoRef,
@@ -292,5 +322,6 @@ export function useMessageScroll({
     handleJumpToPresent,
     followOutput,
     handleAtBottomStateChange,
+    handleAttachmentLoad,
   };
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Search, ShieldAlert } from 'lucide-react';
+import { Check, ChevronDown, Loader2, Search, ShieldAlert } from 'lucide-react';
 import type { GroupPermissions } from '../../../../Services/Chat/chatTypes';
 import {
   getConversationPermissions,
@@ -63,20 +63,75 @@ function WhoDropdown({
   value: WhoOption;
   onChange: (next: WhoOption) => void;
 }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const selectedOption = WHO_OPTIONS.find((option) => option.value === value) || WHO_OPTIONS[0];
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isOpen]);
+
   return (
     <div className="flex items-center justify-between gap-4 py-3">
       <span className="text-sm text-void-text">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as WhoOption)}
-        className="rounded-lg border border-void-bg-hover bg-void-bg-main px-3 py-1.5 text-xs font-semibold text-void-text transition-colors hover:border-void-accent/40 focus:outline-none focus:ring-1 focus:ring-void-accent/50"
-      >
-        {WHO_OPTIONS.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
+      <div ref={menuRef} className="relative flex-shrink-0">
+        <button
+          type="button"
+          onClick={() => setIsOpen((current) => !current)}
+          className={`flex min-w-[136px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs font-semibold shadow-sm transition-colors ${
+            isOpen
+              ? 'border-void-accent/50 bg-void-bg-hover text-void-text ring-1 ring-void-accent/30'
+              : 'border-void-bg-hover bg-void-bg-main text-void-text hover:border-void-accent/40 hover:bg-void-bg-hover/70'
+          }`}
+          aria-haspopup="listbox"
+          aria-expanded={isOpen}
+        >
+          <span>{selectedOption?.label || 'Select'}</span>
+          <ChevronDown
+            className={`h-3.5 w-3.5 text-void-text-muted transition-transform ${
+              isOpen ? 'rotate-180' : ''
+            }`}
+          />
+        </button>
+
+        {isOpen && (
+          <div
+            role="listbox"
+            className="absolute right-0 top-[calc(100%+0.45rem)] z-20 min-w-[180px] overflow-hidden rounded-xl border border-void-bg-hover bg-void-bg-main p-1.5 shadow-2xl"
+          >
+            {WHO_OPTIONS.map((option) => {
+              const isSelected = option.value === value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    onChange(option.value);
+                    setIsOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-xs font-semibold transition-colors ${
+                    isSelected
+                      ? 'bg-void-accent/15 text-void-accent'
+                      : 'text-void-text hover:bg-void-bg-hover'
+                  }`}
+                >
+                  <span>{option.label}</span>
+                  {isSelected ? <Check className="h-3.5 w-3.5" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -219,7 +274,7 @@ export default function PermissionsTab({
           <ShieldAlert className="h-5 w-5" />
         </div>
         <h3 className="mt-4 text-base font-semibold text-void-text">Owner Only</h3>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-void-text-muted">
+        <p className="mx-auto mt-2 hidden max-w-sm text-sm leading-relaxed text-void-text-muted md:block">
           Permissions can only be changed by the group owner.
         </p>
       </section>
@@ -312,20 +367,6 @@ export default function PermissionsTab({
             <span className="text-xs">Search members…</span>
           </div>
         </div>
-      </SectionCard>
-
-      {/* Invites */}
-      <SectionCard title="Invites">
-        <WhoDropdown
-          label="Who can create invite links?"
-          value={perms.whoCanCreateInviteLinks}
-          onChange={(v) => set('whoCanCreateInviteLinks', v)}
-        />
-        <WhoDropdown
-          label="Who can approve requests?"
-          value={perms.whoCanApproveRequests}
-          onChange={(v) => set('whoCanApproveRequests', v)}
-        />
       </SectionCard>
 
       {/* Nickname Rules */}

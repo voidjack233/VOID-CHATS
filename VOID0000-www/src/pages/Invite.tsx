@@ -187,7 +187,6 @@ export default function InvitePage() {
                       <span className="text-xs uppercase tracking-[0.18em]">History</span>
                     </div>
                     <p className="mt-3 text-sm font-medium text-void-text">New messages only</p>
-                    <p className="mt-1 text-xs text-void-text-muted">Joining through an invite starts from your approved history access point.</p>
                   </div>
 
                   <div className="rounded-2xl border border-void-bg-hover bg-void-bg-main/35 p-4">
@@ -197,15 +196,6 @@ export default function InvitePage() {
                     </div>
                     <p className="mt-3 text-sm font-medium text-void-text">{formatExpiry(preview.expires_at)}</p>
                   </div>
-                </div>
-
-                <div className="rounded-2xl border border-void-bg-hover bg-void-bg-main/30 p-5">
-                  <h2 className="text-sm font-semibold text-void-text">How joining works</h2>
-                  <p className="mt-2 text-sm leading-relaxed text-void-text-muted">
-                    This link does not force you into the group. It creates a join request, and the group owner has to
-                    approve it. Once approved, your account only sees messages that are available from your granted
-                    history start point onward.
-                  </p>
                 </div>
               </>
             )}

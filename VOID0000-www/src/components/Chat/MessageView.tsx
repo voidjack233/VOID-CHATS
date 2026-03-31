@@ -1,6 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Virtuoso, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
-import { ArrowDown } from 'lucide-react';
+import { ArrowDown, ExternalLink, ShieldAlert } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -19,6 +19,7 @@ import {
 import MessageItem from './MessageItem';
 import MessageOverlays from './MessageOverlays';
 import MessageViewHeader, { buildMessageViewHeaderIdentity } from './MessageViewHeader';
+import { getMessageLinkHostname, isTrustedMessageUrl } from './messageLinks';
 import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
 import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
@@ -126,6 +127,7 @@ const MessageView = memo(function MessageView({
   messageDelete,
 }: MessageViewProps) {
   const { user } = useUser();
+  const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
   const { friends } = useFriends();
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
@@ -210,6 +212,7 @@ const MessageView = memo(function MessageView({
     handleJumpToPresent,
     followOutput,
     handleAtBottomStateChange,
+    handleAttachmentLoad,
   } = useMessageScroll({
     conversationId: conversation.id,
     currentUserId: user?.id,
@@ -242,6 +245,16 @@ const MessageView = memo(function MessageView({
   typingParticipantsRef.current = typingParticipants;
 
   const getSmartDisplayName = useCallback((senderId: string) => {
+    const member = membersRef.current[senderId];
+    const memberNickname = normalizeText(member?.nickname);
+    if (memberNickname) return memberNickname;
+
+    const memberDisplayName = normalizeText(member?.display_name);
+    if (memberDisplayName) return memberDisplayName;
+
+    const memberUsername = normalizeText(member?.username);
+    if (memberUsername) return memberUsername;
+
     if (conversation.type !== 'dm') {
       return getSenderName(senderId);
     }
@@ -280,6 +293,44 @@ const MessageView = memo(function MessageView({
   const replyFontSize = Math.max(11, chatFontScale - 2);
   const bubbleFontSize = chatFontScale;
   const encryptedFontSize = Math.max(10, chatFontScale - 3);
+
+  const openBrowserLink = useCallback((url: string) => {
+    const openedWindow = window.open(url, '_blank', 'noopener,noreferrer');
+    if (openedWindow) {
+      openedWindow.opener = null;
+    }
+  }, []);
+
+  const handleOpenMessageLink = useCallback((url: string) => {
+    if (isTrustedMessageUrl(url)) {
+      window.location.assign(url);
+      return;
+    }
+
+    setPendingExternalLink({
+      url,
+      hostname: getMessageLinkHostname(url) || 'external site',
+    });
+  }, [openBrowserLink]);
+
+  const handleConfirmExternalLink = useCallback(() => {
+    if (!pendingExternalLink) return;
+    openBrowserLink(pendingExternalLink.url);
+    setPendingExternalLink(null);
+  }, [openBrowserLink, pendingExternalLink]);
+
+  useEffect(() => {
+    if (!pendingExternalLink) return undefined;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPendingExternalLink(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [pendingExternalLink]);
 
   const listItems: MessageListItem[] = useMemo(() => [
     ...visualMessages.map((message) => ({ kind: 'message' as const, message })),
@@ -442,6 +493,8 @@ const MessageView = memo(function MessageView({
         onDelete={handleDelete}
         onToggleReaction={handleToggleReaction}
         onOpenImageViewer={openImageViewer}
+        onAttachmentLoad={handleAttachmentLoad}
+        onOpenLink={handleOpenMessageLink}
       />
     );
   }, [
@@ -454,9 +507,11 @@ const MessageView = memo(function MessageView({
     getSmartUsername,
     handleContextMenu,
     handleDelete,
+    handleAttachmentLoad,
     handleProfileClick,
     handleToggleReaction,
     layoutTraitsById,
+    handleOpenMessageLink,
     messageGroupSpacing,
     metaFontSize,
     onEdit,
@@ -508,6 +563,43 @@ const MessageView = memo(function MessageView({
           Jump to Present
         </button>
       )}
+
+      {pendingExternalLink ? (
+        <div className="fixed inset-0 z-[330] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-void-bg-hover bg-void-bg-sec shadow-2xl">
+            <div className="border-b border-void-bg-hover px-5 py-4">
+              <div className="flex items-center gap-2 text-void-text">
+                <ShieldAlert className="h-5 w-5 text-amber-300" />
+                <h3 className="text-base font-semibold">Open External Link?</h3>
+              </div>
+              <p className="mt-2 text-sm text-void-text-muted">
+                You are leaving VOID to open <span className="font-medium text-void-text">{pendingExternalLink.hostname}</span>.
+              </p>
+              <div className="mt-3 rounded-xl border border-void-bg-hover bg-void-bg-main/60 px-3 py-2 text-xs text-void-text-muted break-all">
+                {pendingExternalLink.url}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setPendingExternalLink(null)}
+                className="rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-4 py-2.5 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmExternalLink}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-void-accent-hover"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Open Link
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <MessageOverlays
         contextMenu={contextMenu}

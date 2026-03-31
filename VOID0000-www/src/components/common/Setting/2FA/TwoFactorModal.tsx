@@ -24,7 +24,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
     backupCodes, copied, code, inputs,
     hasTotp, hasEmail, hasAny2FA,
     setPassword,
-    fetchStatus, handleCodeChange, handleKeyDown,
+    fetchStatus, handleCodeChange, handleCodePaste, handleKeyDown,
     promptSetup, handlePasswordSubmit, handleVerifySetup,
     promptDisable, handleDisable,
     copyBackupCodes, confirmBackupCodesSaved,
@@ -38,17 +38,24 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
   // --- Sub-renders ---
 
   const renderOTPInputs = () => (
-    <div className="flex justify-center gap-2">
+    <div className="mx-auto flex w-full max-w-[320px] justify-center gap-1.5 sm:gap-2">
       {code.map((digit, index) => (
         <input
           key={index}
           type="text"
-          maxLength={index === 0 ? 6 : 1}
+          maxLength={1}
           value={digit}
           onChange={(e) => handleCodeChange(e.target.value, index)}
+          onPaste={(e) => {
+            e.preventDefault();
+            handleCodePaste(e.clipboardData.getData('text'), index);
+          }}
           onKeyDown={(e) => handleKeyDown(e, index)}
           ref={(el) => { inputs.current[index] = el; }}
-          className="w-12 h-12 text-2xl text-center text-void-text bg-void-bg-hover/70 border border-void-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          autoComplete={index === 0 ? 'one-time-code' : 'off'}
+          className="flex-1 min-w-0 max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-void-text bg-void-bg-hover/70 border border-void-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
           disabled={isLoading}
           autoFocus={index === 0}
         />

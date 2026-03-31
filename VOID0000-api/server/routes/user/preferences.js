@@ -15,7 +15,7 @@ router.get('/preferences', async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT theme, accent_color, bg_color, text_color, hover_color, density, message_group_spacing, chat_font_scale
+      `SELECT theme, accent_color, bg_color, text_color, hover_color, density, message_group_spacing, chat_font_scale, message_notifications_enabled
        FROM user_preferences
        WHERE user_id = $1`,
       [userId]
@@ -44,6 +44,7 @@ router.put('/preferences', async (req, res) => {
     density,
     message_group_spacing,
     chat_font_scale,
+    message_notifications_enabled,
   } = req.body;
 
   if (theme && !validThemes.includes(theme)) {
@@ -68,6 +69,10 @@ router.put('/preferences', async (req, res) => {
     return res.status(400).json({ error: 'Invalid chat font scale' });
   }
 
+  if (message_notifications_enabled !== undefined && typeof message_notifications_enabled !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid message_notifications_enabled' });
+  }
+
   const hexPattern = /^#[0-9a-fA-F]{6}$/;
   for (const [name, value] of Object.entries({ accent_color, bg_color, text_color, hover_color })) {
     if (value && !hexPattern.test(value)) {
@@ -79,9 +84,9 @@ router.put('/preferences', async (req, res) => {
     await pool.query(
       `INSERT INTO user_preferences (
          user_id, theme, accent_color, bg_color, text_color, hover_color, density,
-         message_group_spacing, chat_font_scale, updated_at
+         message_group_spacing, chat_font_scale, message_notifications_enabled, updated_at
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
        ON CONFLICT (user_id) DO UPDATE SET
          theme = COALESCE($2, user_preferences.theme),
          accent_color = COALESCE($3, user_preferences.accent_color),
@@ -91,6 +96,7 @@ router.put('/preferences', async (req, res) => {
          density = COALESCE($7, user_preferences.density),
          message_group_spacing = COALESCE($8, user_preferences.message_group_spacing),
          chat_font_scale = COALESCE($9, user_preferences.chat_font_scale),
+         message_notifications_enabled = COALESCE($10, user_preferences.message_notifications_enabled),
          updated_at = NOW()`,
       [
         userId,
@@ -102,6 +108,7 @@ router.put('/preferences', async (req, res) => {
         density || 'compact',
         message_group_spacing ?? 8,
         chat_font_scale ?? 16,
+        message_notifications_enabled !== undefined ? message_notifications_enabled : true,
       ]
     );
 

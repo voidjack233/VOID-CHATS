@@ -110,16 +110,43 @@ export function useEmailVerification() {
   };
 
   const handleChange = (value: string, index: number) => {
-    if (!/^\d?$/.test(value)) return;
+    const digits = value.replace(/\D/g, '');
+    if (!digits) {
+      const newCode = [...code];
+      newCode[index] = '';
+      setCode(newCode);
+      setError('');
+      return;
+    }
+
+    if (digits.length > 1) {
+      handlePaste(digits, index);
+      return;
+    }
 
     const newCode = [...code];
-    newCode[index] = value;
+    newCode[index] = digits;
     setCode(newCode);
     setError('');
 
-    if (value && index < 5) {
+    if (digits && index < 5) {
       inputs.current[index + 1]?.focus();
     }
+  };
+
+  const handlePaste = (value: string, startIndex = 0) => {
+    const digits = value.replace(/\D/g, '').slice(0, 6 - startIndex);
+    if (!digits) return;
+
+    const newCode = [...code];
+    digits.split('').forEach((digit, offset) => {
+      newCode[startIndex + offset] = digit;
+    });
+    setCode(newCode);
+    setError('');
+
+    const nextIndex = Math.min(startIndex + digits.length, 5);
+    inputs.current[nextIndex]?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, index: number) => {
@@ -170,6 +197,7 @@ export function useEmailVerification() {
     setShowCaptcha,
     inputs,
     handleChange,
+    handlePaste,
     handleKeyDown,
     handleSubmit,
     handleSendCode,

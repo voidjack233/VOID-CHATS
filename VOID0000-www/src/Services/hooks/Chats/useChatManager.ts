@@ -58,7 +58,12 @@ export const useChatManager = (user: any) => {
       ...conversation,
       dm_user_id: conversation.dm_user_id || peer?.user_id,
       dm_username: conversation.dm_username || peer?.username || null,
-      dm_display_name: conversation.dm_display_name || peer?.display_name || null,
+      dm_display_name:
+        conversation.dm_display_name ||
+        peer?.nickname ||
+        peer?.display_name ||
+        peer?.username ||
+        null,
       dm_avatar_url: conversation.dm_avatar_url || peer?.avatar_url || null,
     }) as Conversation;
   };

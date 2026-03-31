@@ -4,8 +4,10 @@ import {
   primeIncomingMessageSound,
   testIncomingMessageSound,
 } from '../../../Services/Chat/messageNotificationSound';
+import { useTheme } from '../../../Services/hooks/Settings/useTheme';
 
 const NotificationsTab = () => {
+  const { messageNotificationsEnabled, setMessageNotificationsEnabled } = useTheme();
   const [isTesting, setIsTesting] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'success'>('idle');
 
@@ -13,7 +15,17 @@ const NotificationsTab = () => {
     primeIncomingMessageSound();
   }, []);
 
+  const handleToggleNotifications = async () => {
+    const nextEnabled = !messageNotificationsEnabled;
+    await setMessageNotificationsEnabled(nextEnabled);
+
+    if (!nextEnabled) {
+      setTestStatus('idle');
+    }
+  };
+
   const handleTestSound = async () => {
+    if (!messageNotificationsEnabled) return;
     setIsTesting(true);
     setTestStatus('idle');
 
@@ -31,7 +43,7 @@ const NotificationsTab = () => {
       <div>
         <h2 className="text-lg font-bold text-void-text mb-4">Notifications</h2>
         <p className="text-sm text-void-text-muted mb-6">
-          Control message alert behavior and make sure incoming chat sounds are working on this device.
+          Control message alert behavior in this browser and make sure incoming chat sounds are working here.
         </p>
       </div>
 
@@ -52,11 +64,55 @@ const NotificationsTab = () => {
             <div className="flex flex-col gap-3 rounded-xl border border-void-bg-hover bg-void-bg-sec/80 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium text-void-text">
+                  <BellRing className="h-4 w-4 text-void-accent" />
+                  Message Sound
+                </div>
+                <p className="mt-1 text-xs text-void-text-muted">
+                  Turn incoming message sound alerts on or off on this device.
+                </p>
+              </div>
+
+              <div className="flex shrink-0 items-center gap-3">
+                <span
+                  className={`text-xs font-semibold uppercase tracking-[0.18em] ${
+                    messageNotificationsEnabled ? 'text-void-accent' : 'text-void-text-muted'
+                  }`}
+                >
+                  {messageNotificationsEnabled ? 'ON' : 'OFF'}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={messageNotificationsEnabled}
+                  aria-label="Toggle message notifications"
+                  onClick={() => {
+                    void handleToggleNotifications();
+                  }}
+                  className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border border-transparent transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-void-accent/40 focus:ring-offset-2 focus:ring-offset-void-bg-sec ${
+                    messageNotificationsEnabled
+                      ? 'bg-void-accent shadow-[0_0_0_4px_rgba(99,102,241,0.12)]'
+                      : 'bg-void-bg-hover'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${
+                      messageNotificationsEnabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-xl border border-void-bg-hover bg-void-bg-sec/80 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-medium text-void-text">
                   <Volume2 className="h-4 w-4 text-void-accent" />
                   Notification Sound
                 </div>
                 <p className="mt-1 text-xs text-void-text-muted">
-                  Use the test button once so your browser can allow message sounds on this page.
+                  {messageNotificationsEnabled
+                    ? 'Use the test button once so your browser can allow message sounds on this page.'
+                    : 'Turn message notifications on first if you want incoming sounds to play.'}
                 </p>
               </div>
 
@@ -65,7 +121,7 @@ const NotificationsTab = () => {
                 onClick={() => {
                   void handleTestSound();
                 }}
-                disabled={isTesting}
+                disabled={isTesting || !messageNotificationsEnabled}
                 className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-void-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {testStatus === 'success' && !isTesting ? (

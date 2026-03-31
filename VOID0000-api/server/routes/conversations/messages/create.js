@@ -19,6 +19,9 @@ router.post('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier } = req.params;
   const { encrypted_content, iv, key_version, message_type, reply_to, attachments, content } = req.body;
+  let storageConversationUuid = null;
+  let messageId = null;
+  let messagePersistedToScylla = false;
 
   const isPlaintextSystem = message_type === 'system' && typeof content === 'string' && content.trim().length > 0;
 
@@ -85,13 +88,14 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const messageId = cassandra.types.TimeUuid.now();
+    messageId = cassandra.types.TimeUuid.now();
     const messageIdString = messageId.toString();
     const now = new Date();
     const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
 
     const storedContent = isPlaintextSystem ? content.trim() : (encrypted_content || null);
     const storedIv = isPlaintextSystem ? null : (iv || null);
+    storageConversationUuid = cassandra.types.Uuid.fromString(storageConversationId);
 
     await scylla.execute(
       `INSERT INTO messages (
@@ -99,7 +103,7 @@ router.post('/', async (req, res) => {
         key_version, message_type, reply_to, attachments, is_edited, is_deleted, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
       [
-        cassandra.types.Uuid.fromString(storageConversationId),
+        storageConversationUuid,
         messageId,
         cassandra.types.Uuid.fromString(userId),
         storedContent,
@@ -112,36 +116,51 @@ router.post('/', async (req, res) => {
       ],
       { prepare: true }
     );
+    messagePersistedToScylla = true;
 
     const membershipConversationId = conversation.parent_conversation_id || conversationId;
     const touchedConversationIds = [...new Set(
       [conversationId, storageConversationId, conversation.parent_conversation_id].filter(Boolean)
     )];
 
-    await pool.query(
-      `UPDATE conversations
-       SET updated_at = NOW(),
-           first_message_at = COALESCE(first_message_at, NOW())
-       WHERE id = ANY($1::uuid[])`,
-      [touchedConversationIds]
-    );
-    await pool.query(
-      `UPDATE conversation_members
-       SET unread_count = CASE
-             WHEN user_id = $2 THEN 0
-             ELSE COALESCE(unread_count, 0) + 1
-           END,
-           last_read_message_id = CASE
-             WHEN user_id = $2 THEN $3
-             ELSE last_read_message_id
-           END,
-           last_message_sent_at = CASE
-             WHEN user_id = $2 THEN NOW()
-             ELSE last_message_sent_at
-           END
-       WHERE conversation_id = $1`,
-      [membershipConversationId, userId, messageIdString]
-    );
+    // Run PostgreSQL side-effects in a single transaction so unread and
+    // conversation timestamps stay consistent if one of the writes fails.
+    const pgClient = await pool.connect();
+    try {
+      await pgClient.query('BEGIN');
+
+      await pgClient.query(
+        `UPDATE conversations
+         SET updated_at = NOW(),
+             first_message_at = COALESCE(first_message_at, NOW())
+         WHERE id = ANY($1::uuid[])`,
+        [touchedConversationIds]
+      );
+      await pgClient.query(
+        `UPDATE conversation_members
+         SET unread_count = CASE
+               WHEN user_id = $2 THEN 0
+               ELSE COALESCE(unread_count, 0) + 1
+             END,
+             last_read_message_id = CASE
+               WHEN user_id = $2 THEN $3
+               ELSE last_read_message_id
+             END,
+             last_message_sent_at = CASE
+               WHEN user_id = $2 THEN NOW()
+               ELSE last_message_sent_at
+             END
+         WHERE conversation_id = $1`,
+        [membershipConversationId, userId, messageIdString]
+      );
+
+      await pgClient.query('COMMIT');
+    } catch (pgErr) {
+      await pgClient.query('ROLLBACK');
+      throw pgErr;
+    } finally {
+      pgClient.release();
+    }
 
     const message = {
       event_id: messageEventId(messageId.toString()),
@@ -174,6 +193,17 @@ router.post('/', async (req, res) => {
 
     res.status(201).json({ success: true, message });
   } catch (err) {
+    if (messagePersistedToScylla && storageConversationUuid && messageId) {
+      try {
+        await scylla.execute(
+          'DELETE FROM messages WHERE conversation_id = ? AND message_id = ?',
+          [storageConversationUuid, messageId],
+          { prepare: true }
+        );
+      } catch (cleanupErr) {
+        console.error('Failed to roll back Scylla message after send error:', cleanupErr);
+      }
+    }
     console.error('Message send error:', err);
     res.status(500).json({ error: 'Failed to send message' });
   }

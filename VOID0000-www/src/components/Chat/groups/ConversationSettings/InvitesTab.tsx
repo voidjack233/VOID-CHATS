@@ -59,10 +59,6 @@ export default function InvitesTab({
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="max-w-2xl">
             <h3 className="text-sm font-semibold text-void-text">Invite Links</h3>
-            <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
-              Invite links do not add anyone immediately. They create a join request, and approved members
-              only see the history their account is allowed to access.
-            </p>
           </div>
 
           {canManageInvites && (
@@ -96,9 +92,6 @@ export default function InvitesTab({
         {!canManageInvites && (
           <div className="mt-4 rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
             <p className="text-sm font-medium text-void-text">Owner-only section</p>
-            <p className="mt-1 text-sm text-void-text-muted">
-              Only the group owner can create links and approve join requests right now.
-            </p>
           </div>
         )}
 
@@ -124,9 +117,6 @@ export default function InvitesTab({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-void-text">Pending Join Requests</h3>
-                <p className="mt-1 text-sm text-void-text-muted">
-                  Approval grants access from the member start point, not full back-history.
-                </p>
               </div>
               <div className="inline-flex self-start items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text sm:self-auto">
                 <Users className="h-4 w-4 text-void-text-muted" />
@@ -219,9 +209,6 @@ export default function InvitesTab({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-void-text">Recent Invite Links</h3>
-                <p className="mt-1 text-sm text-void-text-muted">
-                  Links stay reusable until they expire or you revoke them.
-                </p>
               </div>
               <div className="inline-flex self-start items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text sm:self-auto">
                 <Link2 className="h-4 w-4 text-void-text-muted" />

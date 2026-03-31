@@ -1,5 +1,7 @@
 // src/Services/hooks/Settings/useTheme.ts
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
+
+const NOTIFICATION_ENABLED_KEY = 'void_message_notifications_enabled';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 
 export type Theme = 'void' | 'ocean' | 'forest' | 'sunset' | 'midnight';
@@ -43,6 +45,8 @@ interface ThemeContextValue {
   setDensity: (d: Density) => void;
   setMessageGroupSpacing: (spacing: MessageGroupSpacing) => void;
   setChatFontScale: (fontScale: ChatFontScale) => void;
+  messageNotificationsEnabled: boolean;
+  setMessageNotificationsEnabled: (enabled: boolean) => Promise<void>;
   savePreferences: () => Promise<void>;
   resetToDefaults: () => void;
   revertChanges: () => void;
@@ -152,6 +156,10 @@ export function useThemeProvider(): ThemeContextValue {
     parseChatFontScale(localStorage.getItem('void_chat_font_scale'))
   );
 
+  const [messageNotificationsEnabled, setMessageNotificationsEnabledState] = useState<boolean>(
+    () => typeof window !== 'undefined' ? localStorage.getItem(NOTIFICATION_ENABLED_KEY) !== 'false' : true
+  );
+
   const setDensity = useCallback((d: Density) => {
     setDensityState(d);
   }, []);
@@ -160,6 +168,11 @@ export function useThemeProvider(): ThemeContextValue {
   }, []);
   const setChatFontScale = useCallback((fontScale: ChatFontScale) => {
     setChatFontScaleState(fontScale);
+  }, []);
+
+  const setMessageNotificationsEnabled = useCallback(async (enabled: boolean) => {
+    setMessageNotificationsEnabledState(enabled);
+    localStorage.setItem(NOTIFICATION_ENABLED_KEY, enabled ? 'true' : 'false');
   }, []);
 
   const [savedTheme, setSavedTheme] = useState<Theme>(DEFAULT_THEME);
@@ -407,6 +420,8 @@ export function useThemeProvider(): ThemeContextValue {
     savedHover,
     savedTheme,
     hasChanges,
+    messageNotificationsEnabled,
+    setMessageNotificationsEnabled,
     setTheme,
     setCustomColors,
     setDensity,

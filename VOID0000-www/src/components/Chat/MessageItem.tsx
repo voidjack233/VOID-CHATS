@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CornerUpRight,
   Image,
@@ -11,10 +11,12 @@ import type { Message } from '../../Services/Chat/chatService';
 import type { Density } from '../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
 import AttachmentImage from './AttachmentImage';
+import InviteEmbed from './InviteEmbed';
 import UserAvatar from '../common/UserAvatar';
 import { parseAttachments } from '../../Services/Chat/chatService';
 import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
+import { extractMessageTextSegments, getInviteCodeFromMessageUrl } from './messageLinks';
 
 const DENSITY: Record<Density, {
   consecutiveGap: number;
@@ -69,6 +71,8 @@ interface MessageItemProps {
   onDelete: (messageId: string) => void | Promise<void>;
   onToggleReaction: (messageId: string, emoji: string) => void;
   onOpenImageViewer: (urls: string[], index: number) => void;
+  onAttachmentLoad?: () => void;
+  onOpenLink?: (url: string) => void;
 }
 
 const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
@@ -87,7 +91,8 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.formatTime === next.formatTime &&
   prev.getSenderName === next.getSenderName &&
   prev.getSenderUsername === next.getSenderUsername &&
-  prev.getSenderAvatarUrl === next.getSenderAvatarUrl
+  prev.getSenderAvatarUrl === next.getSenderAvatarUrl &&
+  prev.onAttachmentLoad === next.onAttachmentLoad
 );
 
 const MessageItem = memo(function MessageItem({
@@ -116,6 +121,8 @@ const MessageItem = memo(function MessageItem({
   onDelete,
   onToggleReaction,
   onOpenImageViewer,
+  onAttachmentLoad,
+  onOpenLink,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
@@ -189,6 +196,62 @@ const MessageItem = memo(function MessageItem({
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
   const rowIndent = !isRightAligned && !showAvatar ? AVATAR_OFFSET : '';
+  const linkClassName = isRightAligned || isOwn
+    ? 'box-decoration-clone break-all rounded-md bg-white/12 px-1 py-0.5 font-medium text-sky-100 underline decoration-sky-100/90 decoration-2 underline-offset-2 transition-colors hover:bg-white/18 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/35'
+    : 'box-decoration-clone break-all rounded-md bg-void-bg-main/65 px-1 py-0.5 font-medium text-sky-400 underline decoration-sky-400/90 decoration-2 underline-offset-2 transition-colors hover:bg-void-bg-main hover:text-sky-300 focus:outline-none focus:ring-2 focus:ring-void-accent/35';
+  const inviteUrl = useMemo(() => {
+    if (!message.content || message.content === '[encrypted]') return null;
+    const segments = extractMessageTextSegments(message.content);
+    const inviteSegment = segments.find((segment) => (
+      segment.type === 'link' && getInviteCodeFromMessageUrl(segment.url)
+    ));
+
+    return inviteSegment?.type === 'link' ? inviteSegment.url : null;
+  }, [message.content]);
+  const inviteCode = useMemo(
+    () => (inviteUrl ? getInviteCodeFromMessageUrl(inviteUrl) : null),
+    [inviteUrl],
+  );
+
+  const renderMessageText = useCallback((content: string) => {
+    const lines = content.split('\n');
+
+    return lines.map((line, lineIndex) => {
+      const segments = extractMessageTextSegments(line);
+
+      return (
+        <Fragment key={`line-${lineIndex}`}>
+          {segments.map((segment, segmentIndex) => {
+            if (segment.type === 'text') {
+              return (
+                <Fragment key={`text-${lineIndex}-${segmentIndex}`}>
+                  {segment.value}
+                </Fragment>
+              );
+            }
+
+            return (
+              <a
+                key={`link-${lineIndex}-${segmentIndex}`}
+                href={segment.url}
+                onClick={(event) => {
+                  event.preventDefault();
+                  onOpenLink?.(segment.url);
+                }}
+                className={`${linkClassName} inline cursor-pointer text-left align-baseline`}
+                title={segment.url}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {segment.value}
+              </a>
+            );
+          })}
+          {lineIndex < lines.length - 1 ? <br /> : null}
+        </Fragment>
+      );
+    });
+  }, [linkClassName, onOpenLink]);
 
   const resetTouchGesture = useCallback(() => {
     touchStateRef.current.active = false;
@@ -529,7 +592,7 @@ const MessageItem = memo(function MessageItem({
                 style={{ fontSize: `${bubbleFontSize}px` }}
               >
                 {hasRealContent ? (
-                  message.content
+                  renderMessageText(message.content || '')
                 ) : (
                   <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>
                     encrypted
@@ -563,12 +626,21 @@ const MessageItem = memo(function MessageItem({
                       attachment={attachment}
                       alt="attachment"
                       className="w-full h-full object-cover hover:opacity-90"
+                      onLoad={onAttachmentLoad}
                     />
                   </button>
                 ))}
               </div>
             );
           })()}
+
+          {!message.is_deleted && inviteUrl && inviteCode && (
+            <InviteEmbed
+              inviteCode={inviteCode}
+              inviteUrl={inviteUrl}
+              onOpenInvite={(url) => onOpenLink?.(url)}
+            />
+          )}
 
           {!message.is_deleted && Object.keys(messageReactions || {}).length > 0 && (
             <div className="pt-1">

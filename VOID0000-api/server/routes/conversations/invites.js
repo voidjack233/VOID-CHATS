@@ -209,7 +209,7 @@ router.post('/', async (req, res) => {
     }
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsWhoThreshold(membership.role, perms.who_can_create_invite_links)) {
+    if (!meetsAdminToggle(membership.role, perms.admin_can_manage_invite_links)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You do not have permission to create invite links' });
     }
@@ -297,7 +297,7 @@ router.post('/requests/:requestId/approve', async (req, res) => {
     }
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You do not have permission to approve join requests' });
     }
@@ -448,7 +448,7 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
     }
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You do not have permission to approve join requests' });
     }
@@ -730,7 +730,7 @@ router.post('/requests/:requestId/rollback-approval', async (req, res) => {
     }
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
       await client.query('ROLLBACK');
       return res.status(403).json({ error: 'You do not have permission to manage join requests' });
     }
@@ -920,7 +920,7 @@ router.post('/requests/:requestId/decline', async (req, res) => {
     }
 
     const perms = resolvePermissions(conversation.permissions);
-    if (!meetsWhoThreshold(membership.role, perms.who_can_approve_requests)) {
+    if (!meetsAdminToggle(membership.role, perms.admin_can_approve_join_requests)) {
       return res.status(403).json({ error: 'You do not have permission to manage join requests' });
     }
 

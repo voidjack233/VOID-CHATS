@@ -17,6 +17,7 @@ export default function EmailVerification() {
     setShowCaptcha,
     inputs,
     handleChange,
+    handlePaste,
     handleKeyDown,
     handleSubmit,
     handleSendCode,
@@ -119,7 +120,7 @@ export default function EmailVerification() {
         </p>
 
         {/* RESPONSIVE FIX APPLIED HERE */}
-        <div className="flex justify-center gap-1.5 sm:gap-2 mb-6 max-w-[320px] mx-auto">
+        <div className="mx-auto mb-6 flex w-full max-w-[320px] justify-center gap-1.5 sm:gap-2">
           {code.map((digit, index) => (
             <input
               key={index}
@@ -127,11 +128,18 @@ export default function EmailVerification() {
               maxLength={1}
               value={digit}
               onChange={(e) => handleChange(e.target.value, index)}
+              onPaste={(e) => {
+                e.preventDefault();
+                handlePaste(e.clipboardData.getData('text'), index);
+              }}
               onKeyDown={(e) => handleKeyDown(e, index)}
               ref={(el) => {
                 inputs.current[index] = el;
               }}
-              className="flex-1 w-full max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete={index === 0 ? 'one-time-code' : 'off'}
+              className="flex-1 min-w-0 w-full max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               disabled={loading}
               aria-label={`Verification code digit ${index + 1}`}
             />

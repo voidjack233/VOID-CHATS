@@ -50,6 +50,7 @@ const ConversationList = ({
   const conversationsRef = useRef<Conversation[]>([]);
   const activeIdRef = useRef<string | null>(activeId);
   const currentUserIdRef = useRef<string | null>(currentUserId || null);
+  const friendsRef = useRef(friends);
   const readReceiptInFlightRef = useRef<Set<string>>(new Set());
   // Tracks muted_until per conversation ID. Survives the conversation being
   // removed from the list (e.g. after Close Chat or DM_HIDDEN), so the sound
@@ -75,6 +76,10 @@ const ConversationList = ({
   useEffect(() => {
     currentUserIdRef.current = currentUserId || null;
   }, [currentUserId]);
+
+  useEffect(() => {
+    friendsRef.current = friends;
+  }, [friends]);
 
   useEffect(() => subscribeConversationPreviewCache(() => {
     setPreviewVersion((value) => value + 1);
@@ -295,11 +300,58 @@ const ConversationList = ({
       setConversations((prev) => prev.filter((c) => c.id !== conversationId));
     };
 
+    const handleMemberNicknameUpdate = (data: any) => {
+      const targetUserId = data?.user_id;
+      const eventConversationId = data?.conversation_id;
+      const eventConversationPublicId = data?.conversation_public_id || null;
+      const nickname =
+        typeof data?.nickname === 'string' && data.nickname.trim().length > 0
+          ? data.nickname.trim()
+          : null;
+      const currentUserIdValue = currentUserIdRef.current;
+
+      if (!targetUserId || !currentUserIdValue || targetUserId === currentUserIdValue) {
+        return;
+      }
+
+      setConversations((prev) =>
+        prev.map((conversation) => {
+          if (conversation.type !== 'dm') {
+            return conversation;
+          }
+
+          const matchesPeer =
+            (eventConversationId && conversation.id === eventConversationId) ||
+            (eventConversationPublicId &&
+              conversation.public_id &&
+              String(conversation.public_id) === String(eventConversationPublicId)) ||
+            (conversation.dm_user_id && conversation.dm_user_id === targetUserId) ||
+            false;
+
+          if (!matchesPeer) {
+            return conversation;
+          }
+
+          const friend = friendsRef.current.find((entry) => entry.id === targetUserId) || null;
+          return {
+            ...conversation,
+            dm_display_name:
+              nickname ||
+              friend?.display_name ||
+              friend?.username ||
+              conversation.dm_username ||
+              conversation.dm_display_name,
+          };
+        }),
+      );
+    };
+
     gateway.on('MESSAGE_CREATE', handleMessageCreate);
     gateway.on('MESSAGE_UPDATE', handleMessageUpdate);
     gateway.on('MESSAGE_DELETE', handleMessageDelete);
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     gateway.on('MEMBER_LEAVE', handleMemberLeave);
+    gateway.on('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
     gateway.on('READY', handleGatewayResync);
     gateway.on('RESUMED', handleGatewayResync);
     gateway.on('DM_HIDDEN', handleDmHidden);
@@ -310,6 +362,7 @@ const ConversationList = ({
       gateway.off('MESSAGE_DELETE', handleMessageDelete);
       gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
       gateway.off('MEMBER_LEAVE', handleMemberLeave);
+      gateway.off('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
       gateway.off('READY', handleGatewayResync);
       gateway.off('RESUMED', handleGatewayResync);
       gateway.off('DM_HIDDEN', handleDmHidden);
@@ -421,7 +474,7 @@ const ConversationList = ({
       <button
         onClick={() => onSelect(conv)}
         onContextMenu={handleContextMenu}
-        className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md transition-colors ${
+        className={`w-full flex items-center gap-2.5 border-b border-void-bg-hover/75 px-3 py-2.5 text-left transition-colors last:border-b-0 active:bg-void-bg-hover/70 md:rounded-md md:border-b-0 md:px-2 md:py-1.5 ${
           isActive
             ? 'bg-void-bg-hover text-void-text'
             : 'text-void-text-muted hover:bg-void-bg-hover/60 hover:text-void-text'
@@ -528,7 +581,7 @@ const ConversationList = ({
         )}
       </div>
 
-      <div className="space-y-0.5 flex-1">
+      <div className="flex-1 bg-void-bg-sec/20 md:bg-transparent">
         {searchFiltered.length === 0 ? (
           <div className="text-center px-4 py-8">
             <p className="text-sm text-void-text-muted">

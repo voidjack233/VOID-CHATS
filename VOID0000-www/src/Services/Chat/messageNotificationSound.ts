@@ -1,6 +1,7 @@
 const INCOMING_MESSAGE_SOUND_SRC = '/sounds/notification.mp3';
 const PLAY_COOLDOWN_MS = 350;
 const DEFAULT_VOLUME = 0.7;
+const MESSAGE_NOTIFICATIONS_ENABLED_KEY = 'void_message_notifications_enabled';
 
 let incomingMessageAudio: HTMLAudioElement | null = null;
 let unlockInstalled = false;
@@ -9,6 +10,26 @@ let lastPlayAt = 0;
 
 function canUseAudio() {
   return typeof window !== 'undefined' && typeof Audio !== 'undefined';
+}
+
+export function areMessageNotificationsEnabled() {
+  if (typeof window === 'undefined') return true;
+
+  try {
+    return window.localStorage.getItem(MESSAGE_NOTIFICATIONS_ENABLED_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+export function setMessageNotificationsEnabled(enabled: boolean) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(MESSAGE_NOTIFICATIONS_ENABLED_KEY, enabled ? 'true' : 'false');
+  } catch {
+    // Non-critical; fall back to current-session behavior only.
+  }
 }
 
 function getIncomingMessageAudio() {
@@ -65,6 +86,7 @@ export async function testIncomingMessageSound() {
 }
 
 export async function playIncomingMessageSound() {
+  if (!areMessageNotificationsEnabled()) return false;
   if (!soundReady) return false;
 
   const audio = getIncomingMessageAudio();

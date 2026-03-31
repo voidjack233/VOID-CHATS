@@ -12,6 +12,7 @@ const OP = {
 };
 
 type EventHandler = (data: any) => void;
+type ConnectionState = 'connected' | 'reconnecting' | 'disconnected';
 
 class Gateway {
   private static readonly CLIENT_INSTANCE_STORAGE_KEY = 'void_gateway_client_instance_id';
@@ -34,6 +35,10 @@ class Gateway {
   private sessionId: string | null = null;
   private lastSequence = 0;
   private canResume = false;
+
+  // Connection state (exposed to UI)
+  private _connectionState: ConnectionState = 'disconnected';
+  private _hasEverConnected = false;
 
   private static getOrCreateClientInstanceId() {
     const existing = window.sessionStorage.getItem(Gateway.CLIENT_INSTANCE_STORAGE_KEY);
@@ -79,6 +84,7 @@ class Gateway {
     this.userId = userId;
     this.isDisconnecting = false;
     this.isConnecting = true;
+    this.setConnectionState('reconnecting');
 
     window.addEventListener('online', this.handleOnline);
 
@@ -122,6 +128,7 @@ class Gateway {
       // Auth failed — try refresh
       if (event.code === 4001 || event.code === 4003) {
         console.log('Gateway auth failed, attempting refresh...');
+        this.setConnectionState('reconnecting');
         this.cleanup();
         this.handleAuthFailure();
         return;
@@ -129,6 +136,7 @@ class Gateway {
 
       if (event.code === 4009) {
         console.log('Session replaced by newer connection, reconnecting...');
+        this.setConnectionState('reconnecting');
         this.invalidateSession();
         this.cleanup();
         this.scheduleReconnect();
@@ -137,6 +145,7 @@ class Gateway {
 
       if (event.code === 4007) {
         console.log('[GATEWAY] session resume rejected, reconnecting with fresh identify');
+        this.setConnectionState('reconnecting');
         this.invalidateSession();
         this.cleanup();
         this.scheduleReconnect();
@@ -154,6 +163,7 @@ class Gateway {
         last_sequence: this.lastSequence,
         session_id: this.sessionId,
       });
+      this.setConnectionState('reconnecting');
       this.cleanup();
       this.scheduleReconnect();
     };
@@ -197,6 +207,7 @@ class Gateway {
       case OP.RESUMED:
         console.log(`Session resumed, ${d.replayed} events replayed`);
         this.canResume = false;
+        this.setConnectionState('connected');
         this.emit('RESUMED', d);
         break;
 
@@ -207,6 +218,7 @@ class Gateway {
             this.sessionId = d.session_id;
             this.canResume = false;
           }
+          this.setConnectionState('connected');
           this.emit(t, d);
         } else if (t === 'TOKEN_EXPIRING') {
           this.handleTokenExpiring(d);
@@ -216,6 +228,7 @@ class Gateway {
           if (this.sessionId && this.lastSequence > 0) {
             this.canResume = true;
           }
+          this.setConnectionState('reconnecting');
           this.cleanup();
           if (this.ws) {
             this.ws.onclose = null;
@@ -438,6 +451,21 @@ class Gateway {
     this.connect(this.userId);
   }
 
+  getConnectionState(): ConnectionState {
+    return this._connectionState;
+  }
+
+  getHasEverConnected(): boolean {
+    return this._hasEverConnected;
+  }
+
+  private setConnectionState(state: ConnectionState) {
+    if (this._connectionState === state) return;
+    this._connectionState = state;
+    if (state === 'connected') this._hasEverConnected = true;
+    this.emit('CONNECTION_STATE', { state });
+  }
+
   on(event: string, handler: EventHandler) {
     if (!this.handlers.has(event)) {
       this.handlers.set(event, []);
@@ -482,6 +510,7 @@ class Gateway {
 
   disconnect() {
     this.isDisconnecting = true;
+    this.setConnectionState('disconnected');
     this.cleanup();
     this.invalidateSession();
     window.removeEventListener('online', this.handleOnline);

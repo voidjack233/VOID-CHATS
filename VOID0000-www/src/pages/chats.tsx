@@ -22,6 +22,7 @@ import { useUser } from '../Services/Auth/UserContext';
 import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
 import UserAvatar from '../components/common/UserAvatar';
 import { ConversationPaneSkeleton } from '../components/common/Skeleton';
+import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -50,6 +51,28 @@ const ChatDashboard = () => {
   } = useUser();
 
   const { profile: myProfile } = useUserProfile(user?.profile_id || '');
+  const { isOnline, showReconnectBanner } = useConnectionStatus();
+
+  // Independently detect bootstrap stalls (API down before the gateway ever
+  // connects). The gateway stall timer in useConnectionStatus only fires once
+  // gatewayState === 'reconnecting', which never happens if /api/me or the key
+  // backup fetch hang. This timer covers that earlier failure path.
+  const [bootstrapStalled, setBootstrapStalled] = useState(false);
+  const bootstrapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const isBootstrapping = (loading || keyStatusLoading) && !isLoggingOut;
+    if (isBootstrapping) {
+      if (!bootstrapTimerRef.current) {
+        bootstrapTimerRef.current = setTimeout(() => setBootstrapStalled(true), 8000);
+      }
+    } else {
+      if (bootstrapTimerRef.current) {
+        clearTimeout(bootstrapTimerRef.current);
+        bootstrapTimerRef.current = null;
+      }
+      setBootstrapStalled(false);
+    }
+  }, [loading, keyStatusLoading, isLoggingOut]);
 
   // Friends from the shared FriendsProvider — single source of truth
   const { friends } = useFriends();
@@ -318,15 +341,22 @@ const ChatDashboard = () => {
       ) || null
     : null;
   const resolvedDmDisplayName =
+    dmPeer?.nickname ||
+    displayConversation?.dm_display_name ||
     dmPeer?.display_name ||
     dmFriend?.display_name ||
-    displayConversation?.dm_display_name ||
     dmPeer?.username ||
     dmFriend?.username ||
     displayConversation?.dm_username ||
     null;
   const resolvedDmUsername = dmPeer?.username || dmFriend?.username || displayConversation?.dm_username || null;
   const resolvedDmAvatarUrl = dmPeer?.avatar_url || dmFriend?.avatar_url || displayConversation?.dm_avatar_url || null;
+  const resolvedGroupName = displayConversation?.type === 'group'
+    ? displayConversation.name || 'Unnamed'
+    : '';
+  const resolvedGroupIconUrl = displayConversation?.type === 'group'
+    ? displayConversation.icon_url || null
+    : null;
 
   const getHeaderIcon = () => {
     if (!displayConversation) return null;
@@ -342,6 +372,17 @@ const ChatDashboard = () => {
           />
         );
       case 'group':
+        return resolvedGroupIconUrl ? (
+          <img
+            src={resolvedGroupIconUrl}
+            alt=""
+            className="mr-3 h-8 w-8 shrink-0 rounded-full object-cover"
+          />
+        ) : (
+          <div className="mr-3 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-void-accent/15 text-xs font-semibold text-void-accent">
+            {resolvedGroupName.trim().charAt(0).toUpperCase() || '#'}
+          </div>
+        );
       default:
         return <Users className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
     }
@@ -455,6 +496,28 @@ const ChatDashboard = () => {
   };
 
   if (loading || keyStatusLoading || isLoggingOut) {
+    // If the gateway/API is unreachable during startup, surface the reconnect
+    // UX instead of the indefinite "Preparing..." spinner.
+    // showReconnectBanner covers: offline immediately, or gateway stalled 8s+.
+    // bootstrapStalled covers: /api/me or key-fetch hung before gateway starts.
+    if (!isLoggingOut && (showReconnectBanner || bootstrapStalled)) {
+      return (
+        <div className="min-h-screen bg-void-bg-main flex items-center justify-center px-6">
+          <div className="w-full max-w-sm rounded-2xl border border-white/8 bg-white/4 p-6 text-center">
+            <div className="mx-auto mb-4 h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-white/55" />
+            <p className="text-sm font-medium text-void-text">
+              {isOnline ? 'Reconnecting to server\u2026' : 'You\u2019re offline'}
+            </p>
+            <p className="mt-1.5 text-xs text-void-text-muted">
+              {isOnline
+                ? 'The server is not responding yet. Retrying\u2026'
+                : 'Check your connection. The app will resume automatically.'}
+            </p>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
         <div className="text-void-text text-lg font-medium">
@@ -622,12 +685,21 @@ const ChatDashboard = () => {
 
   return (
     <div
-      className="relative flex overflow-hidden bg-void-bg-main font-sans text-void-text"
+      className="flex flex-col overflow-hidden bg-void-bg-main font-sans text-void-text"
       style={{
         height: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
         maxHeight: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
       }}
     >
+      {showReconnectBanner && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-white/8 bg-neutral-900/95 px-4 py-2 text-xs text-white/65">
+          <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-white/60" />
+          {isOnline
+            ? 'Reconnecting\u2026'
+            : 'You\u2019re offline \u2014 reconnecting when network returns'}
+        </div>
+      )}
+      <div className="relative flex flex-1 min-h-0 overflow-hidden">
       {/* Modals */}
       {showProfile && user?.profile_id && (
         <UserProfile profileId={user.profile_id} onClose={() => setShowProfile(false)} />
@@ -927,6 +999,7 @@ const ChatDashboard = () => {
 
           </div>
         )}
+      </div>
       </div>
     </div>
   );

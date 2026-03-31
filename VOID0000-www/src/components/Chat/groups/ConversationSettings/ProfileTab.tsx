@@ -54,7 +54,7 @@ export default function ProfileTab({
       <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-5">
         <div className="mb-5">
           <h3 className="text-sm font-semibold text-void-text">Group Profile</h3>
-          <p className="mt-1 text-sm text-void-text-muted">
+          <p className="mt-1 hidden text-sm text-void-text-muted md:block">
             This is the identity members and invite visitors see for this group.
           </p>
         </div>

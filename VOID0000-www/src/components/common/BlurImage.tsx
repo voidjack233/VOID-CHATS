@@ -9,11 +9,12 @@ interface BlurImageProps {
   blurhash?: string;
   alt?: string;
   className?: string;
+  onLoad?: () => void;
 }
 
 const THUMB = 32; // decode resolution — small for perf, upscaled via CSS
 
-const BlurImage = ({ src, blurhash, alt = '', className = '' }: BlurImageProps) => {
+const BlurImage = ({ src, blurhash, alt = '', className = '', onLoad }: BlurImageProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -45,7 +46,10 @@ const BlurImage = ({ src, blurhash, alt = '', className = '' }: BlurImageProps) 
         src={src}
         alt={alt}
         loading="lazy"
-        onLoad={() => setLoaded(true)}
+        onLoad={() => {
+          setLoaded(true);
+          onLoad?.();
+        }}
         className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />
     </div>

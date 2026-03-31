@@ -151,7 +151,7 @@ router.get('/', async (req, res) => {
          END AS dm_avatar,
          CASE
            WHEN c.type = 'dm' THEN (
-             SELECT up.display_name FROM conversation_members cm2
+             SELECT COALESCE(cm2.nickname, up.display_name, u.username) FROM conversation_members cm2
              JOIN users u ON u.id = cm2.user_id
              JOIN user_profiles up ON up.id = u.profile_id
              WHERE cm2.conversation_id = c.id AND cm2.user_id != $1
