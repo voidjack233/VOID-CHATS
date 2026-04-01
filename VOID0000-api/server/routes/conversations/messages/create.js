@@ -12,6 +12,7 @@ import {
   scylla,
   verifyMembership,
 } from './shared.js';
+import { getAvailableKeyPackageCount } from '../mls/shared.js';
 
 const router = Router({ mergeParams: true });
 
@@ -86,6 +87,31 @@ router.post('/', async (req, res) => {
         code: 'STALE_KEY_VERSION',
         current_key_version: keyState.currentKeyVersion,
       });
+    }
+
+    // For DMs: verify the recipient side has published MLS key packages
+    // before accepting an encrypted message. The frontend DM bootstrap only
+    // blocks on peer readiness; the sender's own account bootstrap/top-up is
+    // handled separately and should not block a valid DM send here.
+    if (conversation.type === 'dm' && !isPlaintextSystem) {
+      const members = await getConversationMembers(conversationId);
+      const recipientMemberIds = members.filter((memberId) => memberId !== userId);
+      const missingKeyPackageMembers = [];
+
+      for (const memberId of recipientMemberIds) {
+        const count = await getAvailableKeyPackageCount(memberId);
+        if (count === 0) {
+          missingKeyPackageMembers.push(memberId);
+        }
+      }
+
+      if (missingKeyPackageMembers.length > 0) {
+        return res.status(409).json({
+          error: 'One or more DM recipients have no published MLS key packages',
+          code: 'DM_RECIPIENT_KEYS_MISSING',
+          missing_member_ids: missingKeyPackageMembers,
+        });
+      }
     }
 
     messageId = cassandra.types.TimeUuid.now();

@@ -27,7 +27,6 @@
     "ioredis": "^5.10.0",
     "jsdom": "^28.1.0",
     "jsonwebtoken": "^9.0.3",
-    "mailtrap": "^4.4.0",
     "minio": "^8.0.7",
     "nodemailer": "^7.0.13",
     "pg": "^8.18.0",

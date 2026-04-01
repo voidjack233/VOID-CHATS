@@ -66,7 +66,13 @@ export const useMessageStream = ({
   const shouldAutoRecover =
     !conversationSecurityState ||
     conversationSecurityState.status === 'ready' ||
-    conversationSecurityState.status === 'recovering';
+    conversationSecurityState.status === 'recovering' ||
+    // Allow the healer to run for DMs blocked because the peer had no keys
+    // when the DM was first opened. The peer may now be online with keys,
+    // so a retry can succeed and repair the conversation.
+    (conversationSecurityState.status === 'blocked' &&
+      conversationSecurityState.reason === 'peer_not_ready' &&
+      activeConversation?.type === 'dm');
 
   // Refs for values used inside WS handlers so the effects don't re-register
   // when these values change (e.g. during key rotation). This prevents the

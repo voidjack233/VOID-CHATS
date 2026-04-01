@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { authService } from '../../Services/Auth/authServiceApi';
 import PasswordInput from '../../components/Auth/PasswordInput';
 import AuthContainer from '../../components/Auth/AuthContainer';
@@ -151,6 +151,18 @@ export default function Register() {
           />
 
           {error && <p className="text-red-500 text-center">{error}</p>}
+
+          <p className="text-center text-xs leading-6 text-gray-400">
+            By signing up, you agree to the{' '}
+            <Link to="/terms" className="text-blue-400 hover:text-blue-300">
+              Terms
+            </Link>{' '}
+            and{' '}
+            <Link to="/privacy" className="text-blue-400 hover:text-blue-300">
+              Privacy Policy
+            </Link>
+            .
+          </p>
 
           <button
             type="submit"

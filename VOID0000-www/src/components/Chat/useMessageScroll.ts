@@ -87,6 +87,11 @@ export function useMessageScroll({
   useEffect(() => {
     if (!loadingOlder && !prefetchingOlder) {
       topLoadLockedRef.current = false;
+      // Clear any deferred startReached so a silent prefetch that just
+      // completed doesn't immediately chain into a visible loadOlder.
+      // The user can still trigger loading by scrolling up again — Virtuoso
+      // will fire startReached naturally on the next scroll event.
+      pendingStartReachedRef.current = false;
     }
   }, [loadingOlder, prefetchingOlder, visualMessages.length]);
 

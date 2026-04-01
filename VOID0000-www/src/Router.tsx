@@ -15,12 +15,16 @@ const Auth = lazy(() => import('./pages/Auth'));
 const ResetPassword = lazy(() => import('./pages/Auth/ResetPassword'));
 const Chat = lazy(() => import('./pages/chats'));
 const Invite = lazy(() => import('./pages/Invite'));
+const TermsOfUse = lazy(() => import('./pages/TermsOfUse'));
+const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 
 const ROUTE_CONFIG = {
   public: [
     { path: '/auth', component: Auth },
     { path: '/reset-password', component: ResetPassword },
     { path: '/invite/:code', component: Invite },
+    { path: '/terms', component: TermsOfUse },
+    { path: '/privacy', component: PrivacyPolicy },
   ],
   protected: [
     { path: '/chats', component: Chat },

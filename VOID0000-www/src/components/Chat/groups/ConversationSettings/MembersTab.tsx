@@ -55,6 +55,10 @@ export default function MembersTab({
 }: MembersTabProps) {
   const [nicknameEditorUserId, setNicknameEditorUserId] = useState<string | null>(null);
   const [nicknameInput, setNicknameInput] = useState('');
+  const nicknameEditorMember =
+    nicknameEditorUserId
+      ? sortedMembers.find((member) => member.user_id === nicknameEditorUserId) || null
+      : null;
 
   const openNicknameEditor = (member: ConversationMember) => {
     setNicknameEditorUserId(member.user_id);
@@ -71,6 +75,11 @@ export default function MembersTab({
     const trimmed = nicknameInput.trim();
     const ok = await onUpdateNickname(member, trimmed === '' ? null : trimmed);
     if (ok) closeNicknameEditor();
+  };
+
+  const handleNicknameInputChange = (value: string) => {
+    // Keep nicknames single-line even though we render a textarea for mobile keyboard behavior.
+    setNicknameInput(value.replace(/[\r\n]+/g, ' '));
   };
 
   return (
@@ -104,17 +113,12 @@ export default function MembersTab({
 
           {sortedMembers.map((member) => {
             const isRoleEditorOpen = expandedRoleEditorUserId === member.user_id;
-            const isNicknameEditorOpen = nicknameEditorUserId === member.user_id;
             const isRoleBusy =
               busyMemberAction?.userId === member.user_id &&
               busyMemberAction.action === 'role';
             const isKickBusy =
               busyMemberAction?.userId === member.user_id &&
               busyMemberAction.action === 'kick';
-            const isNicknameBusy =
-              busyMemberAction?.userId === member.user_id &&
-              busyMemberAction.action === 'nickname';
-
             const hasModActions =
               (canChangeMemberRoles || canKickMembers) &&
               member.user_id !== currentUserId &&
@@ -217,60 +221,6 @@ export default function MembersTab({
                   </div>
                 </div>
 
-                {isNicknameEditorOpen && (
-                  <div className="rounded-xl border border-void-bg-hover bg-void-bg-main/55 px-4 py-3">
-                    <p className="mb-2 text-sm font-semibold text-void-text">
-                      Nickname for {getMemberLabel(member)}
-                    </p>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={nicknameInput}
-                        onChange={(e) => setNicknameInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleNicknameSave(member);
-                          if (e.key === 'Escape') closeNicknameEditor();
-                        }}
-                        maxLength={32}
-                        placeholder="Enter a nickname..."
-                        autoFocus
-                        className="min-w-0 flex-1 rounded-lg border border-void-bg-hover bg-void-bg-sec px-3 py-2 text-sm text-void-text placeholder-void-text-muted outline-none focus:border-void-accent/50 focus:ring-1 focus:ring-void-accent/25"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleNicknameSave(member)}
-                        disabled={isNicknameBusy}
-                        className="rounded-lg bg-void-accent/15 px-4 py-2 text-sm font-medium text-void-accent transition-colors hover:bg-void-accent/25 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isNicknameBusy ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          'Save'
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={closeNicknameEditor}
-                        className="rounded-lg px-3 py-2 text-sm text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                    {member.nickname && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const ok = await onUpdateNickname(member, null);
-                          if (ok) closeNicknameEditor();
-                        }}
-                        className="mt-2 text-xs text-void-text-muted transition-colors hover:text-red-300"
-                      >
-                        Remove nickname
-                      </button>
-                    )}
-                  </div>
-                )}
-
                 {canChangeMemberRoles && member.user_id !== currentUserId && member.role !== 'owner' && isRoleEditorOpen && (
                   <div className="rounded-xl border border-void-bg-hover bg-void-bg-main/55 px-4 py-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
@@ -314,6 +264,77 @@ export default function MembersTab({
           })}
         </div>
       </section>
+
+      {nicknameEditorMember && (
+        <div className="fixed inset-0 z-[340] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-void-bg-hover bg-void-bg-sec shadow-2xl">
+            <div className="border-b border-void-bg-hover px-5 py-4">
+              <h3 className="text-base font-semibold text-void-text">
+                Nickname for {getMemberLabel(nicknameEditorMember)}
+              </h3>
+              <p className="mt-1 text-sm text-void-text-muted">
+                Set a group-specific nickname for this member.
+              </p>
+            </div>
+
+            <div className="space-y-3 px-5 py-4">
+              <textarea
+                value={nicknameInput}
+                onChange={(e) => handleNicknameInputChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleNicknameSave(nicknameEditorMember);
+                  }
+                  if (e.key === 'Escape') closeNicknameEditor();
+                }}
+                maxLength={32}
+                placeholder="Enter a nickname..."
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                rows={1}
+                className="w-full resize-none overflow-hidden rounded-xl border border-void-bg-hover bg-void-bg-main px-3 py-3 text-sm text-void-text placeholder-void-text-muted outline-none focus:border-void-accent/50 focus:ring-1 focus:ring-void-accent/25"
+              />
+
+              {nicknameEditorMember.nickname && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await onUpdateNickname(nicknameEditorMember, null);
+                    if (ok) closeNicknameEditor();
+                  }}
+                  disabled={busyMemberAction?.userId === nicknameEditorMember.user_id && busyMemberAction.action === 'nickname'}
+                  className="text-sm text-void-text-muted transition-colors hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Remove nickname
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-5 py-4">
+              <button
+                type="button"
+                onClick={closeNicknameEditor}
+                className="rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-4 py-2.5 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => { void handleNicknameSave(nicknameEditorMember); }}
+                disabled={busyMemberAction?.userId === nicknameEditorMember.user_id && busyMemberAction.action === 'nickname'}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-void-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busyMemberAction?.userId === nicknameEditorMember.user_id && busyMemberAction.action === 'nickname' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
+                Save nickname
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-5">
         <div className="flex items-start gap-3">

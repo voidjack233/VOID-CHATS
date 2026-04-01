@@ -7,7 +7,9 @@ export function useMobileView(resetKey?: string | number) {
 
   useEffect(() => {
     const syncMobileView = () => {
-      setMobileView(window.innerWidth >= 768 ? 'detail' : 'menu');
+      if (window.innerWidth >= 768) {
+        setMobileView('detail');
+      }
     };
 
     syncMobileView();

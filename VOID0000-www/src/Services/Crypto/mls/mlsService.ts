@@ -9,7 +9,7 @@ import {
 } from './mlsApi';
 import { getMlsCiphersuiteImpl } from './mlsCryptoService';
 import { MlsGroupService } from './mlsGroupService';
-import { createKeyPackageRecord } from './mlsKeyService';
+import { createKeyPackageRecord, getMemberUserIds } from './mlsKeyService';
 import { mlsStorageService } from './mlsStorageService';
 import { base64ToBytes, unwrapArchiveKey } from './mlsUtils';
 import {
@@ -362,6 +362,17 @@ export class MlsService {
 
   async reuploadGroupState(conversationId: string): Promise<boolean> {
     return this.groupService.reuploadGroupState(conversationId);
+  }
+
+  /**
+   * Returns the user IDs present in the local MLS group state for a
+   * conversation, or null if no local state exists. Used to verify cached
+   * DM key coverage without triggering any network requests.
+   */
+  async getLocalGroupMemberUserIds(conversationId: string): Promise<string[] | null> {
+    const state = await mlsStorageService.loadGroupState(conversationId);
+    if (!state) return null;
+    return getMemberUserIds(state);
   }
 
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {

@@ -190,20 +190,44 @@ export async function getEncryptionKey(
   const allowNewerGroupVersion =
     conversation.type !== 'dm' && options?.allowNewerGroupVersion === true;
 
-  if (requestedVersion != null) {
-    const cachedRequestedGroupKey = await keyManager.getGroupKey(keyConversationId, requestedVersion);
-    if (cachedRequestedGroupKey) {
-      return { key: cachedRequestedGroupKey, version: requestedVersion };
-    }
-  }
-
   const targetVersion = hasRequestedVersion
     ? (requestedKeyVersion as number)
     : normalizeKeyVersion(conversation.current_key_version, 1);
 
-  const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
-  if (cachedGroupKey) {
-    return { key: cachedGroupKey, version: targetVersion };
+  // For DMs: before returning any cached key, verify the local MLS group
+  // state includes both DM members. A stale single-member state (from when
+  // the peer had no keys) would produce a key the peer cannot decrypt.
+  const isDm = conversation.type === 'dm';
+  let dmCoverageValid = !isDm; // non-DMs skip this check
+  if (isDm) {
+    const peerUserId = conversation.dm_user_id;
+    if (peerUserId) {
+      const localMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
+      dmCoverageValid = localMembers != null &&
+        localMembers.includes(userId) &&
+        localMembers.includes(peerUserId);
+      if (!dmCoverageValid) {
+        console.warn('[KEY_RESOLVE] DM cached key coverage invalid — peer missing from local MLS state', {
+          conversation_id: keyConversationId,
+          local_members: localMembers,
+          expected_peer: peerUserId,
+        });
+      }
+    }
+  }
+
+  if (dmCoverageValid) {
+    if (requestedVersion != null) {
+      const cachedRequestedGroupKey = await keyManager.getGroupKey(keyConversationId, requestedVersion);
+      if (cachedRequestedGroupKey) {
+        return { key: cachedRequestedGroupKey, version: requestedVersion };
+      }
+    }
+
+    const cachedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
+    if (cachedGroupKey) {
+      return { key: cachedGroupKey, version: targetVersion };
+    }
   }
 
   console.log('[KEY_RESOLVE] local miss - forcing syncInbox', {

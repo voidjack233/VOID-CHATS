@@ -242,114 +242,118 @@ export class MlsGroupService {
       const toRemove = currentMembers.filter((id) => !desiredMembers.includes(id));
 
       if (isDmConversation && toAdd.length > 0) {
-        console.warn('[DM_BOOTSTRAP] refusing late DM membership change to preserve version-1 history', {
+        // The existing DM MLS state is missing the peer — this happens when
+        // User A bootstrapped the DM while User B had no keys on the server.
+        // Discard the stale single-member state and fall through to fresh
+        // bootstrap so both DM members are included in the new group.
+        console.warn('[DM_REPAIR] stale single-member DM state detected, rebuilding', {
           conversation_id: conversationId,
           current_member_user_ids: currentMembers,
           missing_member_user_ids: toAdd,
         });
-        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl, { userId: input.userId });
-        return {
-          ...result,
-          includedMemberUserIds: currentMembers,
-          missingMemberUserIds: toAdd,
-        };
-      }
-
-      if (toAdd.length === 0 && toRemove.length === 0) {
+        await mlsStorageService.deleteGroupState(conversationId);
+        existingState = null;
+        // Reset vars that may have been partially set.
+        newMembersForWelcome = [];
+        missingMemberUserIds = [];
+        // Skip the rest of the existing-state branch; the fresh-bootstrap
+        // branch below (if !existingState && !newState) handles the rebuild.
+      } else if (toAdd.length === 0 && toRemove.length === 0) {
         const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl, { userId: input.userId });
         return {
           ...result,
           includedMemberUserIds: currentMembers,
           missingMemberUserIds: [],
         };
-      }
+      } else {
+        // Membership update on existing state (add/remove for non-DM-repair cases).
+        const proposals: Proposal[] = [];
 
-      const proposals: Proposal[] = [];
-
-      if (toAdd.length > 0) {
-        const addProposalResult = await buildAddProposals(toAdd);
-        proposals.push(...addProposalResult.proposals);
-        newMembersForWelcome = addProposalResult.addedUserIds;
-        missingMemberUserIds = addProposalResult.missingUserIds;
-      }
-
-      if (toAdd.length > 0 && missingMemberUserIds.length > 0 && toRemove.length === 0) {
-        console.error('[MLS_DISTRIBUTE] refusing add/re-add without claimable peer key packages', {
-          conversation_id: conversationId,
-          conversation_type: input.conversation.type,
-          requested_add_user_ids: toAdd,
-          added_member_user_ids: newMembersForWelcome,
-          missing_member_user_ids: missingMemberUserIds,
-          server_key_version: input.conversation.current_key_version ?? null,
-          mls_epoch: Number(existingState.groupContext.epoch),
-        });
-        throw createMlsError(
-          'One or more members are not ready for secure group add yet',
-          'MLS_ADD_KEY_PACKAGE_MISSING',
-        );
-      }
-
-      for (const removeId of toRemove) {
-        const leafIdx = findLeafIndex(existingState, removeId);
-        if (leafIdx !== null) {
-          proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
+        if (toAdd.length > 0) {
+          const addProposalResult = await buildAddProposals(toAdd);
+          proposals.push(...addProposalResult.proposals);
+          newMembersForWelcome = addProposalResult.addedUserIds;
+          missingMemberUserIds = addProposalResult.missingUserIds;
         }
-      }
 
-      try {
-        const commitResult = await createCommit(
-          { state: existingState, cipherSuite: impl },
-          { extraProposals: proposals, ratchetTreeExtension: toAdd.length > 0 },
-        );
-        commitResult.consumed.forEach(zeroOutUint8Array);
-        newState = commitResult.newState;
-
-        if (commitResult.welcome && toAdd.length > 0) {
-          welcomePayload = bytesToBase64(
-            encodeMlsMessage({
-              welcome: commitResult.welcome,
-              wireformat: 'mls_welcome',
-              version: MlsProtocolVersions.current,
-            }),
-          );
-        }
-        commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
-        existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
-      } catch (commitErr) {
-        const errMsg = commitErr instanceof Error ? commitErr.message : String(commitErr || '');
-        console.warn('[MLS] Existing-group commit failed', {
-          conversation_id: conversationId,
-          required_server_version: requiredServerVersion,
-          local_epoch: Number(existingState.groupContext.epoch),
-          error: errMsg,
-        });
-
-        // "removing committer" means the local state has the wrong self-identity
-        // (cross-user state pollution from pre-migration shared rows). Clear the
-        // poisoned state and fall through to fresh-bootstrap below.
-        if (errMsg.includes('removing committer')) {
-          console.warn('[MLS_DISTRIBUTE] clearing poisoned local state (wrong committer identity)', {
+        if (toAdd.length > 0 && missingMemberUserIds.length > 0 && toRemove.length === 0) {
+          console.error('[MLS_DISTRIBUTE] refusing add/re-add without claimable peer key packages', {
             conversation_id: conversationId,
+            conversation_type: input.conversation.type,
+            requested_add_user_ids: toAdd,
+            added_member_user_ids: newMembersForWelcome,
+            missing_member_user_ids: missingMemberUserIds,
+            server_key_version: input.conversation.current_key_version ?? null,
+            mls_epoch: Number(existingState.groupContext.epoch),
           });
-          await mlsStorageService.deleteGroupState(conversationId);
-          existingState = null;
-          // Reset vars that may have been partially set during the failed branch.
-          newMembersForWelcome = [];
-          missingMemberUserIds = [];
-        } else {
-          try {
-            await this.deps.syncInbox(input.userId, true);
-          } catch (syncErr) {
-            console.warn('[MLS_DISTRIBUTE] sync after commit failure failed', {
-              conversation_id: conversationId,
-              required_server_version: requiredServerVersion,
-              error: syncErr instanceof Error ? syncErr.message : String(syncErr || ''),
-            });
-          }
           throw createMlsError(
-            'Local MLS state could not apply this membership change. Sync latest durable group state before retrying.',
-            'MLS_DISTRIBUTE_SYNC_REQUIRED',
+            'One or more members are not ready for secure group add yet',
+            'MLS_ADD_KEY_PACKAGE_MISSING',
           );
+        }
+
+        for (const removeId of toRemove) {
+          const leafIdx = findLeafIndex(existingState, removeId);
+          if (leafIdx !== null) {
+            proposals.push({ proposalType: 'remove', remove: { removed: leafIdx } });
+          }
+        }
+
+        try {
+          const commitResult = await createCommit(
+            { state: existingState, cipherSuite: impl },
+            { extraProposals: proposals, ratchetTreeExtension: toAdd.length > 0 },
+          );
+          commitResult.consumed.forEach(zeroOutUint8Array);
+          newState = commitResult.newState;
+
+          if (commitResult.welcome && toAdd.length > 0) {
+            welcomePayload = bytesToBase64(
+              encodeMlsMessage({
+                welcome: commitResult.welcome,
+                wireformat: 'mls_welcome',
+                version: MlsProtocolVersions.current,
+              }),
+            );
+          }
+          commitPayload = bytesToBase64(encodeMlsMessage(commitResult.commit));
+          existingPeers = currentMembers.filter((id) => id !== input.userId && !toRemove.includes(id));
+        } catch (commitErr) {
+          const errMsg = commitErr instanceof Error ? commitErr.message : String(commitErr || '');
+          console.warn('[MLS] Existing-group commit failed', {
+            conversation_id: conversationId,
+            required_server_version: requiredServerVersion,
+            local_epoch: Number(existingState.groupContext.epoch),
+            error: errMsg,
+          });
+
+          // "removing committer" means the local state has the wrong self-identity
+          // (cross-user state pollution from pre-migration shared rows). Clear the
+          // poisoned state and fall through to fresh-bootstrap below.
+          if (errMsg.includes('removing committer')) {
+            console.warn('[MLS_DISTRIBUTE] clearing poisoned local state (wrong committer identity)', {
+              conversation_id: conversationId,
+            });
+            await mlsStorageService.deleteGroupState(conversationId);
+            existingState = null;
+            // Reset vars that may have been partially set during the failed branch.
+            newMembersForWelcome = [];
+            missingMemberUserIds = [];
+          } else {
+            try {
+              await this.deps.syncInbox(input.userId, true);
+            } catch (syncErr) {
+              console.warn('[MLS_DISTRIBUTE] sync after commit failure failed', {
+                conversation_id: conversationId,
+                required_server_version: requiredServerVersion,
+                error: syncErr instanceof Error ? syncErr.message : String(syncErr || ''),
+              });
+            }
+            throw createMlsError(
+              'Local MLS state could not apply this membership change. Sync latest durable group state before retrying.',
+              'MLS_DISTRIBUTE_SYNC_REQUIRED',
+            );
+          }
         }
       }
     }

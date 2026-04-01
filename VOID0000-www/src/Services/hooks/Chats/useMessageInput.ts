@@ -11,6 +11,7 @@ import {
   Message,
   Conversation,
 } from '../../Chat/chatService';
+import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { queuedSendStore } from '../../Chat/queuedSendStore';
 
 export interface PendingAttachment {
@@ -41,6 +42,30 @@ const MAX_ATTACHMENTS = 5;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MLS_MESSAGE_TYPE = 'mls_application';
 const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
+
+function isDmPeerNotReadyError(error: unknown): boolean {
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? (error as { code?: unknown }).code
+      : null;
+  const message = (
+    error instanceof Error
+      ? error.message
+      : error && typeof error === 'object' && 'message' in error
+        ? (error as { message?: unknown }).message
+        : error
+  );
+  const normalizedMessage = String(message || '').toLowerCase();
+
+  return (
+    code === 'DM_RECIPIENT_KEYS_MISSING' ||
+    code === 'MLS_ADD_KEY_PACKAGE_MISSING' ||
+    normalizedMessage.includes('no usable secure device keys') ||
+    normalizedMessage.includes('dm peer device is not ready') ||
+    normalizedMessage.includes('no published mls key packages') ||
+    normalizedMessage.includes('not ready for secure group add yet')
+  );
+}
 
 const resolveAttachmentAccess = (conversation: Conversation) => {
   if (conversation.type === 'dm') {
@@ -222,11 +247,10 @@ export const useMessageInput = ({
       );
     }
 
-    if (encryptionKey) {
-      return { key: encryptionKey, version: keyVersion, bootstrapped: false };
-    }
-
     if (conversation.type !== 'dm') {
+      if (encryptionKey) {
+        return { key: encryptionKey, version: keyVersion, bootstrapped: false };
+      }
       throw new Error('Secure chat is still loading for this conversation.');
     }
 
@@ -239,12 +263,29 @@ export const useMessageInput = ({
       throw new Error('This conversation is still loading secure recipient details.');
     }
 
+    if (encryptionKey) {
+      const localMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(conversation.id);
+      const hasValidLocalCoverage =
+        localMembers != null &&
+        localMembers.includes(currentUserId) &&
+        localMembers.includes(peerUserId);
+
+      if (hasValidLocalCoverage) {
+        return { key: encryptionKey, version: keyVersion, bootstrapped: false };
+      }
+
+      console.warn('[DM_SEND] in-memory DM key missing peer coverage, repairing before send', {
+        conversation_id: conversation.id,
+        local_members: localMembers,
+        expected_peer: peerUserId,
+      });
+    }
+
     try {
       const result = await bootstrapDmKey(conversation, currentUserId, peerUserId);
       return { ...result, bootstrapped: true };
     } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err || '');
-      if (reason.includes('DM peer device is not ready')) {
+      if (isDmPeerNotReadyError(err)) {
         throw new Error('This person has no usable secure device keys on the server yet.');
       }
       throw err;
@@ -334,17 +375,22 @@ export const useMessageInput = ({
       for (const queued of pending) {
         if (cancelled) break;
         try {
+          const sendCrypto = await resolveSendCrypto();
+          if (sendCrypto.bootstrapped) {
+            onEncryptionKeyResolved?.(sendCrypto.key, sendCrypto.version);
+          }
+
           let msg: Message;
           if (queued.text) {
-            msg = await sendMessage(conversation.id, queued.text, encryptionKey, {
-              key_version: keyVersion,
+            msg = await sendMessage(conversation.id, queued.text, sendCrypto.key, {
+              key_version: sendCrypto.version,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
               secure_attachments: queued.uploaded_urls,
             });
           } else if (queued.uploaded_urls.length > 0) {
-            msg = await sendImageOnlyMessage(conversation.id, encryptionKey, queued.uploaded_urls, {
-              key_version: keyVersion,
+            msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, queued.uploaded_urls, {
+              key_version: sendCrypto.version,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
             });
@@ -374,7 +420,7 @@ export const useMessageInput = ({
     })();
 
     return () => { cancelled = true; };
-  }, [encryptionKey, conversation.id, keyVersion, onMessageSent]);
+  }, [encryptionKey, conversation.id, onEncryptionKeyResolved, onMessageSent, resolveSendCrypto]);
 
   useEffect(() => {
     const isTypingEligible =
@@ -516,9 +562,7 @@ export const useMessageInput = ({
 
       const isPeerNotReady =
         conversation.type === 'dm' &&
-        typeof err?.message === 'string' &&
-        (err.message.includes('no usable secure device keys') ||
-          err.message.includes('DM peer device is not ready'));
+        isDmPeerNotReadyError(err);
 
       if (isPeerNotReady && optimisticMessage && localClientId) {
         // Queue the message locally — don't restore input, don't mark failed.
