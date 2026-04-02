@@ -7,16 +7,11 @@ interface UseMessageScrollParams {
   conversationId: string;
   currentUserId?: string;
   visualMessages: Message[];
-  loading: boolean;
   loadingOlder: boolean;
-  loadingNewer: boolean;
-  prefetchingOlder: boolean;
   hasOlder: boolean;
   hasNewer: boolean;
   initialHydrationSettled: boolean;
   firstItemIndex: number;
-  topLoadingPlaceholderCount: number;
-  initialScrollToMessageId: string | null;
   newMessage?: Message | null;
   setIsAtPresent: (value: boolean) => void;
   jumpToPresent: () => Promise<void>;
@@ -27,16 +22,11 @@ export function useMessageScroll({
   conversationId,
   currentUserId,
   visualMessages,
-  loading: _loading,
   loadingOlder,
-  loadingNewer: _loadingNewer,
-  prefetchingOlder,
   hasOlder,
   hasNewer,
   initialHydrationSettled,
   firstItemIndex,
-  topLoadingPlaceholderCount: _topLoadingPlaceholderCount,
-  initialScrollToMessageId: _initialScrollToMessageId,
   newMessage,
   setIsAtPresent,
   jumpToPresent,
@@ -52,7 +42,6 @@ export function useMessageScroll({
   const savedAnchorRef = useRef<{ id: string; top: number } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
-  const [scrollSeekExitTick, setScrollSeekExitTick] = useState(0);
 
   const handleScrollerRef = useCallback((element: HTMLElement | null | Window) => {
     if (element instanceof HTMLElement) {
@@ -104,12 +93,12 @@ export function useMessageScroll({
   }, [jumpToPresent]);
 
   const handleStartReached = useCallback(() => {
-    if (loadingOlder || prefetchingOlder || !hasOlder) {
+    if (loadingOlder || !hasOlder) {
       return;
     }
 
     void loadOlder();
-  }, [hasOlder, loadOlder, loadingOlder, prefetchingOlder]);
+  }, [hasOlder, loadOlder, loadingOlder]);
 
   const handleRangeChanged = useCallback((range: ListRange) => {
     const relativeStartIndex = range.startIndex - firstItemIndex;
@@ -123,13 +112,7 @@ export function useMessageScroll({
 
   const scrollSeekConfiguration = useMemo(() => ({
     enter: (velocity: number) => Math.abs(velocity) > 1400,
-    exit: (velocity: number) => {
-      const shouldExit = Math.abs(velocity) < 120;
-      if (shouldExit) {
-        setScrollSeekExitTick((previous) => previous + 1);
-      }
-      return shouldExit;
-    },
+    exit: (velocity: number) => Math.abs(velocity) < 120,
   }), []);
 
   const followOutput = useCallback((atBottom: boolean) => {
@@ -234,6 +217,5 @@ export function useMessageScroll({
     followOutput,
     handleAtBottomStateChange,
     handleAttachmentLoad,
-    scrollSeekExitTick,
   };
 }

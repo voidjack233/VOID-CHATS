@@ -59,12 +59,9 @@ const normalizeText = (value?: string | null) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const topRenderBufferPx = 240;
-const bottomRenderBufferPx = 200;
 const virtuosoDefaultItemHeight = 64;
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
 const emptyReactions: Record<string, unknown> = Object.freeze({});
-const virtuosoIncreaseViewportBy = { top: topRenderBufferPx, bottom: bottomRenderBufferPx } as const;
 const virtuosoMinOverscanItemCount = { top: 8, bottom: 4 } as const;
 const virtuosoOverscan = { main: 500, reverse: 200 } as const;
 const initialTopMostItemIndex = { index: 'LAST' as const, align: 'end' as const };
@@ -100,13 +97,10 @@ const MessageView = memo(function MessageView({
     loading,
     initialHydrationSettled,
     loadingOlder,
-    prefetchingOlder,
-    loadingNewer,
     hasOlder,
     hasNewer,
     isAtPresent,
     firstItemIndex,
-    topLoadingPlaceholderCount,
     groupBreakBeforeIds,
     setIsAtPresent,
     handleDelete,
@@ -114,7 +108,6 @@ const MessageView = memo(function MessageView({
     jumpToPresent,
     loadOlder,
     loadNewer,
-    initialScrollToMessageId,
   } = useMessageList(
     conversation,
     user?.id,
@@ -178,16 +171,11 @@ const MessageView = memo(function MessageView({
     conversationId: conversation.id,
     currentUserId: user?.id,
     visualMessages,
-    loading,
     loadingOlder,
-    loadingNewer,
-    prefetchingOlder,
     hasOlder,
     hasNewer,
     initialHydrationSettled,
     firstItemIndex,
-    topLoadingPlaceholderCount,
-    initialScrollToMessageId,
     newMessage,
     setIsAtPresent,
     jumpToPresent,
@@ -443,7 +431,6 @@ const MessageView = memo(function MessageView({
         firstItemIndex={effectiveFirstItemIndex}
         atBottomThreshold={12}
         alignToBottom
-        increaseViewportBy={virtuosoIncreaseViewportBy}
         minOverscanItemCount={virtuosoMinOverscanItemCount}
         overscan={virtuosoOverscan}
         scrollSeekConfiguration={scrollSeekConfiguration}

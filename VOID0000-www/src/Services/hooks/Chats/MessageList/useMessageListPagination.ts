@@ -2,7 +2,6 @@ import {
   useCallback,
   useEffect,
   useRef,
-  useState,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -14,7 +13,6 @@ import { gateway } from '../../../Gateway/gateway';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
 import {
   getNewestServerBackedMessage,
-  mergeMessagesWithReconciliation,
   trimMessages,
 } from './messageListReconciliation';
 import {
@@ -35,14 +33,44 @@ interface UseMessageListPaginationParams {
   currentKeyVersionRef: MutableRefObject<number>;
   messages: Message[];
   messagesRef: MutableRefObject<Message[]>;
-  setMessages: Dispatch<SetStateAction<Message[]>>;
+  replaceWindow: (params: {
+    messages: Message[];
+    firstItemIndex?: number;
+    groupBreakBeforeIds?: Set<string>;
+    loading?: boolean;
+    syncing?: boolean;
+    initialHydrationSettled?: boolean;
+    loadingOlder?: boolean;
+    loadingNewer?: boolean;
+    hasOlder?: boolean;
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
+  }) => void;
+  mergeVisibleMessages: (params: {
+    incoming: Message[];
+    currentUserId?: string;
+    trimFrom?: 'old' | 'new';
+    hasOlder?: boolean;
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
+  }) => void;
   applyPrependedWindow: (params: {
     messages: Message[];
     prependedCount: number;
     seamBreakBeforeId: string;
   }) => void;
+  loadingOlder: boolean;
+  loadingNewer: boolean;
+  hasOlder: boolean;
+  hasNewer: boolean;
+  isAtPresent: boolean;
   setFirstItemIndex: Dispatch<SetStateAction<number>>;
   setGroupBreakBeforeIds: Dispatch<SetStateAction<Set<string>>>;
+  setLoadingOlder: Dispatch<SetStateAction<boolean>>;
+  setLoadingNewer: Dispatch<SetStateAction<boolean>>;
+  setHasOlder: Dispatch<SetStateAction<boolean>>;
+  setHasNewer: Dispatch<SetStateAction<boolean>>;
+  setIsAtPresent: Dispatch<SetStateAction<boolean>>;
   loading: boolean;
   syncing: boolean;
   initialHydrationSettled: boolean;
@@ -61,23 +89,27 @@ const useMessageListPagination = ({
   currentKeyVersionRef,
   messages,
   messagesRef,
-  setMessages,
+  replaceWindow,
+  mergeVisibleMessages,
   applyPrependedWindow,
+  loadingOlder,
+  loadingNewer,
+  hasOlder,
+  hasNewer,
+  isAtPresent,
   setFirstItemIndex,
   setGroupBreakBeforeIds,
+  setLoadingOlder,
+  setLoadingNewer,
+  setHasOlder,
+  setHasNewer,
+  setIsAtPresent,
   loading,
   syncing,
   initialHydrationSettled,
   onMessagesLoaded,
   messageListBaseIndex,
 }: UseMessageListPaginationParams) => {
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [prefetchingOlder, setPrefetchingOlder] = useState(false);
-  const [loadingNewer, setLoadingNewer] = useState(false);
-  const [hasOlder, setHasOlder] = useState(false);
-  const [hasNewer, setHasNewer] = useState(false);
-  const [isAtPresent, setIsAtPresent] = useState(true);
-  const prefetchingOlderRef = useRef(false);
   const isAtPresentRef = useRef(isAtPresent);
   const pendingNewerMessagesRef = useRef<Message[]>([]);
   const pendingNewerHasMoreRef = useRef(false);
@@ -86,12 +118,10 @@ const useMessageListPagination = ({
   isAtPresentRef.current = isAtPresent;
 
   useEffect(() => {
-    prefetchingOlderRef.current = false;
     pendingNewerMessagesRef.current = [];
     pendingNewerHasMoreRef.current = false;
     pendingNewerIsAtPresentRef.current = true;
     setLoadingOlder(false);
-    setPrefetchingOlder(false);
     setLoadingNewer(false);
     setHasOlder(false);
     setHasNewer(false);
@@ -133,20 +163,16 @@ const useMessageListPagination = ({
     pendingNewerHasMoreRef.current = false;
     pendingNewerIsAtPresentRef.current = true;
 
-    setMessages((previous) =>
-      mergeMessagesWithReconciliation({
-        existing: previous,
-        incoming: pendingMessages,
-        currentUserId: userId,
-        trimFrom: 'old',
-        allowOptimisticFallback: true,
-      })
-    );
-    setHasNewer(hasNewerAfterFlush);
-    setIsAtPresent(isAtPresentAfterFlush);
+    mergeVisibleMessages({
+      incoming: pendingMessages,
+      currentUserId: userId,
+      trimFrom: 'old',
+      hasNewer: hasNewerAfterFlush,
+      isAtPresent: isAtPresentAfterFlush,
+    });
     onMessagesLoaded?.(pendingMessages);
     return true;
-  }, [onMessagesLoaded, setMessages, userId]);
+  }, [mergeVisibleMessages, onMessagesLoaded, userId]);
 
   const applyOlderMessages = useCallback((olderMessages: Message[], seamBreakBeforeId: string) => {
     if (olderMessages.length === 0) return;
@@ -226,25 +252,18 @@ const useMessageListPagination = ({
   }, [conversationId, decryptionConversation, encryptionKeyRef, historyAccessFence, userId, currentKeyVersionRef]);
 
   const loadOlderPage = useCallback(async (options?: { silent?: boolean; forceServer?: boolean }) => {
-    const isSilent = options?.silent === true;
     const forceServer = options?.forceServer === true;
 
     if (
       !encryptionKeyRef.current ||
       loadingOlder ||
-      prefetchingOlderRef.current ||
       !hasOlder ||
       messagesRef.current.length === 0
     ) {
       return;
     }
 
-    if (isSilent) {
-      prefetchingOlderRef.current = true;
-      setPrefetchingOlder(true);
-    } else {
-      setLoadingOlder(true);
-    }
+    setLoadingOlder(true);
 
     try {
       const oldestMessage = messagesRef.current[0];
@@ -252,15 +271,6 @@ const useMessageListPagination = ({
 
       const seamBreakBeforeId = oldestMessage.message_id;
       const { olderUI, hasMore } = await fetchOlderMessages(oldestMessage.message_id, { forceServer });
-
-      if (isSilent) {
-        if (olderUI.length > 0) {
-          setHasOlder(true);
-        } else if (!hasMore) {
-          setHasOlder(false);
-        }
-        return;
-      }
 
       if (olderUI.length > 0) {
         applyOlderMessages(olderUI, seamBreakBeforeId);
@@ -271,22 +281,13 @@ const useMessageListPagination = ({
     } catch (error) {
       console.error('Failed to load older messages:', error);
     } finally {
-      if (isSilent) {
-        prefetchingOlderRef.current = false;
-        setPrefetchingOlder(false);
-      } else {
-        setLoadingOlder(false);
-      }
+      setLoadingOlder(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyOlderMessages, fetchOlderMessages, hasOlder, loadingOlder, messagesRef, setHasOlder]);
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
-  }, [loadOlderPage]);
-
-  const prefetchOlder = useCallback(() => {
-    void loadOlderPage({ silent: true, forceServer: false });
   }, [loadOlderPage]);
 
   const loadNewer = useCallback(async () => {
@@ -336,18 +337,13 @@ const useMessageListPagination = ({
           });
           setHasNewer(true);
         } else {
-          setMessages((previous) =>
-            mergeMessagesWithReconciliation({
-              existing: previous,
-              incoming: newerUI,
-              currentUserId: userId,
-              trimFrom: 'old',
-              allowOptimisticFallback: true,
-            })
-          );
-
-          setHasNewer(hasNewerAfterMerge);
-          setIsAtPresent(isAtPresentAfterMerge);
+          mergeVisibleMessages({
+            incoming: newerUI,
+            currentUserId: userId,
+            trimFrom: 'old',
+            hasNewer: hasNewerAfterMerge,
+            isAtPresent: isAtPresentAfterMerge,
+          });
           onMessagesLoaded?.(newerUI);
         }
       } else {
@@ -363,11 +359,11 @@ const useMessageListPagination = ({
   }, [
     conversationId,
     decryptionConversation,
-    flushPendingNewerMessages,
     hasNewer,
     historyAccessFence,
     initialHydrationSettled,
     loadingNewer,
+    mergeVisibleMessages,
     messages,
     onMessagesLoaded,
     queuePendingNewerMessages,
@@ -415,17 +411,13 @@ const useMessageListPagination = ({
         });
         setHasNewer(true);
       } else {
-        setMessages((previous) =>
-          mergeMessagesWithReconciliation({
-            existing: previous,
-            incoming: newerUI,
-            currentUserId: userId,
-            trimFrom: 'old',
-            allowOptimisticFallback: true,
-          })
-        );
-        setHasNewer(hasNewerAfterMerge);
-        setIsAtPresent(isAtPresentAfterMerge);
+        mergeVisibleMessages({
+          incoming: newerUI,
+          currentUserId: userId,
+          trimFrom: 'old',
+          hasNewer: hasNewerAfterMerge,
+          isAtPresent: isAtPresentAfterMerge,
+        });
         onMessagesLoaded?.(newerUI);
       }
     } catch (error) {
@@ -438,6 +430,7 @@ const useMessageListPagination = ({
     flushPendingNewerMessages,
     historyAccessFence,
     initialHydrationSettled,
+    mergeVisibleMessages,
     onMessagesLoaded,
     queuePendingNewerMessages,
     userId,
@@ -498,12 +491,14 @@ const useMessageListPagination = ({
       pendingNewerMessagesRef.current = [];
       pendingNewerHasMoreRef.current = false;
       pendingNewerIsAtPresentRef.current = true;
-      setMessages(freshUI);
-      setFirstItemIndex(messageListBaseIndex);
-      setGroupBreakBeforeIds(new Set());
-      setHasOlder(fresh.has_more);
-      setHasNewer(false);
-      setIsAtPresent(true);
+      replaceWindow({
+        messages: freshUI,
+        firstItemIndex: messageListBaseIndex,
+        groupBreakBeforeIds: new Set(),
+        hasOlder: fresh.has_more,
+        hasNewer: false,
+        isAtPresent: true,
+      });
       onMessagesLoaded?.(freshUI);
     } catch (error) {
       console.error('Failed to jump to present:', error);
@@ -516,28 +511,13 @@ const useMessageListPagination = ({
     historyAccessFence,
     messageListBaseIndex,
     onMessagesLoaded,
-    setMessages,
+    replaceWindow,
   ]);
 
   return {
-    hasNewer,
-    hasOlder,
-    isAtPresent,
     jumpToPresent,
     loadNewer,
     loadOlder,
-    loadingNewer,
-    loadingOlder,
-    prefetchOlder,
-    prefetchingOlder,
-    topLoadingPlaceholderCount: 0,
-    bottomLoadingPlaceholderCount: 0,
-    setHasNewer,
-    setHasOlder,
-    setIsAtPresent,
-    setLoadingNewer,
-    setLoadingOlder,
-    setPrefetchingOlder,
   };
 };
 
