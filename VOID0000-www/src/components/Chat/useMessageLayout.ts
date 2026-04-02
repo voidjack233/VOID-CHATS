@@ -57,7 +57,7 @@ export function useMessageLayout(
       const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
       const showDateSeparator =
         (!prev && !hasUnknownPreviousContext) ||
-        (!!prev && !isSameDay(msg.created_at, prev.created_at));
+        (!!prev && !hasPaginationBreak && !isSameDay(msg.created_at, prev.created_at));
       const timeDiff = prev
         ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime()
         : 0;

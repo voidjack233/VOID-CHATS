@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type SetStateAction } from 'react';
 import {
   type Conversation,
   type ConversationMember,
   type Message,
 } from '../../Chat/chatService';
-import { MESSAGE_CACHE_LIMIT, MESSAGE_INITIAL_PAGE_SIZE, } from '../../Chat/chatConstants';
+import { MESSAGE_CACHE_LIMIT, MESSAGE_INITIAL_PAGE_SIZE } from '../../Chat/chatConstants';
 import { createHistoryAccessFence, normalizeHistoryVersion, } from './MessageList/messageListHistory';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
 import type { MessageDelete, MessageUpdate } from './MessageList/messageListTypes';
@@ -13,11 +13,75 @@ import { useMessageListPagination } from './MessageList/useMessageListPagination
 import { useMessageListRealtime } from './MessageList/useMessageListRealtime';
 import { useMessageListReplies } from './MessageList/useMessageListReplies';
 
-const INITIAL_FETCH_SIZE = MESSAGE_INITIAL_PAGE_SIZE;
 const CACHE_LIMIT = MESSAGE_CACHE_LIMIT;
 const MESSAGE_LIST_BASE_INDEX = 100000;
 
 export { saveConversationScrollPosition } from './MessageList/messageListWindowCache';
+
+interface MessageWindowState {
+  messages: Message[];
+  firstItemIndex: number;
+  groupBreakBeforeIds: Set<string>;
+}
+
+type MessageWindowAction =
+  | { type: 'set_messages'; value: SetStateAction<Message[]> }
+  | { type: 'set_first_item_index'; value: SetStateAction<number> }
+  | { type: 'set_group_break_before_ids'; value: SetStateAction<Set<string>> }
+  | {
+      type: 'apply_prepended_window';
+      messages: Message[];
+      prependedCount: number;
+      seamBreakBeforeId: string;
+    };
+
+const initialMessageWindowState: MessageWindowState = {
+  messages: [],
+  firstItemIndex: MESSAGE_LIST_BASE_INDEX,
+  groupBreakBeforeIds: new Set(),
+};
+
+const resolveStateAction = <T,>(previous: T, value: SetStateAction<T>): T => (
+  typeof value === 'function'
+    ? (value as (current: T) => T)(previous)
+    : value
+);
+
+const messageWindowReducer = (
+  state: MessageWindowState,
+  action: MessageWindowAction,
+): MessageWindowState => {
+  switch (action.type) {
+    case 'set_messages':
+      return {
+        ...state,
+        messages: resolveStateAction(state.messages, action.value),
+      };
+    case 'set_first_item_index':
+      return {
+        ...state,
+        firstItemIndex: resolveStateAction(state.firstItemIndex, action.value),
+      };
+    case 'set_group_break_before_ids':
+      return {
+        ...state,
+        groupBreakBeforeIds: resolveStateAction(state.groupBreakBeforeIds, action.value),
+      };
+    case 'apply_prepended_window': {
+      const nextBreaks = new Set(state.groupBreakBeforeIds);
+      nextBreaks.add(action.seamBreakBeforeId);
+      return {
+        messages: action.messages,
+        firstItemIndex: action.prependedCount > 0
+          ? state.firstItemIndex - action.prependedCount
+          : state.firstItemIndex,
+        groupBreakBeforeIds: nextBreaks,
+      };
+    }
+    default:
+      return state;
+  }
+};
 
 export const useMessageList = (
   conversation: Conversation,
@@ -28,7 +92,8 @@ export const useMessageList = (
   newMessage?: Message | null,
   messageUpdate?: MessageUpdate | null,
   messageDelete?: MessageDelete | null,
-  onMessagesLoaded?: (messages: Message[]) => void
+  onMessagesLoaded?: (messages: Message[]) => void,
+  waitForEncryptionBootstrap = false,
 ) => {
   const conversationId = conversation.id;
   const conversationKeyVersion = normalizeHistoryVersion(conversation.current_key_version) ?? 1;
@@ -43,6 +108,9 @@ export const useMessageList = (
       currentMember?.joined_key_version,
     ]
   );
+  const historyAccessFenceSignature = historyAccessFence
+    ? `${historyAccessFence.joinedAtMs ?? 'null'}:${historyAccessFence.keyVersionFloor ?? 'null'}`
+    : 'none';
 
   const decryptionConversation = useMemo(
     () => conversation,
@@ -57,9 +125,10 @@ export const useMessageList = (
     ]
   );
 
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [windowState, dispatchWindowState] = useReducer(messageWindowReducer, initialMessageWindowState);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [initialHydrationSettled, setInitialHydrationSettled] = useState(false);
 
   const messagesRef = useRef<Message[]>([]);
   const prefetchedAfterLoadRef = useRef(false);
@@ -73,6 +142,10 @@ export const useMessageList = (
   encryptionKeyRef.current = encryptionKey;
   currentKeyVersionRef.current = currentKeyVersion;
 
+  const messages = windowState.messages;
+  const firstItemIndex = windowState.firstItemIndex;
+  const groupBreakBeforeIds = windowState.groupBreakBeforeIds;
+
   const initialScrollToMessageId = useMemo(
     () => getConversationWindowSnapshot(conversationId)?.topVisibleMessageId ?? null,
     [conversationId]
@@ -82,9 +155,31 @@ export const useMessageList = (
     messagesRef.current = messages;
   }, [messages]);
 
+  const setMessages = useCallback((value: SetStateAction<Message[]>) => {
+    dispatchWindowState({ type: 'set_messages', value });
+  }, []);
+
+  const setFirstItemIndex = useCallback((value: SetStateAction<number>) => {
+    dispatchWindowState({ type: 'set_first_item_index', value });
+  }, []);
+
+  const setGroupBreakBeforeIds = useCallback((value: SetStateAction<Set<string>>) => {
+    dispatchWindowState({ type: 'set_group_break_before_ids', value });
+  }, []);
+
+  const applyPrependedWindow = useCallback((params: {
+    messages: Message[];
+    prependedCount: number;
+    seamBreakBeforeId: string;
+  }) => {
+    dispatchWindowState({ type: 'apply_prepended_window', ...params });
+  }, []);
+
+  useEffect(() => {
+    setInitialHydrationSettled(false);
+  }, [conversationId, hasEncryptionKey, historyAccessFenceSignature, waitForEncryptionBootstrap]);
+
   const {
-    firstItemIndex,
-    groupBreakBeforeIds,
     hasNewer,
     hasOlder,
     isAtPresent,
@@ -93,10 +188,9 @@ export const useMessageList = (
     loadOlder,
     loadingNewer,
     loadingOlder,
-    prefetchOlder,
     prefetchingOlder,
-    setFirstItemIndex,
-    setGroupBreakBeforeIds,
+    topLoadingPlaceholderCount,
+    bottomLoadingPlaceholderCount,
     setHasNewer,
     setHasOlder,
     setIsAtPresent,
@@ -112,9 +206,13 @@ export const useMessageList = (
     messages,
     messagesRef,
     setMessages,
+    applyPrependedWindow,
+    setFirstItemIndex,
+    setGroupBreakBeforeIds,
     loading,
+    syncing,
+    initialHydrationSettled,
     onMessagesLoaded,
-    prefetchedAfterLoadRef,
     messageListBaseIndex: MESSAGE_LIST_BASE_INDEX,
   });
 
@@ -136,6 +234,7 @@ export const useMessageList = (
     setFirstItemIndex,
     setGroupBreakBeforeIds,
     setPrefetchingOlder,
+    setInitialHydrationSettled,
     encryptionKeyRef,
     currentKeyVersionRef,
     messagesRef,
@@ -178,7 +277,7 @@ export const useMessageList = (
     setConversationWindowSnapshot(conversationId, {
       loadedCount: Math.min(
         CACHE_LIMIT,
-        Math.max(existingSnapshot?.loadedCount ?? INITIAL_FETCH_SIZE, messages.length)
+        Math.max(existingSnapshot?.loadedCount ?? MESSAGE_INITIAL_PAGE_SIZE, messages.length)
       ),
       hasOlder,
     });
@@ -188,6 +287,7 @@ export const useMessageList = (
     messages,
     loading,
     syncing,
+    initialHydrationSettled,
     loadingOlder,
     prefetchingOlder,
     loadingNewer,
@@ -195,6 +295,8 @@ export const useMessageList = (
     hasNewer,
     isAtPresent,
     firstItemIndex,
+    topLoadingPlaceholderCount,
+    bottomLoadingPlaceholderCount,
     groupBreakBeforeIds,
     setIsAtPresent,
     handleDelete,
@@ -202,7 +304,6 @@ export const useMessageList = (
     jumpToPresent,
     loadOlder,
     loadNewer,
-    prefetchOlder,
     initialScrollToMessageId,
   };
 };

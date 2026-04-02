@@ -72,18 +72,22 @@ const findOptimisticReplacementId = (
   return pendingMatch ? (getLocalClientId(pendingMatch) || pendingMatch.message_id) : undefined;
 };
 
-const trimMessages = (messages: Message[], trimFrom: 'old' | 'new'): Message[] => {
+const trimMessages = (
+  messages: Message[],
+  trimFrom: 'old' | 'new',
+  limit = MESSAGE_CACHE_LIMIT,
+): Message[] => {
   const sorted = [...messages].sort((left, right) => {
     const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
     if (timeDiff !== 0) return timeDiff;
     return left.message_id.localeCompare(right.message_id);
   });
 
-  if (sorted.length <= MESSAGE_CACHE_LIMIT) return sorted;
+  if (sorted.length <= limit) return sorted;
 
   return trimFrom === 'old'
-    ? sorted.slice(sorted.length - MESSAGE_CACHE_LIMIT)
-    : sorted.slice(0, MESSAGE_CACHE_LIMIT);
+    ? sorted.slice(sorted.length - limit)
+    : sorted.slice(0, limit);
 };
 
 const mergeMessagesWithReconciliation = ({

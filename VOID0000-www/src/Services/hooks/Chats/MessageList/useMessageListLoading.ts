@@ -1,11 +1,14 @@
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import { MESSAGE_INITIAL_PAGE_SIZE } from '../../../Chat/chatConstants';
+import { MESSAGE_PAGE_SIZE } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { type Conversation, type Message } from '../../../Chat/chatService';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
 import { mergeMessagesWithReconciliation } from './messageListReconciliation';
 import { sortMessages, toUIMessage } from './messageListPersistence';
-import { getConversationWindowSnapshot, resolveInitialHasOlder } from './messageListWindowCache';
+import {
+  getConversationWindowSnapshot,
+  resolveInitialHasOlder,
+} from './messageListWindowCache';
 
 interface UseMessageListLoadingParams {
   conversationId: string;
@@ -25,6 +28,7 @@ interface UseMessageListLoadingParams {
   setFirstItemIndex: Dispatch<SetStateAction<number>>;
   setGroupBreakBeforeIds: Dispatch<SetStateAction<Set<string>>>;
   setPrefetchingOlder: Dispatch<SetStateAction<boolean>>;
+  setInitialHydrationSettled: Dispatch<SetStateAction<boolean>>;
   encryptionKeyRef: MutableRefObject<CryptoKey | null>;
   currentKeyVersionRef: MutableRefObject<number>;
   messagesRef: MutableRefObject<Message[]>;
@@ -35,7 +39,7 @@ interface UseMessageListLoadingParams {
   keyVersionRefreshInFlightRef: MutableRefObject<number | null>;
 }
 
-const INITIAL_FETCH_SIZE = MESSAGE_INITIAL_PAGE_SIZE;
+const INITIAL_OPEN_LIMIT = MESSAGE_PAGE_SIZE;
 
 const useMessageListLoading = ({
   conversationId,
@@ -55,6 +59,7 @@ const useMessageListLoading = ({
   setFirstItemIndex,
   setGroupBreakBeforeIds,
   setPrefetchingOlder,
+  setInitialHydrationSettled,
   encryptionKeyRef,
   currentKeyVersionRef,
   messagesRef,
@@ -94,7 +99,13 @@ const useMessageListLoading = ({
   useEffect(() => {
     let ignore = false;
     const sessionSnapshot = getConversationWindowSnapshot(conversationId);
-    const initialLimit = Math.max(INITIAL_FETCH_SIZE, sessionSnapshot?.loadedCount ?? 0);
+    const initialLimit = INITIAL_OPEN_LIMIT;
+
+    const settleInitialHydration = () => {
+      if (!ignore) {
+        setInitialHydrationSettled(true);
+      }
+    };
 
     const resetVisibleWindow = () => {
       setMessages([]);
@@ -161,11 +172,13 @@ const useMessageListLoading = ({
         setIsAtPresent(true);
         setLoading(false);
         setSyncing(false);
+        settleInitialHydration();
       } catch (error) {
         if (ignore) return;
         console.error('Failed to load cached messages without an encryption key:', error);
         setLoading(false);
         setSyncing(false);
+        settleInitialHydration();
       }
     };
 
@@ -184,7 +197,7 @@ const useMessageListLoading = ({
           {
             preferSessionCache: true,
             initialLimit,
-            syncLimit: INITIAL_FETCH_SIZE,
+            syncLimit: INITIAL_OPEN_LIMIT,
             conversation: decryptionConversation,
             userId,
             currentKeyVersion: currentKeyVersionRef.current,
@@ -238,6 +251,7 @@ const useMessageListLoading = ({
             }));
             onMessagesLoaded?.(freshUI);
           }
+          settleInitialHydration();
           return;
         }
 
@@ -276,11 +290,13 @@ const useMessageListLoading = ({
         }));
         setLoading(false);
         onMessagesLoaded?.(freshUI);
+        settleInitialHydration();
       } catch (error) {
         if (ignore) return;
         console.error('Failed to load messages:', error);
         setLoading(false);
         setSyncing(false);
+        settleInitialHydration();
       }
     };
 
@@ -311,8 +327,7 @@ const useMessageListLoading = ({
     const refreshForKeyVersionBump = async () => {
       const sessionSnapshot = getConversationWindowSnapshot(conversationId);
       const refreshLimit = Math.max(
-        INITIAL_FETCH_SIZE,
-        sessionSnapshot?.loadedCount ?? 0,
+        INITIAL_OPEN_LIMIT,
         messagesRef.current.length,
       );
 

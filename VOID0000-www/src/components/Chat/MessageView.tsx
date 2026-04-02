@@ -1,6 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Virtuoso, type ScrollSeekPlaceholderProps } from 'react-virtuoso';
-import { ArrowDown, ExternalLink, ShieldAlert } from 'lucide-react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso } from 'react-virtuoso';
+import { ArrowDown } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -12,14 +12,22 @@ import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
 import { useTheme } from '../../Services/hooks/Settings/useTheme';
 import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
 import {
-  ChatMessageSkeletonRow,
-  getMessageSkeletonBubbleWidth,
   MessageViewSkeleton,
 } from '../common/Skeleton';
 import MessageItem from './MessageItem';
 import MessageOverlays from './MessageOverlays';
-import MessageViewHeader, { buildMessageViewHeaderIdentity } from './MessageViewHeader';
+import { buildMessageViewHeaderIdentity } from './MessageViewHeader';
 import { getMessageLinkHostname, isTrustedMessageUrl } from './messageLinks';
+import {
+  createScrollSeekPlaceholderRenderer,
+} from './MessageViewParts/MessageViewPlaceholders';
+import ExternalLinkModal from './MessageViewParts/ExternalLinkModal';
+import {
+  type MessageViewVirtuosoContext,
+  VirtuosoEmptyPlaceholder,
+  VirtuosoFooter,
+  VirtuosoHeader,
+} from './MessageViewParts/MessageViewVirtuosoParts';
 import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
 import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
@@ -46,57 +54,6 @@ type MessageListItem =
   | { kind: 'message'; message: Message }
   | { kind: 'typing'; id: 'typing-indicator' };
 
-interface VirtuosoContext {
-  loadingOlder: boolean;
-  loadingNewer: boolean;
-  hasOlder: boolean;
-  conversationRef: { current: Conversation };
-  headerIdentityRef: { current: ReturnType<typeof buildMessageViewHeaderIdentity> };
-  emptyStateRef: {
-    current: {
-      showCachedHistoryFallback: boolean;
-      securityDetail?: string | null;
-    };
-  };
-  handleProfileClick: (profileId: string) => void;
-  renderPaginationSkeleton: (position: 'top' | 'bottom') => ReactNode;
-}
-
-// Defined at module scope so Virtuoso sees stable component references and
-// never unmounts/remounts them on parent re-renders.
-const VirtuosoHeader = ({ context }: { context?: VirtuosoContext }) => {
-  if (!context) return null;
-  return (
-    <>
-      {context.loadingOlder && context.renderPaginationSkeleton('top')}
-      {context.hasOlder ? null : (
-        <MessageViewHeader
-          conversation={context.conversationRef.current}
-          headerIdentity={context.headerIdentityRef.current}
-          onProfileClick={context.handleProfileClick}
-        />
-      )}
-    </>
-  );
-};
-
-const VirtuosoFooter = ({ context }: { context?: VirtuosoContext }) => {
-  if (!context) return null;
-  return (
-    <>
-      {context.loadingNewer ? context.renderPaginationSkeleton('bottom') : null}
-    </>
-  );
-};
-
-const VirtuosoEmptyPlaceholder = ({ context }: { context?: VirtuosoContext }) => (
-  <p className="text-center text-void-text-muted text-sm py-8">
-    {context?.emptyStateRef.current.showCachedHistoryFallback
-      ? context.emptyStateRef.current.securityDetail || 'Cached history will appear here after this device regains the latest conversation keys.'
-      : 'No messages yet. Say something!'}
-  </p>
-);
-
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
@@ -104,10 +61,12 @@ const normalizeText = (value?: string | null) => {
 
 const topRenderBufferPx = 240;
 const bottomRenderBufferPx = 200;
+const virtuosoDefaultItemHeight = 64;
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
 const emptyReactions: Record<string, unknown> = Object.freeze({});
 const virtuosoIncreaseViewportBy = { top: topRenderBufferPx, bottom: bottomRenderBufferPx } as const;
 const virtuosoMinOverscanItemCount = { top: 8, bottom: 4 } as const;
+const virtuosoOverscan = { main: 500, reverse: 200 } as const;
 const initialTopMostItemIndex = { index: 'LAST' as const, align: 'end' as const };
 
 const MessageView = memo(function MessageView({
@@ -134,10 +93,12 @@ const MessageView = memo(function MessageView({
   const { reactions, handleToggleReaction, initReactionsFromMessages } =
     useReactions(conversation.id, gateway, user?.id);
   const currentMember = user?.id ? members[user.id] || null : null;
+  const waitForEncryptionBootstrap = !encryptionKey && conversationSecurityState?.status === 'recovering';
 
   const {
     messages,
     loading,
+    initialHydrationSettled,
     loadingOlder,
     prefetchingOlder,
     loadingNewer,
@@ -145,6 +106,7 @@ const MessageView = memo(function MessageView({
     hasNewer,
     isAtPresent,
     firstItemIndex,
+    topLoadingPlaceholderCount,
     groupBreakBeforeIds,
     setIsAtPresent,
     handleDelete,
@@ -152,7 +114,6 @@ const MessageView = memo(function MessageView({
     jumpToPresent,
     loadOlder,
     loadNewer,
-    prefetchOlder,
     initialScrollToMessageId,
   } = useMessageList(
     conversation,
@@ -164,6 +125,7 @@ const MessageView = memo(function MessageView({
     messageUpdate,
     messageDelete,
     initReactionsFromMessages,
+    waitForEncryptionBootstrap,
   );
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
@@ -205,7 +167,6 @@ const MessageView = memo(function MessageView({
     isAtBottom,
     hasUnseenMessages,
     handleScrollerRef,
-    handleVirtuosoScroll,
     handleStartReached,
     handleRangeChanged,
     scrollSeekConfiguration,
@@ -219,16 +180,18 @@ const MessageView = memo(function MessageView({
     visualMessages,
     loading,
     loadingOlder,
+    loadingNewer,
     prefetchingOlder,
     hasOlder,
     hasNewer,
+    initialHydrationSettled,
     firstItemIndex,
+    topLoadingPlaceholderCount,
     initialScrollToMessageId,
     newMessage,
     setIsAtPresent,
     jumpToPresent,
     loadOlder,
-    prefetchOlder,
   });
 
   // Refs keep callback references stable so MessageItem memo isn't broken
@@ -319,76 +282,17 @@ const MessageView = memo(function MessageView({
     setPendingExternalLink(null);
   }, [openBrowserLink, pendingExternalLink]);
 
-  useEffect(() => {
-    if (!pendingExternalLink) return undefined;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setPendingExternalLink(null);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [pendingExternalLink]);
-
   const listItems: MessageListItem[] = useMemo(() => [
     ...visualMessages.map((message) => ({ kind: 'message' as const, message })),
     ...(typingParticipants.length > 0 ? [{ kind: 'typing' as const, id: 'typing-indicator' as const }] : []),
   ], [typingParticipants.length, visualMessages]);
 
-  const renderScrollSeekPlaceholder = useCallback(({ height, index }: ScrollSeekPlaceholderProps) => {
-    const alignment = density === 'comfortable' && index % 4 === 1 ? 'outgoing' : 'incoming';
-    const startsGroup = index % 3 !== 1;
-    const bubbleHeight =
-      index % 5 === 2
-        ? 'h-12'
-        : index % 2 === 0
-          ? 'h-10'
-          : 'h-8';
+  const effectiveFirstItemIndex = firstItemIndex;
 
-    return (
-      <div style={{ height }} className="overflow-hidden px-2">
-        <div className="flex h-full items-center">
-          <div className="w-full">
-            <ChatMessageSkeletonRow
-              density={density}
-              alignment={alignment}
-              showAvatar={alignment === 'incoming' && startsGroup}
-              showMeta={startsGroup}
-              metaWidth={alignment === 'outgoing' ? 'w-20' : index % 4 === 0 ? 'w-24' : 'w-16'}
-              bubbleWidth={getMessageSkeletonBubbleWidth(density, alignment, index)}
-              bubbleHeight={bubbleHeight}
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }, [density]);
-
-  const renderPaginationSkeleton = useCallback((position: 'top' | 'bottom') => {
-    const isBottom = position === 'bottom';
-    const alignment = density === 'comfortable' && isBottom ? 'outgoing' : 'incoming';
-
-    return (
-      <div className={`pointer-events-none px-4 ${isBottom ? 'pb-3 pt-2' : 'pb-2 pt-3'}`}>
-        <div className={`flex ${alignment === 'outgoing' ? 'justify-end' : 'justify-start'}`}>
-          <div className="w-full max-w-[min(100%,42rem)] rounded-2xl bg-void-bg-main/70 px-2 py-3 opacity-95 backdrop-blur-sm">
-            <ChatMessageSkeletonRow
-              density={density}
-              alignment={alignment}
-              showAvatar={alignment === 'incoming'}
-              showMeta
-              metaWidth={alignment === 'outgoing' ? 'w-20' : 'w-24'}
-              bubbleWidth={getMessageSkeletonBubbleWidth(density, alignment, isBottom ? 1 : 3)}
-              bubbleHeight={isBottom ? 'h-9' : 'h-10'}
-            />
-          </div>
-        </div>
-      </div>
-    );
-  }, [density]);
-
+  const renderScrollSeekPlaceholder = useMemo(
+    () => createScrollSeekPlaceholderRenderer(density),
+    [density],
+  );
   const showCachedHistoryFallback = Boolean(
     !encryptionKey &&
       (
@@ -438,16 +342,14 @@ const MessageView = memo(function MessageView({
     EmptyPlaceholder: VirtuosoEmptyPlaceholder,
   }), [renderScrollSeekPlaceholder]);
 
-  const virtuosoContext: VirtuosoContext = useMemo(() => ({
+  const virtuosoContext: MessageViewVirtuosoContext = useMemo(() => ({
     loadingOlder,
-    loadingNewer,
     hasOlder,
     conversationRef,
     headerIdentityRef,
     emptyStateRef,
     handleProfileClick,
-    renderPaginationSkeleton,
-  }), [emptyStateSignature, loadingOlder, loadingNewer, hasOlder, handleProfileClick, renderPaginationSkeleton]);
+  }), [emptyStateSignature, hasOlder, handleProfileClick, loadingOlder]);
 
   const handleEndReached = useCallback(() => {
     if (!isAtPresent && hasNewer) {
@@ -530,20 +432,21 @@ const MessageView = memo(function MessageView({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
-      <Virtuoso<MessageListItem, VirtuosoContext>
+      <Virtuoso<MessageListItem, MessageViewVirtuosoContext>
         ref={virtuosoRef}
         scrollerRef={handleScrollerRef}
         className="flex-1 min-h-0"
         context={virtuosoContext}
         data={listItems}
         computeItemKey={(_index, item) => item.kind === 'message' ? item.message.message_id : item.id}
-        firstItemIndex={firstItemIndex}
+        defaultItemHeight={virtuosoDefaultItemHeight}
+        firstItemIndex={effectiveFirstItemIndex}
         atBottomThreshold={12}
         alignToBottom
         increaseViewportBy={virtuosoIncreaseViewportBy}
         minOverscanItemCount={virtuosoMinOverscanItemCount}
+        overscan={virtuosoOverscan}
         scrollSeekConfiguration={scrollSeekConfiguration}
-        onScroll={handleVirtuosoScroll}
         startReached={handleStartReached}
         rangeChanged={handleRangeChanged}
         followOutput={followOutput}
@@ -564,42 +467,11 @@ const MessageView = memo(function MessageView({
         </button>
       )}
 
-      {pendingExternalLink ? (
-        <div className="fixed inset-0 z-[330] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-void-bg-hover bg-void-bg-sec shadow-2xl">
-            <div className="border-b border-void-bg-hover px-5 py-4">
-              <div className="flex items-center gap-2 text-void-text">
-                <ShieldAlert className="h-5 w-5 text-amber-300" />
-                <h3 className="text-base font-semibold">Open External Link?</h3>
-              </div>
-              <p className="mt-2 text-sm text-void-text-muted">
-                You are leaving VOID to open <span className="font-medium text-void-text">{pendingExternalLink.hostname}</span>.
-              </p>
-              <div className="mt-3 rounded-xl border border-void-bg-hover bg-void-bg-main/60 px-3 py-2 text-xs text-void-text-muted break-all">
-                {pendingExternalLink.url}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 px-5 py-4">
-              <button
-                type="button"
-                onClick={() => setPendingExternalLink(null)}
-                className="rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-4 py-2.5 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmExternalLink}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-void-accent-hover"
-              >
-                <ExternalLink className="h-4 w-4" />
-                Open Link
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ExternalLinkModal
+        pendingExternalLink={pendingExternalLink}
+        onClose={() => setPendingExternalLink(null)}
+        onConfirm={handleConfirmExternalLink}
+      />
 
       <MessageOverlays
         contextMenu={contextMenu}

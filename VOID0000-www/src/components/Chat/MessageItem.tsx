@@ -72,6 +72,7 @@ interface MessageItemProps {
   onToggleReaction: (messageId: string, emoji: string) => void;
   onOpenImageViewer: (urls: string[], index: number) => void;
   onAttachmentLoad?: () => void;
+  canLoadAttachments?: boolean;
   onOpenLink?: (url: string) => void;
 }
 
@@ -92,6 +93,7 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.getSenderName === next.getSenderName &&
   prev.getSenderUsername === next.getSenderUsername &&
   prev.getSenderAvatarUrl === next.getSenderAvatarUrl &&
+  prev.canLoadAttachments === next.canLoadAttachments &&
   prev.onAttachmentLoad === next.onAttachmentLoad
 );
 
@@ -122,6 +124,7 @@ const MessageItem = memo(function MessageItem({
   onToggleReaction,
   onOpenImageViewer,
   onAttachmentLoad,
+  canLoadAttachments = true,
   onOpenLink,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
@@ -400,6 +403,7 @@ const MessageItem = memo(function MessageItem({
     const hasContent = typeof message.content === 'string' && message.content.trim().length > 0;
     return (
       <div
+        data-message-id={message.message_id}
         className="px-2"
         style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
       >
@@ -427,6 +431,7 @@ const MessageItem = memo(function MessageItem({
 
   return (
     <div
+      data-message-id={message.message_id}
       className="px-2"
       style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
     >
@@ -627,6 +632,7 @@ const MessageItem = memo(function MessageItem({
                       alt="attachment"
                       className="w-full h-full object-cover hover:opacity-90"
                       onLoad={onAttachmentLoad}
+                      canLoad={canLoadAttachments}
                     />
                   </button>
                 ))}
