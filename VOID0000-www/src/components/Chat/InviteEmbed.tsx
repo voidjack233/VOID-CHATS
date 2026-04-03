@@ -141,6 +141,8 @@ export default function InviteEmbed({
     : status === 'pending'
       ? 'Request Pending'
       : 'Join Group';
+  const hasPreview = Boolean(preview);
+  const hasLoadError = Boolean(loadError) && !loading;
 
   const handleJoinAction = async () => {
     if (!user) {
@@ -195,35 +197,23 @@ export default function InviteEmbed({
     }
   };
 
-  if (loading) {
-    return (
-      <div className="mt-2 w-full max-w-sm rounded-2xl border border-void-bg-hover bg-void-bg-sec/85 p-4 text-left shadow-md">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-void-text-muted">
-          <Link2 className="h-4 w-4" />
-          Invite Link
-        </div>
-        <div className="mt-3 flex items-center gap-3 text-sm text-void-text-muted">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading invite preview...
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="mt-2 w-full max-w-sm rounded-2xl border border-void-bg-hover bg-void-bg-sec/85 p-4 text-left shadow-md">
+    <div className="flex w-full max-w-sm flex-col gap-3 rounded-2xl border border-void-bg-hover bg-void-bg-sec/85 p-4 text-left shadow-md">
       <button
         type="button"
         onClick={() => onOpenInvite(inviteUrl)}
-        className="w-full text-left transition-colors hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-void-accent/40 rounded-xl"
+        disabled={loading}
+        className="w-full text-left transition-colors hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-void-accent/40 rounded-xl disabled:cursor-default disabled:hover:opacity-100"
       >
         <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-void-text-muted">
           <Link2 className="h-4 w-4" />
           Invite Link
         </div>
 
-        <div className="mt-3 flex items-center gap-3">
-          {preview?.conversation_icon_url ? (
+        <div className="flex min-h-12 items-center gap-3">
+          {loading ? (
+            <div className="h-12 w-12 animate-pulse rounded-2xl bg-void-bg-main/70" />
+          ) : preview?.conversation_icon_url ? (
             <img
               src={preview.conversation_icon_url}
               alt=""
@@ -235,59 +225,86 @@ export default function InviteEmbed({
             </div>
           )}
 
-          <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <p className="truncate text-sm font-semibold text-void-text">
-              {preview?.conversation_name || 'VOID Group Invite'}
+              {loading ? (
+                <span className="block h-4 w-36 animate-pulse rounded bg-void-bg-main/70" />
+              ) : (
+                preview?.conversation_name || 'VOID Group Invite'
+              )}
             </p>
-            <p className="mt-0.5 text-xs text-void-text-muted">
-              {subtitle}
+            <p className="min-h-[16px] truncate text-xs text-void-text-muted">
+              {loading ? (
+                <span className="block h-3.5 w-44 animate-pulse rounded bg-void-bg-main/60" />
+              ) : (
+                subtitle
+              )}
             </p>
           </div>
 
-          <ExternalLink className="h-4 w-4 flex-shrink-0 text-void-text-muted" />
+          {loading ? (
+            <div className="h-4 w-4 flex-shrink-0 rounded bg-void-bg-main/60" />
+          ) : (
+            <ExternalLink className="h-4 w-4 flex-shrink-0 text-void-text-muted" />
+          )}
         </div>
       </button>
 
-      {preview ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-void-text-muted">
-          <span className="inline-flex items-center gap-1 rounded-full bg-void-bg-main/70 px-2.5 py-1">
-            <Users className="h-3.5 w-3.5" />
-            {preview.member_count} members
-          </span>
-          <span className="rounded-full bg-void-bg-main/70 px-2.5 py-1">
-            Expires {formatExpiry(preview.expires_at)}
-          </span>
-        </div>
-      ) : (
-        <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-          {loadError || 'This invite link is unavailable.'}
-        </div>
-      )}
+      <div className="min-h-[28px]">
+        {loading ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-void-text-muted">
+            <span className="inline-flex h-7 w-24 animate-pulse rounded-full bg-void-bg-main/70 px-2.5 py-1" />
+            <span className="inline-flex h-7 w-28 animate-pulse rounded-full bg-void-bg-main/70 px-2.5 py-1" />
+          </div>
+        ) : hasPreview && preview ? (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-void-text-muted">
+            <span className="inline-flex items-center gap-1 rounded-full bg-void-bg-main/70 px-2.5 py-1">
+              <Users className="h-3.5 w-3.5" />
+              {preview.member_count} members
+            </span>
+            <span className="rounded-full bg-void-bg-main/70 px-2.5 py-1">
+              Expires {formatExpiry(preview.expires_at)}
+            </span>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {loadError || 'This invite link is unavailable.'}
+          </div>
+        )}
+      </div>
 
-      <div className="mt-4 border-t border-void-bg-hover pt-4">
-        <button
-          type="button"
-          onClick={handleJoinAction}
-          disabled={Boolean(loadError) || requesting || status === 'pending'}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-void-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {requesting ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : status === 'member' ? (
-            <ExternalLink className="h-4 w-4" />
-          ) : status === 'pending' ? (
-            <CheckCircle2 className="h-4 w-4" />
-          ) : (
-            <Users className="h-4 w-4" />
-          )}
-          {requesting ? 'Joining...' : actionLabel}
-        </button>
+      <div className="border-t border-void-bg-hover pt-4">
+        {loading ? (
+          <div className="inline-flex h-[42px] w-full animate-pulse items-center justify-center gap-2 rounded-xl bg-void-bg-main/70 text-sm font-semibold text-transparent">
+            Loading
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleJoinAction}
+            disabled={hasLoadError || requesting || status === 'pending'}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-void-accent px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-void-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {requesting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : status === 'member' ? (
+              <ExternalLink className="h-4 w-4" />
+            ) : status === 'pending' ? (
+              <CheckCircle2 className="h-4 w-4" />
+            ) : (
+              <Users className="h-4 w-4" />
+            )}
+            {requesting ? 'Joining...' : actionLabel}
+          </button>
+        )}
 
-        {statusNote ? (
-          <p className={`mt-2 text-xs ${statusNote.toLowerCase().includes('failed') ? 'text-red-300' : 'text-void-text-muted'}`}>
-            {statusNote}
-          </p>
-        ) : null}
+        <div className="min-h-[16px] pt-2">
+          {statusNote ? (
+            <p className={`text-xs ${statusNote.toLowerCase().includes('failed') ? 'text-red-300' : 'text-void-text-muted'}`}>
+              {statusNote}
+            </p>
+          ) : null}
+        </div>
       </div>
     </div>
   );

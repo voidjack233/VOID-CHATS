@@ -7,6 +7,7 @@ import {
 import { MESSAGE_CACHE_LIMIT, MESSAGE_INITIAL_PAGE_SIZE } from '../../Chat/chatConstants';
 import { createHistoryAccessFence, normalizeHistoryVersion, } from './MessageList/messageListHistory';
 import { mergeMessagesWithReconciliation } from './MessageList/messageListReconciliation';
+import { sortMessages } from './MessageList/messageListPersistence';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
 import type { MessageDelete, MessageUpdate } from './MessageList/messageListTypes';
 import { useMessageListLoading } from './MessageList/useMessageListLoading';
@@ -23,6 +24,9 @@ interface MessageWindowState {
   messages: Message[];
   firstItemIndex: number;
   groupBreakBeforeIds: Set<string>;
+  queuedNewerMessages: Message[];
+  queuedNewerHasNewer: boolean;
+  queuedNewerIsAtPresent: boolean;
   loading: boolean;
   syncing: boolean;
   initialHydrationSettled: boolean;
@@ -58,6 +62,17 @@ type MessageWindowAction =
       hasNewer?: boolean;
       isAtPresent?: boolean;
     }
+  | {
+      type: 'queue_newer_messages';
+      incoming: Message[];
+      hasNewerAfterFlush: boolean;
+      isAtPresentAfterFlush: boolean;
+    }
+  | {
+      type: 'flush_queued_newer';
+      currentUserId?: string;
+      trimFrom?: 'old' | 'new';
+    }
   | { type: 'set_first_item_index'; value: SetStateAction<number> }
   | { type: 'set_group_break_before_ids'; value: SetStateAction<Set<string>> }
   | { type: 'set_loading'; value: SetStateAction<boolean> }
@@ -79,6 +94,9 @@ const initialMessageWindowState: MessageWindowState = {
   messages: [],
   firstItemIndex: MESSAGE_LIST_BASE_INDEX,
   groupBreakBeforeIds: new Set(),
+  queuedNewerMessages: [],
+  queuedNewerHasNewer: false,
+  queuedNewerIsAtPresent: true,
   loading: true,
   syncing: false,
   initialHydrationSettled: false,
@@ -111,6 +129,9 @@ const messageWindowReducer = (
         messages: action.messages,
         firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
         groupBreakBeforeIds: action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
+        queuedNewerMessages: [],
+        queuedNewerHasNewer: false,
+        queuedNewerIsAtPresent: true,
         loading: action.loading ?? state.loading,
         syncing: action.syncing ?? state.syncing,
         initialHydrationSettled: action.initialHydrationSettled ?? state.initialHydrationSettled,
@@ -119,6 +140,50 @@ const messageWindowReducer = (
         hasOlder: action.hasOlder ?? state.hasOlder,
         hasNewer: action.hasNewer ?? state.hasNewer,
         isAtPresent: action.isAtPresent ?? state.isAtPresent,
+      };
+    case 'queue_newer_messages': {
+      const queuedNewerMessages = action.incoming.length > 0
+        ? sortMessages(
+            Array.from(
+              new Map(
+                [...state.queuedNewerMessages, ...action.incoming].map((message) => [message.message_id, message])
+              ).values()
+            )
+          )
+        : state.queuedNewerMessages;
+      const hasExistingQueuedNewer = state.queuedNewerMessages.length > 0;
+
+      return {
+        ...state,
+        queuedNewerMessages,
+        queuedNewerHasNewer: hasExistingQueuedNewer
+          ? state.queuedNewerHasNewer || action.hasNewerAfterFlush
+          : action.hasNewerAfterFlush,
+        queuedNewerIsAtPresent: hasExistingQueuedNewer
+          ? state.queuedNewerIsAtPresent && action.isAtPresentAfterFlush
+          : action.isAtPresentAfterFlush,
+        hasNewer: true,
+        isAtPresent: false,
+      };
+    }
+    case 'flush_queued_newer':
+      if (state.queuedNewerMessages.length === 0) {
+        return state;
+      }
+      return {
+        ...state,
+        messages: mergeMessagesWithReconciliation({
+          existing: state.messages,
+          incoming: state.queuedNewerMessages,
+          currentUserId: action.currentUserId,
+          trimFrom: action.trimFrom ?? 'old',
+          allowOptimisticFallback: true,
+        }),
+        queuedNewerMessages: [],
+        queuedNewerHasNewer: false,
+        queuedNewerIsAtPresent: true,
+        hasNewer: state.queuedNewerHasNewer,
+        isAtPresent: state.queuedNewerIsAtPresent,
       };
     case 'merge_visible_messages':
       return {
@@ -267,6 +332,7 @@ export const useMessageList = (
   const hasOlder = windowState.hasOlder;
   const hasNewer = windowState.hasNewer;
   const isAtPresent = windowState.isAtPresent;
+  const queuedNewerCount = windowState.queuedNewerMessages.length;
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -303,12 +369,19 @@ export const useMessageList = (
     dispatchWindowState({ type: 'merge_visible_messages', ...params });
   }, []);
 
-  const setFirstItemIndex = useCallback((value: SetStateAction<number>) => {
-    dispatchWindowState({ type: 'set_first_item_index', value });
+  const queueNewerMessages = useCallback((params: {
+    incoming: Message[];
+    hasNewerAfterFlush: boolean;
+    isAtPresentAfterFlush: boolean;
+  }) => {
+    dispatchWindowState({ type: 'queue_newer_messages', ...params });
   }, []);
 
-  const setGroupBreakBeforeIds = useCallback((value: SetStateAction<Set<string>>) => {
-    dispatchWindowState({ type: 'set_group_break_before_ids', value });
+  const flushQueuedNewerMessages = useCallback((params?: {
+    currentUserId?: string;
+    trimFrom?: 'old' | 'new';
+  }) => {
+    dispatchWindowState({ type: 'flush_queued_newer', ...params });
   }, []);
 
   const setLoading = useCallback((value: SetStateAction<boolean>) => {
@@ -369,16 +442,18 @@ export const useMessageList = (
     currentKeyVersionRef,
     messages,
     messagesRef,
+    firstItemIndex,
     replaceWindow,
     mergeVisibleMessages,
+    queueNewerMessages,
+    flushQueuedNewerMessages,
     applyPrependedWindow,
-    setFirstItemIndex,
-    setGroupBreakBeforeIds,
     loadingOlder,
     loadingNewer,
     hasOlder,
     hasNewer,
     isAtPresent,
+    hasQueuedNewer: queuedNewerCount > 0,
     setLoadingOlder,
     setLoadingNewer,
     setHasOlder,
@@ -423,6 +498,10 @@ export const useMessageList = (
     messageUpdate,
     messageDelete,
     setMessages,
+    mergeVisibleMessages,
+    queueNewerMessages,
+    isAtPresent,
+    initialHydrationSettled,
   });
 
   const { getReplyParent } = useMessageListReplies({

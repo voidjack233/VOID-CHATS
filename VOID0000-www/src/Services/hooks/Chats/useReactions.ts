@@ -17,6 +17,38 @@ interface ReactionEvent {
   action: 'add' | 'remove';
 }
 
+const applyReactionEvent = (
+  previous: Record<string, ReactionMap>,
+  data: ReactionEvent,
+  currentUserId?: string,
+): Record<string, ReactionMap> => {
+  const msgReactions = { ...(previous[data.message_id] || {}) };
+
+  if (data.action === 'add') {
+    const existing = msgReactions[data.emoji] || { count: 0, me: false };
+    msgReactions[data.emoji] = {
+      count: existing.count + 1,
+      me: existing.me || data.user_id === currentUserId,
+    };
+    return { ...previous, [data.message_id]: msgReactions };
+  }
+
+  const existing = msgReactions[data.emoji];
+  if (!existing) return previous;
+
+  const newCount = existing.count - 1;
+  if (newCount <= 0) {
+    delete msgReactions[data.emoji];
+  } else {
+    msgReactions[data.emoji] = {
+      count: newCount,
+      me: data.user_id === currentUserId ? false : existing.me,
+    };
+  }
+
+  return { ...previous, [data.message_id]: msgReactions };
+};
+
 const areReactionMapsEqual = (a?: ReactionMap, b?: ReactionMap): boolean => {
   const aEntries = Object.entries(a || {});
   const bEntries = Object.entries(b || {});
@@ -54,18 +86,36 @@ const normalizeReactionMap = (rawReactions: any, currentUserId?: string): Reacti
 export const useReactions = (
   conversationId: string,
   gateway: any,
-  currentUserId?: string
+  currentUserId?: string,
+  isAtPresent = true,
 ) => {
   const [reactions, setReactions] = useState<Record<string, ReactionMap>>({});
   const lastConvRef = useRef<string>('');
+  const pendingGatewayEventsRef = useRef<ReactionEvent[]>([]);
 
   // Reset on conversation change
   useEffect(() => {
     if (lastConvRef.current !== conversationId) {
       setReactions({});
+      pendingGatewayEventsRef.current = [];
       lastConvRef.current = conversationId;
     }
   }, [conversationId]);
+
+  useEffect(() => {
+    if (isAtPresent || pendingGatewayEventsRef.current.length === 0) {
+      if (isAtPresent && pendingGatewayEventsRef.current.length > 0) {
+        setReactions((previous) => (
+          pendingGatewayEventsRef.current.reduce(
+            (next, event) => applyReactionEvent(next, event, currentUserId),
+            previous,
+          )
+        ));
+        pendingGatewayEventsRef.current = [];
+      }
+      return;
+    }
+  }, [currentUserId, isAtPresent]);
 
   // Listen for real-time reaction events
   useEffect(() => {
@@ -73,35 +123,22 @@ export const useReactions = (
 
     const handleReactionAdd = (data: ReactionEvent) => {
       if (data.conversation_id !== conversationId) return;
-      setReactions((prev) => {
-        const msgReactions = { ...(prev[data.message_id] || {}) };
-        const existing = msgReactions[data.emoji] || { count: 0, me: false };
-        msgReactions[data.emoji] = {
-          count: existing.count + 1,
-          me: existing.me || data.user_id === currentUserId,
-        };
-        return { ...prev, [data.message_id]: msgReactions };
-      });
+      if (!isAtPresent) {
+        pendingGatewayEventsRef.current.push(data);
+        return;
+      }
+
+      setReactions((previous) => applyReactionEvent(previous, data, currentUserId));
     };
 
     const handleReactionRemove = (data: ReactionEvent) => {
       if (data.conversation_id !== conversationId) return;
-      setReactions((prev) => {
-        const msgReactions = { ...(prev[data.message_id] || {}) };
-        const existing = msgReactions[data.emoji];
-        if (!existing) return prev;
+      if (!isAtPresent) {
+        pendingGatewayEventsRef.current.push(data);
+        return;
+      }
 
-        const newCount = existing.count - 1;
-        if (newCount <= 0) {
-          delete msgReactions[data.emoji];
-        } else {
-          msgReactions[data.emoji] = {
-            count: newCount,
-            me: data.user_id === currentUserId ? false : existing.me,
-          };
-        }
-        return { ...prev, [data.message_id]: msgReactions };
-      });
+      setReactions((previous) => applyReactionEvent(previous, data, currentUserId));
     };
 
     gateway.on?.('REACTION_ADD', handleReactionAdd);
@@ -111,7 +148,7 @@ export const useReactions = (
       gateway.off?.('REACTION_ADD', handleReactionAdd);
       gateway.off?.('REACTION_REMOVE', handleReactionRemove);
     };
-  }, [gateway, conversationId, currentUserId]);
+  }, [conversationId, currentUserId, gateway, isAtPresent]);
 
   /**
    * Initialize reactions from message data -- called by useMessageList

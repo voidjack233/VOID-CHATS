@@ -10,13 +10,21 @@ interface BlurImageProps {
   alt?: string;
   className?: string;
   onLoad?: () => void;
+  loading?: 'eager' | 'lazy';
 }
 
 const THUMB = 32; // decode resolution — small for perf, upscaled via CSS
 
-const BlurImage = ({ src, blurhash, alt = '', className = '', onLoad }: BlurImageProps) => {
+interface BlurhashPlaceholderProps {
+  blurhash?: string;
+  className?: string;
+}
+
+export const BlurhashPlaceholder = ({
+  blurhash,
+  className = '',
+}: BlurhashPlaceholderProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     if (!blurhash || !canvasRef.current) return;
@@ -28,24 +36,47 @@ const BlurImage = ({ src, blurhash, alt = '', className = '', onLoad }: BlurImag
       imageData.data.set(pixels);
       ctx.putImageData(imageData, 0, 0);
     } catch {
-      // invalid hash — canvas stays blank, image still shows
+      // invalid hash — canvas stays blank
     }
   }, [blurhash]);
+
+  if (!blurhash) {
+    return null;
+  }
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={THUMB}
+      height={THUMB}
+      className={className}
+    />
+  );
+};
+
+const BlurImage = ({
+  src,
+  blurhash,
+  alt = '',
+  className = '',
+  onLoad,
+  loading = 'lazy',
+}: BlurImageProps) => {
+  const [loaded, setLoaded] = useState(false);
 
   return (
     <div className="relative w-full h-full">
       {blurhash && !loaded && (
-        <canvas
-          ref={canvasRef}
-          width={THUMB}
-          height={THUMB}
+        <BlurhashPlaceholder
+          blurhash={blurhash}
           className="absolute inset-0 w-full h-full object-cover"
         />
       )}
       <img
         src={src}
         alt={alt}
-        loading="lazy"
+        loading={loading}
+        decoding="async"
         onLoad={() => {
           setLoaded(true);
           onLoad?.();

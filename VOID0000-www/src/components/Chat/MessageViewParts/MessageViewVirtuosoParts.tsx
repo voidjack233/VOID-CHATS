@@ -2,7 +2,6 @@ import type { Conversation } from '../../../Services/Chat/chatService';
 import MessageViewHeader, { buildMessageViewHeaderIdentity } from '../MessageViewHeader';
 
 export interface MessageViewVirtuosoContext {
-  loadingOlder: boolean;
   hasOlder: boolean;
   conversationRef: { current: Conversation };
   headerIdentityRef: { current: ReturnType<typeof buildMessageViewHeaderIdentity> };
@@ -17,17 +16,14 @@ export interface MessageViewVirtuosoContext {
 
 export const VirtuosoHeader = ({ context }: { context?: MessageViewVirtuosoContext }) => {
   if (!context) return null;
+  if (context.hasOlder) return null;
 
   return (
-    <>
-      {context.hasOlder ? null : (
-        <MessageViewHeader
-          conversation={context.conversationRef.current}
-          headerIdentity={context.headerIdentityRef.current}
-          onProfileClick={context.handleProfileClick}
-        />
-      )}
-    </>
+    <MessageViewHeader
+      conversation={context.conversationRef.current}
+      headerIdentity={context.headerIdentityRef.current}
+      onProfileClick={context.handleProfileClick}
+    />
   );
 };
 

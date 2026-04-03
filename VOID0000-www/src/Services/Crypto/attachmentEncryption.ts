@@ -10,6 +10,7 @@ interface EncryptedAttachment extends Attachment {
 }
 
 const decryptedUrlCache = new Map<string, Promise<string>>();
+const resolvedUrlCache = new Map<string, string>();
 const BASE64_CHUNK_SIZE = 0x8000;
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -44,6 +45,15 @@ export function isEncryptedAttachment(attachment: Attachment): attachment is Enc
     typeof attachment.mime === 'string' &&
     attachment.mime.length > 0
   );
+}
+
+function getAttachmentCacheKey(attachment: EncryptedAttachment): string {
+  return [
+    attachment.url,
+    attachment.iv,
+    attachment.key,
+    attachment.mime,
+  ].join('::');
 }
 
 export async function encryptAttachmentFile(file: File): Promise<{
@@ -105,19 +115,34 @@ export async function resolveAttachmentObjectUrl(attachment: Attachment): Promis
     return attachment.url;
   }
 
-  const cacheKey = [
-    attachment.url,
-    attachment.iv,
-    attachment.key,
-    attachment.mime,
-  ].join('::');
+  const cacheKey = getAttachmentCacheKey(attachment);
+  const resolvedUrl = resolvedUrlCache.get(cacheKey);
+  if (resolvedUrl) {
+    return resolvedUrl;
+  }
 
   if (!decryptedUrlCache.has(cacheKey)) {
-    decryptedUrlCache.set(
-      cacheKey,
-      decryptAttachmentToBlob(attachment).then((blob) => URL.createObjectURL(blob)),
-    );
+    const pendingUrl = decryptAttachmentToBlob(attachment)
+      .then((blob) => {
+        const objectUrl = URL.createObjectURL(blob);
+        resolvedUrlCache.set(cacheKey, objectUrl);
+        return objectUrl;
+      })
+      .catch((error) => {
+        decryptedUrlCache.delete(cacheKey);
+        throw error;
+      });
+
+    decryptedUrlCache.set(cacheKey, pendingUrl);
   }
 
   return decryptedUrlCache.get(cacheKey) as Promise<string>;
+}
+
+export function getCachedAttachmentObjectUrl(attachment: Attachment): string | null {
+  if (!isEncryptedAttachment(attachment)) {
+    return attachment.url;
+  }
+
+  return resolvedUrlCache.get(getAttachmentCacheKey(attachment)) || null;
 }

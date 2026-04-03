@@ -19,6 +19,21 @@ interface UseMessageListRealtimeParams {
   messageUpdate?: MessageUpdate | null;
   messageDelete?: MessageDelete | null;
   setMessages: Dispatch<SetStateAction<Message[]>>;
+  mergeVisibleMessages: (params: {
+    incoming: Message[];
+    currentUserId?: string;
+    trimFrom?: 'old' | 'new';
+    hasOlder?: boolean;
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
+  }) => void;
+  queueNewerMessages: (params: {
+    incoming: Message[];
+    hasNewerAfterFlush: boolean;
+    isAtPresentAfterFlush: boolean;
+  }) => void;
+  isAtPresent: boolean;
+  initialHydrationSettled: boolean;
 }
 
 const useMessageListRealtime = ({
@@ -29,6 +44,10 @@ const useMessageListRealtime = ({
   messageUpdate,
   messageDelete,
   setMessages,
+  mergeVisibleMessages,
+  queueNewerMessages,
+  isAtPresent,
+  initialHydrationSettled,
 }: UseMessageListRealtimeParams) => {
   useEffect(() => {
     let ignore = false;
@@ -143,16 +162,39 @@ const useMessageListRealtime = ({
       messageSync.storeIncomingMessage(localMessage).catch(console.error);
     }
 
-    setMessages((previous) =>
-      mergeMessagesWithReconciliation({
-        existing: previous,
+    const shouldApplyImmediately = (
+      !initialHydrationSettled ||
+      isAtPresent ||
+      normalizedMessage.sender_id === userId ||
+      normalizedMessage.local_status === 'sending' ||
+      normalizedMessage.local_status === 'queued'
+    );
+
+    if (shouldApplyImmediately) {
+      mergeVisibleMessages({
         incoming: [normalizedMessage],
         currentUserId: userId,
         trimFrom: 'old',
-        allowOptimisticFallback: true,
-      })
-    );
-  }, [conversationId, historyAccessFence, newMessage, setMessages, userId]);
+      });
+      return;
+    }
+
+    queueNewerMessages({
+      incoming: [normalizedMessage],
+      hasNewerAfterFlush: false,
+      isAtPresentAfterFlush: true,
+    });
+  }, [
+    conversationId,
+    historyAccessFence,
+    initialHydrationSettled,
+    isAtPresent,
+    mergeVisibleMessages,
+    newMessage,
+    queueNewerMessages,
+    setMessages,
+    userId,
+  ]);
 
   useEffect(() => {
     if (!messageUpdate) return;

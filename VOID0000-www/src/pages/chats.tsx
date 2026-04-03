@@ -303,6 +303,8 @@ const ChatDashboard = () => {
     !matchesConversationIdentifier(activeGroup, groupConversationId)
   );
   const isConversationRoutePending = !loading && Boolean(user?.id) && (isPendingDmRoute || isPendingGroupRoute);
+  const showConversationRoutePendingSkeleton = isConversationRoutePending && !activeConversation;
+  const showConversationRoutePendingOverlay = isConversationRoutePending && !!activeConversation;
   const typingParticipants = useMemo(() => {
     if (!activeConversation) return [];
 
@@ -887,10 +889,18 @@ const ChatDashboard = () => {
 
       {/* Main Area */}
       <div className={`flex-1 flex flex-col bg-void-bg-sec min-w-0 ${!isMobileSidebarOpen ? 'flex' : 'hidden md:flex'}`}>
-        {isConversationRoutePending ? (
+        {showConversationRoutePendingSkeleton ? (
           <ConversationPaneSkeleton showMobileBack density="compact" />
         ) : activeConversation ? (
-          <div className="flex flex-1 min-h-0">
+          <div className="relative flex flex-1 min-h-0">
+            {showConversationRoutePendingOverlay ? (
+              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
+                <div className="inline-flex items-center gap-2 rounded-full border border-void-bg-hover bg-void-bg-sec/92 px-3 py-1.5 text-xs font-medium text-void-text shadow-sm backdrop-blur-sm">
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-void-text-muted/30 border-t-void-text-muted" />
+                  Syncing conversation...
+                </div>
+              </div>
+            ) : null}
             <div className="flex min-w-0 flex-1 flex-col">
               <nav className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:static md:bg-void-bg-sec">
                 <div className="flex items-center min-w-0 flex-1">

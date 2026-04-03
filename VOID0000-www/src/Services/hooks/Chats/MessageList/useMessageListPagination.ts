@@ -6,11 +6,16 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
-import { MESSAGE_ACTIVE_WINDOW_SIZE, MESSAGE_PAGE_SIZE } from '../../../Chat/chatConstants';
+import {
+  MESSAGE_ACTIVE_WINDOW_SIZE,
+  MESSAGE_PAGE_SIZE,
+  MESSAGE_PREFETCH_SIZE,
+} from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
 import { gateway } from '../../../Gateway/gateway';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
+import { debugMessageList, rawDebugMessageList } from './messageListDebug';
 import {
   getNewestServerBackedMessage,
   trimMessages,
@@ -33,6 +38,7 @@ interface UseMessageListPaginationParams {
   currentKeyVersionRef: MutableRefObject<number>;
   messages: Message[];
   messagesRef: MutableRefObject<Message[]>;
+  firstItemIndex: number;
   replaceWindow: (params: {
     messages: Message[];
     firstItemIndex?: number;
@@ -54,6 +60,15 @@ interface UseMessageListPaginationParams {
     hasNewer?: boolean;
     isAtPresent?: boolean;
   }) => void;
+  queueNewerMessages: (params: {
+    incoming: Message[];
+    hasNewerAfterFlush: boolean;
+    isAtPresentAfterFlush: boolean;
+  }) => void;
+  flushQueuedNewerMessages: (params?: {
+    currentUserId?: string;
+    trimFrom?: 'old' | 'new';
+  }) => void;
   applyPrependedWindow: (params: {
     messages: Message[];
     prependedCount: number;
@@ -64,8 +79,7 @@ interface UseMessageListPaginationParams {
   hasOlder: boolean;
   hasNewer: boolean;
   isAtPresent: boolean;
-  setFirstItemIndex: Dispatch<SetStateAction<number>>;
-  setGroupBreakBeforeIds: Dispatch<SetStateAction<Set<string>>>;
+  hasQueuedNewer: boolean;
   setLoadingOlder: Dispatch<SetStateAction<boolean>>;
   setLoadingNewer: Dispatch<SetStateAction<boolean>>;
   setHasOlder: Dispatch<SetStateAction<boolean>>;
@@ -79,6 +93,7 @@ interface UseMessageListPaginationParams {
 }
 
 const FETCH_SIZE = MESSAGE_PAGE_SIZE;
+
 const useMessageListPagination = ({
   conversationId,
   decryptionConversation,
@@ -89,16 +104,18 @@ const useMessageListPagination = ({
   currentKeyVersionRef,
   messages,
   messagesRef,
+  firstItemIndex,
   replaceWindow,
   mergeVisibleMessages,
+  queueNewerMessages,
+  flushQueuedNewerMessages,
   applyPrependedWindow,
   loadingOlder,
   loadingNewer,
   hasOlder,
   hasNewer,
   isAtPresent,
-  setFirstItemIndex,
-  setGroupBreakBeforeIds,
+  hasQueuedNewer,
   setLoadingOlder,
   setLoadingNewer,
   setHasOlder,
@@ -111,74 +128,158 @@ const useMessageListPagination = ({
   messageListBaseIndex,
 }: UseMessageListPaginationParams) => {
   const isAtPresentRef = useRef(isAtPresent);
-  const pendingNewerMessagesRef = useRef<Message[]>([]);
-  const pendingNewerHasMoreRef = useRef(false);
-  const pendingNewerIsAtPresentRef = useRef(true);
-
   isAtPresentRef.current = isAtPresent;
+  const firstItemIndexRef = useRef(firstItemIndex);
+  firstItemIndexRef.current = firstItemIndex;
+  const olderServerPrefetchInFlightRef = useRef<Set<string>>(new Set());
+  const olderServerPrefetchedAnchorsRef = useRef<Set<string>>(new Set());
+  const pendingOlderExhaustionRef = useRef<{
+    conversationId: string;
+    anchorMessageId: string | null;
+  } | null>(null);
 
   useEffect(() => {
-    pendingNewerMessagesRef.current = [];
-    pendingNewerHasMoreRef.current = false;
-    pendingNewerIsAtPresentRef.current = true;
-    setLoadingOlder(false);
-    setLoadingNewer(false);
-    setHasOlder(false);
-    setHasNewer(false);
-    setIsAtPresent(true);
-    setFirstItemIndex(messageListBaseIndex);
-    setGroupBreakBeforeIds(new Set());
+    return () => {
+      pendingOlderExhaustionRef.current = null;
+    };
+  }, []);
+
+  const getOlderServerPrefetchState = useCallback((anchorMessageId: string | null) => {
+    if (!anchorMessageId) {
+      return null;
+    }
+
+    return {
+      anchorMessageId,
+      inFlight: olderServerPrefetchInFlightRef.current.has(anchorMessageId),
+      prefetched: olderServerPrefetchedAnchorsRef.current.has(anchorMessageId),
+    };
+  }, []);
+
+  useEffect(() => {
+    olderServerPrefetchInFlightRef.current.clear();
+    olderServerPrefetchedAnchorsRef.current.clear();
+    pendingOlderExhaustionRef.current = null;
+    replaceWindow({
+      messages: [],
+      firstItemIndex: messageListBaseIndex,
+      groupBreakBeforeIds: new Set(),
+      loadingOlder: false,
+      loadingNewer: false,
+      hasOlder: false,
+      hasNewer: false,
+      isAtPresent: true,
+    });
   }, [conversationId, messageListBaseIndex]);
 
-  const queuePendingNewerMessages = useCallback((incoming: Message[], options: {
-    hasNewerAfterFlush: boolean;
-    isAtPresentAfterFlush: boolean;
-  }) => {
-    if (incoming.length === 0) {
-      pendingNewerHasMoreRef.current = options.hasNewerAfterFlush;
-      pendingNewerIsAtPresentRef.current = options.isAtPresentAfterFlush;
+  const warmOlderServerHistory = useCallback(async (nextOldestMessageId: string) => {
+    if (!encryptionKeyRef.current) {
       return;
     }
 
-    const mergedPending = Array.from(
-      new Map(
-        [...pendingNewerMessagesRef.current, ...incoming].map((message) => [message.message_id, message])
-      ).values()
-    );
-
-    pendingNewerMessagesRef.current = sortMessages(mergedPending);
-    pendingNewerHasMoreRef.current = options.hasNewerAfterFlush;
-    pendingNewerIsAtPresentRef.current = options.isAtPresentAfterFlush;
-  }, []);
-
-  const flushPendingNewerMessages = useCallback(() => {
-    const pendingMessages = pendingNewerMessagesRef.current;
-    if (pendingMessages.length === 0) {
-      return false;
+    const prefetchStateBefore = getOlderServerPrefetchState(nextOldestMessageId);
+    if (
+      olderServerPrefetchInFlightRef.current.has(nextOldestMessageId) ||
+      olderServerPrefetchedAnchorsRef.current.has(nextOldestMessageId)
+    ) {
+      const payload = {
+        conversationId,
+        anchorMessageId: nextOldestMessageId,
+        action: 'skip_already_known',
+        prefetchStateBefore,
+      };
+      rawDebugMessageList('older_server_prefetch_state', payload);
+      debugMessageList('older_server_prefetch_state', payload);
+      return;
     }
 
-    pendingNewerMessagesRef.current = [];
-    const hasNewerAfterFlush = pendingNewerHasMoreRef.current;
-    const isAtPresentAfterFlush = pendingNewerIsAtPresentRef.current;
-    pendingNewerHasMoreRef.current = false;
-    pendingNewerIsAtPresentRef.current = true;
-
-    mergeVisibleMessages({
-      incoming: pendingMessages,
-      currentUserId: userId,
-      trimFrom: 'old',
-      hasNewer: hasNewerAfterFlush,
-      isAtPresent: isAtPresentAfterFlush,
+    const localProbe = await messageSync.readLocal(conversationId, {
+      before: nextOldestMessageId,
+      limit: FETCH_SIZE,
     });
-    onMessagesLoaded?.(pendingMessages);
-    return true;
-  }, [mergeVisibleMessages, onMessagesLoaded, userId]);
+    const localProbeHadUndecryptable = hasUndecryptableMessage(localProbe.messages);
+
+    const isNearLocalOlderSeam =
+      localProbe.messages.length < FETCH_SIZE ||
+      !localProbe.has_more ||
+      localProbeHadUndecryptable;
+
+    if (!isNearLocalOlderSeam) {
+      const payload = {
+        conversationId,
+        anchorMessageId: nextOldestMessageId,
+        action: 'skip_not_near_seam',
+        localProbeCount: localProbe.messages.length,
+        localProbeHasMore: localProbe.has_more,
+        localProbeHadUndecryptable,
+        localHistoryExhaustedBeforeServer: localProbe.messages.length < FETCH_SIZE || !localProbe.has_more,
+        prefetchStateBefore,
+      };
+      rawDebugMessageList('older_server_prefetch_state', payload);
+      debugMessageList('older_server_prefetch_state', payload);
+      return;
+    }
+
+    olderServerPrefetchInFlightRef.current.add(nextOldestMessageId);
+    const startPayload = {
+      conversationId,
+      anchorMessageId: nextOldestMessageId,
+      action: 'start',
+      localProbeCount: localProbe.messages.length,
+      localProbeHasMore: localProbe.has_more,
+      localProbeHadUndecryptable,
+      localHistoryExhaustedBeforeServer: localProbe.messages.length < FETCH_SIZE || !localProbe.has_more,
+      prefetchStateBefore,
+      prefetchStateAfterStart: getOlderServerPrefetchState(nextOldestMessageId),
+    };
+    rawDebugMessageList('older_server_prefetch_state', startPayload);
+    debugMessageList('older_server_prefetch_state', startPayload);
+
+    try {
+      const serverResult = await getMessages(conversationId, encryptionKeyRef.current, {
+        before: nextOldestMessageId,
+        limit: MESSAGE_PREFETCH_SIZE,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion: currentKeyVersionRef.current,
+      });
+
+      await persistFetchedMessagesSafely(serverResult.messages);
+      olderServerPrefetchedAnchorsRef.current.add(nextOldestMessageId);
+      const successPayload = {
+        conversationId,
+        anchorMessageId: nextOldestMessageId,
+        action: 'success',
+        serverCount: serverResult.messages.length,
+        serverHasMore: serverResult.has_more,
+        prefetchStateAfterSuccess: getOlderServerPrefetchState(nextOldestMessageId),
+      };
+      rawDebugMessageList('older_server_prefetch_state', successPayload);
+      debugMessageList('older_server_prefetch_state', successPayload);
+    } catch (error) {
+      const errorPayload = {
+        conversationId,
+        anchorMessageId: nextOldestMessageId,
+        action: 'error',
+        error: error instanceof Error ? error.message : String(error),
+        prefetchStateAtError: getOlderServerPrefetchState(nextOldestMessageId),
+      };
+      rawDebugMessageList('older_server_prefetch_state', errorPayload);
+      debugMessageList('older_server_prefetch_state', errorPayload);
+      console.error('Failed to prefetch older server history:', error);
+    } finally {
+      olderServerPrefetchInFlightRef.current.delete(nextOldestMessageId);
+    }
+  }, [conversationId, currentKeyVersionRef, decryptionConversation, encryptionKeyRef, getOlderServerPrefetchState, userId]);
 
   const applyOlderMessages = useCallback((olderMessages: Message[], seamBreakBeforeId: string) => {
-    if (olderMessages.length === 0) return;
+    if (olderMessages.length === 0) return null;
 
+    const prevCount = messagesRef.current.length;
+    const prevFirstItemIndex = firstItemIndexRef.current;
     const existingIds = new Set(messagesRef.current.map((message) => message.message_id));
-    const prependedCount = olderMessages.filter((message) => !existingIds.has(message.message_id)).length;
+    const prependedMessages = olderMessages.filter((message) => !existingIds.has(message.message_id));
+    const prependedCount = prependedMessages.length;
     const mergedMessages = [...olderMessages, ...messagesRef.current];
     const uniqueMessages = Array.from(
       new Map(mergedMessages.map((message) => [message.message_id, message])).values()
@@ -186,6 +287,25 @@ const useMessageListPagination = ({
     const trimmedMessages = trimMessages(uniqueMessages, 'new', MESSAGE_ACTIVE_WINDOW_SIZE);
 
     messagesRef.current = trimmedMessages;
+    debugMessageList('prepend_apply', {
+      conversationId,
+      prependedCount,
+      prevFirstItemIndex,
+      nextFirstItemIndex: prependedCount > 0
+        ? prevFirstItemIndex - prependedCount
+        : prevFirstItemIndex,
+      prevCount,
+      nextCount: trimmedMessages.length,
+      firstPrependedId: prependedMessages[0]?.message_id || null,
+      lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
+    });
+    debugMessageList('prepend_derived_rows', {
+      conversationId,
+      rawOlderMessages: olderMessages.length,
+      renderedPrependedRows: prependedCount,
+      derivedRowsAreSeparateItems: false,
+      note: 'Date separators and grouping are rendered inside MessageItem, not as separate Virtuoso rows.',
+    });
     applyPrependedWindow({
       messages: trimmedMessages,
       prependedCount,
@@ -198,18 +318,36 @@ const useMessageListPagination = ({
     }
 
     onMessagesLoaded?.(olderMessages);
-  }, [applyPrependedWindow, messagesRef, onMessagesLoaded]);
+    return {
+      prependedCount,
+      prevCount,
+      nextCount: trimmedMessages.length,
+      trimmedVisibleCount: uniqueMessages.length - trimmedMessages.length,
+      firstPrependedId: prependedMessages[0]?.message_id || null,
+      lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
+    };
+  }, [applyPrependedWindow, conversationId, messagesRef, onMessagesLoaded]);
 
   const fetchOlderMessages = useCallback(async (oldestMessageId: string, options?: { forceServer?: boolean }) => {
     const forceServer = options?.forceServer === true;
     let result: { messages: any[]; has_more: boolean };
+    let localCount = 0;
+    let localHasMore = false;
+    let localHadUndecryptable = false;
+    let serverRequested = false;
+    let serverCount = 0;
+    let serverHasMore: boolean | null = null;
 
     if (forceServer) {
       const localResult = await messageSync.readLocal(conversationId, {
         before: oldestMessageId,
         limit: FETCH_SIZE,
       });
+      localCount = localResult.messages.length;
+      localHasMore = localResult.has_more;
+      localHadUndecryptable = hasUndecryptableMessage(localResult.messages);
 
+      serverRequested = true;
       const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
         before: oldestMessageId,
         limit: FETCH_SIZE,
@@ -217,6 +355,8 @@ const useMessageListPagination = ({
         userId,
         currentKeyVersion: currentKeyVersionRef.current,
       });
+      serverCount = serverResult.messages.length;
+      serverHasMore = serverResult.has_more;
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       result = {
         messages: mergeLocalMessages(localResult.messages, localMessages),
@@ -227,8 +367,12 @@ const useMessageListPagination = ({
         before: oldestMessageId,
         limit: FETCH_SIZE,
       });
+      localCount = result.messages.length;
+      localHasMore = result.has_more;
+      localHadUndecryptable = hasUndecryptableMessage(result.messages);
 
-      if (result.messages.length < FETCH_SIZE || !result.has_more || hasUndecryptableMessage(result.messages)) {
+      if (result.messages.length < FETCH_SIZE || !result.has_more || localHadUndecryptable) {
+        serverRequested = true;
         const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
           before: oldestMessageId,
           limit: FETCH_SIZE,
@@ -236,6 +380,8 @@ const useMessageListPagination = ({
           userId,
           currentKeyVersion: currentKeyVersionRef.current,
         });
+        serverCount = serverResult.messages.length;
+        serverHasMore = serverResult.has_more;
         const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
         result = {
           messages: mergeLocalMessages(result.messages, localMessages),
@@ -245,14 +391,39 @@ const useMessageListPagination = ({
     }
 
     const visibleOlderMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
+    const olderUI = sortMessages(visibleOlderMessages.map(toUIMessage));
     return {
-      olderUI: sortMessages(visibleOlderMessages.map(toUIMessage)),
+      olderUI,
       hasMore: result.has_more,
+      debug: {
+        requestedOlderCount: FETCH_SIZE,
+        forceServer,
+        localCount,
+        localHasMore,
+        localHadUndecryptable,
+        localHistoryExhaustedBeforeServer: localCount < FETCH_SIZE || !localHasMore,
+        serverRequested,
+        serverCount,
+        serverHasMore,
+        mergedCount: result.messages.length,
+        mergedHasMore: result.has_more,
+        visibleReturnedCount: olderUI.length,
+      },
     };
   }, [conversationId, decryptionConversation, encryptionKeyRef, historyAccessFence, userId, currentKeyVersionRef]);
 
   const loadOlderPage = useCallback(async (options?: { silent?: boolean; forceServer?: boolean }) => {
     const forceServer = options?.forceServer === true;
+
+    if (
+      pendingOlderExhaustionRef.current &&
+      pendingOlderExhaustionRef.current.conversationId === conversationId &&
+      !loadingOlder
+    ) {
+      pendingOlderExhaustionRef.current = null;
+      setHasOlder(false);
+      return;
+    }
 
     if (
       !encryptionKeyRef.current ||
@@ -263,6 +434,15 @@ const useMessageListPagination = ({
       return;
     }
 
+    debugMessageList('older_fetch_start', {
+      conversationId,
+      oldestMessageId: messagesRef.current[0]?.message_id || null,
+      currentCount: messagesRef.current.length,
+      firstItemIndex: firstItemIndexRef.current,
+      forceServer,
+      hasOlder,
+      loadingOlder,
+    });
     setLoadingOlder(true);
 
     try {
@@ -270,13 +450,68 @@ const useMessageListPagination = ({
       if (!oldestMessage) return;
 
       const seamBreakBeforeId = oldestMessage.message_id;
-      const { olderUI, hasMore } = await fetchOlderMessages(oldestMessage.message_id, { forceServer });
+      const { olderUI, hasMore, debug } = await fetchOlderMessages(oldestMessage.message_id, { forceServer });
+      let applySummary: ReturnType<typeof applyOlderMessages> = null;
+      const nextOldestLoadedMessageId = olderUI[0]?.message_id ?? null;
 
       if (olderUI.length > 0) {
-        applyOlderMessages(olderUI, seamBreakBeforeId);
-        setHasOlder(hasMore);
+        applySummary = applyOlderMessages(olderUI, seamBreakBeforeId);
+        if (!hasMore) {
+          pendingOlderExhaustionRef.current = {
+            conversationId,
+            anchorMessageId: nextOldestLoadedMessageId,
+          };
+          setHasOlder(true);
+        } else {
+          pendingOlderExhaustionRef.current = null;
+          setHasOlder(true);
+        }
+        if (!forceServer) {
+          if (nextOldestLoadedMessageId) {
+            void warmOlderServerHistory(nextOldestLoadedMessageId);
+          }
+        }
+        debugMessageList('older_fetch_success', {
+          conversationId,
+          fetchedCount: olderUI.length,
+          hasMore,
+          seamBreakBeforeId,
+          firstItemIndex: firstItemIndexRef.current,
+        });
       } else {
+        pendingOlderExhaustionRef.current = null;
         setHasOlder(false);
+      }
+
+      if (olderUI.length < FETCH_SIZE || !hasMore) {
+        const boundaryPayload = {
+          conversationId,
+          requestedOlderCount: debug.requestedOlderCount,
+          returnedOlderCount: olderUI.length,
+          hasOlderBefore: hasOlder,
+          hasOlderAfter: olderUI.length > 0 ? hasMore : false,
+          oldestMessageIdBefore: oldestMessage.message_id,
+          oldestMessageIdAfter: nextOldestLoadedMessageId,
+          localHistoryExhaustedBeforeServer: debug.localHistoryExhaustedBeforeServer,
+          localCount: debug.localCount,
+          localHasMore: debug.localHasMore,
+          localHadUndecryptable: debug.localHadUndecryptable,
+          serverRequested: debug.serverRequested,
+          serverCount: debug.serverCount,
+          serverHasMore: debug.serverHasMore,
+          mergedCount: debug.mergedCount,
+          visibleReturnedCount: debug.visibleReturnedCount,
+          currentAnchorPrefetchState: getOlderServerPrefetchState(oldestMessage.message_id),
+          nextAnchorPrefetchState: getOlderServerPrefetchState(nextOldestLoadedMessageId),
+          trimmedVisibleCount: applySummary?.trimmedVisibleCount ?? 0,
+          prevVisibleCount: applySummary?.prevCount ?? messagesRef.current.length,
+          nextVisibleCount: applySummary?.nextCount ?? messagesRef.current.length,
+          prependedCount: applySummary?.prependedCount ?? 0,
+          forceServer,
+          exhaustionStateCommitStrategy: olderUI.length > 0 && !hasMore ? 'defer_until_next_top_hit' : 'immediate',
+        };
+        rawDebugMessageList('older_fetch_boundary', boundaryPayload);
+        debugMessageList('older_fetch_boundary', boundaryPayload);
       }
     } catch (error) {
       console.error('Failed to load older messages:', error);
@@ -284,7 +519,16 @@ const useMessageListPagination = ({
       setLoadingOlder(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyOlderMessages, fetchOlderMessages, hasOlder, loadingOlder, messagesRef, setHasOlder]);
+  }, [
+    applyOlderMessages,
+    fetchOlderMessages,
+    getOlderServerPrefetchState,
+    hasOlder,
+    loadingOlder,
+    messagesRef,
+    setHasOlder,
+    warmOlderServerHistory,
+  ]);
 
   const loadOlder = useCallback(async () => {
     await loadOlderPage();
@@ -293,8 +537,8 @@ const useMessageListPagination = ({
   const loadNewer = useCallback(async () => {
     if (!encryptionKeyRef.current || loadingNewer || !hasNewer || messages.length === 0) return;
 
-    if (initialHydrationSettled && pendingNewerMessagesRef.current.length > 0) {
-      flushPendingNewerMessages();
+    if (initialHydrationSettled && hasQueuedNewer) {
+      flushQueuedNewerMessages({ currentUserId: userId, trimFrom: 'old' });
       return;
     }
 
@@ -331,11 +575,11 @@ const useMessageListPagination = ({
         const isAtPresentAfterMerge = newerUI.length < FETCH_SIZE;
 
         if (!initialHydrationSettled || !isAtPresentRef.current) {
-          queuePendingNewerMessages(newerUI, {
+          queueNewerMessages({
             hasNewerAfterFlush: hasNewerAfterMerge,
             isAtPresentAfterFlush: isAtPresentAfterMerge,
+            incoming: newerUI,
           });
-          setHasNewer(true);
         } else {
           mergeVisibleMessages({
             incoming: newerUI,
@@ -355,19 +599,20 @@ const useMessageListPagination = ({
     } finally {
       setLoadingNewer(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     conversationId,
     decryptionConversation,
     hasNewer,
+    hasQueuedNewer,
     historyAccessFence,
     initialHydrationSettled,
     loadingNewer,
     mergeVisibleMessages,
     messages,
     onMessagesLoaded,
-    queuePendingNewerMessages,
+    queueNewerMessages,
     userId,
+    flushQueuedNewerMessages,
   ]);
 
   const reconcileRecentMessages = useCallback(async (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
@@ -405,11 +650,11 @@ const useMessageListPagination = ({
         setHasNewer(hasNewerAfterMerge);
         setIsAtPresent(isAtPresentAfterMerge);
       } else if (!initialHydrationSettled || !isAtPresentRef.current) {
-        queuePendingNewerMessages(newerUI, {
+        queueNewerMessages({
           hasNewerAfterFlush: hasNewerAfterMerge,
           isAtPresentAfterFlush: isAtPresentAfterMerge,
+          incoming: newerUI,
         });
-        setHasNewer(true);
       } else {
         mergeVisibleMessages({
           incoming: newerUI,
@@ -423,26 +668,24 @@ const useMessageListPagination = ({
     } catch (error) {
       console.error('Failed to reconcile missed messages after reconnect:', error);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     conversationId,
     decryptionConversation,
-    flushPendingNewerMessages,
     historyAccessFence,
     initialHydrationSettled,
     mergeVisibleMessages,
     onMessagesLoaded,
-    queuePendingNewerMessages,
+    queueNewerMessages,
     userId,
   ]);
 
   useEffect(() => {
-    if (!initialHydrationSettled || !isAtPresent) {
+    if (!initialHydrationSettled || !isAtPresent || !hasQueuedNewer) {
       return;
     }
 
-    void flushPendingNewerMessages();
-  }, [flushPendingNewerMessages, initialHydrationSettled, isAtPresent]);
+    flushQueuedNewerMessages({ currentUserId: userId, trimFrom: 'old' });
+  }, [flushQueuedNewerMessages, hasQueuedNewer, initialHydrationSettled, isAtPresent, userId]);
 
   useEffect(() => {
     if (!encryptionKey || loading || syncing || !initialHydrationSettled) return;
@@ -488,9 +731,6 @@ const useMessageListPagination = ({
       const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
       const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
 
-      pendingNewerMessagesRef.current = [];
-      pendingNewerHasMoreRef.current = false;
-      pendingNewerIsAtPresentRef.current = true;
       replaceWindow({
         messages: freshUI,
         firstItemIndex: messageListBaseIndex,

@@ -529,7 +529,7 @@ const MessageItem = memo(function MessageItem({
           {message.reply_to && (
             <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
               <div
-                className="inline-flex items-center gap-1.5 text-void-text-muted cursor-pointer hover:text-void-text transition-colors"
+                className="inline-flex min-h-[18px] max-w-[260px] items-center gap-1.5 text-void-text-muted cursor-pointer hover:text-void-text transition-colors"
                 style={{ fontSize: `${replyFontSize}px` }}
               >
                 <CornerUpRight className="w-3 h-3 flex-shrink-0" />
@@ -569,7 +569,7 @@ const MessageItem = memo(function MessageItem({
                     })()}
                   </>
                 ) : (
-                  <span className="italic">Loading reply...</span>
+                  <span className="truncate italic opacity-70">Loading reply...</span>
                 )}
               </div>
             </div>
@@ -641,11 +641,13 @@ const MessageItem = memo(function MessageItem({
           })()}
 
           {!message.is_deleted && inviteUrl && inviteCode && (
-            <InviteEmbed
-              inviteCode={inviteCode}
-              inviteUrl={inviteUrl}
-              onOpenInvite={(url) => onOpenLink?.(url)}
-            />
+            <div className="pt-2">
+              <InviteEmbed
+                inviteCode={inviteCode}
+                inviteUrl={inviteUrl}
+                onOpenInvite={(url) => onOpenLink?.(url)}
+              />
+            </div>
           )}
 
           {!message.is_deleted && Object.keys(messageReactions || {}).length > 0 && (
