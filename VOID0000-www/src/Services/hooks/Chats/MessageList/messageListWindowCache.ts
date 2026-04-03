@@ -38,11 +38,12 @@ export const resolveInitialHasOlder = ({
   sessionSnapshot?: ConversationWindowSnapshot;
   syncHasMore?: boolean;
 }) => {
-  if (sessionSnapshot) {
-    return localHasMore || syncHasMore || sessionSnapshot.hasOlder;
-  }
-
-  return localHasMore || syncHasMore || localCount >= requestedLimit;
+  return (
+    localHasMore ||
+    syncHasMore ||
+    localCount >= requestedLimit ||
+    sessionSnapshot?.hasOlder === true
+  );
 };
 
 export type { ConversationWindowSnapshot };

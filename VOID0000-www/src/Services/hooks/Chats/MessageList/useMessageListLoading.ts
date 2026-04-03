@@ -1,5 +1,10 @@
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import { MESSAGE_PAGE_SIZE } from '../../../Chat/chatConstants';
+import {
+  MAX_INITIAL_OPEN_COUNT,
+  MESSAGE_PAGE_SIZE,
+  MIN_MESSAGE_ROW_HEIGHT_PX,
+  VIEWPORT_FILL_BUFFER,
+} from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { type Conversation, type Message } from '../../../Chat/chatService';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
@@ -54,6 +59,25 @@ interface UseMessageListLoadingParams {
 
 const INITIAL_OPEN_LIMIT = MESSAGE_PAGE_SIZE;
 
+const resolveInitialOpenLimit = () => {
+  if (typeof window === 'undefined') {
+    return INITIAL_OPEN_LIMIT;
+  }
+
+  const viewportHeight = Math.max(window.innerHeight || 0, 0);
+  if (viewportHeight <= 0) {
+    return INITIAL_OPEN_LIMIT;
+  }
+
+  const viewportDrivenLimit =
+    Math.ceil(viewportHeight / MIN_MESSAGE_ROW_HEIGHT_PX) + VIEWPORT_FILL_BUFFER;
+
+  return Math.min(
+    MAX_INITIAL_OPEN_COUNT,
+    Math.max(INITIAL_OPEN_LIMIT, viewportDrivenLimit),
+  );
+};
+
 const useMessageListLoading = ({
   conversationId,
   conversationKeyVersion,
@@ -105,7 +129,7 @@ const useMessageListLoading = ({
   useEffect(() => {
     let ignore = false;
     const sessionSnapshot = getConversationWindowSnapshot(conversationId);
-    const initialLimit = INITIAL_OPEN_LIMIT;
+    const initialLimit = resolveInitialOpenLimit();
 
     const settleInitialHydration = () => {
       if (!ignore) {
@@ -225,6 +249,10 @@ const useMessageListLoading = ({
 
       if (!shouldPreserveMessages) {
         resetVisibleWindow();
+        // Force one fresh validation sync when a conversation is opened again in the UI.
+        // Cached messages still render immediately, but we should not trust the previous
+        // session-validation result to answer "does older history exist?" for this open.
+        messageSync.invalidateConversation(conversationId);
       }
 
       try {

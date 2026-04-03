@@ -11,7 +11,7 @@ import UserProfile from '../components/common/Profile/userProfile';
 import UseSetting from '../components/common/Setting/Setting';
 import RecoveryPhraseModal from '../components/common/Setting/RecoveryPhraseModal';
 import ConversationList from '../components/Chat/ConversationList';
-import MessageView from '../components/Chat/MessageView';
+import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';

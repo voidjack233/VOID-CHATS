@@ -1,46 +1,46 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { LogLevel, type ListRange, type VirtuosoHandle, Virtuoso } from 'react-virtuoso';
 import { ArrowDown } from 'lucide-react';
-import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
-import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
-import { useReactions } from '../../Services/hooks/Chats/useReactions';
-import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
-import { parseAttachments } from '../../Services/Chat/chatService';
-import { type Conversation, type ConversationMember, type Message } from '../../Services/Chat/chatService';
-import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
+import { useMessageList } from '../../../Services/hooks/Chats/useMessageList';
+import { useMessageDisplay } from '../../../Services/hooks/Chats/useMessageDisplay';
+import { useReactions } from '../../../Services/hooks/Chats/useReactions';
+import type { ConversationSecurityState } from '../../../Services/Chat/conversationSecurityState';
+import { parseAttachments } from '../../../Services/Chat/chatService';
+import { type Conversation, type ConversationMember, type Message } from '../../../Services/Chat/chatService';
+import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../../Services/Crypto/attachmentEncryption';
 import {
   debugMessageList,
   ensureChatDebugHelpers,
   isMessageListDebugEnabled,
   rawDebugMessageList,
-} from '../../Services/hooks/Chats/MessageList/messageListDebug';
-import { useUser } from '../../Services/Auth/UserContext';
-import { useFriends } from '../../Services/hooks/Friends/useFriends';
-import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
-import { useTheme } from '../../Services/hooks/Settings/useTheme';
-import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
+} from '../../../Services/hooks/Chats/MessageList/messageListDebug';
+import { useUser } from '../../../Services/Auth/UserContext';
+import { useFriends } from '../../../Services/hooks/Friends/useFriends';
+import { useUserProfile } from '../../../Services/hooks/editProfile/userProfile';
+import { useTheme } from '../../../Services/hooks/Settings/useTheme';
+import { formatConversationPreview, setConversationPreview } from '../../../Services/Chat/conversationPreviewCache';
 import {
   MessageViewSkeleton,
-} from '../common/Skeleton';
-import MessageItem from './MessageItem';
-import MessageOverlays from './MessageOverlays';
-import { buildMessageViewHeaderIdentity } from './MessageViewHeader';
+} from '../../common/Skeleton';
+import MessageItem from '../MessageItem';
+import MessageOverlays from '../MessageOverlays';
+import { buildMessageViewHeaderIdentity } from '../MessageViewHeader';
 import {
   extractMessageTextSegments,
   getInviteCodeFromMessageUrl,
   getMessageLinkHostname,
   isTrustedMessageUrl,
-} from './messageLinks';
-import ExternalLinkModal from './MessageViewParts/ExternalLinkModal';
+} from '../messageLinks';
+import ExternalLinkModal from '../MessageViewParts/ExternalLinkModal';
 import {
   type MessageViewVirtuosoContext,
   VirtuosoEmptyPlaceholder,
   VirtuosoFooter,
   VirtuosoHeader,
-} from './MessageViewParts/MessageViewVirtuosoParts';
-import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
-import { useMessageActions } from './useMessageActions';
-import { useMessageLayout } from './useMessageLayout';
+} from './MessageViewVirtuosoParts';
+import TypingIndicator, { type TypingParticipant } from '../TypingIndicator';
+import { useMessageActions } from '../useMessageActions';
+import { useMessageLayout } from '../useMessageLayout';
 
 interface MessageViewProps {
   conversation: Conversation;
