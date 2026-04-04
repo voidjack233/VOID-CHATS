@@ -358,6 +358,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const loginPasswordRef = useRef<string | null>(null);
+  const liveConversationKeyVersionsRef = useRef<Record<string, number>>({});
+  const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
 
   const setLoginPassword = (password: string) => {
     loginPasswordRef.current = password;
@@ -778,9 +780,46 @@ export function UserProvider({ children }: { children: ReactNode }) {
     const password = loginPasswordRef.current;
     let cancelled = false;
 
+    liveConversationKeyVersionsRef.current = {};
+
     const runBootstrapMaintenance = (force = false) => {
       if (cancelled) return;
       void chatCryptoProtocolService.bootstrapAccount(userId, force).catch(() => {});
+    };
+
+    const clearPendingLiveInboxSync = () => {
+      if (pendingLiveInboxSyncTimerRef.current != null) {
+        window.clearTimeout(pendingLiveInboxSyncTimerRef.current);
+        pendingLiveInboxSyncTimerRef.current = null;
+      }
+    };
+
+    const scheduleLiveInboxSync = (
+      reason: 'conversation_key_bump',
+      metadata: Record<string, unknown>,
+    ) => {
+      if (cancelled) return;
+
+      clearPendingLiveInboxSync();
+      pendingLiveInboxSyncTimerRef.current = window.setTimeout(() => {
+        pendingLiveInboxSyncTimerRef.current = null;
+        if (cancelled) return;
+
+        console.log('[MLS_LIVE_SYNC] syncing inbox after live conversation update', {
+          user_id: userId,
+          reason,
+          ...metadata,
+        });
+
+        void chatCryptoProtocolService.syncInbox(userId, true).catch((error) => {
+          console.warn('[MLS_LIVE_SYNC] forced inbox sync failed', {
+            user_id: userId,
+            reason,
+            ...metadata,
+            error: error instanceof Error ? error.message : String(error || ''),
+          });
+        });
+      }, 150);
     };
 
     // Top-up the server key-package reserve.  The single-flight mutex inside
@@ -850,6 +889,48 @@ export function UserProvider({ children }: { children: ReactNode }) {
       runKeyPackageTopUp();
     };
 
+    const onConversationUpdate = (data: any) => {
+      const updatedConversation = data?.conversation;
+      const conversationId =
+        typeof updatedConversation?.id === 'string' && updatedConversation.id.length > 0
+          ? updatedConversation.id
+          : null;
+
+      if (!conversationId) {
+        return;
+      }
+
+      const nextKeyVersion = normalizePositiveVersion(updatedConversation?.current_key_version);
+      if (nextKeyVersion <= 0) {
+        return;
+      }
+
+      const previousKeyVersion = liveConversationKeyVersionsRef.current[conversationId] ?? 0;
+      liveConversationKeyVersionsRef.current[conversationId] = Math.max(
+        previousKeyVersion,
+        nextKeyVersion,
+      );
+
+      const shouldSync =
+        previousKeyVersion === 0 || nextKeyVersion > previousKeyVersion;
+
+      if (!shouldSync) {
+        return;
+      }
+
+      scheduleLiveInboxSync('conversation_key_bump', {
+        conversation_id: conversationId,
+        conversation_public_id:
+          typeof updatedConversation?.public_id === 'string'
+            ? updatedConversation.public_id
+            : null,
+        conversation_type:
+          typeof updatedConversation?.type === 'string' ? updatedConversation.type : null,
+        previous_key_version: previousKeyVersion > 0 ? previousKeyVersion : null,
+        next_key_version: nextKeyVersion,
+      });
+    };
+
     // Incrementally back up group keys whenever they change during the session.
     const onKeyChanged = () => {
       if (loginPasswordRef.current && user?.id) {
@@ -865,9 +946,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
     gateway.on('READY', onGatewayReady);
     gateway.on('RESUMED', onGatewayResumed);
     gateway.on('KEY_PACKAGE_LOW', onKeyPackageLow);
+    gateway.on('CONVERSATION_UPDATE', onConversationUpdate);
 
     return () => {
       cancelled = true;
+      clearPendingLiveInboxSync();
       window.clearInterval(maintenanceInterval);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('focus', onFocus);
@@ -877,6 +960,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       gateway.off('READY', onGatewayReady);
       gateway.off('RESUMED', onGatewayResumed);
       gateway.off('KEY_PACKAGE_LOW', onKeyPackageLow);
+      gateway.off('CONVERSATION_UPDATE', onConversationUpdate);
     };
   }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
 

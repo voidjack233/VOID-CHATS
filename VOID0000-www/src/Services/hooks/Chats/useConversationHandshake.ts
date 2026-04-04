@@ -780,6 +780,118 @@ export const useConversationHandshake = ({
   useEffect(() => {
     if (!user?.id) return;
 
+    const refreshMembershipDetails = async (
+      activeConversationSnapshot: Conversation,
+      activeGroupSnapshot: Conversation | null,
+    ) => {
+      const lookupId =
+        activeConversationSnapshot.type !== 'channel'
+          ? activeConversationSnapshot.public_id || activeConversationSnapshot.id
+          : (
+              activeConversationSnapshot.parent_public_id ||
+              activeGroupSnapshot?.public_id ||
+              activeConversationSnapshot.parent_conversation_id ||
+              activeGroupSnapshot?.id ||
+              activeConversationSnapshot.public_id ||
+              activeConversationSnapshot.id
+            );
+
+      const res = await fetchWithAuth(`/api/conversations/${lookupId}`);
+      const data = await res.json();
+      if (!data.success) {
+        throw new Error(data.error || 'Could not refresh conversation members');
+      }
+
+      const conversationDetails = storeConversationDetails(data.conversation as ConversationDetails);
+      const refreshedMembers = conversationDetails.members || [];
+      const nextMembers: Record<string, any> = {};
+      refreshedMembers.forEach((member: any) => {
+        nextMembers[member.user_id] = member;
+      });
+
+      setMembers(nextMembers);
+
+      const keyScopeId =
+        activeConversationSnapshot.type === 'dm'
+          ? activeConversationSnapshot.id
+          : (
+              activeConversationSnapshot.parent_conversation_id ||
+              activeGroupSnapshot?.id ||
+              activeConversationSnapshot.id
+            );
+      const handshakeEntry = getHandshakeEntry(keyScopeId);
+      if (handshakeEntry) {
+        setHandshakeEntry(keyScopeId, {
+          ...handshakeEntry,
+          members: nextMembers,
+        });
+      }
+    };
+
+    const handleConversationUpdate = (data: any) => {
+      const updatedConversation = data?.conversation as Conversation | undefined;
+      if (!updatedConversation?.id) {
+        return;
+      }
+
+      const activeConversationSnapshot = activeConversation;
+      const activeGroupSnapshot = activeGroup;
+      if (!activeConversationSnapshot) {
+        return;
+      }
+
+      const membershipConversationId =
+        activeConversationSnapshot.type === 'channel'
+          ? activeConversationSnapshot.parent_conversation_id || activeGroupSnapshot?.id || null
+          : activeGroupSnapshot?.id || activeConversationSnapshot.id;
+      const membershipConversationPublicId =
+        activeConversationSnapshot.type === 'channel'
+          ? activeConversationSnapshot.parent_public_id || activeGroupSnapshot?.public_id || null
+          : activeGroupSnapshot?.public_id || activeConversationSnapshot.public_id || null;
+
+      const matchesMembershipConversation =
+        String(updatedConversation.id) === String(membershipConversationId) ||
+        (updatedConversation.public_id && membershipConversationPublicId
+          ? String(updatedConversation.public_id) === String(membershipConversationPublicId)
+          : false);
+
+      if (!matchesMembershipConversation) {
+        return;
+      }
+
+      const membershipSnapshot = activeGroupSnapshot || activeConversationSnapshot;
+      const previousMemberCount = membershipSnapshot.member_count ?? null;
+      const nextMemberCount =
+        typeof updatedConversation.member_count === 'number'
+          ? updatedConversation.member_count
+          : previousMemberCount;
+      const previousKeyVersion =
+        normalizeRequiredVersion(membershipSnapshot.current_key_version) ?? 0;
+      const nextKeyVersion =
+        normalizeRequiredVersion(updatedConversation.current_key_version) ?? previousKeyVersion;
+      const previousRole =
+        typeof membershipSnapshot.role === 'string' ? membershipSnapshot.role : null;
+      const nextRole =
+        typeof updatedConversation.role === 'string' ? updatedConversation.role : previousRole;
+
+      const membershipChanged =
+        nextMemberCount !== previousMemberCount ||
+        nextKeyVersion > previousKeyVersion ||
+        nextRole !== previousRole;
+
+      if (!membershipChanged) {
+        return;
+      }
+
+      void refreshMembershipDetails(activeConversationSnapshot, activeGroupSnapshot).catch((error) => {
+        console.warn('[GROUP_MEMBERS] failed to refresh active membership details', {
+          conversation_id: membershipConversationId,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
+    };
+
+    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     const handleMemberNicknameUpdate = (data: any) => {
       const targetUserId = data?.user_id;
       const eventConversationId = data?.conversation_id;
@@ -888,7 +1000,10 @@ export const useConversationHandshake = ({
     };
 
     gateway.on('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
-    return () => gateway.off('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
+    return () => {
+      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
+      gateway.off('MEMBER_NICKNAME_UPDATE', handleMemberNicknameUpdate);
+    };
   }, [
     activeConversation,
     activeGroup,
