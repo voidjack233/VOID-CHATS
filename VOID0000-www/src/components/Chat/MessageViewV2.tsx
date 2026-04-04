@@ -90,7 +90,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
-  const [scrollReady, setScrollReady] = useState(false);
+
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
   const { friends } = useFriends();
@@ -180,7 +180,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     autofillOlderRequestInFlightRef.current = false;
     setIsAtBottom(true);
     setHasUnseenMessages(false);
-    setScrollReady(false);
+    if (scrollerRef.current) scrollerRef.current.style.opacity = '0';
   }, [conversation.id]);
 
   // ── Track unseen messages from others ──
@@ -390,7 +390,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     scrollToBottom('auto');
     syncScrollState();
     initialLatestRestoreDoneRef.current = true;
-    setScrollReady(true);
+    if (scroller) scroller.style.opacity = '1';
     return true;
   }, [initialHydrationSettled, scrollToBottom, syncScrollState, visualMessages.length]);
 
@@ -459,7 +459,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       },
       {
         root: scroller,
-        rootMargin: '0px 0px 200px 0px',
+        rootMargin: '0px 0px 600px 0px',
         threshold: 0,
       },
     );
@@ -682,16 +682,11 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
-      {!scrollReady && (
-        <div className="absolute inset-0 z-10 bg-void-bg-main flex flex-col">
-          <MessageViewSkeleton density={density} />
-        </div>
-      )}
       <div
         ref={scrollerRef}
         onScroll={handleScroll}
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
-        style={{ overflowAnchor: 'auto' }}
+        style={{ overflowAnchor: 'auto', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}
       >
         {/* Older sentinel: triggers prefetch via IntersectionObserver */}
         {hasOlder && <div ref={olderSentinelRef} className="h-px w-full" />}

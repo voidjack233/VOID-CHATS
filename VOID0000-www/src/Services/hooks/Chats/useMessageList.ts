@@ -166,39 +166,50 @@ const messageWindowReducer = (
         isAtPresent: false,
       };
     }
-    case 'flush_queued_newer':
+    case 'flush_queued_newer': {
       if (state.queuedNewerMessages.length === 0) {
         return state;
       }
+      const flushResult = mergeMessagesWithReconciliation({
+        existing: state.messages,
+        incoming: state.queuedNewerMessages,
+        currentUserId: action.currentUserId,
+        trimFrom: action.trimFrom ?? 'old',
+        allowOptimisticFallback: true,
+      });
       return {
         ...state,
-        messages: mergeMessagesWithReconciliation({
-          existing: state.messages,
-          incoming: state.queuedNewerMessages,
-          currentUserId: action.currentUserId,
-          trimFrom: action.trimFrom ?? 'old',
-          allowOptimisticFallback: true,
-        }),
+        messages: flushResult.messages,
+        firstItemIndex: flushResult.trimmedFromOld > 0
+          ? state.firstItemIndex + flushResult.trimmedFromOld
+          : state.firstItemIndex,
         queuedNewerMessages: [],
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
+        hasOlder: flushResult.trimmedFromOld > 0 ? true : state.hasOlder,
         hasNewer: state.queuedNewerHasNewer,
         isAtPresent: state.queuedNewerIsAtPresent,
       };
-    case 'merge_visible_messages':
+    }
+    case 'merge_visible_messages': {
+      const mergeResult = mergeMessagesWithReconciliation({
+        existing: state.messages,
+        incoming: action.incoming,
+        currentUserId: action.currentUserId,
+        trimFrom: action.trimFrom ?? 'old',
+        allowOptimisticFallback: true,
+      });
       return {
         ...state,
-        messages: mergeMessagesWithReconciliation({
-          existing: state.messages,
-          incoming: action.incoming,
-          currentUserId: action.currentUserId,
-          trimFrom: action.trimFrom ?? 'old',
-          allowOptimisticFallback: true,
-        }),
-        hasOlder: action.hasOlder ?? state.hasOlder,
-        hasNewer: action.hasNewer ?? state.hasNewer,
-        isAtPresent: action.isAtPresent ?? state.isAtPresent,
+        messages: mergeResult.messages,
+        firstItemIndex: mergeResult.trimmedFromOld > 0
+          ? state.firstItemIndex + mergeResult.trimmedFromOld
+          : state.firstItemIndex,
+        hasOlder: mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? state.hasOlder),
+        hasNewer: mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? state.hasNewer),
+        isAtPresent: mergeResult.trimmedFromNew > 0 ? false : (action.isAtPresent ?? state.isAtPresent),
       };
+    }
     case 'set_first_item_index':
       return {
         ...state,

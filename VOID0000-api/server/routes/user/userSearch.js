@@ -1,12 +1,13 @@
 import express from 'express';
 import { pool as db } from '../../db.js';
 import { authenticateUser } from '../../middleware/jwt.js';
+import { userSearchLimiter } from '../../middleware/rate_limit.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
 
 const router = express.Router();
 
 // GET /api/users/search?q=username
-router.get('/', authenticateUser, async (req, res) => {
+router.get('/', authenticateUser, userSearchLimiter, async (req, res) => {
   const { q } = req.query;
   const currentUserId = req.user.id;
 

@@ -3,13 +3,16 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import cassandra from 'cassandra-driver';
 import pg from 'pg';
 
 const { Pool } = pg;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const projectRoot = path.resolve(__dirname, '..', '..');
-const migrationsDir = path.join(projectRoot, 'db', 'migrations');
+const postgresMigrationsDir = path.join(projectRoot, 'db', 'migrations');
+const scyllaMigrationsDir = path.join(projectRoot, 'db', 'scylla-migrations');
+const MIGRATION_LOCK_KEYS = [1448030532, 1296641874];
 
 dotenv.config({ path: path.join(projectRoot, '.env'), quiet: true });
 
@@ -23,11 +26,35 @@ function createPool() {
   });
 }
 
-function checksumOf(sql) {
-  return createHash('sha256').update(sql).digest('hex');
+function checksumOf(contents) {
+  return createHash('sha256').update(contents).digest('hex');
 }
 
-async function ensureMigrationsTable(client) {
+function validateIdentifier(value, label) {
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`Invalid ${label} "${value}". Use only letters, numbers, and underscores.`);
+  }
+  return value;
+}
+
+function resolveScyllaConfig() {
+  const keyspace = validateIdentifier(process.env.SCYLLA_KEYSPACE || 'voidapp', 'Scylla keyspace');
+  const localDataCenter = process.env.SCYLLA_LOCAL_DATACENTER || 'datacenter1';
+  const replicationFactor = Math.max(parseInt(process.env.SCYLLA_REPLICATION_FACTOR || '1', 10) || 1, 1);
+  const contactPoints = String(process.env.SCYLLA_HOST || '127.0.0.1')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return {
+    keyspace,
+    localDataCenter,
+    replicationFactor,
+    contactPoints: contactPoints.length > 0 ? contactPoints : ['127.0.0.1'],
+  };
+}
+
+async function ensurePostgresMigrationsTable(client) {
   await client.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       filename TEXT PRIMARY KEY,
@@ -37,14 +64,33 @@ async function ensureMigrationsTable(client) {
   `);
 }
 
-async function loadMigrations() {
-  const files = (await fs.readdir(migrationsDir))
+async function ensureScyllaKeyspace(client, config) {
+  await client.execute(
+    `CREATE KEYSPACE IF NOT EXISTS ${config.keyspace}
+     WITH replication = {'class': 'SimpleStrategy', 'replication_factor': ${config.replicationFactor}}`
+  );
+}
+
+async function ensureScyllaMigrationsTable(client, keyspace) {
+  await client.execute(
+    `CREATE TABLE IF NOT EXISTS ${keyspace}.schema_migrations (
+      scope text,
+      filename text,
+      checksum text,
+      applied_at timestamp,
+      PRIMARY KEY ((scope), filename)
+    )`
+  );
+}
+
+async function loadSqlMigrations() {
+  const files = (await fs.readdir(postgresMigrationsDir))
     .filter((file) => file.endsWith('.sql'))
     .sort();
 
   const migrations = [];
   for (const filename of files) {
-    const fullPath = path.join(migrationsDir, filename);
+    const fullPath = path.join(postgresMigrationsDir, filename);
     const sql = await fs.readFile(fullPath, 'utf8');
     migrations.push({
       filename,
@@ -57,14 +103,114 @@ async function loadMigrations() {
   return migrations;
 }
 
-export async function runMigrations({ logger = console, statusOnly = false } = {}) {
+async function loadScyllaMigrations() {
+  let files = [];
+  try {
+    files = await fs.readdir(scyllaMigrationsDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const migrations = [];
+  for (const filename of files.filter((file) => file.endsWith('.cql')).sort()) {
+    const fullPath = path.join(scyllaMigrationsDir, filename);
+    const cql = await fs.readFile(fullPath, 'utf8');
+    const statements = cql
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+
+    migrations.push({
+      filename,
+      fullPath,
+      cql,
+      statements,
+      checksum: checksumOf(cql),
+    });
+  }
+
+  return migrations;
+}
+
+function renderScyllaStatement(statement, config) {
+  return statement.replaceAll('{{KEYSPACE}}', config.keyspace);
+}
+
+function reportMigrationStatus({
+  logger,
+  appliedRows,
+  pending,
+  appliedLabel,
+  pendingLabel,
+}) {
+  logger.log(`${appliedLabel}: ${appliedRows.length}`);
+  logger.log(`${pendingLabel}: ${pending.length}`);
+
+  for (const row of appliedRows) {
+    logger.log(`applied  ${row.filename}  ${new Date(row.applied_at).toISOString()}`);
+  }
+  for (const migration of pending) {
+    logger.log(`pending  ${migration.filename}`);
+  }
+}
+
+function validateAppliedChecksums({ appliedByFilename, migrations, errorPrefix }) {
+  const pending = [];
+
+  for (const migration of migrations) {
+    const applied = appliedByFilename.get(migration.filename);
+    if (!applied) {
+      pending.push(migration);
+      continue;
+    }
+
+    if (applied.checksum !== migration.checksum) {
+      throw new Error(
+        `${errorPrefix} "${migration.filename}" no longer matches the repo copy. ` +
+        'Create a new migration instead of editing an old one.'
+      );
+    }
+  }
+
+  return pending;
+}
+
+async function withGlobalMigrationLock({ logger = console }, callback) {
   const pool = createPool();
   const client = await pool.connect();
 
   try {
-    await ensureMigrationsTable(client);
+    logger.log('Waiting for global migration lock...');
+    await client.query(
+      'SELECT pg_advisory_lock($1, $2)',
+      MIGRATION_LOCK_KEYS
+    );
+    logger.log('Acquired global migration lock.');
+    return await callback();
+  } finally {
+    try {
+      await client.query(
+        'SELECT pg_advisory_unlock($1, $2)',
+        MIGRATION_LOCK_KEYS
+      );
+    } finally {
+      client.release();
+      await pool.end();
+    }
+  }
+}
 
-    const migrations = await loadMigrations();
+export async function runPostgresMigrations({ logger = console, statusOnly = false } = {}) {
+  const pool = createPool();
+  const client = await pool.connect();
+
+  try {
+    await ensurePostgresMigrationsTable(client);
+
+    const migrations = await loadSqlMigrations();
     const appliedResult = await client.query(
       `SELECT filename, checksum, applied_at
        FROM schema_migrations
@@ -74,33 +220,20 @@ export async function runMigrations({ logger = console, statusOnly = false } = {
     const appliedByFilename = new Map(
       appliedResult.rows.map((row) => [row.filename, row])
     );
-
-    const pending = [];
-    for (const migration of migrations) {
-      const applied = appliedByFilename.get(migration.filename);
-      if (!applied) {
-        pending.push(migration);
-        continue;
-      }
-
-      if (applied.checksum !== migration.checksum) {
-        throw new Error(
-          `Applied migration "${migration.filename}" no longer matches the repo copy. ` +
-          'Create a new migration instead of editing an old one.'
-        );
-      }
-    }
+    const pending = validateAppliedChecksums({
+      appliedByFilename,
+      migrations,
+      errorPrefix: 'Applied migration',
+    });
 
     if (statusOnly) {
-      logger.log(`Applied migrations: ${appliedResult.rows.length}`);
-      logger.log(`Pending migrations: ${pending.length}`);
-
-      for (const row of appliedResult.rows) {
-        logger.log(`applied  ${row.filename}  ${new Date(row.applied_at).toISOString()}`);
-      }
-      for (const migration of pending) {
-        logger.log(`pending  ${migration.filename}`);
-      }
+      reportMigrationStatus({
+        logger,
+        appliedRows: appliedResult.rows,
+        pending,
+        appliedLabel: 'Applied migrations',
+        pendingLabel: 'Pending migrations',
+      });
 
       return {
         appliedCount: appliedResult.rows.length,
@@ -140,4 +273,104 @@ export async function runMigrations({ logger = console, statusOnly = false } = {
     client.release();
     await pool.end();
   }
+}
+
+export async function runScyllaMigrations({ logger = console, statusOnly = false } = {}) {
+  const config = resolveScyllaConfig();
+  const client = new cassandra.Client({
+    contactPoints: config.contactPoints,
+    localDataCenter: config.localDataCenter,
+  });
+
+  await client.connect();
+
+  try {
+    await ensureScyllaKeyspace(client, config);
+    await ensureScyllaMigrationsTable(client, config.keyspace);
+
+    const migrations = await loadScyllaMigrations();
+    const appliedResult = await client.execute(
+      `SELECT filename, checksum, applied_at
+       FROM ${config.keyspace}.schema_migrations
+       WHERE scope = ?`,
+      ['scylla'],
+      { prepare: true }
+    );
+    const appliedRows = appliedResult.rows || [];
+    const appliedByFilename = new Map(
+      appliedRows.map((row) => [row.filename, row])
+    );
+    const pending = validateAppliedChecksums({
+      appliedByFilename,
+      migrations,
+      errorPrefix: 'Applied Scylla migration',
+    });
+
+    if (statusOnly) {
+      reportMigrationStatus({
+        logger,
+        appliedRows,
+        pending,
+        appliedLabel: 'Applied Scylla migrations',
+        pendingLabel: 'Pending Scylla migrations',
+      });
+
+      return {
+        appliedCount: appliedRows.length,
+        pendingCount: pending.length,
+      };
+    }
+
+    for (const migration of pending) {
+      logger.log(`Applying Scylla migration ${migration.filename}...`);
+      try {
+        for (const statement of migration.statements) {
+          await client.execute(renderScyllaStatement(statement, config));
+        }
+        await client.execute(
+          `INSERT INTO ${config.keyspace}.schema_migrations (scope, filename, checksum, applied_at)
+           VALUES (?, ?, ?, ?)`,
+          ['scylla', migration.filename, migration.checksum, new Date()],
+          { prepare: true }
+        );
+        logger.log(`Applied ${migration.filename}`);
+      } catch (error) {
+        throw new Error(`Failed while applying Scylla migration "${migration.filename}": ${error.message}`);
+      }
+    }
+
+    logger.log(
+      pending.length === 0
+        ? 'No pending Scylla migrations.'
+        : `Scylla migration complete. Applied ${pending.length} new migration${pending.length === 1 ? '' : 's'}.`
+    );
+
+    return {
+      appliedCount: appliedRows.length + pending.length,
+      pendingCount: 0,
+    };
+  } finally {
+    await client.shutdown();
+  }
+}
+
+export async function runMigrations({ logger = console, statusOnly = false } = {}) {
+  const runAll = async () => {
+    logger.log('== PostgreSQL ==');
+    const postgres = await runPostgresMigrations({ logger, statusOnly });
+    logger.log('');
+    logger.log('== ScyllaDB ==');
+    const scylla = await runScyllaMigrations({ logger, statusOnly });
+
+    return {
+      postgres,
+      scylla,
+    };
+  };
+
+  if (statusOnly) {
+    return runAll();
+  }
+
+  return withGlobalMigrationLock({ logger }, runAll);
 }

@@ -7,9 +7,10 @@ import {
   type SetStateAction,
 } from 'react';
 import {
-  MESSAGE_ACTIVE_WINDOW_SIZE,
   MESSAGE_PAGE_SIZE,
   MESSAGE_PREFETCH_SIZE,
+  MESSAGE_WINDOW_TRIM_TARGET,
+  MESSAGE_WINDOW_TRIM_TRIGGER,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
@@ -284,7 +285,11 @@ const useMessageListPagination = ({
     const uniqueMessages = Array.from(
       new Map(mergedMessages.map((message) => [message.message_id, message])).values()
     );
-    const trimmedMessages = trimMessages(uniqueMessages, 'new', MESSAGE_ACTIVE_WINDOW_SIZE);
+    const trimResult = trimMessages(uniqueMessages, 'new', {
+      trigger: MESSAGE_WINDOW_TRIM_TRIGGER,
+      target: MESSAGE_WINDOW_TRIM_TARGET,
+    });
+    const trimmedMessages = trimResult.messages;
 
     messagesRef.current = trimmedMessages;
     debugMessageList('prepend_apply', {
@@ -312,7 +317,7 @@ const useMessageListPagination = ({
       seamBreakBeforeId,
     });
 
-    if (trimmedMessages.length < uniqueMessages.length) {
+    if (trimResult.trimmedFromNew > 0) {
       setHasNewer(true);
       setIsAtPresent(false);
     }

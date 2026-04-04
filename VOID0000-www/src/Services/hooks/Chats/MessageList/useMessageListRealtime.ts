@@ -86,7 +86,7 @@ const useMessageListRealtime = ({
             currentUserId: userId,
             trimFrom: 'old',
             allowOptimisticFallback: false,
-          })
+          }).messages
         );
       } catch (error) {
         console.error('[QUEUED_SEND] failed to load persisted queued sends', error);

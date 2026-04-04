@@ -1,4 +1,4 @@
-import { MESSAGE_CACHE_LIMIT } from '../../../Chat/chatConstants';
+import { MESSAGE_WINDOW_TRIM_TARGET, MESSAGE_WINDOW_TRIM_TRIGGER } from '../../../Chat/chatConstants';
 import type { Message } from '../../../Chat/chatService';
 
 const getLocalClientId = (message: Pick<Message, 'message_id' | 'local_client_id'>): string | undefined => {
@@ -72,22 +72,50 @@ const findOptimisticReplacementId = (
   return pendingMatch ? (getLocalClientId(pendingMatch) || pendingMatch.message_id) : undefined;
 };
 
-const trimMessages = (
-  messages: Message[],
-  trimFrom: 'old' | 'new',
-  limit = MESSAGE_CACHE_LIMIT,
-): Message[] => {
-  const sorted = [...messages].sort((left, right) => {
+interface TrimOptions {
+  trigger?: number;
+  target?: number;
+}
+
+interface TrimResult {
+  messages: Message[];
+  trimmedFromOld: number;
+  trimmedFromNew: number;
+}
+
+interface MergeResult {
+  messages: Message[];
+  trimmedFromOld: number;
+  trimmedFromNew: number;
+}
+
+const sortMessages = (messages: Message[]): Message[] =>
+  [...messages].sort((left, right) => {
     const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
     if (timeDiff !== 0) return timeDiff;
     return left.message_id.localeCompare(right.message_id);
   });
 
-  if (sorted.length <= limit) return sorted;
+const trimMessages = (
+  messages: Message[],
+  trimFrom: 'old' | 'new',
+  options: TrimOptions = {},
+): TrimResult => {
+  const trigger = options.trigger ?? MESSAGE_WINDOW_TRIM_TRIGGER;
+  const target = options.target ?? MESSAGE_WINDOW_TRIM_TARGET;
+  const sorted = sortMessages(messages);
 
-  return trimFrom === 'old'
-    ? sorted.slice(sorted.length - limit)
-    : sorted.slice(0, limit);
+  if (sorted.length <= trigger) {
+    return { messages: sorted, trimmedFromOld: 0, trimmedFromNew: 0 };
+  }
+
+  const trimCount = sorted.length - target;
+
+  if (trimFrom === 'old') {
+    return { messages: sorted.slice(trimCount), trimmedFromOld: trimCount, trimmedFromNew: 0 };
+  }
+
+  return { messages: sorted.slice(0, target), trimmedFromOld: 0, trimmedFromNew: trimCount };
 };
 
 const mergeMessagesWithReconciliation = ({
@@ -102,7 +130,7 @@ const mergeMessagesWithReconciliation = ({
   currentUserId?: string;
   trimFrom: 'old' | 'new';
   allowOptimisticFallback?: boolean;
-}): Message[] => {
+}): MergeResult => {
   const next = [...existing];
   let didChange = false;
 
@@ -147,7 +175,7 @@ const mergeMessagesWithReconciliation = ({
   });
 
   if (!didChange) {
-    return existing;
+    return { messages: existing, trimmedFromOld: 0, trimmedFromNew: 0 };
   }
 
   return trimMessages(next, trimFrom);
@@ -163,3 +191,5 @@ export {
   mergeMessagesWithReconciliation,
   trimMessages,
 };
+
+export type { MergeResult, TrimResult };

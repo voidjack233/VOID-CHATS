@@ -110,3 +110,38 @@ export async function getLiveUserPresence(userId) {
 
   return { status: 'offline', lastActive: null, activeCount: 0 };
 }
+
+/**
+ * Bulk presence lookup — single Valkey pipeline instead of N individual calls.
+ * Returns a Map<userId, { status, lastActive, activeCount }>.
+ */
+export async function getBulkUserPresence(userIds) {
+  const result = new Map();
+  if (!userIds || userIds.length === 0) return result;
+
+  const offline = { status: 'offline', lastActive: null, activeCount: 0 };
+
+  try {
+    const pipeline = valkey.pipeline();
+    for (const userId of userIds) {
+      pipeline.get(presenceKey(userId));
+      pipeline.get(presenceCountKey(userId));
+    }
+    const results = await pipeline.exec();
+
+    for (let i = 0; i < userIds.length; i++) {
+      const rawPresence = results?.[i * 2]?.[1];
+      const rawCount = results?.[i * 2 + 1]?.[1];
+      const parsedPresence = rawPresence ? JSON.parse(rawPresence) : null;
+      const activeCount = parseSharedActiveCount(parsedPresence, rawCount);
+      result.set(userIds[i], normalizePresence(parsedPresence, activeCount));
+    }
+  } catch (err) {
+    console.error('Gateway bulk presence lookup error:', err);
+    for (const userId of userIds) {
+      if (!result.has(userId)) result.set(userId, offline);
+    }
+  }
+
+  return result;
+}
