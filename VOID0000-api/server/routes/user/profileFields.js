@@ -51,7 +51,7 @@ router.put('/profile', async (req, res) => {
 
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('ProfileUpdate PUT error:', err);
+      console.error('ProfileFields PUT error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

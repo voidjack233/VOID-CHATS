@@ -75,7 +75,7 @@ import csrfRouter from './routes/csrf/index.js';
 import accountReadRouter from './routes/user/accountRead.js';
 import sessionsRouter from './routes/user/sessions.js';
 import profileReadRouter from './routes/user/profileRead.js';
-import profileUpdateRouter from './routes/user/profileUpdate.js';
+import profileFieldsRouter from './routes/user/profileFields.js';
 import profileAvatarRouter from './routes/user/profileAvatar.js';
 import friendRouter from './routes/friends/index.js';
 import userSearchRouter from './routes/user/userSearch.js';
@@ -141,7 +141,7 @@ app.use('/api/auth/reset-password', resetDeviceLimiter);
 app.use('/api/auth/register', registerDeviceLimiter);
 app.use('/api/auth/me', authCheckLimiter);
 app.use('/api/users/profile', profileUpdateLimiter);
-app.use('/api/users/avatar', avatarUploadLimiter);
+app.use('/api/users/profile/avatar', avatarUploadLimiter);
 
 app.post('/api/security/csp-report', 
   express.json({ type: 'application/csp-report' }), 
@@ -171,7 +171,7 @@ app.use('/api/me', noCache, meRouter);
 app.use('/api/users/account', accountReadRouter);
 app.use('/api/users/sessions', sessionsRouter);
 app.use('/api/users/search', userSearchRouter);
-app.use('/api/users', authenticateUser, preferencesRouter, profileUpdateRouter, profileAvatarRouter);
+app.use('/api/users', authenticateUser, preferencesRouter, profileFieldsRouter, profileAvatarRouter);
 app.use('/api/users', profileReadRouter);
 app.use('/api/friends', friendRouter);
 app.use('/api/conversations', noCache, conversationRouter);

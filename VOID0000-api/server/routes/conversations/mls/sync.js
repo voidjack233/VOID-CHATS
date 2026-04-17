@@ -109,8 +109,12 @@ router.post('/sync', async (req, res) => {
              FROM mls_commit_messages AS commits
              JOIN conversation_members cm
                ON cm.conversation_id = commits.conversation_id
+             LEFT JOIN mls_commit_receipts receipts
+               ON receipts.conversation_id = commits.conversation_id
+              AND receipts.commit_ref = commits.commit_ref
+              AND receipts.user_id = $1::UUID
              WHERE cm.user_id = $1::UUID
-               AND commits.applied_at IS NULL
+               AND receipts.commit_ref IS NULL
                AND (
                  commits.epoch IS NULL
                  OR commits.epoch >= GREATEST(COALESCE(cm.joined_key_version, 1) - 1, 1)

@@ -15,7 +15,7 @@ import {
 import type { Message } from '../../Services/Chat/chatService';
 import type { Friend } from '../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../common/Friends/FriendProfile';
-import UserProfile from '../common/Profile/userProfile';
+import UserProfileModal from '../common/Profile/UserProfileModal';
 import type {
   ContextMenuState,
   EmojiPickerTarget,
@@ -182,7 +182,7 @@ export default function MessageOverlays({
       )}
 
       {selectedProfileId && (
-        <UserProfile profileId={selectedProfileId} onClose={onCloseProfile} />
+        <UserProfileModal profileId={selectedProfileId} onClose={onCloseProfile} />
       )}
 
       {selectedFriend && (

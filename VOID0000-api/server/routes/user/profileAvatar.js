@@ -52,8 +52,8 @@ router.use(authenticateUser);
 
 // ==================== UPLOAD ====================
 
-// PUT /api/users/avatar
-router.put('/avatar', async (req, res) => {
+// PUT /api/users/profile/avatar
+router.put('/profile/avatar', async (req, res) => {
   const { avatar } = req.body;
   const profile_id = req.userProfileId;
 
@@ -154,7 +154,7 @@ router.put('/avatar', async (req, res) => {
 
 // ==================== DELETE ====================
 
-router.delete('/avatar', async (req, res) => {
+router.delete('/profile/avatar', async (req, res) => {
   const profile_id = req.userProfileId;
 
   try {
@@ -217,7 +217,7 @@ router.delete('/avatar', async (req, res) => {
 
 // ==================== SERVE (legacy fallback) ====================
 
-router.get('/avatar/:filename', async (req, res) => {
+router.get('/profile/avatar/:filename', async (req, res) => {
   const { filename } = req.params;
 
   if (!/^avatar-\d+-\d+\.webp$/.test(filename)) {

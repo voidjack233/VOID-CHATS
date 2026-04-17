@@ -131,19 +131,33 @@ router.post('/commits/:conversationId/:commitRef/apply', async (req, res) => {
       return res.status(403).json({ success: false, error: `Not a member of conversation: ${conversationIdentifier}` });
     }
 
-    const result = await client.query(
-      `UPDATE mls_commit_messages
-       SET applied_at = COALESCE(applied_at, NOW())
+    const commitExists = await client.query(
+      `SELECT conversation_id::text AS conversation_id,
+              commit_ref,
+              epoch
+       FROM mls_commit_messages
        WHERE conversation_id = $1::UUID
          AND commit_ref = $2
-       RETURNING conversation_id::text AS conversation_id, commit_ref, applied_at`,
+       LIMIT 1`,
       [resolved.conversationId, commitRef]
     );
 
-    if (result.rows.length === 0) {
+    if (commitExists.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ success: false, error: 'Commit not found' });
     }
+
+    const result = await client.query(
+      `INSERT INTO mls_commit_receipts (user_id, conversation_id, commit_ref, applied_at)
+       VALUES ($1::UUID, $2::UUID, $3, NOW())
+       ON CONFLICT (user_id, conversation_id, commit_ref)
+       DO UPDATE SET applied_at = COALESCE(mls_commit_receipts.applied_at, EXCLUDED.applied_at)
+       RETURNING user_id::text AS user_id,
+                 conversation_id::text AS conversation_id,
+                 commit_ref,
+                 applied_at`,
+      [userId, resolved.conversationId, commitRef]
+    );
 
     await client.query('COMMIT');
     return res.json({ success: true, data: result.rows[0] });

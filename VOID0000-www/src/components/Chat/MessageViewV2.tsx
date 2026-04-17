@@ -9,7 +9,7 @@ import { type Conversation, type ConversationMember, type Message } from '../../
 import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
-import { useUserProfile } from '../../Services/hooks/editProfile/userProfile';
+import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
 import { useTheme } from '../../Services/hooks/Settings/useTheme';
 import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
 import { MessageViewSkeleton } from '../common/Skeleton';
@@ -94,7 +94,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
   const { friends } = useFriends();
-  const { profile: myProfile } = useUserProfile(user?.profile_id || '');
+  const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const currentMember = user?.id ? members[user.id] || null : null;
   const waitForEncryptionBootstrap = !encryptionKey && conversationSecurityState?.status === 'recovering';
   const initReactionsFromMessagesRef = useRef<(messages: Array<{ message_id: string; reactions?: any }>) => void>(() => {});
@@ -364,16 +364,24 @@ const MessageViewV2 = memo(function MessageViewV2({
     if (
       !scroller ||
       !initialHydrationSettled ||
-      !isAtPresent ||
       loadingOlder
     ) {
       return false;
     }
 
+    // Only pin when the user is actually at the bottom (or we explicitly
+    // forced a follow action). A stale "present" state can briefly linger
+    // while the user starts scrolling upward, which makes the list feel like
+    // it's fighting them and yanking them back down.
+    if (!forceFollowOutputRef.current && !atBottomRef.current) {
+      return false;
+    }
+
     scrollToBottom('auto');
     syncScrollState();
+    forceFollowOutputRef.current = false;
     return true;
-  }, [initialHydrationSettled, isAtPresent, loadingOlder, scrollToBottom, syncScrollState]);
+  }, [initialHydrationSettled, loadingOlder, scrollToBottom, syncScrollState]);
 
   const attemptInitialBottomRestore = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -485,14 +493,15 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [jumpToPresent, scrollToBottom]);
 
   const handleAttachmentLoad = useCallback(() => {
-    if (!atBottomRef.current && !isAtPresent) {
+    if (!atBottomRef.current && !forceFollowOutputRef.current) {
       return;
     }
 
     requestAnimationFrame(() => {
       scrollToBottom('auto');
+      forceFollowOutputRef.current = false;
     });
-  }, [isAtPresent, scrollToBottom]);
+  }, [scrollToBottom]);
 
   // ── Initial scroll to bottom ──
   useLayoutEffect(() => {
@@ -593,7 +602,6 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     const observer = new ResizeObserver(() => {
       void attemptInitialBottomRestore();
-      void keepPresentPinnedToBottom();
       void maybeAutofillOlder();
       syncScrollState();
     });
@@ -602,7 +610,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     return () => {
       observer.disconnect();
     };
-  }, [attemptInitialBottomRestore, keepPresentPinnedToBottom, maybeAutofillOlder, syncScrollState]);
+  }, [attemptInitialBottomRestore, maybeAutofillOlder, syncScrollState]);
 
   // ── Render ──
   const renderListItem = useCallback((item: MessageListItem) => {
@@ -691,7 +699,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         {/* Older sentinel: triggers prefetch via IntersectionObserver */}
         {hasOlder && <div ref={olderSentinelRef} className="h-px w-full" />}
 
-        {!hasOlder && messages.length > 0 && (
+        {!hasOlder && (
           <MessageViewHeader
             conversation={conversation}
             headerIdentity={headerIdentity}

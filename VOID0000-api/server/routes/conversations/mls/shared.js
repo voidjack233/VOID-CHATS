@@ -21,6 +21,7 @@ const REQUIRED_MLS_TABLES = [
   'mls_group_states',
   'mls_welcome_messages',
   'mls_commit_messages',
+  'mls_commit_receipts',
   'mls_group_key_archive',
 ];
 const REQUIRED_MLS_COLUMNS = [
@@ -34,6 +35,7 @@ const REQUIRED_MLS_INDEXES = [
   'idx_mls_group_states_user_unique',
   'idx_mls_welcome_messages_user_id',
   'idx_mls_commit_messages_conversation_id',
+  'idx_mls_commit_receipts_conversation_user',
   'idx_mls_group_key_archive_user_unique',
 ];
 

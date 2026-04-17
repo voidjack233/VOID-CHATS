@@ -9,7 +9,7 @@ interface BlurImageProps {
   blurhash?: string;
   alt?: string;
   className?: string;
-  onLoad?: () => void;
+  onLoad?: (image: HTMLImageElement) => void;
   loading?: 'eager' | 'lazy';
 }
 
@@ -77,9 +77,9 @@ const BlurImage = ({
         alt={alt}
         loading={loading}
         decoding="async"
-        onLoad={() => {
+        onLoad={(event) => {
           setLoaded(true);
-          onLoad?.();
+          onLoad?.(event.currentTarget);
         }}
         className={`${className} transition-opacity duration-300 ${loaded ? 'opacity-100' : 'opacity-0'}`}
       />

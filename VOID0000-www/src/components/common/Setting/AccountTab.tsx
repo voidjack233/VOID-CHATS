@@ -6,7 +6,6 @@ import { useUser } from '../../../Services/Auth/UserContext';
 import ChangePasswordModal from './ChangePassword/ChangePasswordModal';
 import ActiveSessionsModal from './ActiveSessions/ActiveSessionsModal';
 import TwoFactorSettingsModal from './2FA/TwoFactorModal';
-import RecoveryPhraseModal from './RecoveryPhraseModal';
 
 const AccountTab = () => {
   const navigate = useNavigate();
@@ -14,7 +13,6 @@ const AccountTab = () => {
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showActiveSessions, setShowActiveSessions] = useState(false);
   const [showTwoFactor, setShowTwoFactor] = useState(false);
-  const [showRecoveryPhrase, setShowRecoveryPhrase] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const { account, loading } = useAccountSettings();
@@ -61,30 +59,26 @@ const AccountTab = () => {
         <div className="border-t border-void-border pt-4">
           <h4 className="text-xs md:text-sm font-semibold text-void-text-muted uppercase mb-3">Security</h4>
           <div className="space-y-2">
-            <button
-              onClick={() => setShowRecoveryPhrase(true)}
-              className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 hover:bg-gray-900/70 border border-void-border hover:border-blue-500 rounded-lg transition-all active:scale-[0.98]"
-            >
-              <div className="flex items-center justify-between">
+            <div className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-gray-900 border border-void-border rounded-lg">
+              <div className="flex items-center justify-between gap-3">
                 <div className="text-left">
-                  <p className="text-sm font-medium text-void-text">Recovery Key</p>
+                  <p className="text-sm font-medium text-void-text">Secure Chat Backup</p>
                   <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">
                     {keyStatusLoading
-                      ? 'Checking recovery status...'
+                      ? 'Checking secure backup status...'
                       : keyStatus === 'SECURE'
-                        ? 'Recovery key configured'
-                        : 'Protect your chat identity with a recovery key (legacy 12-word phrases still work)'}
+                        ? 'Your chat identity is backed up automatically and restored with your account password.'
+                        : 'Your secure chat backup is being initialized automatically for this account.'}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  {keyStatus === 'SECURE' && !keyStatusLoading && (
-                    <span className="text-[11px] uppercase tracking-wide text-emerald-400">Secure</span>
-                  )}
+                  <span className={`text-[11px] uppercase tracking-wide ${keyStatus === 'SECURE' && !keyStatusLoading ? 'text-emerald-400' : 'text-void-text-muted'}`}>
+                    {keyStatusLoading ? 'Checking' : keyStatus === 'SECURE' ? 'Automatic' : 'Initializing'}
+                  </span>
                   <Shield className="w-4 h-4 text-void-text-muted hidden sm:block" />
-                  <ChevronRight className="w-4 h-4 text-void-text-muted" />
                 </div>
               </div>
-            </button>
+            </div>
 
             <button
               onClick={() => setShowChangePassword(true)}
@@ -180,7 +174,6 @@ const AccountTab = () => {
       {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
       {showActiveSessions && <ActiveSessionsModal onClose={() => setShowActiveSessions(false)} />}
       {showTwoFactor && <TwoFactorSettingsModal onClose={() => setShowTwoFactor(false)} />}
-      {showRecoveryPhrase && <RecoveryPhraseModal onClose={() => setShowRecoveryPhrase(false)} />}
     </>
   );
 };

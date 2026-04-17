@@ -178,6 +178,20 @@ function validateAppliedChecksums({ appliedByFilename, migrations, errorPrefix }
   return pending;
 }
 
+function validateUnexpectedAppliedMigrations({ appliedRows, migrations, errorPrefix }) {
+  const repoFilenames = new Set(migrations.map((migration) => migration.filename));
+  const unexpected = appliedRows
+    .map((row) => row.filename)
+    .filter((filename) => !repoFilenames.has(filename));
+
+  if (unexpected.length > 0) {
+    throw new Error(
+      `${errorPrefix} ${unexpected.join(', ')}. ` +
+      'This database is ahead of the repo migration set. Realign schema_migrations and any leftover tables before continuing.'
+    );
+  }
+}
+
 async function withGlobalMigrationLock({ logger = console }, callback) {
   const pool = createPool();
   const client = await pool.connect();
@@ -220,6 +234,11 @@ export async function runPostgresMigrations({ logger = console, statusOnly = fal
     const appliedByFilename = new Map(
       appliedResult.rows.map((row) => [row.filename, row])
     );
+    validateUnexpectedAppliedMigrations({
+      appliedRows: appliedResult.rows,
+      migrations,
+      errorPrefix: 'Unexpected applied PostgreSQL migrations:',
+    });
     const pending = validateAppliedChecksums({
       appliedByFilename,
       migrations,
@@ -300,6 +319,11 @@ export async function runScyllaMigrations({ logger = console, statusOnly = false
     const appliedByFilename = new Map(
       appliedRows.map((row) => [row.filename, row])
     );
+    validateUnexpectedAppliedMigrations({
+      appliedRows,
+      migrations,
+      errorPrefix: 'Unexpected applied Scylla migrations:',
+    });
     const pending = validateAppliedChecksums({
       appliedByFilename,
       migrations,

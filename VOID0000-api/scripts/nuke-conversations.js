@@ -2,6 +2,7 @@
 /**
  * nuke-conversations.js
  * Wipes all conversation-related data from PostgreSQL, ScyllaDB, and Valkey.
+ * Preserves account-scoped user key identity/backup tables.
  * Run with: node scripts/nuke-conversations.js
  * Add --confirm to skip the prompt.
  */
@@ -20,9 +21,11 @@ import Redis from 'ioredis';
 
 const POSTGRES_TABLES = [
   // Order matters — child tables first to avoid FK violations
+  'mls_commit_receipts',
   'mls_commit_messages',
   'mls_welcome_messages',
   'mls_group_states',
+  'mls_group_key_archive',
   'mls_key_packages',
   'conversation_join_requests',
   'conversation_invite_links',
@@ -71,10 +74,27 @@ async function nukePostgres() {
   const client = await pool.connect();
   try {
     console.log('\n[PostgreSQL] Truncating tables...');
-    // TRUNCATE with CASCADE handles any remaining FK references
-    const tableList = POSTGRES_TABLES.join(', ');
+    const existingTablesResult = await client.query(
+      `SELECT table_name
+       FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_name = ANY($1::text[])
+       ORDER BY table_name`,
+      [POSTGRES_TABLES]
+    );
+
+    const existingTables = new Set(existingTablesResult.rows.map((row) => row.table_name));
+    const tablesToTruncate = POSTGRES_TABLES.filter((tableName) => existingTables.has(tableName));
+
+    if (tablesToTruncate.length === 0) {
+      console.log('  No matching conversation tables found.');
+      return;
+    }
+
+    // TRUNCATE with CASCADE handles any remaining FK references.
+    const tableList = tablesToTruncate.join(', ');
     await client.query(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`);
-    for (const t of POSTGRES_TABLES) {
+    for (const t of tablesToTruncate) {
       console.log(`  ✓ ${t}`);
     }
   } finally {

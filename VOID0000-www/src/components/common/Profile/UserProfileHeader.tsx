@@ -4,12 +4,12 @@ import { UserProfileHeaderProps } from './types';
 import UserAvatar from '../../common/UserAvatar';
 
 const UserProfileHeader: React.FC<UserProfileHeaderProps & { 
-  tempProfile?: any, 
-  setTempProfile?: (p: any) => void 
+  draftProfile?: any,
+  setDraftProfile?: (p: any) => void
 }> = ({
   displayProfile,
-  tempProfile,
-  setTempProfile,
+  draftProfile,
+  setDraftProfile,
   previewUrl,
   isEditing,
   isUploading,
@@ -75,9 +75,9 @@ const UserProfileHeader: React.FC<UserProfileHeaderProps & {
             </label>
             <input
               type="text"
-              value={tempProfile?.display_name || ''}
+              value={draftProfile?.display_name || ''}
               onChange={(e) =>
-                setTempProfile?.({ ...tempProfile, display_name: e.target.value })
+                setDraftProfile?.({ ...draftProfile, display_name: e.target.value })
               }
               className="w-full bg-gray-900 border border-void-border rounded-md px-2.5 py-1.5 text-void-text text-sm focus:outline-none focus:border-blue-500 transition-colors placeholder-gray-600"
               placeholder="Display Name"

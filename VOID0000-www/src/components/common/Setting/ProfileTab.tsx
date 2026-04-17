@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Camera, Loader2, Save, CheckCircle } from 'lucide-react';
 import { ProfileFormSkeleton } from '../Skeleton';
 import { useUser } from '../../../Services/Auth/UserContext';
-import { useUserProfile } from '../../../Services/hooks/editProfile/userProfile';
-import { useAvatarUpload } from '../../../Services/hooks/editProfile/useAvatarUpload';
+import { useProfileRecord } from '../../../Services/hooks/profile/useProfileRecord';
+import { useProfileAvatarUpload } from '../../../Services/hooks/profile/useProfileAvatarUpload';
 import UserAvatar from '../../common/UserAvatar';
 
 const updateLocalCache = (profileId: string, data: any) => {
@@ -16,22 +16,22 @@ const ProfileTab = () => {
 
   const {
     profile,
-    tempProfile,
-    setTempProfile,
+    draftProfile,
+    setDraftProfile,
     setProfile,
-    saveProfile,
+    saveProfileFields,
     loading,
     error,
     saving,
-  } = useUserProfile(profileId || '');
+  } = useProfileRecord(profileId || '');
 
   const {
-    uploadAvatar,
+    uploadProfileAvatar,
     validateFile,
     isUploading: isAvatarUploading,
     uploadError: hookUploadError,
     fileInputRef,
-  } = useAvatarUpload();
+  } = useProfileAvatarUpload();
 
   const [bioError, setBioError] = useState<string | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -47,14 +47,14 @@ const ProfileTab = () => {
   // Trim values so trailing spaces don't count as changes
   const isDirty = (() => {
     if (pendingFile) return true;
-    if (!profile || !tempProfile) return false;
+    if (!profile || !draftProfile) return false;
 
     const origName = (profile.display_name || '').trim();
-    const tempName = (tempProfile.display_name || '').trim();
+    const draftName = (draftProfile.display_name || '').trim();
     const origBio = (profile.bio || '').trim();
-    const tempBio = (tempProfile.bio || '').trim();
+    const draftBio = (draftProfile.bio || '').trim();
 
-    return origName !== tempName || origBio !== tempBio;
+    return origName !== draftName || origBio !== draftBio;
   })();
 
   const canSave = isDirty && !bioError && !isGlobalLoading && !saveCooldown;
@@ -77,11 +77,11 @@ const ProfileTab = () => {
     const newBio = e.target.value;
     if (newBio.length > 200) {
       setBioError('Maximum 200 characters reached');
-      setTempProfile({ ...tempProfile!, bio: newBio.slice(0, 200) });
+      setDraftProfile({ ...draftProfile!, bio: newBio.slice(0, 200) });
       return;
     }
     setBioError(null);
-    setTempProfile({ ...tempProfile!, bio: newBio });
+    setDraftProfile({ ...draftProfile!, bio: newBio });
   };
 
   const handleSave = async () => {
@@ -94,10 +94,10 @@ const ProfileTab = () => {
       let newAvatarUrl: string | null = null;
 
       if (pendingFile) {
-        newAvatarUrl = await uploadAvatar(pendingFile);
+        newAvatarUrl = await uploadProfileAvatar(pendingFile);
       }
 
-      await saveProfile();
+      await saveProfileFields();
 
       setProfile((prev) => {
         if (!prev) return null;
@@ -112,7 +112,7 @@ const ProfileTab = () => {
           avatar_url: finalAvatarUrl,
         };
 
-        setTempProfile(finalProfile);
+        setDraftProfile(finalProfile);
         updateLocalCache(profileId, finalProfile);
         return finalProfile;
       });
@@ -132,7 +132,7 @@ const ProfileTab = () => {
 
   if (loading) return <ProfileFormSkeleton />;
 
-  if (!profile || !tempProfile) {
+  if (!profile || !draftProfile) {
     return (
       <div className="text-center py-12 text-void-text-muted">
         Unable to load profile
@@ -221,9 +221,9 @@ const ProfileTab = () => {
         <div>
           <input
             type="text"
-            value={tempProfile.display_name || ''}
+            value={draftProfile.display_name || ''}
             onChange={(e) =>
-              setTempProfile({ ...tempProfile, display_name: e.target.value })
+              setDraftProfile({ ...draftProfile, display_name: e.target.value })
             }
             className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 text-void-text text-sm focus:outline-none focus:border-blue-500 transition-colors"
             placeholder="Enter a display name"
@@ -242,7 +242,7 @@ const ProfileTab = () => {
 
         <div>
           <textarea
-            value={tempProfile.bio || ''}
+            value={draftProfile.bio || ''}
             onChange={handleBioChange}
             maxLength={200}
             placeholder="Tell us about yourself..."
@@ -255,7 +255,7 @@ const ProfileTab = () => {
           />
           <div className="flex justify-between mt-1">
             <span className={`text-xs ${bioError ? 'text-red-400' : 'text-void-text-muted'}`}>
-              {tempProfile.bio?.length || 0}/200
+              {draftProfile.bio?.length || 0}/200
             </span>
             {bioError && <span className="text-xs text-red-400">{bioError}</span>}
           </div>

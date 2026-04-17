@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { isGeneratedFallbackAvatarUrl } from '../../Chat/avatarFallback';
 
-export interface UserProfileData {
+export interface ProfileRecord {
   id: string;
   profile_id?: string;
   avatar_url?: string;
@@ -15,18 +15,18 @@ export interface UserProfileData {
 import { API_URL } from '../../config';
 const PROFILE_CACHE_KEY = 'void_profile';
 
-const getCachedProfile = (profileId: string): UserProfileData | null => {
+const getCachedProfile = (profileId: string): ProfileRecord | null => {
   const cached = localStorage.getItem(`${PROFILE_CACHE_KEY}_${profileId}`);
   if (!cached) return null;
 
-  const parsed = JSON.parse(cached) as UserProfileData;
+  const parsed = JSON.parse(cached) as ProfileRecord;
   if (isGeneratedFallbackAvatarUrl(parsed.avatar_url)) {
     parsed.avatar_url = undefined;
   }
   return parsed;
 };
 
-const setCachedProfile = (profileId: string, data: UserProfileData) => {
+const setCachedProfile = (profileId: string, data: ProfileRecord) => {
   localStorage.setItem(`${PROFILE_CACHE_KEY}_${profileId}`, JSON.stringify(data));
 };
 
@@ -34,11 +34,11 @@ export const clearProfileCache = (profileId: string) => {
   localStorage.removeItem(`${PROFILE_CACHE_KEY}_${profileId}`);
 };
 
-export const useUserProfile = (profileId: string) => {
+export const useProfileRecord = (profileId: string) => {
   const cached = getCachedProfile(profileId);
   
-  const [profile, setProfile] = useState<UserProfileData | null>(cached);
-  const [tempProfile, setTempProfile] = useState<UserProfileData | null>(cached);
+  const [profile, setProfile] = useState<ProfileRecord | null>(cached);
+  const [draftProfile, setDraftProfile] = useState<ProfileRecord | null>(cached);
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(!cached);
   const [saving, setSaving] = useState(false);
@@ -96,7 +96,7 @@ export const useUserProfile = (profileId: string) => {
         
         setCachedProfile(profileId, data);
         setProfile(data);
-        setTempProfile(data);
+        setDraftProfile(data);
       } catch (err: any) {
         setError(err.message || 'Failed to load profile');
       } finally {
@@ -107,13 +107,13 @@ export const useUserProfile = (profileId: string) => {
     fetchProfile();
   }, [profileId, cached]);
 
-  const saveProfile = async () => {
-    if (!tempProfile) return;
+  const saveProfileFields = async () => {
+    if (!draftProfile) return;
 
     try {
       setSaving(true);
       setError(null);
-      const normalizedDisplayName = (tempProfile.display_name || '').trim();
+      const normalizedDisplayName = (draftProfile.display_name || '').trim();
 
       const headers = await getAuthHeaders();
 
@@ -123,7 +123,7 @@ export const useUserProfile = (profileId: string) => {
         credentials: 'include',
         body: JSON.stringify({
           display_name: normalizedDisplayName,
-          bio: tempProfile.bio,
+          bio: draftProfile.bio,
         }),
       });
 
@@ -139,7 +139,7 @@ export const useUserProfile = (profileId: string) => {
 
       setCachedProfile(profileId, newProfileData);
       setProfile(newProfileData);
-      setTempProfile(newProfileData);
+      setDraftProfile(newProfileData);
       setIsEditing(false);
     } catch (err: any) {
       setError(err.message || 'Failed to save profile changes');
@@ -149,19 +149,19 @@ export const useUserProfile = (profileId: string) => {
   };
 
   const cancelEditing = () => {
-    setTempProfile(profile);
+    setDraftProfile(profile);
     setIsEditing(false);
     setError(null);
   };
 
   return {
     profile,
-    tempProfile,
-    setTempProfile,
+    draftProfile,
+    setDraftProfile,
     setProfile,
     isEditing,
     setIsEditing,
-    saveProfile,
+    saveProfileFields,
     cancelEditing,
     loading,
     saving,

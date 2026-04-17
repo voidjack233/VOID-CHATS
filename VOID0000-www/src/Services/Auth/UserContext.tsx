@@ -47,6 +47,23 @@ function hasMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
   );
 }
 
+function hasPasswordBackupPayload(backup: KeyBackupRecord | null): boolean {
+  return Boolean(
+    backup?.encrypted_private_key &&
+    backup.iv &&
+    backup.salt &&
+    backup.key_id
+  );
+}
+
+function hasRecoveryBackupPayload(backup: KeyBackupRecord | null): boolean {
+  return Boolean(
+    backup?.recovery_encrypted_private_key &&
+    backup.recovery_iv &&
+    backup.recovery_salt
+  );
+}
+
 function toTimestamp(value?: string | null): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
@@ -334,8 +351,6 @@ interface UserContextType {
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;
   retryMlsRecoveryWithPassword: (password: string) => Promise<void>;
-  saveRecoveryPhrase: (recoveryPhrase: string) => Promise<void>;
-  unlockWithRecoveryPhrase: (recoveryPhrase: string) => Promise<void>;
 }
 
 const UserContext = createContext<UserContextType | null>(null);
@@ -392,13 +407,32 @@ export function UserProvider({ children }: { children: ReactNode }) {
   };
 
   const resolveKeyStatusFromBackup = (backup: KeyBackupRecord | null): KeyStatus => {
-    const hasRecoveryBackup = Boolean(
-      backup?.recovery_encrypted_private_key &&
-      backup.recovery_iv &&
-      backup.recovery_salt
-    );
+    return hasPasswordBackupPayload(backup) ? 'SECURE' : 'UNINITIALIZED';
+  };
 
-    return hasRecoveryBackup ? 'SECURE' : 'UNINITIALIZED';
+  const ensureAutomaticRecoveryBackup = async (
+    userId: string,
+    backupHint?: KeyBackupRecord | null,
+  ): Promise<boolean> => {
+    const shouldTrustHint =
+      hasPasswordBackupPayload(backupHint ?? null) &&
+      hasRecoveryBackupPayload(backupHint ?? null);
+    const backup = shouldTrustHint ? backupHint ?? null : await fetchKeyBackup();
+
+    if (!hasPasswordBackupPayload(backup) || hasRecoveryBackupPayload(backup)) {
+      return false;
+    }
+
+    const recoveryPhrase = keyManager.generateRecoveryPhrase();
+    const recoveryBackup = await keyManager.prepareRecoveryBackup(userId, recoveryPhrase);
+    await backupRecoveryKeyToServer(recoveryBackup);
+
+    console.log('[RECOVERY_AUTO_SETUP] created hidden recovery backup', {
+      user_id: userId,
+      key_id: backup?.key_id || recoveryBackup.key_id,
+    });
+
+    return true;
   };
 
   const createKeyCallbacks = () => ({
@@ -488,23 +522,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const saveRecoveryPhrase = async (recoveryPhrase: string) => {
-    if (!user?.id) {
-      throw new Error('AUTH_REQUIRED');
-    }
-
-    if (loginPasswordRef.current) {
-      const keyBackup = await keyManager.prepareBackup(user.id, loginPasswordRef.current);
-      const mlsFields = await buildMlsBackupFields(user.id, loginPasswordRef.current);
-      await backupKeyToServer({ ...keyBackup, ...mlsFields });
-    }
-
-    const recoveryBackup = await keyManager.prepareRecoveryBackup(user.id, recoveryPhrase);
-    await backupRecoveryKeyToServer(recoveryBackup);
-
-    setKeyStatus('SECURE');
-  };
-
   const retryMlsRecoveryWithPassword = async (password: string) => {
     if (!user?.id) {
       throw new Error('AUTH_REQUIRED');
@@ -579,29 +596,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const unlockWithRecoveryPhrase = async (recoveryPhrase: string) => {
-    if (!user?.id) {
-      throw new Error('AUTH_REQUIRED');
-    }
-
-    const callbacks = createKeyCallbacks();
-    setKeyStatusLoading(true);
-
-    try {
-      await keyManager.restoreFromRecoveryPhrase(
-        user.id,
-        recoveryPhrase,
-        loginPasswordRef.current,
-        callbacks
-      );
-      setKeyStatus('SECURE');
-      window.location.reload();
-    } catch (err) {
-      setKeyStatusLoading(false);
-      throw err;
-    }
-  };
-
   // Initial user fetch
   useEffect(() => {
     const init = async () => {
@@ -671,6 +665,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
         console.log('🔑 Encryption keys ready');
         try {
           const backup = await callbacks.fetchBackup();
+          if (password) {
+            try {
+              await ensureAutomaticRecoveryBackup(userId, backup);
+            } catch (recoveryError) {
+              console.warn('[RECOVERY_AUTO_SETUP] automatic recovery backup failed', {
+                user_id: userId,
+                error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError || ''),
+              });
+            }
+          }
           const hasMlsBackup = hasMlsBackupPayload(backup);
           let restoreSummary: MlsRestoreSummary = createEmptyRestoreSummary();
           if (!cancelled) {
@@ -757,6 +761,13 @@ export function UserProvider({ children }: { children: ReactNode }) {
         if (err.message === 'KEY_NEEDS_PASSWORD' || err.message === 'KEY_RESTORE_FAILED') {
           console.warn('🔑 Keys are locked on this device');
           setKeyStatus('LOCKED');
+          activateMlsRecoveryGate(
+            err.message === 'KEY_RESTORE_FAILED' ? 'restore_failed' : 'password_required',
+            {
+              user_id: userId,
+              source: 'key_init',
+            }
+          );
         } else {
           console.warn('🔑 Key init failed:', err.message);
           setKeyStatus('UNINITIALIZED');
@@ -838,6 +849,17 @@ export function UserProvider({ children }: { children: ReactNode }) {
         const keyBackup = await keyManager.prepareBackup(userId, password);
         const mlsFields = await buildMlsBackupFields(userId, password);
         await backupKeyToServer({ ...keyBackup, ...mlsFields });
+        try {
+          await ensureAutomaticRecoveryBackup(userId, keyBackup);
+        } catch (recoveryError) {
+          console.warn('[RECOVERY_AUTO_SETUP] automatic recovery backup failed after backup refresh', {
+            user_id: userId,
+            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError || ''),
+          });
+        }
+        if (!cancelled) {
+          setKeyStatus('SECURE');
+        }
       } catch {
         // Non-critical — event-driven backup will catch future changes
       }
@@ -1045,8 +1067,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       logout,
       setLoginPassword,
       retryMlsRecoveryWithPassword,
-      saveRecoveryPhrase,
-      unlockWithRecoveryPhrase,
     }}>
       {children}
     </UserContext.Provider>

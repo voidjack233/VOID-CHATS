@@ -74,12 +74,12 @@ export default function FriendProfile({ friend, onClose, onRemoveFriend }: Frien
 
           <UserProfileFields
             displayProfile={displayProfile}
-            tempProfile={displayProfile}
+            draftProfile={displayProfile}
             isEditing={false}
             bioError={null}
             error={null}
             uploadError={null}
-            setTempProfile={() => {}}
+            setDraftProfile={() => {}}
             handleBioChange={() => {}}
           />
 

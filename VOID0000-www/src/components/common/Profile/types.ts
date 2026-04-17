@@ -1,5 +1,5 @@
 import { RefObject, ChangeEvent } from 'react';
-import { UserProfileData as ProfileType } from '../../../Services/hooks/editProfile/userProfile';
+import { ProfileRecord as ProfileType } from '../../../Services/hooks/profile/useProfileRecord';
 
 export interface UserProfileProps {
   profileId: string;
@@ -20,12 +20,12 @@ export interface UserProfileHeaderProps {
 
 export interface UserProfileFieldsProps {
   displayProfile: ProfileType;
-  tempProfile: ProfileType;
+  draftProfile: ProfileType;
   isEditing: boolean;
   bioError: string | null;
   error: string | null;
   uploadError: string | null;
-  setTempProfile: (profile: ProfileType) => void;
+  setDraftProfile: (profile: ProfileType) => void;
   handleBioChange: (e: ChangeEvent<HTMLTextAreaElement>) => void;
 }
 

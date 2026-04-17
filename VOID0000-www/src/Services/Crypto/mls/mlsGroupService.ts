@@ -14,6 +14,7 @@ import {
   type Proposal,
 } from 'ts-mls';
 import {
+  applyMlsCommit,
   checkKeyPackageAvailability,
   ingestMlsCommits,
   ingestMlsWelcomes,
@@ -680,6 +681,11 @@ export class MlsGroupService {
         local_epoch: localEpoch,
       });
       await mlsStorageService.markCommitApplied(commit.conversationId, commit.commitRef);
+      try {
+        await applyMlsCommit(commit.conversationId, commit.commitRef);
+      } catch {
+        // Best-effort server-side acknowledgement.
+      }
       return false;
     }
 
@@ -707,6 +713,11 @@ export class MlsGroupService {
     });
     const keyResult = await mlsStorageService.cacheDerivedGroupKey(commit.conversationId, newState, impl, { userId });
     await mlsStorageService.markCommitApplied(commit.conversationId, commit.commitRef);
+    try {
+      await applyMlsCommit(commit.conversationId, commit.commitRef);
+    } catch {
+      // Best-effort server-side acknowledgement.
+    }
     console.log('[MLS_COMMIT] applied commit', {
       conversation_id: commit.conversationId,
       commit_ref: commit.commitRef,

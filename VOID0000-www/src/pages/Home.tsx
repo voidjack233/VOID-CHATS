@@ -4,7 +4,7 @@ import { User, Settings, LogOut, Users, MessageCircle } from 'lucide-react';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
 import { useFriendRequests } from '../Services/hooks/Friends/useFriendRequests';
 import MenuComponent from '../components/common/Menu';
-import UserProfile from '../components/common/Profile/userProfile';
+import UserProfileModal from '../components/common/Profile/UserProfileModal';
 import UseSetting from '../components/common/Setting/Setting';
 import FriendsModal from '../components/common/Friends/FriendsModal';
 
@@ -28,7 +28,7 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-void-bg-main text-void-text">
       {showProfile && user?.profile_id && (
-        <UserProfile profileId={user.profile_id} onClose={() => setShowProfile(false)} />
+        <UserProfileModal profileId={user.profile_id} onClose={() => setShowProfile(false)} />
       )}
       {showSettings && <UseSetting onClose={() => setShowSettings(false)} />}
       {showFriends && <FriendsModal onClose={() => setShowFriends(false)} />}

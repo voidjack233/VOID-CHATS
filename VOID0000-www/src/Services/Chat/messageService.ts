@@ -157,24 +157,6 @@ export async function sendTypingStart(conversationId: string): Promise<void> {
   if (!data.success) throw createApiError(data);
 }
 
-export async function uploadAttachments(
-  conversationId: string,
-  files: Array<{ data: string }>,
-): Promise<{ urls: string[]; blurhashes: string[] }> {
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
-    method: 'POST',
-    body: JSON.stringify({ files }),
-  });
-
-  const data = await response.json();
-  if (!data.success) throw new Error(data.error || 'Upload failed');
-
-  return {
-    urls: data.urls as string[],
-    blurhashes: (data.blurhashes || data.urls.map(() => '')) as string[],
-  };
-}
-
 export async function uploadEncryptedAttachments(
   conversationId: string,
   files: File[],

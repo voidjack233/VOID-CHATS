@@ -13,6 +13,7 @@ interface AttachmentImageProps {
   alt?: string;
   className?: string;
   onLoad?: () => void;
+  onDimensionsResolved?: (dimensions: { width: number; height: number }) => void;
   canLoad?: boolean;
 }
 
@@ -21,6 +22,7 @@ export default function AttachmentImage({
   alt = '',
   className = '',
   onLoad,
+  onDimensionsResolved,
   canLoad = true,
 }: AttachmentImageProps) {
   const [src, setSrc] = useState<string | null>(
@@ -93,7 +95,15 @@ export default function AttachmentImage({
         blurhash={attachment.blurhash}
         alt={alt}
         className={className}
-        onLoad={onLoad}
+        onLoad={(image) => {
+          onLoad?.();
+          if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+            onDimensionsResolved?.({
+              width: image.naturalWidth,
+              height: image.naturalHeight,
+            });
+          }
+        }}
         loading="eager"
       />
     );

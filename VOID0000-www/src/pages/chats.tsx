@@ -4,12 +4,11 @@ import { Settings, Users, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizont
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../components/Chat/ConversationSettings';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
-import { useUserProfile } from '../Services/hooks/editProfile/userProfile';
+import { useProfileRecord } from '../Services/hooks/profile/useProfileRecord';
 import { useChatManager } from '../Services/hooks/Chats/useChatManager';
 import { useFriends } from '../Services/hooks/Friends/useFriends';
-import UserProfile from '../components/common/Profile/userProfile';
+import UserProfileModal from '../components/common/Profile/UserProfileModal';
 import UseSetting from '../components/common/Setting/Setting';
-import RecoveryPhraseModal from '../components/common/Setting/RecoveryPhraseModal';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
@@ -19,7 +18,6 @@ import { gateway } from '../Services/Gateway/gateway';
 import { Message } from '../Services/Chat/chatService';
 import { matchesConversationIdentifier } from '../Services/Chat/utils/conversationUtils';
 import { useUser } from '../Services/Auth/UserContext';
-import RecoveryLockScreen from '../components/Chat/RecoveryLockScreen';
 import UserAvatar from '../components/common/UserAvatar';
 import { ConversationPaneSkeleton } from '../components/common/Skeleton';
 import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
@@ -41,16 +39,14 @@ const ChatDashboard = () => {
   }>();
   const { loading, user } = useAuth();
   const {
-    keyStatus,
     keyStatusLoading,
     mlsRecoveryGate,
     isLoggingOut,
     retryMlsRecoveryWithPassword,
-    unlockWithRecoveryPhrase,
     logout,
   } = useUser();
 
-  const { profile: myProfile } = useUserProfile(user?.profile_id || '');
+  const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const { isOnline, showReconnectBanner } = useConnectionStatus();
 
   // Independently detect bootstrap stalls (API down before the gateway ever
@@ -171,12 +167,10 @@ const ChatDashboard = () => {
     syncViewportHeight();
     window.addEventListener('resize', syncViewportHeight);
     window.visualViewport?.addEventListener('resize', syncViewportHeight);
-    window.visualViewport?.addEventListener('scroll', syncViewportHeight);
 
     return () => {
       window.removeEventListener('resize', syncViewportHeight);
       window.visualViewport?.removeEventListener('resize', syncViewportHeight);
-      window.visualViewport?.removeEventListener('scroll', syncViewportHeight);
     };
   }, []);
 
@@ -651,19 +645,6 @@ const ChatDashboard = () => {
     );
   }
 
-  if (keyStatus === 'LOCKED') {
-    return (
-      <RecoveryLockScreen
-        onRecover={unlockWithRecoveryPhrase}
-        onLogout={async () => {
-          await logout();
-          navigate('/auth', { replace: true });
-        }}
-        loading={keyStatusLoading}
-      />
-    );
-  }
-
   const isFriendsPaneVisible = !displayConversation;
   const isFriendsMobileActive = mobileSidebarMode === 'friends';
   const securityBannerMessage = conversationSecurityState?.message || encryptionError;
@@ -704,12 +685,9 @@ const ChatDashboard = () => {
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
       {/* Modals */}
       {showProfile && user?.profile_id && (
-        <UserProfile profileId={user.profile_id} onClose={() => setShowProfile(false)} />
+        <UserProfileModal profileId={user.profile_id} onClose={() => setShowProfile(false)} />
       )}
       {showSettings && <UseSetting onClose={() => setShowSettings(false)} />}
-      {user?.id && keyStatus === 'UNINITIALIZED' && !isLoggingOut && (
-        <RecoveryPhraseModal onClose={() => {}} required />
-      )}
       
       {showCreateGroup && user?.id && (
         <GroupCreateModal

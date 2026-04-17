@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { X } from 'lucide-react';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
-import { useUserProfile } from '../../../Services/hooks/editProfile/userProfile';
+import { useProfileRecord } from '../../../Services/hooks/profile/useProfileRecord';
 import UserProfileHeader from './UserProfileHeader';
 import UserProfileFields from './UserProfileFields';
 import UserProfileStatus from './UserProfileStatus';
@@ -10,7 +10,7 @@ import UserProfileError from './UserProfileError';
 import UserProfileEmpty from './UserProfileEmpty';
 import { UserProfileProps } from './types';
 
-const UserProfile: React.FC<UserProfileProps> = ({ profileId, onClose }) => {
+const UserProfileModal: React.FC<UserProfileProps> = ({ profileId, onClose }) => {
   useScrollLock(); // Lock scroll when profile modal is open
   const dummyInputRef = useRef<HTMLInputElement>(null);
 
@@ -18,7 +18,7 @@ const UserProfile: React.FC<UserProfileProps> = ({ profileId, onClose }) => {
     profile,
     loading,
     error,
-  } = useUserProfile(profileId);
+  } = useProfileRecord(profileId);
 
   if (loading) return <UserProfileLoading />;
   if (error) return <UserProfileError error={error} onClose={onClose} />;
@@ -58,12 +58,12 @@ const UserProfile: React.FC<UserProfileProps> = ({ profileId, onClose }) => {
 
           <UserProfileFields
             displayProfile={profile}
-            tempProfile={profile}
+            draftProfile={profile}
             isEditing={false}
             bioError={null}
             error={null}
             uploadError={null}
-            setTempProfile={() => {}}
+            setDraftProfile={() => {}}
             handleBioChange={() => {}}
           />
 
@@ -76,4 +76,4 @@ const UserProfile: React.FC<UserProfileProps> = ({ profileId, onClose }) => {
   );
 };
 
-export default UserProfile;
+export default UserProfileModal;

@@ -40,6 +40,15 @@ const SWIPE_START_THRESHOLD = 12;
 const SWIPE_START_THRESHOLD_ATTACHMENT = 18;
 const SWIPE_ACTION_THRESHOLD = 68;
 const SWIPE_ACTION_THRESHOLD_ATTACHMENT = 84;
+const SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH = 280;
+const SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH = 220;
+const SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH = 240;
+const SINGLE_ATTACHMENT_MAX_HEIGHT = 320;
+const SINGLE_ATTACHMENT_MIN_WIDTH = 160;
+const SINGLE_ATTACHMENT_FALLBACK_WIDTH = 220;
+const MULTI_ATTACHMENT_MAX_WIDTH = 320;
+const LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD = 1.2;
+const PORTRAIT_ATTACHMENT_RATIO_THRESHOLD = 0.9;
 
 interface MessageItemProps {
   message: Message;
@@ -74,6 +83,76 @@ interface MessageItemProps {
   onAttachmentLoad?: () => void;
   canLoadAttachments?: boolean;
   onOpenLink?: (url: string) => void;
+}
+
+function getSingleAttachmentPresentation(attachment: {
+  width?: number;
+  height?: number;
+}): { width: number; aspectRatio: string } | null {
+  const width = attachment.width;
+  const height = attachment.height;
+
+  if (
+    typeof width !== 'number' ||
+    typeof height !== 'number' ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+
+  const aspectRatio = width / height;
+  const maxWidth = aspectRatio >= LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD
+    ? SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH
+    : aspectRatio <= PORTRAIT_ATTACHMENT_RATIO_THRESHOLD
+      ? SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH
+      : SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH;
+
+  let displayWidth = Math.min(width, maxWidth);
+  displayWidth = Math.max(SINGLE_ATTACHMENT_MIN_WIDTH, displayWidth);
+  let displayHeight = displayWidth * (height / width);
+
+  if (displayHeight > SINGLE_ATTACHMENT_MAX_HEIGHT) {
+    displayHeight = SINGLE_ATTACHMENT_MAX_HEIGHT;
+    displayWidth = displayHeight * (width / height);
+  }
+
+  displayWidth = Math.max(SINGLE_ATTACHMENT_MIN_WIDTH, Math.min(displayWidth, maxWidth));
+
+  return {
+    width: Math.round(displayWidth),
+    aspectRatio: `${width} / ${height}`,
+  };
+}
+
+function getMultiAttachmentGridClass(attachmentCount: number): string {
+  if (attachmentCount <= 1) {
+    return 'flex';
+  }
+
+  return 'grid grid-cols-2 gap-1';
+}
+
+function getMultiAttachmentTileClass(attachmentCount: number, index: number): string {
+  if (attachmentCount === 2) {
+    return 'aspect-square';
+  }
+
+  if (attachmentCount >= 3) {
+    if (index === 0) {
+      return 'col-span-2 aspect-[16/9]';
+    }
+
+    return 'aspect-square';
+  }
+
+  return 'aspect-square';
+}
+
+function getAttachmentLayoutKey(attachment: { url: string; name?: string }, index: number): string {
+  return `${attachment.url}::${attachment.name || 'attachment'}::${index}`;
 }
 
 const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
@@ -131,6 +210,7 @@ const MessageItem = memo(function MessageItem({
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
+  const [attachmentDimensions, setAttachmentDimensions] = useState<Record<string, { width: number; height: number }>>({});
   const longPressTimerRef = useRef<number | null>(null);
   const touchStateRef = useRef<{
     active: boolean;
@@ -155,6 +235,7 @@ const MessageItem = memo(function MessageItem({
   const isSending = message.local_status === 'sending';
   const isQueued = message.local_status === 'queued';
   const isPending = isSending || isQueued;
+  const pendingStatusLabel = isQueued ? 'queued' : 'sending...';
   const isRightAligned = isOwn && density === 'comfortable';
   const canSwipeReply = Boolean(onReply);
   const canSwipeEdit = Boolean(isOwn && onEdit);
@@ -167,6 +248,9 @@ const MessageItem = memo(function MessageItem({
   }, []);
 
   useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+  useEffect(() => {
+    setAttachmentDimensions({});
+  }, [message.message_id]);
 
   const blurActiveComposer = useCallback(() => {
     const activeElement = document.activeElement;
@@ -604,38 +688,116 @@ const MessageItem = memo(function MessageItem({
                   </span>
                 )}
                 {message.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
+                {isPending && (
+                  <div
+                    className={`mt-1 text-[10px] italic ${
+                      isRightAligned || isOwn ? 'text-white/75' : 'text-void-text-muted'
+                    }`}
+                  >
+                    {pendingStatusLabel}
+                  </div>
+                )}
               </div>
             );
           })()}
 
           {!message.is_deleted && message.attachments && message.attachments.length > 0 && (() => {
             const parsed = parseAttachments(message.attachments);
+            const singleAttachment = parsed[0];
+            const singleAttachmentLayoutKey = parsed.length === 1 && singleAttachment
+              ? getAttachmentLayoutKey(singleAttachment, 0)
+              : null;
+            const singleAttachmentResolvedDimensions = singleAttachmentLayoutKey
+              ? attachmentDimensions[singleAttachmentLayoutKey]
+              : undefined;
+            const singleAttachmentPresentation = parsed.length === 1 && singleAttachment
+              ? getSingleAttachmentPresentation({
+                  ...singleAttachment,
+                  width: singleAttachment.width ?? singleAttachmentResolvedDimensions?.width,
+                  height: singleAttachment.height ?? singleAttachmentResolvedDimensions?.height,
+                })
+              : null;
+            const visibleAttachments = parsed.length > 3
+              ? parsed.slice(0, 3).map((attachment, index) => ({
+                  attachment,
+                  originalIndex: index,
+                }))
+              : parsed.map((attachment, index) => ({
+                  attachment,
+                  originalIndex: index,
+                }));
+            const hiddenAttachmentCount = Math.max(0, parsed.length - visibleAttachments.length);
 
             return (
               <div
-                className={`pt-1 grid gap-1 ${
-                  parsed.length === 1 ? 'grid-cols-1' :
-                  parsed.length === 2 ? 'grid-cols-2' :
-                  'grid-cols-3'
-                } max-w-xs`}
+                className={`pt-1 ${
+                  parsed.length === 1
+                    ? 'flex'
+                    : getMultiAttachmentGridClass(visibleAttachments.length)
+                }`}
+                style={parsed.length === 1 ? undefined : { maxWidth: `${MULTI_ATTACHMENT_MAX_WIDTH}px` }}
               >
-                {parsed.map((attachment, index) => (
-                  <button
-                    key={index}
-                    onClick={() => { void handleOpenAttachmentViewer(message.attachments || [], index); }}
-                    data-message-gesture-target="attachment"
-                    disabled={isPending || openingImageViewer}
-                    className={`block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none aspect-square ${isPending ? 'cursor-not-allowed' : ''}`}
-                  >
-                    <AttachmentImage
-                      attachment={attachment}
-                      alt="attachment"
-                      className="w-full h-full object-cover hover:opacity-90"
-                      onLoad={onAttachmentLoad}
-                      canLoad={canLoadAttachments}
-                    />
-                  </button>
-                ))}
+                {visibleAttachments.map(({ attachment, originalIndex }, index) => {
+                  const hasHiddenAttachments = hiddenAttachmentCount > 0 && index === visibleAttachments.length - 1;
+
+                  return (
+                    <button
+                      key={`${originalIndex}-${attachment.url}`}
+                      onClick={() => { void handleOpenAttachmentViewer(message.attachments || [], originalIndex); }}
+                      data-message-gesture-target="attachment"
+                      disabled={isPending || openingImageViewer}
+                      className={`relative block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none ${
+                        parsed.length === 1 && singleAttachmentPresentation
+                          ? 'max-w-full'
+                          : getMultiAttachmentTileClass(visibleAttachments.length, index)
+                      } ${isPending ? 'cursor-not-allowed' : ''}`}
+                      style={parsed.length === 1 && singleAttachmentPresentation
+                        ? {
+                            width: `${singleAttachmentPresentation.width}px`,
+                            aspectRatio: singleAttachmentPresentation.aspectRatio,
+                          }
+                        : parsed.length === 1
+                          ? {
+                              width: `${SINGLE_ATTACHMENT_FALLBACK_WIDTH}px`,
+                            }
+                        : undefined}
+                    >
+                      <AttachmentImage
+                        attachment={attachment}
+                        alt="attachment"
+                        className="w-full h-full object-cover hover:opacity-90"
+                        onLoad={onAttachmentLoad}
+                        onDimensionsResolved={(dimensions) => {
+                          if (parsed.length !== 1) return;
+                          const layoutKey = getAttachmentLayoutKey(attachment, originalIndex);
+                          setAttachmentDimensions((current) => {
+                            const existing = current[layoutKey];
+                            if (
+                              existing &&
+                              existing.width === dimensions.width &&
+                              existing.height === dimensions.height
+                            ) {
+                              return current;
+                            }
+
+                            return {
+                              ...current,
+                              [layoutKey]: dimensions,
+                            };
+                          });
+                        }}
+                        canLoad={canLoadAttachments}
+                      />
+                      {hasHiddenAttachments ? (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-white">
+                          <span className="text-lg font-semibold tracking-tight">
+                            +{hiddenAttachmentCount}
+                          </span>
+                        </div>
+                      ) : null}
+                    </button>
+                  );
+                })}
               </div>
             );
           })()}
@@ -661,10 +823,10 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
 
-          {isPending && (
+          {isPending && message.attachments && message.attachments.length > 0 && (
             <div className={`pt-1 ${isRightAligned ? 'text-right' : 'text-left'}`}>
               <span className="text-[10px] italic text-void-text-muted">
-                {isQueued ? 'queued' : 'sending...'}
+                {pendingStatusLabel}
               </span>
             </div>
           )}

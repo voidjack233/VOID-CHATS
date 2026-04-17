@@ -2,12 +2,12 @@ import { useState, useRef, useCallback } from "react";
 import { ensureCSRFToken } from '../../Auth/authServiceApi'; // CRITICAL FOR FIXING 403
 import { API_URL } from '../../config';
 
-interface UseAvatarUploadReturn {
+interface UseProfileAvatarUploadReturn {
   uploadError: string | null;
   isUploading: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   validateFile: (file: File) => string | null;
-  uploadAvatar: (file: File) => Promise<string>;
+  uploadProfileAvatar: (file: File) => Promise<string>;
   clearError: () => void;
 }
 
@@ -24,7 +24,7 @@ const ERROR_MESSAGES = {
   CSRF_MISSING: "Security token missing. Please refresh the page.",
 } as const;
 
-export const useAvatarUpload = (): UseAvatarUploadReturn => {
+export const useProfileAvatarUpload = (): UseProfileAvatarUploadReturn => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -59,7 +59,7 @@ export const useAvatarUpload = (): UseAvatarUploadReturn => {
   };
 
   // 3. Upload Logic (Manual Trigger)
-  const uploadAvatar = useCallback(async (file: File): Promise<string> => {
+  const uploadProfileAvatar = useCallback(async (file: File): Promise<string> => {
     setIsUploading(true);
     setUploadError(null);
 
@@ -74,7 +74,7 @@ export const useAvatarUpload = (): UseAvatarUploadReturn => {
       const base64Image = await readFileAsDataURL(file);
 
       // Step C: Fetch
-      const response = await fetch(`${API_URL}/api/users/avatar`, {
+      const response = await fetch(`${API_URL}/api/users/profile/avatar`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -112,7 +112,7 @@ export const useAvatarUpload = (): UseAvatarUploadReturn => {
     isUploading,
     fileInputRef,
     validateFile,
-    uploadAvatar,
+    uploadProfileAvatar,
     clearError,
   };
 };

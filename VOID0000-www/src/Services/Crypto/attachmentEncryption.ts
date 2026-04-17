@@ -1,4 +1,5 @@
 import type { Attachment } from '../Chat/chatTypes';
+import { encode } from 'blurhash';
 
 interface EncryptedAttachment extends Attachment {
   encrypted: true;
@@ -12,6 +13,15 @@ interface EncryptedAttachment extends Attachment {
 const decryptedUrlCache = new Map<string, Promise<string>>();
 const resolvedUrlCache = new Map<string, string>();
 const BASE64_CHUNK_SIZE = 0x8000;
+const BLURHASH_MAX_DIMENSION = 32;
+const BLURHASH_COMPONENT_X = 4;
+const BLURHASH_COMPONENT_Y = 4;
+
+interface ImageAttachmentPreviewData {
+  blurhash?: string;
+  width?: number;
+  height?: number;
+}
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -56,6 +66,77 @@ function getAttachmentCacheKey(attachment: EncryptedAttachment): string {
   ].join('::');
 }
 
+function getBlurhashDimensions(width: number, height: number): { width: number; height: number } {
+  if (width <= 0 || height <= 0) {
+    return { width: BLURHASH_MAX_DIMENSION, height: BLURHASH_MAX_DIMENSION };
+  }
+
+  if (width >= height) {
+    return {
+      width: BLURHASH_MAX_DIMENSION,
+      height: Math.max(1, Math.round((height / width) * BLURHASH_MAX_DIMENSION)),
+    };
+  }
+
+  return {
+    width: Math.max(1, Math.round((width / height) * BLURHASH_MAX_DIMENSION)),
+    height: BLURHASH_MAX_DIMENSION,
+  };
+}
+
+async function extractImageAttachmentPreviewData(file: File): Promise<ImageAttachmentPreviewData> {
+  if (!file.type.startsWith('image/')) {
+    return {};
+  }
+
+  let objectUrl: string | null = null;
+
+  try {
+    objectUrl = URL.createObjectURL(file);
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('IMAGE_LOAD_FAILED'));
+      img.src = objectUrl as string;
+    });
+
+    const width = image.naturalWidth > 0 ? image.naturalWidth : undefined;
+    const height = image.naturalHeight > 0 ? image.naturalHeight : undefined;
+
+    let blurhash: string | undefined;
+    try {
+      const targetDimensions = getBlurhashDimensions(image.naturalWidth, image.naturalHeight);
+      const canvas = document.createElement('canvas');
+      canvas.width = targetDimensions.width;
+      canvas.height = targetDimensions.height;
+
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (context) {
+        context.drawImage(image, 0, 0, targetDimensions.width, targetDimensions.height);
+        const imageData = context.getImageData(0, 0, targetDimensions.width, targetDimensions.height);
+        blurhash = encode(
+          imageData.data,
+          targetDimensions.width,
+          targetDimensions.height,
+          BLURHASH_COMPONENT_X,
+          BLURHASH_COMPONENT_Y,
+        );
+      }
+    } catch (error) {
+      console.warn('Failed to generate blurhash for attachment:', error);
+    }
+
+    return { blurhash, width, height };
+  } catch (error) {
+    console.warn('Failed to inspect image attachment:', error);
+    return {};
+  } finally {
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+}
+
 export async function encryptAttachmentFile(file: File): Promise<{
   encryptedData: string;
   attachment: EncryptedAttachment;
@@ -67,6 +148,7 @@ export async function encryptAttachmentFile(file: File): Promise<{
   );
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const fileData = await file.arrayBuffer();
+  const previewData = await extractImageAttachmentPreviewData(file);
   const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, fileData);
   const rawKey = await crypto.subtle.exportKey('raw', key);
 
@@ -80,6 +162,9 @@ export async function encryptAttachmentFile(file: File): Promise<{
       mime: file.type || 'application/octet-stream',
       name: file.name || undefined,
       size: file.size,
+      blurhash: previewData.blurhash,
+      width: previewData.width,
+      height: previewData.height,
     },
   };
 }
