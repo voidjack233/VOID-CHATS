@@ -303,6 +303,7 @@ Notes:
 - current protocol lane is MLS-based account-scope chat
 - durable catch-up comes from synced welcomes, commits, group states, and archived keys
 - commit receipts are per user, which matches the account-scope model
+- the current MLS implementation depends on `ts-mls`, which upstream has explicitly said is not formally audited yet
 
 ## 10. Message History + Live Stream
 
@@ -446,5 +447,6 @@ Notes:
 ## 18. Current Known Limits
 
 - secure chat recovery after forgot-password is still limited on fresh devices
+- the current `ts-mls` dependency has no formal upstream security audit yet
 - some flows are durable, but edge-case testing still matters after auth/session/MLS changes
 - this doc is meant to be updated when auth, sessions, friends, conversations, MLS, or recovery behavior changes

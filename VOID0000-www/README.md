@@ -2,8 +2,10 @@
 
 ## Project Notes
 
+- Full stack setup: see [../docs/setup.md](../docs/setup.md)
 - Secure chat recovery limitation: see [docs/secure-chat-recovery-limitations.md](docs/secure-chat-recovery-limitations.md)
 - Current system flow map: see [docs/project-flow-map.md](docs/project-flow-map.md)
+- Crypto security note: see [docs/crypto-security-notes.md](docs/crypto-security-notes.md)
 
 If a user changes password while authenticated, the app can re-wrap the existing chat backup.
 If a user uses forgot-password reset on a fresh device, old encrypted chats may still require the old password unless a surviving device repairs the backup first.

@@ -100,9 +100,14 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
           ? 'sticky top-0 z-10 bg-gray-800 border-b border-void-border px-4 py-3' 
           : 'p-6 border-b border-void-border'
         } flex items-center justify-between`}>
-          <div className="flex items-center gap-3">
-            <Shield className="w-5 h-5 text-blue-400" />
-            <h3 className="text-lg font-semibold text-void-text">Active Sessions</h3>
+          <div className="flex items-start gap-3">
+            <Shield className="w-5 h-5 text-blue-400 mt-0.5" />
+            <div>
+              <h3 className="text-lg font-semibold text-void-text">Active Sessions</h3>
+              <p className="text-xs text-void-text-muted mt-1">
+                One entry per signed-in device or browser.
+              </p>
+            </div>
           </div>
           
           <button
@@ -194,7 +199,7 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
                   <div className="inline-block p-6 bg-gray-900/50 rounded-xl">
                     <Shield className="w-12 h-12 text-void-text-muted mx-auto mb-3" />
                     <p className="text-void-text-muted mb-2">No other active sessions</p>
-                    <p className="text-xs text-void-text-muted">Only this device is logged in</p>
+                    <p className="text-xs text-void-text-muted">Only this device or browser is currently signed in.</p>
                   </div>
                 </div>
               )}

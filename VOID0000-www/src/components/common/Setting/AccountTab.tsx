@@ -159,13 +159,20 @@ const AccountTab = () => {
         {/* Danger Zone */}
         <div className="border-t border-void-border pt-4">
           <h4 className="text-xs md:text-sm font-semibold text-red-400 uppercase mb-3">Danger Zone</h4>
-          <button className="w-full px-3 py-2.5 md:px-4 md:py-3 bg-red-900/20 hover:bg-red-900/30 border border-red-800/50 hover:border-red-700 rounded-lg transition-all active:scale-[0.98]">
+          <button
+            disabled
+            className="w-full cursor-not-allowed px-3 py-2.5 md:px-4 md:py-3 bg-red-900/10 border border-red-900/40 rounded-lg transition-all opacity-70"
+          >
             <div className="flex items-center justify-between">
               <div className="text-left">
                 <p className="text-sm font-medium text-red-400">Delete Account</p>
-                <p className="text-xs text-red-300/70 mt-0.5 hidden sm:block">Permanently delete your account</p>
+                <p className="text-xs text-red-300/70 mt-0.5 hidden sm:block">
+                  Account deletion is not available yet.
+                </p>
               </div>
-              <ChevronRight className="w-4 h-4 text-red-400" />
+              <span className="rounded-full border border-red-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-red-300/80">
+                Unavailable
+              </span>
             </div>
           </button>
         </div>
