@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
@@ -23,10 +23,13 @@ interface PresenceContextType {
 }
 
 const PresenceContext = createContext<PresenceContextType | null>(null);
+const PRESENCE_MIN_SYNC_GAP_MS = 10_000;
 
 export function PresenceProvider({ children }: { children: ReactNode }) {
   const { user } = useUser();
   const [presences, setPresences] = useState<Map<string, Presence>>(new Map());
+  const lastSyncAtRef = useRef(0);
+  const syncInFlightRef = useRef<Promise<void> | null>(null);
 
   const getPresence = useCallback((userId: string): Presence => {
     return presences.get(userId) || { status: 'offline', lastActive: null };
@@ -57,18 +60,36 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       });
     };
 
-    const syncPresenceFromFriends = async () => {
-      try {
-        const res = await fetchWithAuth('/api/friends');
-        if (!res.ok) return;
+    const syncPresenceFromFriends = async (force = false) => {
+      const now = Date.now();
+      if (!force && syncInFlightRef.current) return syncInFlightRef.current;
+      if (!force && now - lastSyncAtRef.current < PRESENCE_MIN_SYNC_GAP_MS) return;
 
-        const data = await res.json();
-        if (cancelled || !Array.isArray(data?.friends)) return;
+      const task = (async () => {
+        try {
+          const res = await fetchWithAuth('/api/friends/presence');
+          if (!res.ok) return;
 
-        applyPresenceSnapshot(data.friends);
-      } catch (err) {
-        console.error('Failed to refresh presence snapshot:', err);
-      }
+          const data = await res.json();
+          if (cancelled || !Array.isArray(data?.presences)) return;
+
+          applyPresenceSnapshot(
+            data.presences.map((presence: { user_id: string; status?: PresenceStatus; last_active?: number | null }) => ({
+              id: presence.user_id,
+              status: presence.status,
+              last_active: presence.last_active,
+            }))
+          );
+          lastSyncAtRef.current = Date.now();
+        } catch (err) {
+          console.error('Failed to refresh presence snapshot:', err);
+        } finally {
+          syncInFlightRef.current = null;
+        }
+      })();
+
+      syncInFlightRef.current = task;
+      return task;
     };
 
     // READY event includes initial friend presences
@@ -88,7 +109,6 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
         });
       }
 
-      void syncPresenceFromFriends();
     };
 
     // Real-time presence updates
@@ -124,7 +144,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
     };
 
     const handleResumed = () => {
-      void syncPresenceFromFriends();
+      void syncPresenceFromFriends(true);
     };
 
     const handleVisibilityChange = () => {
@@ -133,7 +153,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    void syncPresenceFromFriends();
+    void syncPresenceFromFriends(true);
 
     const refreshInterval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {

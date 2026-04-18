@@ -23,4 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 
-docs
+docs/*
+!docs/project-flow-map.md
+!docs/secure-chat-recovery-limitations.md

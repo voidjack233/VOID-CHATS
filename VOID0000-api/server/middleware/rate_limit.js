@@ -159,6 +159,13 @@ export const friendsListLimiter = createRateLimiter({
   maxAttempts: 30,
 });
 
+// FRIENDS PRESENCE: 180 per minute
+export const friendsPresenceLimiter = createRateLimiter({
+  prefix: 'friends:presence',
+  windowSec: 60,
+  maxAttempts: 180,
+});
+
 // FRIEND ACTIONS (request, accept, reject, cancel, remove): 20 per minute
 export const friendActionLimiter = createRateLimiter({
   prefix: 'friends:action',
