@@ -4,13 +4,13 @@ import { authService, fetchWithAuth } from './authServiceApi';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
+import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncryption';
 import { upsertMlsGroupStates } from '../Crypto/mls/mlsApi';
 import { mlsStore } from '../Crypto/mls/mlsStore';
 import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
 import {
   uploadPublicKey,
   backupKeyToServer,
-  backupRecoveryKeyToServer,
   fetchKeyBackup,
   type KeyBackupRecord,
 } from '../Chat/chatService';
@@ -53,14 +53,6 @@ function hasPasswordBackupPayload(backup: KeyBackupRecord | null): boolean {
     backup.iv &&
     backup.salt &&
     backup.key_id
-  );
-}
-
-function hasRecoveryBackupPayload(backup: KeyBackupRecord | null): boolean {
-  return Boolean(
-    backup?.recovery_encrypted_private_key &&
-    backup.recovery_iv &&
-    backup.recovery_salt
   );
 }
 
@@ -410,31 +402,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
     return hasPasswordBackupPayload(backup) ? 'SECURE' : 'UNINITIALIZED';
   };
 
-  const ensureAutomaticRecoveryBackup = async (
-    userId: string,
-    backupHint?: KeyBackupRecord | null,
-  ): Promise<boolean> => {
-    const shouldTrustHint =
-      hasPasswordBackupPayload(backupHint ?? null) &&
-      hasRecoveryBackupPayload(backupHint ?? null);
-    const backup = shouldTrustHint ? backupHint ?? null : await fetchKeyBackup();
-
-    if (!hasPasswordBackupPayload(backup) || hasRecoveryBackupPayload(backup)) {
-      return false;
-    }
-
-    const recoveryPhrase = keyManager.generateRecoveryPhrase();
-    const recoveryBackup = await keyManager.prepareRecoveryBackup(userId, recoveryPhrase);
-    await backupRecoveryKeyToServer(recoveryBackup);
-
-    console.log('[RECOVERY_AUTO_SETUP] created hidden recovery backup', {
-      user_id: userId,
-      key_id: backup?.key_id || recoveryBackup.key_id,
-    });
-
-    return true;
-  };
-
   const createKeyCallbacks = () => ({
     uploadPublicKey: async (pubKey: string, keyId: string) => uploadPublicKey(pubKey, keyId),
     backupToServer: async (data: { encrypted_private_key: string; iv: string; salt: string; key_id: string }) => {
@@ -507,6 +474,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     setIsLoggingOut(true);
     gateway.disconnect();
+    clearDecryptedAttachmentObjectUrlCache();
     loginPasswordRef.current = null;
     setKeyStatus('UNINITIALIZED');
     setKeyStatusLoading(false);
@@ -665,16 +633,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
         console.log('🔑 Encryption keys ready');
         try {
           const backup = await callbacks.fetchBackup();
-          if (password) {
-            try {
-              await ensureAutomaticRecoveryBackup(userId, backup);
-            } catch (recoveryError) {
-              console.warn('[RECOVERY_AUTO_SETUP] automatic recovery backup failed', {
-                user_id: userId,
-                error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError || ''),
-              });
-            }
-          }
           const hasMlsBackup = hasMlsBackupPayload(backup);
           let restoreSummary: MlsRestoreSummary = createEmptyRestoreSummary();
           if (!cancelled) {
@@ -849,14 +807,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
         const keyBackup = await keyManager.prepareBackup(userId, password);
         const mlsFields = await buildMlsBackupFields(userId, password);
         await backupKeyToServer({ ...keyBackup, ...mlsFields });
-        try {
-          await ensureAutomaticRecoveryBackup(userId, keyBackup);
-        } catch (recoveryError) {
-          console.warn('[RECOVERY_AUTO_SETUP] automatic recovery backup failed after backup refresh', {
-            user_id: userId,
-            error: recoveryError instanceof Error ? recoveryError.message : String(recoveryError || ''),
-          });
-        }
         if (!cancelled) {
           setKeyStatus('SECURE');
         }

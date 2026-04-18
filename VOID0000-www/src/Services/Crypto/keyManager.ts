@@ -5,6 +5,8 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 const DB_NAME = 'void_crypto';
 const DB_VERSION = 1;
 const KEY_STORE = 'keys';
+const LOCAL_KEY_WRAP_ID = 'meta:local_key_wrap';
+const LOCAL_PRIVATE_KEY_STORAGE_VERSION = 1;
 
 // ============== IndexedDB Helpers ==============
 
@@ -84,6 +86,87 @@ async function importPrivateKey(base64Key: string): Promise<CryptoKey> {
     true,
     ['deriveKey', 'deriveBits']
   );
+}
+
+async function getOrCreateLocalWrapKey(): Promise<CryptoKey> {
+  const existing = await dbGet(LOCAL_KEY_WRAP_ID);
+  if (existing?.key) {
+    return existing.key as CryptoKey;
+  }
+
+  const key = await crypto.subtle.generateKey(
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  await dbPut({
+    id: LOCAL_KEY_WRAP_ID,
+    key,
+    createdAt: Date.now(),
+  });
+
+  return key;
+}
+
+async function encryptPrivateKeyForLocalStorage(
+  privateKeyBase64: string
+): Promise<{ encrypted: string; iv: string }> {
+  const wrapKey = await getOrCreateLocalWrapKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoder = new TextEncoder();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    wrapKey,
+    encoder.encode(privateKeyBase64)
+  );
+
+  return {
+    encrypted: arrayBufferToBase64(encrypted),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+  };
+}
+
+async function decryptStoredPrivateKey(record: any): Promise<string | null> {
+  if (typeof record?.privateKey === 'string' && record.privateKey.length > 0) {
+    return record.privateKey;
+  }
+
+  if (
+    typeof record?.privateKeyEncrypted !== 'string' ||
+    typeof record?.privateKeyIv !== 'string'
+  ) {
+    return null;
+  }
+
+  const wrapKey = await getOrCreateLocalWrapKey();
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToArrayBuffer(record.privateKeyIv) },
+    wrapKey,
+    base64ToArrayBuffer(record.privateKeyEncrypted)
+  );
+
+  return new TextDecoder().decode(decrypted);
+}
+
+async function storeLocalKeyPair(
+  userId: string,
+  publicKeyBase64: string,
+  privateKeyBase64: string,
+  keyId: string,
+  createdAt = Date.now()
+): Promise<void> {
+  const encryptedPrivateKey = await encryptPrivateKeyForLocalStorage(privateKeyBase64);
+
+  await dbPut({
+    id: `keypair:${userId}`,
+    publicKey: publicKeyBase64,
+    privateKeyEncrypted: encryptedPrivateKey.encrypted,
+    privateKeyIv: encryptedPrivateKey.iv,
+    privateKeyStorageVersion: LOCAL_PRIVATE_KEY_STORAGE_VERSION,
+    keyId,
+    createdAt,
+  });
 }
 
 // ============== Key Fingerprint ==============
@@ -441,7 +524,12 @@ async function initializeKeys(
 
   // === Path 1: Local keys exist ===
   const stored = await dbGet(`keypair:${userId}`);
-  if (stored) {
+  const storedPrivateKeyBase64 = stored ? await decryptStoredPrivateKey(stored).catch((error) => {
+    console.warn('🔑 Failed to unlock locally stored private key:', error);
+    return null;
+  }) : null;
+
+  if (stored && storedPrivateKeyBase64) {
     // When password is available, verify local keys match the server backup.
     // If they diverge (e.g. this device generated fresh keys before a backup
     // existed on the server), prefer the backup — it is the canonical keypair.
@@ -464,13 +552,7 @@ async function initializeKeys(
           // derived with the wrong identity keypair.
           await clearAllKeys();
 
-          await dbPut({
-            id: `keypair:${userId}`,
-            publicKey: publicKeyBase64,
-            privateKey: privateKeyBase64,
-            keyId,
-            createdAt: Date.now(),
-          });
+          await storeLocalKeyPair(userId, publicKeyBase64, privateKeyBase64, keyId);
 
           await callbacks.uploadPublicKey(publicKeyBase64, keyId);
           return { publicKey: publicKeyBase64, privateKey: await importPrivateKey(privateKeyBase64) };
@@ -480,7 +562,17 @@ async function initializeKeys(
       }
     }
 
-    const privateKey = await importPrivateKey(stored.privateKey);
+    if (typeof stored.privateKey === 'string') {
+      await storeLocalKeyPair(
+        userId,
+        stored.publicKey,
+        storedPrivateKeyBase64,
+        stored.keyId,
+        stored.createdAt ?? Date.now(),
+      );
+    }
+
+    const privateKey = await importPrivateKey(storedPrivateKeyBase64);
     console.log('🔑 Using existing local keys');
 
     // FIX: Ensure public key is on the server (handles truncate/reset scenarios)
@@ -490,7 +582,7 @@ async function initializeKeys(
 
     // Ensure backup exists (non-blocking)
     if (password) {
-      ensureBackup(stored.privateKey, stored.keyId, password, callbacks).catch(() => {});
+      ensureBackup(storedPrivateKeyBase64, stored.keyId, password, callbacks).catch(() => {});
     }
 
     return { publicKey: stored.publicKey, privateKey };
@@ -518,13 +610,7 @@ async function initializeKeys(
       const publicKeyBase64 = await derivePublicKeyFromPrivate(privateKeyBase64);
       const keyId = await generateKeyFingerprint(publicKeyBase64);
 
-      await dbPut({
-        id: `keypair:${userId}`,
-        publicKey: publicKeyBase64,
-        privateKey: privateKeyBase64,
-        keyId,
-        createdAt: Date.now(),
-      });
+      await storeLocalKeyPair(userId, publicKeyBase64, privateKeyBase64, keyId);
 
       await callbacks.uploadPublicKey(publicKeyBase64, keyId);
       return { publicKey: publicKeyBase64, privateKey: await importPrivateKey(privateKeyBase64) };
@@ -547,13 +633,7 @@ async function initializeKeys(
     const privateKeyBase64 = await exportKey(keyPair.privateKey, false);
     const keyId = await generateKeyFingerprint(publicKeyBase64);
 
-    await dbPut({
-      id: `keypair:${userId}`,
-      publicKey: publicKeyBase64,
-      privateKey: privateKeyBase64,
-      keyId,
-      createdAt: Date.now(),
-    });
+    await storeLocalKeyPair(userId, publicKeyBase64, privateKeyBase64, keyId);
 
     await callbacks.uploadPublicKey(publicKeyBase64, keyId);
 
@@ -688,13 +768,7 @@ async function generateFreshKeys(
   const privateKeyBase64 = await exportKey(keyPair.privateKey, false);
   const keyId = await generateKeyFingerprint(publicKeyBase64);
 
-  await dbPut({
-    id: `keypair:${userId}`,
-    publicKey: publicKeyBase64,
-    privateKey: privateKeyBase64,
-    keyId,
-    createdAt: Date.now(),
-  });
+  await storeLocalKeyPair(userId, publicKeyBase64, privateKeyBase64, keyId);
 
   await callbacks.uploadPublicKey(publicKeyBase64, keyId);
 
@@ -722,11 +796,12 @@ async function prepareBackup(
   password: string
 ): Promise<PasswordWrappedKeyBackup> {
   const stored = await dbGet(`keypair:${userId}`);
-  if (!stored?.privateKey || !stored?.keyId) {
+  const privateKeyBase64 = stored ? await decryptStoredPrivateKey(stored) : null;
+  if (!privateKeyBase64 || !stored?.keyId) {
     throw new Error('LOCAL_KEY_MISSING');
   }
 
-  return createPasswordWrappedBackup(stored.privateKey, password, stored.keyId);
+  return createPasswordWrappedBackup(privateKeyBase64, password, stored.keyId);
 }
 
 async function prepareRecoveryBackup(
@@ -734,11 +809,12 @@ async function prepareRecoveryBackup(
   recoveryPhrase: string
 ): Promise<PasswordWrappedKeyBackup> {
   const stored = await dbGet(`keypair:${userId}`);
-  if (!stored?.privateKey || !stored?.keyId) {
+  const privateKeyBase64 = stored ? await decryptStoredPrivateKey(stored) : null;
+  if (!privateKeyBase64 || !stored?.keyId) {
     throw new Error('LOCAL_KEY_MISSING');
   }
 
-  return createRecoveryWrappedBackup(stored.privateKey, recoveryPhrase, stored.keyId);
+  return createRecoveryWrappedBackup(privateKeyBase64, recoveryPhrase, stored.keyId);
 }
 
 async function restoreFromRecoveryPhrase(
@@ -771,13 +847,7 @@ async function restoreFromRecoveryPhrase(
     throw new Error('RECOVERY_KEY_MISMATCH');
   }
 
-  await dbPut({
-    id: `keypair:${userId}`,
-    publicKey: publicKeyBase64,
-    privateKey: privateKeyBase64,
-    keyId,
-    createdAt: Date.now(),
-  });
+  await storeLocalKeyPair(userId, publicKeyBase64, privateKeyBase64, keyId);
 
   await callbacks.uploadPublicKey(publicKeyBase64, keyId);
 
@@ -790,8 +860,9 @@ async function restoreFromRecoveryPhrase(
 
 async function getIdentityKeyBytes(userId: string): Promise<Uint8Array | null> {
   const stored = await dbGet(`keypair:${userId}`);
-  if (!stored?.privateKey) return null;
-  return new Uint8Array(base64ToArrayBuffer(stored.privateKey));
+  const privateKeyBase64 = stored ? await decryptStoredPrivateKey(stored) : null;
+  if (!privateKeyBase64) return null;
+  return new Uint8Array(base64ToArrayBuffer(privateKeyBase64));
 }
 
 export const keyManager = {

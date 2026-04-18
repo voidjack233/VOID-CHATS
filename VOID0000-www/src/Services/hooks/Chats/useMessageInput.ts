@@ -38,8 +38,14 @@ interface UseMessageInputProps {
   onEditComplete?: (messageId: string, newContent: string) => void;
 }
 
+interface AttachmentAlertState {
+  title: string;
+  message: string;
+}
+
 const MAX_ATTACHMENTS = 5;
 const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const MAX_ATTACHMENT_FILE_SIZE = 10 * 1024 * 1024;
 const MLS_MESSAGE_TYPE = 'mls_application';
 const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
 
@@ -111,6 +117,7 @@ export const useMessageInput = ({
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sendError, setSendError] = useState('');
+  const [attachmentAlert, setAttachmentAlert] = useState<AttachmentAlertState | null>(null);
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
   const attachmentAccess = resolveAttachmentAccess(conversation);
@@ -146,6 +153,7 @@ export const useMessageInput = ({
     inputRef.current?.focus();
     setAttachments([]);
     setSendError('');
+    setAttachmentAlert(null);
     setSlowmodeRemaining(0);
     lastTypingSentAtRef.current = 0;
   }, [conversation.id]);
@@ -181,9 +189,33 @@ export const useMessageInput = ({
   const addFiles = useCallback((files: FileList | File[]) => {
     if (!attachmentsAllowed) return;
 
-    const arr = Array.from(files).filter((f) => ALLOWED_TYPES.includes(f.type));
+    let oversizedCount = 0;
+    const arr = Array.from(files).filter((file) => {
+      if (!ALLOWED_TYPES.includes(file.type)) {
+        return false;
+      }
+
+      if (file.size > MAX_ATTACHMENT_FILE_SIZE) {
+        oversizedCount += 1;
+        return false;
+      }
+
+      return true;
+    });
+
+    if (oversizedCount > 0) {
+      setAttachmentAlert({
+        title: 'Image Too Large',
+        message:
+          oversizedCount === 1
+            ? 'The maximum image upload size is 10MB. Please choose a smaller image.'
+            : `${oversizedCount} images were skipped because the maximum upload size is 10MB per image.`,
+      });
+    }
+
     const slots = MAX_ATTACHMENTS - attachments.length;
     if (slots <= 0) return;
+    if (arr.length === 0) return;
 
     const toAdd = arr.slice(0, slots).map((f) => ({
       id: `${Date.now()}-${Math.random()}`,
@@ -196,6 +228,10 @@ export const useMessageInput = ({
     setAttachments((prev) => [...prev, ...toAdd.map(({ file: _f, ...a }) => a)]);
     toAdd.forEach(({ id, file }) => uploadFile(file, id));
   }, [attachments.length, attachmentsAllowed, uploadFile]);
+
+  const dismissAttachmentAlert = useCallback(() => {
+    setAttachmentAlert(null);
+  }, []);
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
@@ -651,6 +687,7 @@ export const useMessageInput = ({
     sendError,
     slowmodeRemaining,
     attachments,
+    attachmentAlert,
     attachmentsAllowed,
     attachmentsRestrictionLabel,
     inputRef,
@@ -663,5 +700,6 @@ export const useMessageInput = ({
     openFilePicker,
     handleFileChange,
     removeAttachment,
+    dismissAttachmentAlert,
   };
 };

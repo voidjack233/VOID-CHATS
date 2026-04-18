@@ -12,10 +12,12 @@ interface EncryptedAttachment extends Attachment {
 
 const decryptedUrlCache = new Map<string, Promise<string>>();
 const resolvedUrlCache = new Map<string, string>();
+const resolvedUrlExpiryTimers = new Map<string, number>();
 const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
 const BLURHASH_COMPONENT_X = 4;
 const BLURHASH_COMPONENT_Y = 4;
+const DECRYPTED_ATTACHMENT_URL_TTL_MS = 60_000;
 
 interface ImageAttachmentPreviewData {
   blurhash?: string;
@@ -64,6 +66,38 @@ function getAttachmentCacheKey(attachment: EncryptedAttachment): string {
     attachment.key,
     attachment.mime,
   ].join('::');
+}
+
+function clearResolvedUrlExpiry(cacheKey: string): void {
+  const existingTimer = resolvedUrlExpiryTimers.get(cacheKey);
+  if (existingTimer != null) {
+    window.clearTimeout(existingTimer);
+    resolvedUrlExpiryTimers.delete(cacheKey);
+  }
+}
+
+function revokeResolvedUrl(cacheKey: string): void {
+  clearResolvedUrlExpiry(cacheKey);
+
+  const objectUrl = resolvedUrlCache.get(cacheKey);
+  if (objectUrl) {
+    URL.revokeObjectURL(objectUrl);
+    resolvedUrlCache.delete(cacheKey);
+  }
+
+  decryptedUrlCache.delete(cacheKey);
+}
+
+function touchResolvedUrl(cacheKey: string): void {
+  if (!resolvedUrlCache.has(cacheKey)) {
+    return;
+  }
+
+  clearResolvedUrlExpiry(cacheKey);
+  const timer = window.setTimeout(() => {
+    revokeResolvedUrl(cacheKey);
+  }, DECRYPTED_ATTACHMENT_URL_TTL_MS);
+  resolvedUrlExpiryTimers.set(cacheKey, timer);
 }
 
 function getBlurhashDimensions(width: number, height: number): { width: number; height: number } {
@@ -203,6 +237,7 @@ export async function resolveAttachmentObjectUrl(attachment: Attachment): Promis
   const cacheKey = getAttachmentCacheKey(attachment);
   const resolvedUrl = resolvedUrlCache.get(cacheKey);
   if (resolvedUrl) {
+    touchResolvedUrl(cacheKey);
     return resolvedUrl;
   }
 
@@ -211,10 +246,11 @@ export async function resolveAttachmentObjectUrl(attachment: Attachment): Promis
       .then((blob) => {
         const objectUrl = URL.createObjectURL(blob);
         resolvedUrlCache.set(cacheKey, objectUrl);
+        touchResolvedUrl(cacheKey);
         return objectUrl;
       })
       .catch((error) => {
-        decryptedUrlCache.delete(cacheKey);
+        revokeResolvedUrl(cacheKey);
         throw error;
       });
 
@@ -229,5 +265,16 @@ export function getCachedAttachmentObjectUrl(attachment: Attachment): string | n
     return attachment.url;
   }
 
-  return resolvedUrlCache.get(getAttachmentCacheKey(attachment)) || null;
+  const cacheKey = getAttachmentCacheKey(attachment);
+  const cachedUrl = resolvedUrlCache.get(cacheKey) || null;
+  if (cachedUrl) {
+    touchResolvedUrl(cacheKey);
+  }
+  return cachedUrl;
+}
+
+export function clearDecryptedAttachmentObjectUrlCache(): void {
+  Array.from(resolvedUrlCache.keys()).forEach((cacheKey) => {
+    revokeResolvedUrl(cacheKey);
+  });
 }

@@ -1,5 +1,12 @@
 # React + TypeScript + Vite
 
+## Project Notes
+
+- Secure chat recovery limitation: see [docs/secure-chat-recovery-limitations.md](docs/secure-chat-recovery-limitations.md)
+
+If a user changes password while authenticated, the app can re-wrap the existing chat backup.
+If a user uses forgot-password reset on a fresh device, old encrypted chats may still require the old password unless a surviving device repairs the backup first.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

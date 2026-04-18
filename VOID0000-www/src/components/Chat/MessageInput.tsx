@@ -4,6 +4,7 @@ import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2, Image, FileTe
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
+import AttachmentLimitModal from './AttachmentLimitModal';
 
 interface MessageInputProps {
   currentUserId?: string;
@@ -29,6 +30,7 @@ const MessageInput = (props: MessageInputProps) => {
     sendError,
     slowmodeRemaining,
     attachments,
+    attachmentAlert,
     attachmentsAllowed,
     attachmentsRestrictionLabel,
     inputRef,
@@ -41,6 +43,7 @@ const MessageInput = (props: MessageInputProps) => {
     openFilePicker,
     handleFileChange,
     removeAttachment,
+    dismissAttachmentAlert,
   } = useMessageInput(props);
 
   const { editingMessage, replyTo, encryptionKey } = props;
@@ -71,7 +74,14 @@ const MessageInput = (props: MessageInputProps) => {
   }, [attachMenuOpen]);
 
   return (
-    <div className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4">
+    <>
+      <AttachmentLimitModal
+        isOpen={Boolean(attachmentAlert)}
+        onClose={dismissAttachmentAlert}
+        title={attachmentAlert?.title}
+        message={attachmentAlert?.message || ''}
+      />
+      <div className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4">
       {/* Edit / Reply banner */}
       {hasBanner && (
         <div className="flex items-center gap-2 px-2 py-1.5 bg-void-bg-hover/50 rounded-t-lg text-sm text-void-text-muted">
@@ -255,7 +265,8 @@ const MessageInput = (props: MessageInputProps) => {
           </span>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 };
 

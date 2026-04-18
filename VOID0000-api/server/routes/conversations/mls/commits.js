@@ -64,24 +64,61 @@ router.post('/commits', async (req, res) => {
         return res.status(403).json({ success: false, error: `Not a member of conversation: ${conversationIdentifier}` });
       }
 
-      const result = await client.query(
+      const insertResult = await client.query(
         `INSERT INTO mls_commit_messages (conversation_id, commit_ref, payload, epoch, received_at, applied_at)
          VALUES ($1::UUID, $2, $3, $4, NOW(), NULL)
          ON CONFLICT (conversation_id, commit_ref)
-         DO UPDATE SET
-           payload = EXCLUDED.payload,
-           epoch = EXCLUDED.epoch,
-           received_at = NOW(),
-           applied_at = NULL
+         DO NOTHING
          RETURNING conversation_id::text AS conversation_id,
                    commit_ref,
+                   payload,
                    epoch,
                    received_at,
                    applied_at`,
         [resolved.conversationId, commitRef, payload, epoch]
       );
 
-      inserted.push(result.rows[0]);
+      if (insertResult.rows.length > 0) {
+        const { payload: insertedPayload, ...insertedCommit } = insertResult.rows[0];
+        inserted.push(insertedCommit);
+        continue;
+      }
+
+      const existingResult = await client.query(
+        `SELECT conversation_id::text AS conversation_id,
+                commit_ref,
+                payload,
+                epoch,
+                received_at,
+                applied_at
+         FROM mls_commit_messages
+         WHERE conversation_id = $1::UUID
+           AND commit_ref = $2
+         LIMIT 1`,
+        [resolved.conversationId, commitRef]
+      );
+
+      if (existingResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ success: false, error: 'Commit already exists but could not be reloaded' });
+      }
+
+      const existingCommit = existingResult.rows[0];
+      const sameEpoch =
+        (existingCommit.epoch == null && epoch == null) ||
+        Number(existingCommit.epoch) === Number(epoch);
+
+      if (existingCommit.payload !== payload || !sameEpoch) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          error: 'Commit ref already exists with different payload',
+          code: 'MLS_COMMIT_IMMUTABLE',
+        });
+      }
+
+      const { payload: existingPayload, ...existingCommitWithoutPayload } = existingCommit;
+      inserted.push(existingCommitWithoutPayload);
     }
 
     await client.query('COMMIT');

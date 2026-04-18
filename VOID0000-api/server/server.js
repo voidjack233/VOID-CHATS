@@ -52,7 +52,9 @@ app.use(
 
 securityMiddleware(allowedOrigins).forEach(mw => app.use(mw));
 
-app.use(express.json({ limit: '10mb' }));
+// Encrypted attachment uploads are AES-GCM ciphertext encoded as base64 JSON.
+// A 10 MB source image expands past 10 MB once encrypted + base64 encoded.
+app.use(express.json({ limit: '25mb' }));
 app.use(cookieParser());
 
 // ================== STATIC (CDN) ==================
