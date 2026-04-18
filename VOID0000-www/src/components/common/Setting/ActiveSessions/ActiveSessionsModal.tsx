@@ -168,7 +168,7 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
                       disabled={revoking !== null}
                       className="text-xs px-3 py-1.5 bg-red-900/20 hover:bg-red-900/30 rounded-lg text-red-400 disabled:opacity-50 transition-colors"
                     >
-                      {revoking === -1 ? 'Revoking...' : 'Revoke all'}
+                      {revoking === '__all__' ? 'Revoking...' : 'Revoke all'}
                     </button>
                   </div>
 
@@ -216,10 +216,14 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
 // Session Card Component
 interface SessionCardProps {
   session: {
-    id: number;
+    id: string;
+    device_id: string;
+    device_name: string | null;
+    device_type: string | null;
     ip_address: string | null;
     user_agent: string | null;
     created_at: string;
+    updated_at: string;
   };
   isCurrent: boolean;
   isMobile: boolean;
@@ -231,6 +235,7 @@ interface SessionCardProps {
 function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disabled }: SessionCardProps) {
   const device = parseUserAgent(session.user_agent);
   const DeviceIcon = device.icon;
+  const deviceLabel = session.device_name?.trim() || (isMobile ? device.browser : `${device.browser} on ${device.os}`);
 
   return (
     <div className={`p-4 rounded-xl border ${
@@ -246,7 +251,7 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium text-void-text">
-              {isMobile ? device.browser : `${device.browser} on ${device.os}`}
+              {deviceLabel}
             </p>
             {isCurrent && (
               <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded-full">
@@ -258,8 +263,12 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
           <div className="flex items-center gap-2 mt-1 text-xs text-void-text-muted">
             <Globe className="w-3 h-3 flex-shrink-0" />
             <span className="truncate">{session.ip_address || 'Unknown IP'}</span>
+          </div>
+
+          <div className="flex items-center gap-2 mt-1 text-xs text-void-text-muted flex-wrap">
+            <span className="flex-shrink-0">Created {formatDate(session.created_at, isMobile)}</span>
             <span className="text-void-text-muted">•</span>
-            <span className="flex-shrink-0">{formatDate(session.created_at, isMobile)}</span>
+            <span className="flex-shrink-0">Last active {formatDate(session.updated_at, isMobile)}</span>
           </div>
         </div>
         

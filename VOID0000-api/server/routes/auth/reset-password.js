@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../../db.js';
 import argon2 from 'argon2';
 import { IPSecurity } from '../../utils/securityUtils.js';
+import { hashToken } from '../../utils/hashToken.js';
 
 const router = Router();
 
@@ -17,9 +18,14 @@ router.post('/', async (req, res) => {
     client = await pool.connect();
     await client.query('BEGIN');
 
+    const hashedToken = hashToken(token);
     const resetResult = await client.query(
-      `SELECT user_id FROM password_resets WHERE token = $1 AND expires_at > NOW()`,
-      [token]
+      `SELECT user_id
+       FROM password_resets
+       WHERE token = ANY($1::text[])
+         AND expires_at > NOW()
+       FOR UPDATE`,
+      [[token, hashedToken]]
     );
 
     if (resetResult.rows.length === 0) {

@@ -10,10 +10,15 @@ import { v4 as uuidv4 } from 'uuid';
 import argon2 from 'argon2';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
 import { sessionStore } from '../../../middleware/sessionStore.js';
+import valkey from '../../../valkey.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
 const REFRESH_SECRET = process.env.REFRESH_SECRET;
+const TWO_FACTOR_VERIFY_WINDOW_SEC = 5 * 60;
+const TWO_FACTOR_VERIFY_MAX_ATTEMPTS = 5;
+const TWO_FACTOR_EMAIL_WINDOW_SEC = 10 * 60;
+const TWO_FACTOR_EMAIL_MAX_SENDS = 3;
 
 // In-memory store for pending 2FA sessions
 const pending2FA = new Map();
@@ -47,6 +52,67 @@ export function create2FASession(userId, req) {
   return token;
 }
 
+function getTwoFactorVerifyKey(twoFactorToken) {
+  return `auth:2fa:verify:${twoFactorToken}`;
+}
+
+function getTwoFactorEmailKey(twoFactorToken) {
+  return `auth:2fa:email:${twoFactorToken}`;
+}
+
+async function clearTwoFactorAttemptState(twoFactorToken) {
+  await valkey.del(
+    getTwoFactorVerifyKey(twoFactorToken),
+    getTwoFactorEmailKey(twoFactorToken),
+  );
+}
+
+async function getTwoFactorVerifyState(twoFactorToken) {
+  const raw = await valkey.get(getTwoFactorVerifyKey(twoFactorToken));
+  return raw ? JSON.parse(raw) : { attempts: 0, blockedUntil: 0 };
+}
+
+async function recordTwoFactorFailure(twoFactorToken) {
+  const state = await getTwoFactorVerifyState(twoFactorToken);
+  state.attempts = (state.attempts || 0) + 1;
+  if (state.attempts >= TWO_FACTOR_VERIFY_MAX_ATTEMPTS) {
+    state.blockedUntil = Date.now() + TWO_FACTOR_VERIFY_WINDOW_SEC * 1000;
+  }
+  await valkey.set(
+    getTwoFactorVerifyKey(twoFactorToken),
+    JSON.stringify(state),
+    'EX',
+    TWO_FACTOR_VERIFY_WINDOW_SEC,
+  );
+  return state;
+}
+
+async function checkTwoFactorBlocked(twoFactorToken) {
+  const state = await getTwoFactorVerifyState(twoFactorToken);
+  const now = Date.now();
+  if (state.blockedUntil && now < state.blockedUntil) {
+    return {
+      blocked: true,
+      retryAfterSeconds: Math.ceil((state.blockedUntil - now) / 1000),
+    };
+  }
+  return { blocked: false, retryAfterSeconds: 0 };
+}
+
+async function recordTwoFactorEmailSend(twoFactorToken) {
+  const key = getTwoFactorEmailKey(twoFactorToken);
+  const count = await valkey.incr(key);
+  if (count === 1) {
+    await valkey.expire(key, TWO_FACTOR_EMAIL_WINDOW_SEC);
+  }
+  return count;
+}
+
+async function getTwoFactorEmailRetryAfter(twoFactorToken) {
+  const ttl = await valkey.ttl(getTwoFactorEmailKey(twoFactorToken));
+  return ttl > 0 ? ttl : TWO_FACTOR_EMAIL_WINDOW_SEC;
+}
+
 // POST /api/auth/2fa/verify-login/send-email — Send email code during login
 router.post('/send-email', async (req, res) => {
   try {
@@ -59,7 +125,19 @@ router.post('/send-email', async (req, res) => {
     const session = pending2FA.get(twoFactorToken);
     if (!session || Date.now() > session.expiresAt) {
       pending2FA.delete(twoFactorToken);
+      await clearTwoFactorAttemptState(twoFactorToken);
       return res.status(401).json({ success: false, message: 'Session expired. Please login again.' });
+    }
+
+    const emailSendCount = await recordTwoFactorEmailSend(twoFactorToken);
+    if (emailSendCount > TWO_FACTOR_EMAIL_MAX_SENDS) {
+      const retryAfterSeconds = await getTwoFactorEmailRetryAfter(twoFactorToken);
+      return res.status(429).json({
+        success: false,
+        message: 'Too many email code requests. Please wait before trying again.',
+        code: 'TWO_FA_EMAIL_RATE_LIMIT',
+        retryAfterSeconds,
+      });
     }
 
     // Get user email
@@ -100,10 +178,22 @@ router.post('/', async (req, res) => {
     const session = pending2FA.get(twoFactorToken);
     if (!session || Date.now() > session.expiresAt) {
       pending2FA.delete(twoFactorToken);
+      await clearTwoFactorAttemptState(twoFactorToken);
       return res.status(401).json({
         success: false,
         message: 'Session expired. Please login again.',
         code: 'TWO_FA_SESSION_EXPIRED',
+      });
+    }
+
+    const blockedState = await checkTwoFactorBlocked(twoFactorToken);
+    if (blockedState.blocked) {
+      pending2FA.delete(twoFactorToken);
+      return res.status(429).json({
+        success: false,
+        message: 'Too many invalid 2FA attempts. Please login again.',
+        code: 'TWO_FA_RATE_LIMIT',
+        retryAfterSeconds: blockedState.retryAfterSeconds,
       });
     }
 
@@ -129,6 +219,10 @@ router.post('/', async (req, res) => {
       }
 
       if (!validBackup) {
+        const failureState = await recordTwoFactorFailure(twoFactorToken);
+        if (failureState.blockedUntil) {
+          pending2FA.delete(twoFactorToken);
+        }
         return res.status(400).json({
           success: false,
           message: 'Invalid backup code.',
@@ -158,6 +252,10 @@ router.post('/', async (req, res) => {
       const isValid = totp.verifyToken(code, secret);
 
       if (!isValid) {
+        const failureState = await recordTwoFactorFailure(twoFactorToken);
+        if (failureState.blockedUntil) {
+          pending2FA.delete(twoFactorToken);
+        }
         return res.status(400).json({
           success: false,
           message: 'Invalid code. Please try again.',
@@ -173,6 +271,10 @@ router.post('/', async (req, res) => {
       }
 
       if (session.emailCode !== code.trim()) {
+        const failureState = await recordTwoFactorFailure(twoFactorToken);
+        if (failureState.blockedUntil) {
+          pending2FA.delete(twoFactorToken);
+        }
         return res.status(400).json({
           success: false,
           message: 'Invalid code. Please try again.',
@@ -187,6 +289,7 @@ router.post('/', async (req, res) => {
 
     // 2FA passed — complete login (issue tokens)
     pending2FA.delete(twoFactorToken);
+    await clearTwoFactorAttemptState(twoFactorToken);
 
     const userResult = await pool.query(
       'SELECT id, email, username, profile_id, is_verified FROM users WHERE id = $1',
@@ -194,7 +297,7 @@ router.post('/', async (req, res) => {
     );
     const user = userResult.rows[0];
 
-    const deviceId = DeviceManager.generateDeviceId(req);
+    const deviceId = DeviceManager.generateDeviceId(req, res);
     const deviceInfo = DeviceManager.getDeviceInfo(req);
     const userIp = normalizeIP(getClientIP(req));
     const userAgent = req.get('User-Agent') || 'unknown';

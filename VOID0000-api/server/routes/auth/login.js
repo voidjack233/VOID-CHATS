@@ -33,7 +33,7 @@ router.post('/', async (req, res) => {
 
   let userIp = normalizeIP(getClientIP(req));
   const userAgent = req.get('User-Agent') || 'unknown';
-  const trustDeviceId = DeviceFingerprint.generateFingerprint(req);
+  const trustDeviceId = DeviceFingerprint.ensureFingerprint(req, res);
 
   let client;
 
@@ -97,7 +97,7 @@ router.post('/', async (req, res) => {
 
     await IPSecurity.logIPActivity(req, 'LOGIN_SUCCESS', user.id, client);
 
-    const deviceId = DeviceManager.generateDeviceId(req);
+    const deviceId = DeviceManager.generateDeviceId(req, res);
     const deviceInfo = DeviceManager.getDeviceInfo(req);
 
     await client.query(

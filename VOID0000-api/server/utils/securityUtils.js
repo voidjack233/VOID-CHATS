@@ -1,6 +1,6 @@
 // utils/securityUtils.js
 import { pool } from '../db.js';
-import crypto from 'crypto';
+import { DeviceFingerprint } from './deviceFingerprint.js';
 
 // Known malicious IP ranges
 const SUSPICIOUS_NETWORKS = [
@@ -34,18 +34,7 @@ export function getClientIP(req) {
 
 // Helper: Generate fingerprint/device ID consistently
 export function generateDeviceFingerprint(req) {
-  const components = [
-    getClientIP(req),
-    req.get('User-Agent') || '',
-    req.get('Accept-Language') || '',
-    req.get('Accept-Encoding') || '',
-  ].join('|');
-
-  return crypto
-    .createHash('sha256')
-    .update(components)
-    .digest('hex')
-    .substring(0, 32);
+  return DeviceFingerprint.generateFingerprint(req);
 }
 
 export class IPSecurity {
@@ -231,7 +220,11 @@ export class DeviceManager {
    * Generate a unique device identifier
    * Uses same method as IPSecurity.generateFingerprint for consistency
    */
-  static generateDeviceId(req) {
+  static generateDeviceId(req, res = null) {
+    if (res) {
+      return DeviceFingerprint.ensureFingerprint(req, res);
+    }
+
     return generateDeviceFingerprint(req);
   }
 

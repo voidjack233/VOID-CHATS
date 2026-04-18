@@ -1,13 +1,26 @@
 import crypto from 'crypto';
+import { deviceCookieOptions } from './cookieConfig.js';
+
+function buildStableFingerprintSeed(req) {
+  return [
+    req.get('User-Agent') || '',
+    req.get('Accept-Language') || '',
+    req.get('Accept-Encoding') || '',
+    req.get('Sec-CH-UA-Platform') || '',
+    req.get('Sec-CH-UA-Mobile') || '',
+  ].join('|');
+}
 
 export class DeviceFingerprint {
   // Generate unique device ID
   static generateFingerprint(req) {
+    const cookieDeviceId = req.cookies?.deviceId;
+    if (typeof cookieDeviceId === 'string' && cookieDeviceId.length > 0) {
+      return cookieDeviceId;
+    }
+
     const components = [
-      req.ip,
-      req.get('User-Agent') || '',
-      req.get('Accept-Language') || '',
-      req.get('Accept-Encoding') || '',
+      buildStableFingerprintSeed(req),
     ].join('|');
 
     return crypto
@@ -15,6 +28,22 @@ export class DeviceFingerprint {
       .update(components)
       .digest('hex')
       .substring(0, 32); // Shorten for storage
+  }
+
+  static ensureFingerprint(req, res) {
+    const existing = req.cookies?.deviceId;
+    if (typeof existing === 'string' && existing.length > 0) {
+      return existing;
+    }
+
+    const generated = crypto.randomUUID();
+    if (res?.cookie) {
+      res.cookie('deviceId', generated, deviceCookieOptions());
+    }
+    if (req.cookies) {
+      req.cookies.deviceId = generated;
+    }
+    return generated;
   }
 
   // Get browser/device characteristics

@@ -4,10 +4,14 @@ import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { API_URL } from '../../config';
 
 interface Session {
-  id: number;
+  id: string;
+  device_id: string;
+  device_name: string | null;
+  device_type: string | null;
   ip_address: string | null;
   user_agent: string | null;
   created_at: string;
+  updated_at: string;
   expires_at: string;
   is_current: boolean;
 }
@@ -16,7 +20,7 @@ export const useActiveSessions = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [revoking, setRevoking] = useState<number | null>(null);
+  const [revoking, setRevoking] = useState<string | null>(null);
 
   const fetchSessions = async () => {
     try {
@@ -39,7 +43,7 @@ export const useActiveSessions = () => {
     }
   };
 
-  const revokeSession = async (sessionId: number) => {
+  const revokeSession = async (sessionId: string) => {
     try {
       setRevoking(sessionId);
       setError(null);
@@ -70,7 +74,7 @@ export const useActiveSessions = () => {
 
   const revokeAllSessions = async () => {
     try {
-      setRevoking(-1); // -1 indicates "all"
+      setRevoking('__all__');
       setError(null);
 
       const csrfToken = await ensureCSRFToken();

@@ -10,7 +10,7 @@ import valkey from '../valkey.js';
 function createRateLimiter({ prefix, windowSec, maxAttempts, escalatingBlocks = null, logAction = null }) {
   return async (req, res, next) => {
     try {
-      const deviceId = DeviceFingerprint.generateFingerprint(req);
+      const deviceId = DeviceFingerprint.ensureFingerprint(req, res);
       const key = `rl:${prefix}:${deviceId}`;
 
       // Get current state from Valkey
