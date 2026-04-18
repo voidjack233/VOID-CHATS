@@ -1,6 +1,7 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CornerUpRight,
+  FileText,
   Image,
   Pencil,
   Reply,
@@ -11,9 +12,11 @@ import type { Message } from '../../Services/Chat/chatService';
 import type { Density } from '../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
 import AttachmentImage from './AttachmentImage';
+import AttachmentFileCard from './AttachmentFileCard';
+import FormattedMessageText from './FormattedMessageText';
 import InviteEmbed from './InviteEmbed';
 import UserAvatar from '../common/UserAvatar';
-import { parseAttachments } from '../../Services/Chat/chatService';
+import { parseAttachment, parseAttachments } from '../../Services/Chat/chatService';
 import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
 import { extractMessageTextSegments, getInviteCodeFromMessageUrl } from './messageLinks';
@@ -153,6 +156,29 @@ function getMultiAttachmentTileClass(attachmentCount: number, index: number): st
 
 function getAttachmentLayoutKey(attachment: { url: string; name?: string }, index: number): string {
   return `${attachment.url}::${attachment.name || 'attachment'}::${index}`;
+}
+
+function looksLikeImageAttachment(attachment: {
+  url: string;
+  mime?: string;
+  blurhash?: string;
+  width?: number;
+  height?: number;
+}): boolean {
+  if (attachment.mime?.startsWith('image/')) {
+    return true;
+  }
+
+  if (attachment.blurhash || attachment.width || attachment.height) {
+    return true;
+  }
+
+  try {
+    const pathname = new URL(attachment.url, window.location.origin).pathname.toLowerCase();
+    return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(pathname);
+  } catch {
+    return false;
+  }
 }
 
 const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
@@ -300,46 +326,6 @@ const MessageItem = memo(function MessageItem({
     [inviteUrl],
   );
 
-  const renderMessageText = useCallback((content: string) => {
-    const lines = content.split('\n');
-
-    return lines.map((line, lineIndex) => {
-      const segments = extractMessageTextSegments(line);
-
-      return (
-        <Fragment key={`line-${lineIndex}`}>
-          {segments.map((segment, segmentIndex) => {
-            if (segment.type === 'text') {
-              return (
-                <Fragment key={`text-${lineIndex}-${segmentIndex}`}>
-                  {segment.value}
-                </Fragment>
-              );
-            }
-
-            return (
-              <a
-                key={`link-${lineIndex}-${segmentIndex}`}
-                href={segment.url}
-                onClick={(event) => {
-                  event.preventDefault();
-                  onOpenLink?.(segment.url);
-                }}
-                className={`${linkClassName} inline cursor-pointer text-left align-baseline`}
-                title={segment.url}
-                rel="noopener noreferrer"
-                target="_blank"
-              >
-                {segment.value}
-              </a>
-            );
-          })}
-          {lineIndex < lines.length - 1 ? <br /> : null}
-        </Fragment>
-      );
-    });
-  }, [linkClassName, onOpenLink]);
-
   const resetTouchGesture = useCallback(() => {
     touchStateRef.current.active = false;
     touchStateRef.current.swiping = false;
@@ -354,6 +340,11 @@ const MessageItem = memo(function MessageItem({
     if (isPending || event.touches.length !== 1) return;
 
     const target = event.target as HTMLElement | null;
+    const disabledGestureArea = target?.closest('[data-disable-message-gesture="true"]');
+    if (disabledGestureArea) {
+      return;
+    }
+
     const gestureTarget = target?.closest('[data-message-gesture-target]');
     const allowsMessageGesture = gestureTarget?.getAttribute('data-message-gesture-target') === 'attachment';
 
@@ -631,11 +622,17 @@ const MessageItem = memo(function MessageItem({
                       }
 
                       if (!hasRealContent && replyParent.attachments?.length) {
+                        const firstReplyAttachment = parseAttachment(replyParent.attachments[0]!);
+                        const ReplyAttachmentIcon = looksLikeImageAttachment(firstReplyAttachment) ? Image : FileText;
+                        const replyAttachmentLabel = looksLikeImageAttachment(firstReplyAttachment)
+                          ? 'Click to see attachment'
+                          : 'Click to download file';
+
                         return (
                           <span className="flex items-center gap-1.5">
-                            <Image className="w-4 h-4 flex-shrink-0" />
+                            <ReplyAttachmentIcon className="w-4 h-4 flex-shrink-0" />
                             <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
-                              Click to see attachment
+                              {replyAttachmentLabel}
                             </span>
                           </span>
                         );
@@ -671,7 +668,7 @@ const MessageItem = memo(function MessageItem({
             if (!hasRealContent && message.attachments?.length) return null;
             return (
               <div
-                className={`${d.bubblePadding} rounded-2xl whitespace-pre-wrap break-words ${
+                className={`min-w-0 max-w-full overflow-hidden ${d.bubblePadding} rounded-2xl whitespace-pre-wrap break-words ${
                   isRightAligned
                     ? 'rounded-br-sm bg-void-accent text-white'
                     : isOwn
@@ -681,7 +678,11 @@ const MessageItem = memo(function MessageItem({
                 style={{ fontSize: `${bubbleFontSize}px` }}
               >
                 {hasRealContent ? (
-                  renderMessageText(message.content || '')
+                  <FormattedMessageText
+                    content={message.content || ''}
+                    linkClassName={linkClassName}
+                    onOpenLink={onOpenLink}
+                  />
                 ) : (
                   <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>
                     encrypted
@@ -702,103 +703,131 @@ const MessageItem = memo(function MessageItem({
           })()}
 
           {!message.is_deleted && message.attachments && message.attachments.length > 0 && (() => {
-            const parsed = parseAttachments(message.attachments);
-            const singleAttachment = parsed[0];
-            const singleAttachmentLayoutKey = parsed.length === 1 && singleAttachment
-              ? getAttachmentLayoutKey(singleAttachment, 0)
-              : null;
-            const singleAttachmentResolvedDimensions = singleAttachmentLayoutKey
-              ? attachmentDimensions[singleAttachmentLayoutKey]
-              : undefined;
-            const singleAttachmentPresentation = parsed.length === 1 && singleAttachment
-              ? getSingleAttachmentPresentation({
-                  ...singleAttachment,
-                  width: singleAttachment.width ?? singleAttachmentResolvedDimensions?.width,
-                  height: singleAttachment.height ?? singleAttachmentResolvedDimensions?.height,
-                })
-              : null;
-            const visibleAttachments = parsed.length > 3
-              ? parsed.slice(0, 3).map((attachment, index) => ({
-                  attachment,
-                  originalIndex: index,
-                }))
-              : parsed.map((attachment, index) => ({
-                  attachment,
-                  originalIndex: index,
-                }));
-            const hiddenAttachmentCount = Math.max(0, parsed.length - visibleAttachments.length);
+            const attachmentEntries = message.attachments.map((raw, index) => ({
+              raw,
+              originalIndex: index,
+              attachment: parseAttachment(raw),
+            }));
 
-            return (
-              <div
-                className={`pt-1 ${
-                  parsed.length === 1
-                    ? 'flex'
-                    : getMultiAttachmentGridClass(visibleAttachments.length)
-                }`}
-                style={parsed.length === 1 ? undefined : { maxWidth: `${MULTI_ATTACHMENT_MAX_WIDTH}px` }}
-              >
-                {visibleAttachments.map(({ attachment, originalIndex }, index) => {
-                  const hasHiddenAttachments = hiddenAttachmentCount > 0 && index === visibleAttachments.length - 1;
+            const imageEntries = attachmentEntries.filter(({ attachment }) => looksLikeImageAttachment(attachment));
+            const fileEntries = attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment));
+
+            const imageSection = imageEntries.length > 0
+              ? (() => {
+                  const singleImageEntry = imageEntries[0];
+                  const singleAttachmentLayoutKey = imageEntries.length === 1 && singleImageEntry
+                    ? getAttachmentLayoutKey(singleImageEntry.attachment, singleImageEntry.originalIndex)
+                    : null;
+                  const singleAttachmentResolvedDimensions = singleAttachmentLayoutKey
+                    ? attachmentDimensions[singleAttachmentLayoutKey]
+                    : undefined;
+                  const singleAttachmentPresentation = imageEntries.length === 1 && singleImageEntry
+                    ? getSingleAttachmentPresentation({
+                        ...singleImageEntry.attachment,
+                        width: singleImageEntry.attachment.width ?? singleAttachmentResolvedDimensions?.width,
+                        height: singleImageEntry.attachment.height ?? singleAttachmentResolvedDimensions?.height,
+                      })
+                    : null;
+                  const visibleImages = imageEntries.length > 3 ? imageEntries.slice(0, 3) : imageEntries;
+                  const hiddenImageCount = Math.max(0, imageEntries.length - visibleImages.length);
+                  const viewerRawAttachments = imageEntries.map(({ raw }) => raw);
 
                   return (
-                    <button
-                      key={`${originalIndex}-${attachment.url}`}
-                      onClick={() => { void handleOpenAttachmentViewer(message.attachments || [], originalIndex); }}
-                      data-message-gesture-target="attachment"
-                      disabled={isPending || openingImageViewer}
-                      className={`relative block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none ${
-                        parsed.length === 1 && singleAttachmentPresentation
-                          ? 'max-w-full'
-                          : getMultiAttachmentTileClass(visibleAttachments.length, index)
-                      } ${isPending ? 'cursor-not-allowed' : ''}`}
-                      style={parsed.length === 1 && singleAttachmentPresentation
-                        ? {
-                            width: `${singleAttachmentPresentation.width}px`,
-                            aspectRatio: singleAttachmentPresentation.aspectRatio,
-                          }
-                        : parsed.length === 1
-                          ? {
-                              width: `${SINGLE_ATTACHMENT_FALLBACK_WIDTH}px`,
-                            }
-                        : undefined}
+                    <div
+                      className={`${
+                        imageEntries.length === 1
+                          ? 'flex'
+                          : getMultiAttachmentGridClass(visibleImages.length)
+                      }`}
+                      style={imageEntries.length === 1 ? undefined : { maxWidth: `${MULTI_ATTACHMENT_MAX_WIDTH}px` }}
                     >
-                      <AttachmentImage
-                        attachment={attachment}
-                        alt="attachment"
-                        className="w-full h-full object-cover hover:opacity-90"
-                        onLoad={onAttachmentLoad}
-                        onDimensionsResolved={(dimensions) => {
-                          if (parsed.length !== 1) return;
-                          const layoutKey = getAttachmentLayoutKey(attachment, originalIndex);
-                          setAttachmentDimensions((current) => {
-                            const existing = current[layoutKey];
-                            if (
-                              existing &&
-                              existing.width === dimensions.width &&
-                              existing.height === dimensions.height
-                            ) {
-                              return current;
-                            }
+                      {visibleImages.map(({ attachment, originalIndex }, index) => {
+                        const hasHiddenAttachments = hiddenImageCount > 0 && index === visibleImages.length - 1;
 
-                            return {
-                              ...current,
-                              [layoutKey]: dimensions,
-                            };
-                          });
-                        }}
-                        canLoad={canLoadAttachments}
-                      />
-                      {hasHiddenAttachments ? (
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-white">
-                          <span className="text-lg font-semibold tracking-tight">
-                            +{hiddenAttachmentCount}
-                          </span>
-                        </div>
-                      ) : null}
-                    </button>
+                        return (
+                          <button
+                            key={`${originalIndex}-${attachment.url}`}
+                            onClick={() => { void handleOpenAttachmentViewer(viewerRawAttachments, index); }}
+                            data-message-gesture-target="attachment"
+                            disabled={isPending || openingImageViewer}
+                            className={`relative block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none ${
+                              imageEntries.length === 1 && singleAttachmentPresentation
+                                ? 'max-w-full'
+                                : getMultiAttachmentTileClass(visibleImages.length, index)
+                            } ${isPending ? 'cursor-not-allowed' : ''}`}
+                            style={imageEntries.length === 1 && singleAttachmentPresentation
+                              ? {
+                                  width: `${singleAttachmentPresentation.width}px`,
+                                  aspectRatio: singleAttachmentPresentation.aspectRatio,
+                                }
+                              : imageEntries.length === 1
+                                ? {
+                                    width: `${SINGLE_ATTACHMENT_FALLBACK_WIDTH}px`,
+                                  }
+                                : undefined}
+                          >
+                            <AttachmentImage
+                              attachment={attachment}
+                              alt="attachment"
+                              className="w-full h-full object-cover hover:opacity-90"
+                              onLoad={onAttachmentLoad}
+                              onDimensionsResolved={(dimensions) => {
+                                if (imageEntries.length !== 1) return;
+                                const layoutKey = getAttachmentLayoutKey(attachment, originalIndex);
+                                setAttachmentDimensions((current) => {
+                                  const existing = current[layoutKey];
+                                  if (
+                                    existing &&
+                                    existing.width === dimensions.width &&
+                                    existing.height === dimensions.height
+                                  ) {
+                                    return current;
+                                  }
+
+                                  return {
+                                    ...current,
+                                    [layoutKey]: dimensions,
+                                  };
+                                });
+                              }}
+                              canLoad={canLoadAttachments}
+                            />
+                            {hasHiddenAttachments ? (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-white">
+                                <span className="text-lg font-semibold tracking-tight">
+                                  +{hiddenImageCount}
+                                </span>
+                              </div>
+                            ) : null}
+                          </button>
+                        );
+                      })}
+                    </div>
                   );
-                })}
+                })()
+              : null;
+
+            const fileSection = fileEntries.length > 0 ? (
+              <div className={`flex w-full flex-col gap-2 ${imageSection ? 'pt-2' : 'pt-1'}`}>
+                {fileEntries.map(({ attachment, originalIndex }) => (
+                  <AttachmentFileCard
+                    key={`${originalIndex}-${attachment.url}`}
+                    attachment={attachment}
+                    disabled={isPending}
+                  />
+                ))}
               </div>
+            ) : null;
+
+            if (!imageSection && !fileSection) {
+              return null;
+            }
+
+            return (
+              <>
+                {imageSection ? <div className="pt-1">{imageSection}</div> : null}
+                {fileSection}
+              </>
             );
           })()}
 

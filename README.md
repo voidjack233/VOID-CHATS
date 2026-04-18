@@ -22,6 +22,7 @@ Private monorepo for the full VOID chat stack.
 5. Start the API, gateway, and frontend.
 
 See [docs/setup.md](docs/setup.md) for the full setup flow.
+Future architecture notes live in [docs/future-notes.md](docs/future-notes.md).
 
 ## Repo layout
 

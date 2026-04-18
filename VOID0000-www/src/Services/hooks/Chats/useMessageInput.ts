@@ -18,6 +18,9 @@ export interface PendingAttachment {
   id: string;
   preview: string;
   url: string | null;
+  name: string;
+  mime: string;
+  size: number;
   blurhash?: string;
   uploading: boolean;
   error?: string;
@@ -44,7 +47,7 @@ interface AttachmentAlertState {
 }
 
 const MAX_ATTACHMENTS = 5;
-const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const IMAGE_ACCEPT_TYPES = 'image/jpeg,image/png,image/gif,image/webp';
 const MAX_ATTACHMENT_FILE_SIZE = 10 * 1024 * 1024;
 const MLS_MESSAGE_TYPE = 'mls_application';
 const DEFAULT_ATTACHMENT_PERMISSION = 'everyone';
@@ -131,6 +134,7 @@ export const useMessageInput = ({
 
   // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-resize textarea as text changes
@@ -163,27 +167,31 @@ export const useMessageInput = ({
   }, [replyTo]);
 
   const uploadFile = useCallback(async (file: File, id: string) => {
-    return new Promise<void>((resolve) => {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        const data = e.target?.result as string;
+    if (file.type.startsWith('image/')) {
+      const preview = await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (event) => resolve((event.target?.result as string) || null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      });
+
+      if (preview) {
         setAttachments((prev) =>
-          prev.map((a) => (a.id === id ? { ...a, preview: data, uploading: true } : a))
+          prev.map((a) => (a.id === id ? { ...a, preview } : a))
         );
-        try {
-          const [attachment] = await uploadEncryptedAttachments(conversation.id, [file]);
-          setAttachments((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false } : a))
-          );
-        } catch {
-          setAttachments((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, uploading: false, error: 'Upload failed' } : a))
-          );
-        }
-        resolve();
-      };
-      reader.readAsDataURL(file);
-    });
+      }
+    }
+
+    try {
+      const [attachment] = await uploadEncryptedAttachments(conversation.id, [file]);
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false } : a))
+      );
+    } catch {
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, uploading: false, error: 'Upload failed' } : a))
+      );
+    }
   }, [conversation.id]);
 
   const addFiles = useCallback((files: FileList | File[]) => {
@@ -191,10 +199,6 @@ export const useMessageInput = ({
 
     let oversizedCount = 0;
     const arr = Array.from(files).filter((file) => {
-      if (!ALLOWED_TYPES.includes(file.type)) {
-        return false;
-      }
-
       if (file.size > MAX_ATTACHMENT_FILE_SIZE) {
         oversizedCount += 1;
         return false;
@@ -205,11 +209,11 @@ export const useMessageInput = ({
 
     if (oversizedCount > 0) {
       setAttachmentAlert({
-        title: 'Image Too Large',
+        title: 'Attachment Too Large',
         message:
           oversizedCount === 1
-            ? 'The maximum image upload size is 10MB. Please choose a smaller image.'
-            : `${oversizedCount} images were skipped because the maximum upload size is 10MB per image.`,
+            ? 'The maximum upload size is 10MB per attachment. Please choose a smaller file.'
+            : `${oversizedCount} attachments were skipped because the maximum upload size is 10MB per attachment.`,
       });
     }
 
@@ -221,6 +225,9 @@ export const useMessageInput = ({
       id: `${Date.now()}-${Math.random()}`,
       preview: '',
       url: null,
+      name: f.name,
+      mime: f.type || 'application/octet-stream',
+      size: f.size,
       uploading: true,
       file: f,
     }));
@@ -240,14 +247,17 @@ export const useMessageInput = ({
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     if (!attachmentsAllowed) return;
 
-    const items = Array.from(e.clipboardData.items).filter(
-      (item) => item.kind === 'file' && ALLOWED_TYPES.includes(item.type)
-    );
+    const items = Array.from(e.clipboardData.items).filter((item) => item.kind === 'file');
     if (items.length === 0) return;
     e.preventDefault();
     const files = items.map((item) => item.getAsFile()!).filter(Boolean);
     addFiles(files);
   }, [addFiles, attachmentsAllowed]);
+
+  const openMediaPicker = useCallback(() => {
+    if (!attachmentsAllowed) return;
+    mediaInputRef.current?.click();
+  }, [attachmentsAllowed]);
 
   const openFilePicker = useCallback(() => {
     if (!attachmentsAllowed) return;
@@ -691,12 +701,15 @@ export const useMessageInput = ({
     attachmentsAllowed,
     attachmentsRestrictionLabel,
     inputRef,
+    mediaInputRef,
     fileInputRef,
+    imageAccept: IMAGE_ACCEPT_TYPES,
     getPlaceholder,
     handleSend,
     handleKeyDown,
     handleCancelAction, // Now this resolves correctly
     handlePaste,
+    openMediaPicker,
     openFilePicker,
     handleFileChange,
     removeAttachment,

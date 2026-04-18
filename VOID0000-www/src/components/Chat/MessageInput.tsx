@@ -1,10 +1,11 @@
 // src/components/Chat/MessageInput.tsx
 import { useState, useRef, useEffect } from 'react';
-import { Send, Plus, X, Pencil, CornerUpRight, ImageIcon, Loader2, Image, FileText, TimerReset } from 'lucide-react';
+import { Send, Plus, X, Pencil, CornerUpRight, Loader2, Image, FileText, TimerReset } from 'lucide-react';
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 import AttachmentLimitModal from './AttachmentLimitModal';
+import FormattedMessageText from './FormattedMessageText';
 
 interface MessageInputProps {
   currentUserId?: string;
@@ -21,6 +22,12 @@ interface MessageInputProps {
   onEditComplete?: (messageId: string, newContent: string) => void;
 }
 
+function formatAttachmentSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return '';
+  if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`;
+  return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
 const MessageInput = (props: MessageInputProps) => {
   const {
     text,
@@ -34,12 +41,15 @@ const MessageInput = (props: MessageInputProps) => {
     attachmentsAllowed,
     attachmentsRestrictionLabel,
     inputRef,
+    mediaInputRef,
     fileInputRef,
+    imageAccept,
     getPlaceholder,
     handleSend,
     handleKeyDown,
     handleCancelAction,
     handlePaste,
+    openMediaPicker,
     openFilePicker,
     handleFileChange,
     removeAttachment,
@@ -49,6 +59,8 @@ const MessageInput = (props: MessageInputProps) => {
   const { editingMessage, replyTo, encryptionKey } = props;
   const hasAttachments = attachments.length > 0;
   const hasBanner = !!(editingMessage || replyTo);
+  const hasCodeFenceDraft = text.includes('```');
+  const showComposerPreview = text.length > 0 && !hasCodeFenceDraft;
   const canBootstrapDmOnSend =
     props.conversation.type === 'dm' &&
     Boolean(props.currentUserId) &&
@@ -60,6 +72,24 @@ const MessageInput = (props: MessageInputProps) => {
 
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const attachMenuRef = useRef<HTMLDivElement>(null);
+  const composerPreviewRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const input = inputRef.current;
+    const preview = composerPreviewRef.current;
+
+    if (!input || !preview) return;
+
+    input.style.height = 'auto';
+    const targetHeight = Math.min(Math.max(input.scrollHeight, preview.scrollHeight), 120);
+    input.style.height = `${targetHeight}px`;
+  }, [inputRef, text]);
+
+  const syncComposerScroll = () => {
+    if (!inputRef.current || !composerPreviewRef.current) return;
+    composerPreviewRef.current.scrollTop = inputRef.current.scrollTop;
+    composerPreviewRef.current.scrollLeft = inputRef.current.scrollLeft;
+  };
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -125,13 +155,28 @@ const MessageInput = (props: MessageInputProps) => {
       {hasAttachments && (
         <div className={`flex gap-2 px-3 pt-3 pb-2 bg-void-bg-hover flex-wrap ${hasBanner ? '' : 'rounded-t-lg'}`}>
           {attachments.map((a) => (
-            <div key={a.id} className="relative w-16 h-16 rounded-lg overflow-hidden bg-void-bg-main shrink-0">
+            <div
+              key={a.id}
+              className={`relative overflow-hidden rounded-lg bg-void-bg-main shrink-0 ${
+                a.preview ? 'w-16 h-16' : 'flex w-40 h-16 items-center gap-2 px-3'
+              }`}
+            >
               {a.preview ? (
                 <img src={a.preview} alt="" className="w-full h-full object-cover" />
               ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <ImageIcon className="w-6 h-6 text-void-text-muted" />
-                </div>
+                <>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-void-bg-hover">
+                    <FileText className="w-5 h-5 text-void-text-muted" />
+                  </div>
+                  <div className="min-w-0 flex-1 pr-3">
+                    <div className="truncate text-xs font-medium text-void-text">
+                      {a.name}
+                    </div>
+                    <div className="truncate text-[10px] text-void-text-muted">
+                      {formatAttachmentSize(a.size)}
+                    </div>
+                  </div>
+                </>
               )}
               {a.uploading && (
                 <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
@@ -158,9 +203,16 @@ const MessageInput = (props: MessageInputProps) => {
       <div className={`bg-void-bg-hover flex items-end px-4 py-2.5 ${hasBanner || hasAttachments ? 'rounded-b-lg' : 'rounded-lg'}`}>
         {/* Hidden file input */}
         <input
+          ref={mediaInputRef}
+          type="file"
+          accept={imageAccept}
+          multiple
+          className="hidden"
+          onChange={handleFileChange}
+        />
+        <input
           ref={fileInputRef}
           type="file"
-          accept="image/jpeg,image/png,image/gif,image/webp"
           multiple
           className="hidden"
           onChange={handleFileChange}
@@ -184,7 +236,7 @@ const MessageInput = (props: MessageInputProps) => {
               <button
                 onClick={() => {
                   if (!attachmentsAllowed) return;
-                  openFilePicker();
+                  openMediaPicker();
                   setAttachMenuOpen(false);
                 }}
                 disabled={!attachmentsAllowed || attachments.length >= 5}
@@ -207,35 +259,73 @@ const MessageInput = (props: MessageInputProps) => {
                   </span>
                 )}
               </button>
-              {/* Files — disabled */}
               <button
-                disabled
-                className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-void-text-muted opacity-40 cursor-not-allowed"
-                title="Coming soon"
+                onClick={() => {
+                  if (!attachmentsAllowed) return;
+                  openFilePicker();
+                  setAttachMenuOpen(false);
+                }}
+                disabled={!attachmentsAllowed || attachments.length >= 5}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm transition-colors ${
+                  attachmentsAllowed && attachments.length < 5
+                    ? 'text-void-text hover:bg-void-bg-hover'
+                    : 'text-void-text-muted opacity-50 cursor-not-allowed'
+                }`}
+                title={
+                  !attachmentsAllowed && attachmentsRestrictionLabel
+                    ? `Only ${attachmentsRestrictionLabel.toLowerCase()} can send files in this group`
+                    : undefined
+                }
               >
-                <FileText className="w-4 h-4" />
+                <FileText className={`w-4 h-4 ${attachmentsAllowed ? 'text-void-accent' : 'text-void-text-muted'}`} />
                 Files
-                <span className="ml-auto text-[10px] bg-void-bg-hover px-1.5 py-0.5 rounded-full">Soon</span>
+                {!attachmentsAllowed && attachmentsRestrictionLabel && (
+                  <span className="ml-auto text-[10px] bg-void-bg-hover px-1.5 py-0.5 rounded-full">
+                    {attachmentsRestrictionLabel}
+                  </span>
+                )}
               </button>
             </div>
           )}
         </div>
 
-        {/* REPLACED INPUT WITH TEXTAREA */}
-        <textarea
-          ref={inputRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={getPlaceholder()}
-          disabled={inputDisabled}
-          autoComplete="off"
-          spellCheck="false"
-          enterKeyHint="enter" // <-- This forces the mobile keyboard to show "Return"
-          rows={1}
-          className="flex-1 bg-transparent border-none focus:outline-none text-void-text placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1"
-        />
+        <div className="relative flex-1">
+          {showComposerPreview ? (
+            <div
+              ref={composerPreviewRef}
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 overflow-hidden py-1 text-void-text"
+            >
+              <div className="whitespace-pre-wrap break-words leading-5">
+                <FormattedMessageText
+                  content={text}
+                  linkClassName="font-medium underline decoration-current/70 decoration-2 underline-offset-2"
+                  interactiveSpoilers={false}
+                  codeBlockVariant="composer"
+                  authoringMode
+                />
+              </div>
+            </div>
+          ) : null}
+
+          <textarea
+            ref={inputRef}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onScroll={syncComposerScroll}
+            placeholder={getPlaceholder()}
+            disabled={inputDisabled}
+            autoComplete="off"
+            spellCheck="false"
+            enterKeyHint="enter"
+            rows={1}
+            className={`w-full border-none bg-transparent focus:outline-none placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1 leading-5 ${
+              showComposerPreview ? 'text-transparent caret-void-text' : 'text-void-text'
+            }`}
+          />
+        </div>
 
         <button
           onClick={handleSend}
@@ -261,7 +351,7 @@ const MessageInput = (props: MessageInputProps) => {
           </span>
         ) : (
           <span className="text-[10px] text-void-text-muted">
-            Messages are end-to-end encrypted.
+            Messages are end-to-end encrypted
           </span>
         )}
       </div>
