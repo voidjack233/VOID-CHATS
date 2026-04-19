@@ -750,6 +750,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         currentUserId={user?.id}
         onCloseContextMenu={() => setContextMenu(null)}
         onOpenEmojiPickerAtPosition={openEmojiPickerAtPosition}
+        onToggleReaction={handleToggleReaction}
         onEmojiSelect={handleEmojiSelect}
         onCloseEmojiPicker={closeEmojiPicker}
         onCopyMessageText={handleCopyMessageText}

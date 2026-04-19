@@ -6,6 +6,7 @@ import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation } from '../../Services/Chat/chatService';
 import AttachmentLimitModal from './AttachmentLimitModal';
 import FormattedMessageText from './FormattedMessageText';
+import MessagePreviewText from './MessagePreviewText';
 
 interface MessageInputProps {
   currentUserId?: string;
@@ -130,7 +131,13 @@ const MessageInput = (props: MessageInputProps) => {
               <span className="flex-1 truncate text-void-text-muted">
                 {replyTo?.is_deleted
                   ? '[deleted]'
-                  : replyTo?.content?.substring(0, 60) || '[encrypted]'}
+                  : (
+                    <MessagePreviewText
+                      content={replyTo?.content}
+                      maxLength={60}
+                      fallback="[encrypted]"
+                    />
+                  )}
               </span>
             </>
           )}

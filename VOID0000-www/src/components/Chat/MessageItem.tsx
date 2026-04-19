@@ -15,6 +15,7 @@ import AttachmentImage from './AttachmentImage';
 import AttachmentFileCard from './AttachmentFileCard';
 import FormattedMessageText from './FormattedMessageText';
 import InviteEmbed from './InviteEmbed';
+import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../common/UserAvatar';
 import { parseAttachment, parseAttachments } from '../../Services/Chat/chatService';
 import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
@@ -29,12 +30,12 @@ const DENSITY: Record<Density, {
   compact: {
     consecutiveGap: 2,
     bubblePadding: 'px-3 py-1.5',
-    maxWidth: 'max-w-[85%]',
+    maxWidth: 'max-w-[88%] md:max-w-[85%]',
   },
   comfortable: {
     consecutiveGap: 6,
     bubblePadding: 'px-4 py-2.5',
-    maxWidth: 'max-w-[70%]',
+    maxWidth: 'max-w-[80%] md:max-w-[70%]',
   },
 };
 
@@ -234,10 +235,13 @@ const MessageItem = memo(function MessageItem({
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
-  const [swipeOffset, setSwipeOffset] = useState(0);
-  const [isSwiping, setIsSwiping] = useState(false);
   const [attachmentDimensions, setAttachmentDimensions] = useState<Record<string, { width: number; height: number }>>({});
   const longPressTimerRef = useRef<number | null>(null);
+  const swipeAnimationFrameRef = useRef<number | null>(null);
+  const swipeOffsetRef = useRef(0);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const replyIndicatorRef = useRef<HTMLDivElement | null>(null);
+  const editIndicatorRef = useRef<HTMLDivElement | null>(null);
   const touchStateRef = useRef<{
     active: boolean;
     swiping: boolean;
@@ -273,7 +277,46 @@ const MessageItem = memo(function MessageItem({
     }
   }, []);
 
-  useEffect(() => () => clearLongPressTimer(), [clearLongPressTimer]);
+  const applySwipeVisuals = useCallback((offset: number, animate: boolean) => {
+    const contentEl = contentRef.current;
+    const replyEl = replyIndicatorRef.current;
+    const editEl = editIndicatorRef.current;
+
+    if (contentEl) {
+      contentEl.style.transition = animate ? 'transform 200ms ease-out' : 'none';
+      contentEl.style.transform = `translateX(${offset}px)`;
+    }
+
+    if (replyEl) {
+      replyEl.style.opacity = offset > 8 ? `${Math.min(1, offset / 56)}` : '0';
+    }
+
+    if (editEl) {
+      editEl.style.opacity = offset < -8 ? `${Math.min(1, Math.abs(offset) / 56)}` : '0';
+    }
+  }, []);
+
+  const scheduleSwipeVisuals = useCallback((offset: number, animate: boolean) => {
+    swipeOffsetRef.current = offset;
+
+    if (swipeAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(swipeAnimationFrameRef.current);
+    }
+
+    swipeAnimationFrameRef.current = window.requestAnimationFrame(() => {
+      swipeAnimationFrameRef.current = null;
+      applySwipeVisuals(offset, animate);
+    });
+  }, [applySwipeVisuals]);
+
+  useEffect(() => () => {
+    clearLongPressTimer();
+
+    if (swipeAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(swipeAnimationFrameRef.current);
+    }
+  }, [clearLongPressTimer]);
+
   useEffect(() => {
     setAttachmentDimensions({});
   }, [message.message_id]);
@@ -332,9 +375,8 @@ const MessageItem = memo(function MessageItem({
     touchStateRef.current.longPressTriggered = false;
     touchStateRef.current.startedOnAttachment = false;
     touchStateRef.current.touchId = null;
-    setIsSwiping(false);
-    setSwipeOffset(0);
-  }, []);
+    scheduleSwipeVisuals(0, true);
+  }, [scheduleSwipeVisuals]);
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     if (isPending || event.touches.length !== 1) return;
@@ -347,8 +389,9 @@ const MessageItem = memo(function MessageItem({
 
     const gestureTarget = target?.closest('[data-message-gesture-target]');
     const allowsMessageGesture = gestureTarget?.getAttribute('data-message-gesture-target') === 'attachment';
+    const explicitGestureAllowance = target?.closest('[data-allow-message-gesture="true"]');
 
-    if (!allowsMessageGesture && target?.closest('button, a, input, textarea')) {
+    if (!allowsMessageGesture && !explicitGestureAllowance && target?.closest('button, a, input, textarea')) {
       return;
     }
 
@@ -396,7 +439,6 @@ const MessageItem = memo(function MessageItem({
       : SWIPE_START_THRESHOLD;
 
     if (state.longPressTriggered) {
-      event.preventDefault();
       return;
     }
 
@@ -409,14 +451,12 @@ const MessageItem = memo(function MessageItem({
     if (absX > swipeStartThreshold && absX > absY * 1.25) {
       clearLongPressTimer();
       state.swiping = true;
-      setIsSwiping(true);
 
       let nextOffset = deltaX;
       if (nextOffset > 0 && !canSwipeReply) nextOffset = 0;
       if (nextOffset < 0 && !canSwipeEdit) nextOffset = 0;
       nextOffset = Math.max(-88, Math.min(88, nextOffset));
-      setSwipeOffset(nextOffset);
-      event.preventDefault();
+      scheduleSwipeVisuals(nextOffset, false);
       return;
     }
 
@@ -444,15 +484,15 @@ const MessageItem = memo(function MessageItem({
         ? SWIPE_ACTION_THRESHOLD_ATTACHMENT
         : SWIPE_ACTION_THRESHOLD;
 
-      if (swipeOffset >= swipeActionThreshold && onReply) {
+      if (swipeOffsetRef.current >= swipeActionThreshold && onReply) {
         onReply(message);
-      } else if (swipeOffset <= -swipeActionThreshold && isOwn && onEdit) {
+      } else if (swipeOffsetRef.current <= -swipeActionThreshold && isOwn && onEdit) {
         onEdit(message);
       }
     }
 
     resetTouchGesture();
-  }, [clearLongPressTimer, isOwn, message, onEdit, onReply, resetTouchGesture, swipeOffset]);
+  }, [clearLongPressTimer, isOwn, message, onEdit, onReply, resetTouchGesture]);
 
   const handleTouchCancel = useCallback(() => {
     clearLongPressTimer();
@@ -558,16 +598,18 @@ const MessageItem = memo(function MessageItem({
       >
         {canSwipeReply && (
           <div
+            ref={replyIndicatorRef}
             className={`pointer-events-none absolute inset-y-0 ${isRightAligned ? 'right-2' : 'left-2'} flex items-center text-void-accent transition-opacity`}
-            style={{ opacity: swipeOffset > 8 ? Math.min(1, swipeOffset / 56) : 0 }}
+            style={{ opacity: 0 }}
           >
             <Reply className="h-4 w-4" />
           </div>
         )}
         {canSwipeEdit && (
           <div
+            ref={editIndicatorRef}
             className={`pointer-events-none absolute inset-y-0 ${isRightAligned ? 'left-2' : 'right-2'} flex items-center text-void-accent transition-opacity`}
-            style={{ opacity: swipeOffset < -8 ? Math.min(1, Math.abs(swipeOffset) / 56) : 0 }}
+            style={{ opacity: 0 }}
           >
             <Pencil className="h-4 w-4" />
           </div>
@@ -590,15 +632,16 @@ const MessageItem = memo(function MessageItem({
         )}
 
         <div
+          ref={contentRef}
           onContextMenu={isPending ? undefined : (e) => onContextMenu?.(e, message)}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
           onTouchCancel={handleTouchCancel}
-          className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0 select-none md:select-text ${isSwiping ? '' : 'transition-transform duration-200 ease-out'}`}
+          className={`flex flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${d.maxWidth} min-w-0 select-none md:select-text will-change-transform`}
           style={{
-            transform: `translateX(${swipeOffset}px)`,
             WebkitTouchCallout: 'none',
+            touchAction: 'pan-y',
           }}
         >
           {message.reply_to && (
@@ -641,7 +684,11 @@ const MessageItem = memo(function MessageItem({
                       if (hasRealContent) {
                         return (
                           <span className="truncate max-w-[220px]">
-                            {replyParent.content!.substring(0, 60) + (replyParent.content!.length > 60 ? '...' : '')}
+                            <MessagePreviewText
+                              content={replyParent.content}
+                              maxLength={60}
+                              fallback="Message unavailable"
+                            />
                           </span>
                         );
                       }
@@ -863,7 +910,7 @@ const MessageItem = memo(function MessageItem({
 
         {!message.is_deleted && !isPending && (
           <div
-            className={`flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+            className={`hidden md:flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           >
             <button
               onClick={handleOpenEmojiPickerFromButton}

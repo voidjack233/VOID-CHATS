@@ -5,7 +5,7 @@ import { extractMessageTextSegments } from './messageLinks';
 
 type FormatNode =
   | { type: 'text'; value: string }
-  | { type: 'bold' | 'italic' | 'strike' | 'spoiler'; children: FormatNode[] };
+  | { type: 'bold' | 'italic' | 'strike' | 'spoiler'; raw: string; children: FormatNode[] };
 
 interface FormattedMessageTextProps {
   content: string;
@@ -149,6 +149,7 @@ function parseFormattedNodes(text: string): FormatNode[] {
     const inner = text.slice(contentStart, closingIndex);
     nodes.push({
       type: marker.type,
+      raw: inner,
       children: parseFormattedNodes(inner),
     });
     cursor = closingIndex + marker.delimiter.length;
@@ -164,27 +165,32 @@ function parseFormattedNodes(text: string): FormatNode[] {
 function parseContentBlocks(content: string): ContentBlock[] {
   const blocks: ContentBlock[] = [];
   let cursor = 0;
+  let textStart = 0;
+  let insideSpoiler = false;
 
   while (cursor < content.length) {
-    const start = content.indexOf('```', cursor);
-    if (start === -1) {
-      break;
+    if (content.startsWith('||', cursor)) {
+      insideSpoiler = !insideSpoiler;
+      cursor += 2;
+      continue;
     }
 
-    if (start > cursor) {
-      blocks.push({ type: 'text', value: content.slice(cursor, start) });
-    }
+    if (!insideSpoiler && content.startsWith('```', cursor)) {
+      if (cursor > textStart) {
+        blocks.push({ type: 'text', value: content.slice(textStart, cursor) });
+      }
 
-    const contentStart = start + 3;
-    const end = content.indexOf('```', contentStart);
+      const contentStart = cursor + 3;
+      const end = content.indexOf('```', contentStart);
 
-    if (end === -1) {
-      blocks.push({ type: 'text', value: content.slice(start) });
-      cursor = content.length;
-      break;
-    }
+      if (end === -1) {
+        blocks.push({ type: 'text', value: content.slice(cursor) });
+        cursor = content.length;
+        textStart = cursor;
+        break;
+      }
 
-    const rawBody = content.slice(contentStart, end);
+      const rawBody = content.slice(contentStart, end);
     const firstNewlineIndex = rawBody.indexOf('\n');
     const firstLine = firstNewlineIndex === -1 ? rawBody : rawBody.slice(0, firstNewlineIndex);
     const normalizedFenceLabel = firstLine.trim().toLowerCase();
@@ -199,17 +205,22 @@ function parseContentBlocks(content: string): ContentBlock[] {
         ? rawBody.slice(1)
         : rawBody;
 
-    blocks.push({
-      type: 'code',
-      value: rawCode.replace(/\n$/, ''),
-      language: hasSupportedFenceLabel ? firstLine.trim() : undefined,
-    });
+      blocks.push({
+        type: 'code',
+        value: rawCode.replace(/\n$/, ''),
+        language: hasSupportedFenceLabel ? firstLine.trim() : undefined,
+      });
 
-    cursor = end + 3;
+      cursor = end + 3;
+      textStart = cursor;
+      continue;
+    }
+
+    cursor += 1;
   }
 
-  if (cursor < content.length) {
-    blocks.push({ type: 'text', value: content.slice(cursor) });
+  if (textStart < content.length) {
+    blocks.push({ type: 'text', value: content.slice(textStart) });
   }
 
   if (blocks.length === 0) {
@@ -223,12 +234,57 @@ function SpoilerText({
   children,
   interactive = true,
   authoringMode = false,
+  block = false,
 }: {
   children: ReactNode;
   interactive?: boolean;
   authoringMode?: boolean;
+  block?: boolean;
 }) {
   const [revealed, setRevealed] = useState(false);
+  const hiddenBlockContentClassName = 'pointer-events-none select-none blur-[0.32rem]';
+
+  if (block) {
+    if (!interactive) {
+      return (
+        <div
+          className={`my-1 block max-w-full overflow-hidden rounded-lg ${
+            authoringMode ? 'bg-black/15 text-inherit' : 'bg-black/35'
+          }`}
+        >
+          <div className={authoringMode ? '' : hiddenBlockContentClassName}>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        data-allow-message-gesture="true"
+        onClick={() => setRevealed((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setRevealed((value) => !value);
+          }
+        }}
+        className={`my-1 block max-w-full overflow-hidden rounded-lg transition-colors ${
+          revealed
+            ? 'bg-black/10'
+            : 'bg-black/35 hover:bg-black/45'
+        }`}
+        aria-label={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
+        title={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
+      >
+        <div className={revealed ? '' : hiddenBlockContentClassName}>
+          {children}
+        </div>
+      </div>
+    );
+  }
 
   if (!interactive) {
     return (
@@ -247,6 +303,7 @@ function SpoilerText({
   return (
     <button
       type="button"
+      data-allow-message-gesture="true"
       onClick={() => setRevealed((value) => !value)}
       className={`inline rounded px-1 py-0.5 align-baseline transition-colors ${
         revealed
@@ -267,30 +324,43 @@ function renderLeafText(
   linkClassName: string,
   onOpenLink?: (url: string) => void,
 ): ReactNode[] {
-  return extractMessageTextSegments(value).map((segment, index) => {
+  return extractMessageTextSegments(value).flatMap((segment, index) => {
+    const segmentParts = segment.value.split('\n');
+
+    const withLineBreaks = (renderPart: (part: string, partIndex: number) => ReactNode) =>
+      segmentParts.flatMap((part, partIndex) => {
+        const nodes: ReactNode[] = [renderPart(part, partIndex)];
+
+        if (partIndex < segmentParts.length - 1) {
+          nodes.push(<br key={`${keyPrefix}-break-${index}-${partIndex}`} />);
+        }
+
+        return nodes;
+      });
+
     if (segment.type === 'text') {
-      return (
-        <Fragment key={`${keyPrefix}-text-${index}`}>
-          {segment.value}
+      return withLineBreaks((part, partIndex) => (
+        <Fragment key={`${keyPrefix}-text-${index}-${partIndex}`}>
+          {part}
         </Fragment>
-      );
+      ));
     }
 
     if (!onOpenLink) {
-      return (
+      return withLineBreaks((part, partIndex) => (
         <span
-          key={`${keyPrefix}-link-${index}`}
+          key={`${keyPrefix}-link-${index}-${partIndex}`}
           className={`${linkClassName} inline text-left align-baseline`}
           title={segment.url}
         >
-          {segment.value}
+          {part}
         </span>
-      );
+      ));
     }
 
-    return (
+    return withLineBreaks((part, partIndex) => (
       <a
-        key={`${keyPrefix}-link-${index}`}
+        key={`${keyPrefix}-link-${index}-${partIndex}`}
         href={segment.url}
         onClick={(event) => {
           event.preventDefault();
@@ -301,9 +371,9 @@ function renderLeafText(
         rel="noopener noreferrer"
         target="_blank"
       >
-        {segment.value}
+        {part}
       </a>
-    );
+    ));
   });
 }
 
@@ -314,6 +384,7 @@ function renderNodes(
   onOpenLink?: (url: string) => void,
   interactiveSpoilers: boolean = true,
   authoringMode: boolean = false,
+  renderNestedSpoilerContent?: (content: string, key: string) => ReactNode,
 ): ReactNode[] {
   return nodes.map((node, index) => {
     const nodeKey = `${keyPrefix}-${index}`;
@@ -333,6 +404,7 @@ function renderNodes(
       onOpenLink,
       interactiveSpoilers,
       authoringMode,
+      renderNestedSpoilerContent,
     );
     const delimiter = node.type === 'bold'
       ? '**'
@@ -365,13 +437,22 @@ function renderNodes(
       return <span key={nodeKey} className="line-through opacity-85">{wrappedChildren}</span>;
     }
 
+    const shouldRenderNestedSpoilerContent =
+      node.type === 'spoiler' &&
+      Boolean(renderNestedSpoilerContent) &&
+      node.raw.trim().startsWith('```') &&
+      node.raw.trim().endsWith('```');
+
     return (
       <SpoilerText
         key={nodeKey}
         interactive={interactiveSpoilers}
         authoringMode={authoringMode}
+        block={shouldRenderNestedSpoilerContent}
       >
-        {wrappedChildren}
+        {shouldRenderNestedSpoilerContent
+          ? renderNestedSpoilerContent?.(node.raw, `${nodeKey}-spoiler`)
+          : wrappedChildren}
       </SpoilerText>
     );
   });
@@ -412,6 +493,9 @@ const FormattedMessageText = memo(function FormattedMessageText({
   const blocks = useMemo(() => parseContentBlocks(content), [content]);
   const [copiedBlockKey, setCopiedBlockKey] = useState<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
+  const nestedContentClassName = codeBlockVariant === 'composer'
+    ? linkClassName
+    : `${linkClassName} break-all`;
 
   useEffect(() => () => {
     if (copyResetTimerRef.current !== null) {
@@ -435,6 +519,24 @@ const FormattedMessageText = memo(function FormattedMessageText({
       console.error('Failed to copy code block:', error);
     }
   }, []);
+
+  const renderNestedSpoilerContent = useCallback((nestedContent: string, key: string) => (
+    <FormattedMessageText
+      key={key}
+      content={nestedContent}
+      linkClassName={nestedContentClassName}
+      onOpenLink={onOpenLink}
+      interactiveSpoilers={interactiveSpoilers}
+      codeBlockVariant={codeBlockVariant}
+      authoringMode={authoringMode}
+    />
+  ), [
+    authoringMode,
+    codeBlockVariant,
+    interactiveSpoilers,
+    nestedContentClassName,
+    onOpenLink,
+  ]);
 
   return (
     <>
@@ -467,8 +569,14 @@ const FormattedMessageText = memo(function FormattedMessageText({
                     {openingFence}
                   </div>
                 ) : (
-                  <div className="sticky top-0 z-[1] flex items-center justify-between gap-2 border-b border-black/10 bg-inherit px-3 py-1.5">
-                    <span className="min-w-0 truncate font-mono text-[10px] tracking-[0.08em] text-current/60">
+                  <div
+                    data-allow-message-gesture="true"
+                    className="sticky top-0 z-[1] flex items-center justify-between gap-2 border-b border-black/10 bg-inherit px-3 py-1.5"
+                  >
+                    <span
+                      data-allow-message-gesture="true"
+                      className="min-w-0 truncate font-mono text-[10px] tracking-[0.08em] text-current/60"
+                    >
                       {block.language || 'code'}
                     </span>
                     <button
@@ -491,7 +599,6 @@ const FormattedMessageText = memo(function FormattedMessageText({
                       : 'w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain px-3 py-2.5 text-[0.92em] leading-relaxed text-inherit'
                   }
                   style={{
-                    touchAction: 'pan-x',
                     WebkitOverflowScrolling: 'touch',
                   }}
                 >
@@ -507,27 +614,19 @@ const FormattedMessageText = memo(function FormattedMessageText({
           );
         }
 
-        const lines = block.value.split('\n');
+        const nodes = parseFormattedNodes(block.value);
         return (
           <Fragment key={`block-${blockIndex}`}>
             {blocks.length > 1 && blockIndex > 0 ? <br /> : null}
-            {lines.map((line, lineIndex) => {
-              const nodes = parseFormattedNodes(line);
-
-              return (
-                <Fragment key={`block-${blockIndex}-line-${lineIndex}`}>
-                  {renderNodes(
-                    nodes,
-                    `block-${blockIndex}-line-${lineIndex}`,
-                    linkClassName,
-                    onOpenLink,
-                    interactiveSpoilers,
-                    authoringMode,
-                  )}
-                  {lineIndex < lines.length - 1 ? <br /> : null}
-                </Fragment>
-              );
-            })}
+            {renderNodes(
+              nodes,
+              `block-${blockIndex}`,
+              linkClassName,
+              onOpenLink,
+              interactiveSpoilers,
+              authoringMode,
+              renderNestedSpoilerContent,
+            )}
           </Fragment>
         );
       })}

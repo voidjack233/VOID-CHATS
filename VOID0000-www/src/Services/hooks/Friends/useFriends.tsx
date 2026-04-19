@@ -5,6 +5,8 @@ import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 
+const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
+
 export interface Friend {
   friendship_id: number;
   friends_since: string;
@@ -35,24 +37,46 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const hasFetched = useRef(false);
+  const lastFetchAtRef = useRef(0);
+  const fetchInFlightRef = useRef<Promise<void> | null>(null);
 
-  const fetchFriends = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const res = await fetchWithAuth('/api/friends');
-
-      if (!res.ok) throw new Error('Failed to fetch friends');
-
-      const data = await res.json();
-      setFriends(data.friends || []);
-      hasFetched.current = true;
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+  const fetchFriends = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && fetchInFlightRef.current) {
+      return fetchInFlightRef.current;
     }
+
+    if (
+      !force &&
+      hasFetched.current &&
+      now - lastFetchAtRef.current < FRIENDS_RESYNC_MIN_GAP_MS
+    ) {
+      return;
+    }
+
+    const task = (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const res = await fetchWithAuth('/api/friends');
+
+        if (!res.ok) throw new Error('Failed to fetch friends');
+
+        const data = await res.json();
+        setFriends(data.friends || []);
+        hasFetched.current = true;
+        lastFetchAtRef.current = Date.now();
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+        fetchInFlightRef.current = null;
+      }
+    })();
+
+    fetchInFlightRef.current = task;
+    return task;
   }, []);
 
   const removeFriend = async (friendshipId: number) => {
@@ -80,11 +104,13 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     if (!user) {
       setFriends([]);
       hasFetched.current = false;
+      lastFetchAtRef.current = 0;
+      fetchInFlightRef.current = null;
       return;
     }
 
     if (!hasFetched.current) {
-      fetchFriends();
+      void fetchFriends(true);
     }
 
     // PROFILE_UPDATE: Update specific friend in cache
@@ -160,16 +186,16 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
     gateway.on('FRIEND_ACCEPT', handleFriendAccept);
     gateway.on('FRIEND_REMOVE', handleFriendRemove);
 
-    const handleReady = () => {
-      fetchFriends();
+    const handleResumed = () => {
+      void fetchFriends();
     };
-    gateway.on('READY', handleReady);
+    gateway.on('RESUMED', handleResumed);
 
     return () => {
       gateway.off('PROFILE_UPDATE', handleProfileUpdate);
       gateway.off('FRIEND_ACCEPT', handleFriendAccept);
       gateway.off('FRIEND_REMOVE', handleFriendRemove);
-      gateway.off('READY', handleReady);
+      gateway.off('RESUMED', handleResumed);
     };
   }, [user, fetchFriends]);
 
