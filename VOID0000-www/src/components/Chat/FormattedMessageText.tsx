@@ -592,7 +592,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
                   </div>
                 )}
                 <pre
-                  data-disable-message-gesture="true"
+                  data-code-block-scroll-zone="true"
                   className={
                     codeBlockVariant === 'composer'
                       ? 'w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain px-2 py-1.5 text-[0.92em] leading-relaxed text-inherit'

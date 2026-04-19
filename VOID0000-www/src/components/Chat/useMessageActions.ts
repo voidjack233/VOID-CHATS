@@ -6,6 +6,7 @@ export interface ContextMenuState {
   msg: Message;
   x: number;
   y: number;
+  mode?: 'full' | 'reactions';
 }
 
 export interface EmojiPickerTarget {
@@ -100,18 +101,33 @@ export function useMessageActions({
     let y = event.clientY;
     if (window.innerWidth - x < 200) x -= 180;
     if (window.innerHeight - y < 200) y -= 150;
-    setContextMenu({ msg, x, y });
+    setContextMenu({ msg, x, y, mode: 'full' });
   }, []);
 
   const openContextMenuAtPosition = useCallback((
     msg: Message,
     position: { x: number; y: number },
+    mode: 'full' | 'reactions' = 'full',
   ) => {
     let x = position.x;
     let y = position.y;
-    if (window.innerWidth - x < 200) x -= 180;
-    if (window.innerHeight - y < 200) y -= 150;
-    setContextMenu({ msg, x, y });
+
+    if (mode === 'reactions') {
+      const estimatedWidth = 316;
+      const estimatedHeight = 52;
+      const viewportPadding = 8;
+
+      x = position.x - estimatedWidth / 2;
+      y = position.y - estimatedHeight;
+
+      x = Math.max(viewportPadding, Math.min(x, window.innerWidth - estimatedWidth - viewportPadding));
+      y = Math.max(viewportPadding, Math.min(y, window.innerHeight - estimatedHeight - viewportPadding));
+    } else {
+      if (window.innerWidth - x < 200) x -= 180;
+      if (window.innerHeight - y < 200) y -= 150;
+    }
+
+    setContextMenu({ msg, x, y, mode });
   }, []);
 
   const blurActiveTextInput = useCallback(() => {

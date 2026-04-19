@@ -152,7 +152,6 @@ export default function MessageOverlays({
     contextMenu.msg.content !== '[deleted]',
   );
   const canOpenReactionPicker = contextMenu ? messageCanAddReaction(contextMenu.msg) : false;
-
   const handleQuickReaction = (emoji: string) => {
     if (!contextMenu) return;
     if (!messageCanAddReaction(contextMenu.msg, emoji)) return;
@@ -337,90 +336,58 @@ export default function MessageOverlays({
           </div>
         ) : (
           <div
-            className={`fixed z-[70] w-48 overflow-hidden rounded-lg border border-void-bg-hover bg-void-bg-main py-1.5 shadow-2xl flex flex-col select-none transition-all duration-150 ease-out ${
+            className={`fixed z-[70] flex max-w-[calc(100vw-1rem)] items-center gap-1 overflow-hidden rounded-2xl border border-void-bg-hover bg-void-bg-main/95 p-2 shadow-2xl supports-[backdrop-filter]:backdrop-blur select-none transition-all duration-150 ease-out ${
               contextMenuVisible ? 'translate-y-0 scale-100 opacity-100' : 'translate-y-1 scale-[0.98] opacity-0'
             }`}
             style={{ top: contextMenu.y, left: contextMenu.x }}
           >
-            <button
-              onClick={() => {
-                onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
-                  x: contextMenu.x,
-                  y: contextMenu.y,
-                });
-                onCloseContextMenu();
-              }}
-              className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
-              style={{ WebkitTapHighlightColor: 'transparent' }}
-            >
-              <Smile className="w-4 h-4" />
-              Add Reaction
-            </button>
-            <button
-              onClick={async () => {
-                await onCopyMessageText(contextMenu.msg.content);
-                onCloseContextMenu();
-              }}
-              disabled={!contextMenuIsCopyable}
-              className={`flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                contextMenuIsCopyable
-                  ? 'text-void-text hover:bg-void-accent hover:text-white'
-                  : 'cursor-not-allowed text-void-text-muted/60'
-              }`}
-              style={{ WebkitTapHighlightColor: 'transparent' }}
-            >
-              <Copy className="w-4 h-4" />
-              Copy Text
-            </button>
-            {onReply && (
-              <button
-                onClick={() => {
-                  onReply(contextMenu.msg);
-                  onCloseContextMenu();
-                }}
-                className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
-                style={{ WebkitTapHighlightColor: 'transparent' }}
-              >
-                <Reply className="w-4 h-4" />
-                Reply
-              </button>
-            )}
-            <button
-              disabled
-              className="flex w-full cursor-not-allowed items-center gap-2 px-3 py-2 text-left text-sm text-void-text-muted/60"
-              style={{ WebkitTapHighlightColor: 'transparent' }}
-            >
-              <Forward className="w-4 h-4" />
-              Forward Message
-            </button>
-            {contextMenu.msg.sender_id === currentUserId && (
-              <>
-                <div className="h-px w-full bg-void-bg-hover my-1" />
-                {onEdit && (
-                  <button
-                    onClick={() => {
-                      onEdit(contextMenu.msg);
-                      onCloseContextMenu();
-                    }}
-                    className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-void-text transition-colors hover:bg-void-accent hover:text-white"
-                    style={{ WebkitTapHighlightColor: 'transparent' }}
-                  >
-                    <Pencil className="w-4 h-4" />
-                    Edit Message
-                  </button>
-                )}
+            {QUICK_REACTIONS.map(({ emoji, label }) => {
+              const isSelected = messageHasUserReaction(contextMenu.msg, emoji, currentUserId);
+              const isDisabled = !messageCanAddReaction(contextMenu.msg, emoji);
+
+              return (
                 <button
-                  onClick={() => {
-                    onDelete(contextMenu.msg.message_id);
-                    onCloseContextMenu();
-                  }}
-                  className="flex w-full touch-manipulation items-center gap-2 px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500 hover:text-white"
+                  key={emoji}
+                  type="button"
+                  disabled={isDisabled}
+                  onClick={() => handleQuickReaction(emoji)}
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl transition-all ${
+                    isDisabled
+                      ? 'cursor-not-allowed opacity-40'
+                      : isSelected
+                      ? 'bg-void-accent/18 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]'
+                      : 'hover:bg-void-bg-hover/80'
+                  }`}
+                  aria-label={label}
+                  title={isDisabled ? 'Maximum of 10 reactions per message' : label}
                   style={{ WebkitTapHighlightColor: 'transparent' }}
                 >
-                  <Trash2 className="w-4 h-4" />
-                  Delete Message
+                  <EmojiGlyph
+                    emoji={emoji}
+                    className="text-[18px]"
+                    fallbackClassName="text-[18px]"
+                  />
                 </button>
-              </>
+              );
+            })}
+
+            {canOpenReactionPicker && (
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
+                    x: contextMenu.x,
+                    y: contextMenu.y,
+                  });
+                  onCloseContextMenu();
+                }}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-void-text-muted transition-all hover:bg-void-bg-hover/80"
+                aria-label="Add reaction"
+                title="Add reaction"
+                style={{ WebkitTapHighlightColor: 'transparent' }}
+              >
+                <Plus className="h-5 w-5" />
+              </button>
             )}
           </div>
         ),

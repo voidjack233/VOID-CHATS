@@ -79,7 +79,11 @@ interface MessageItemProps {
     placement?: 'top' | 'bottom',
   ) => void;
   onContextMenu?: (event: React.MouseEvent, message: Message) => void;
-  onOpenContextMenuAtPosition?: (message: Message, position: { x: number; y: number }) => void;
+  onOpenContextMenuAtPosition?: (
+    message: Message,
+    position: { x: number; y: number },
+    mode?: 'full' | 'reactions',
+  ) => void;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
@@ -248,6 +252,7 @@ const MessageItem = memo(function MessageItem({
     swiping: boolean;
     longPressTriggered: boolean;
     startedOnAttachment: boolean;
+    startedInCodeBlock: boolean;
     startX: number;
     startY: number;
     touchId: number | null;
@@ -256,6 +261,7 @@ const MessageItem = memo(function MessageItem({
     swiping: false,
     longPressTriggered: false,
     startedOnAttachment: false,
+    startedInCodeBlock: false,
     startX: 0,
     startY: 0,
     touchId: null,
@@ -376,6 +382,7 @@ const MessageItem = memo(function MessageItem({
     touchStateRef.current.swiping = false;
     touchStateRef.current.longPressTriggered = false;
     touchStateRef.current.startedOnAttachment = false;
+    touchStateRef.current.startedInCodeBlock = false;
     touchStateRef.current.touchId = null;
     scheduleSwipeVisuals(0, true);
   }, [scheduleSwipeVisuals]);
@@ -384,14 +391,10 @@ const MessageItem = memo(function MessageItem({
     if (isPending || event.touches.length !== 1) return;
 
     const target = event.target as HTMLElement | null;
-    const disabledGestureArea = target?.closest('[data-disable-message-gesture="true"]');
-    if (disabledGestureArea) {
-      return;
-    }
-
     const gestureTarget = target?.closest('[data-message-gesture-target]');
     const allowsMessageGesture = gestureTarget?.getAttribute('data-message-gesture-target') === 'attachment';
     const explicitGestureAllowance = target?.closest('[data-allow-message-gesture="true"]');
+    const codeBlockScrollZone = target?.closest('[data-code-block-scroll-zone="true"]');
 
     if (!allowsMessageGesture && !explicitGestureAllowance && target?.closest('button, a, input, textarea')) {
       return;
@@ -404,6 +407,7 @@ const MessageItem = memo(function MessageItem({
       swiping: false,
       longPressTriggered: false,
       startedOnAttachment: allowsMessageGesture,
+      startedInCodeBlock: Boolean(codeBlockScrollZone),
       startX: touch.clientX,
       startY: touch.clientY,
       touchId: touch.identifier,
@@ -445,6 +449,12 @@ const MessageItem = memo(function MessageItem({
     }
 
     if (absY > 18 && absY > absX) {
+      clearLongPressTimer();
+      resetTouchGesture();
+      return;
+    }
+
+    if (state.startedInCodeBlock && absX > 8 && absX > absY) {
       clearLongPressTimer();
       resetTouchGesture();
       return;
@@ -501,11 +511,30 @@ const MessageItem = memo(function MessageItem({
     resetTouchGesture();
   }, [clearLongPressTimer, resetTouchGesture]);
 
-  const handleOpenEmojiPickerFromButton = useCallback((event: React.MouseEvent<HTMLElement>) => {
-    if (reachedReactionLimit) return;
+  const handleOpenReactionActionsFromButton = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
     blurActiveComposer();
+
+    if (onOpenContextMenuAtPosition) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      onOpenContextMenuAtPosition(message, {
+        x: rect.left + rect.width / 2,
+        y: rect.top - 8,
+      }, 'reactions');
+      return;
+    }
+
+    if (reachedReactionLimit) return;
     onOpenEmojiPicker(message.message_id, event.currentTarget);
-  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker, reachedReactionLimit]);
+  }, [
+    blurActiveComposer,
+    message,
+    message.message_id,
+    onOpenContextMenuAtPosition,
+    onOpenEmojiPicker,
+    reachedReactionLimit,
+  ]);
 
   const handleOpenEmojiPickerFromReactionBar = useCallback((event: React.MouseEvent<HTMLElement>) => {
     if (reachedReactionLimit) return;
@@ -917,14 +946,9 @@ const MessageItem = memo(function MessageItem({
             className={`hidden md:flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
           >
             <button
-              onClick={handleOpenEmojiPickerFromButton}
-              disabled={reachedReactionLimit}
-              className={`p-1 rounded ${
-                reachedReactionLimit
-                  ? 'cursor-not-allowed text-void-text-muted/45'
-                  : 'text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
-              }`}
-              title={reachedReactionLimit ? 'Maximum of 10 reactions per message' : 'React'}
+              onClick={handleOpenReactionActionsFromButton}
+              className="p-1 rounded text-void-text-muted hover:bg-void-bg-hover hover:text-void-text"
+              title="React"
             >
               <Smile className="w-3.5 h-3.5" />
             </button>

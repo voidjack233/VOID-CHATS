@@ -19,6 +19,7 @@ import PresenceDot from '../common/PresenceDot';
 import { gateway } from '../../Services/Gateway/gateway';
 import { ConversationItemSkeleton } from '../common/Skeleton';
 import UserAvatar from '../common/UserAvatar';
+import MessagePreviewText from './MessagePreviewText';
 
 interface ConversationListProps {
   activeId: string | null;
@@ -517,7 +518,7 @@ const ConversationList = ({
           </div>
           {preview && (
             <div className={`truncate text-xs ${hasUnread ? 'text-void-text/90' : 'text-void-text-muted'}`}>
-              {preview}
+              <MessagePreviewText content={preview} fallback="" maxLength={60} />
             </div>
           )}
         </div>
