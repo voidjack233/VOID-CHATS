@@ -1,4 +1,4 @@
-// src/components/common/Setting/AppearanceTab.tsx
+// src/components/common/Settings/AppearanceTab.tsx
 import { useState } from 'react';
 import { useTheme, Theme, THEME_PRESETS } from '../../../Services/hooks/Settings/useTheme';
 import { Check, Save, Moon, Sun, Sparkles, RotateCcw, Pipette } from 'lucide-react';

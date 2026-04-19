@@ -1,4 +1,4 @@
-// src/components/common/Setting/Setting.tsx
+// src/components/common/Settings/SettingsModal.tsx
 import { X, User, Shield, Info, Palette, BellRing, AlertTriangle, ChevronRight, ArrowLeft } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import ProfileTab from './ProfileTab';

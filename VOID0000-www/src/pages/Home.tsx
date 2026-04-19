@@ -5,7 +5,7 @@ import { useAuth } from '../Services/hooks/Auth/useAuth';
 import { useFriendRequests } from '../Services/hooks/Friends/useFriendRequests';
 import MenuComponent from '../components/common/Menu';
 import UserProfileModal from '../components/common/Profile/UserProfileModal';
-import UseSetting from '../components/common/Setting/Setting';
+import SettingsModal from '../components/common/Settings/SettingsModal';
 import FriendsModal from '../components/common/Friends/FriendsModal';
 
 const Dashboard = () => {
@@ -30,7 +30,7 @@ const Dashboard = () => {
       {showProfile && user?.profile_id && (
         <UserProfileModal profileId={user.profile_id} onClose={() => setShowProfile(false)} />
       )}
-      {showSettings && <UseSetting onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
       {showFriends && <FriendsModal onClose={() => setShowFriends(false)} />}
 
       <nav className="bg-void-bg-sec/80 backdrop-blur-md border-b border-void-border sticky top-0 z-40">

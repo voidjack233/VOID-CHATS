@@ -13,7 +13,7 @@ import AppBootScreen from './components/common/AppBootScreen';
 // Lazy-loaded pages
 const Auth = lazy(() => import('./pages/Auth'));
 const ResetPassword = lazy(() => import('./pages/Auth/ResetPassword'));
-const Chat = lazy(() => import('./pages/chats'));
+const Chat = lazy(() => import('./pages/Chats'));
 const Invite = lazy(() => import('./pages/Invite'));
 const TermsOfUse = lazy(() => import('./pages/TermsOfUse'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
