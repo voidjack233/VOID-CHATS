@@ -3,6 +3,8 @@ import valkey from '../valkey.js';
 const PRESENCE_KEY_PREFIX = 'presence:';
 const PRESENCE_COUNT_KEY_PREFIX = 'presence_count:';
 const VALID_PRESENCE_STATUSES = new Set(['online', 'idle', 'offline']);
+const REACTION_BATCH_WINDOW_MS = 150;
+const reactionFanoutBuffer = new Map();
 
 function presenceKey(userId) {
   return `${PRESENCE_KEY_PREFIX}${userId}`;
@@ -54,6 +56,57 @@ export function sendLiveEventToUser(userId, event, data) {
       console.error('Gateway user dispatch error:', err);
     }
   })();
+}
+
+function reactionBatchKey(userId, payload) {
+  return [
+    userId,
+    payload?.conversation_id || '',
+    payload?.message_id || '',
+  ].join(':');
+}
+
+export function queueReactionEventToUser(userId, payload) {
+  if (!userId || !payload?.conversation_id || !payload?.message_id) return;
+
+  const key = reactionBatchKey(userId, payload);
+  const existing = reactionFanoutBuffer.get(key);
+
+  if (existing) {
+    existing.events.push({
+      event_id: payload.event_id,
+      emoji: payload.emoji,
+      user_id: payload.user_id,
+      action: payload.action,
+    });
+    return;
+  }
+
+  const entry = {
+    userId,
+    conversation_id: payload.conversation_id,
+    conversation_public_id: payload.conversation_public_id || null,
+    message_id: payload.message_id,
+    events: [{
+      event_id: payload.event_id,
+      emoji: payload.emoji,
+      user_id: payload.user_id,
+      action: payload.action,
+    }],
+    timer: null,
+  };
+
+  entry.timer = setTimeout(() => {
+    reactionFanoutBuffer.delete(key);
+    sendLiveEventToUser(entry.userId, 'REACTIONS_BATCH', {
+      conversation_id: entry.conversation_id,
+      conversation_public_id: entry.conversation_public_id,
+      message_id: entry.message_id,
+      events: entry.events,
+    });
+  }, REACTION_BATCH_WINDOW_MS);
+
+  reactionFanoutBuffer.set(key, entry);
 }
 
 export function broadcastLiveEventToFriends(userId, event, data) {

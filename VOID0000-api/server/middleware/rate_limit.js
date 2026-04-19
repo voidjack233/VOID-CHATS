@@ -194,6 +194,14 @@ export const messagesSendLimiter = createRateLimiter({
   maxAttempts: 30,
 });
 
+// MESSAGE REACTIONS TOGGLE: 80 per minute
+export const messageReactionToggleLimiter = createRateLimiter({
+  prefix: 'messages:reactions',
+  windowSec: 60,
+  maxAttempts: 80,
+  logAction: 'REACTION_RATE_LIMIT_HIT',
+});
+
 // MLS SYNC: 30 per minute
 export const mlsSyncLimiter = createRateLimiter({
   prefix: 'mls:sync',

@@ -2,12 +2,15 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
 import scylla, { cassandra } from '../../scylla.js';
-import { sendLiveEventToUser } from '../../gateway/client.js';
+import { queueReactionEventToUser } from '../../gateway/client.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { reactionEventId } from '../../utils/eventIdentity.js';
 import { resolveMessageStorageConversation } from '../../utils/messageConversation.js';
 
 const router = Router({ mergeParams: true });
+const MAX_UNIQUE_REACTIONS_PER_MESSAGE = 10;
+const MAX_REACTION_EMOJI_GRAPHEMES = 1;
+const MAX_REACTION_EMOJI_LENGTH = 64;
 
 async function verifyMembership(conversationId, userId) {
   const result = await pool.query(
@@ -88,6 +91,47 @@ function canAccessMessageForHistory(message, keyState) {
   return createdAt >= joinedAt;
 }
 
+function normalizeReactionCount(value) {
+  if (value && typeof value.toNumber === 'function') {
+    return value.toNumber();
+  }
+
+  return Number(value || 0);
+}
+
+function getEmojiGraphemeCount(value) {
+  if (!value) return 0;
+
+  if (typeof Intl?.Segmenter === 'function') {
+    return Array.from(
+      new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value),
+    ).length;
+  }
+
+  return Array.from(value).length;
+}
+
+function normalizeReactionEmoji(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length > MAX_REACTION_EMOJI_LENGTH) {
+    return null;
+  }
+
+  if (getEmojiGraphemeCount(normalized) > MAX_REACTION_EMOJI_GRAPHEMES) {
+    return null;
+  }
+
+  return normalized;
+}
+
 async function resolveConversationContexts(conversationIdentifier) {
   const conversation = await findConversationByIdentifier(conversationIdentifier);
   if (!conversation) {
@@ -108,9 +152,9 @@ async function resolveConversationContexts(conversationIdentifier) {
 router.put('/:emoji', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
-  const emoji = decodeURIComponent(req.params.emoji);
+  const emoji = normalizeReactionEmoji(decodeURIComponent(req.params.emoji));
 
-  if (!emoji || emoji.length > 10) {
+  if (!emoji) {
     return res.status(400).json({ error: 'Invalid emoji' });
   }
 
@@ -194,6 +238,27 @@ router.put('/:emoji', async (req, res) => {
       ]);
       action = 'remove';
     } else {
+      const reactionCounts = await scylla.execute(
+        `SELECT emoji, count FROM reaction_counts
+         WHERE conversation_id = ? AND message_id = ?`,
+        [convUuid, msgUuid],
+        { prepare: true }
+      );
+
+      const activeReactionEmojis = reactionCounts.rows
+        .filter((row) => normalizeReactionCount(row.count) > 0)
+        .map((row) => row.emoji);
+
+      if (
+        !activeReactionEmojis.includes(emoji) &&
+        activeReactionEmojis.length >= MAX_UNIQUE_REACTIONS_PER_MESSAGE
+      ) {
+        return res.status(409).json({
+          error: `Maximum of ${MAX_UNIQUE_REACTIONS_PER_MESSAGE} reactions per message`,
+          code: 'REACTION_LIMIT_REACHED',
+        });
+      }
+
       await Promise.all([
         scylla.execute(
           `INSERT INTO message_reactions (conversation_id, message_id, emoji, user_id, created_at)
@@ -236,7 +301,7 @@ router.put('/:emoji', async (req, res) => {
     const members = await getConversationMembers(conversationId);
     members.forEach((memberId) => {
       if (memberId !== userId) {
-        sendLiveEventToUser(memberId, action === 'add' ? 'REACTION_ADD' : 'REACTION_REMOVE', payload);
+        queueReactionEventToUser(memberId, payload);
       }
     });
 

@@ -18,6 +18,7 @@ import InviteEmbed from './InviteEmbed';
 import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../common/UserAvatar';
 import { parseAttachment, parseAttachments } from '../../Services/Chat/chatService';
+import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../Services/Chat/reactionLimits';
 import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
 import { extractMessageTextSegments, getInviteCodeFromMessageUrl } from './messageLinks';
@@ -269,6 +270,7 @@ const MessageItem = memo(function MessageItem({
   const isRightAligned = isOwn && density === 'comfortable';
   const canSwipeReply = Boolean(onReply);
   const canSwipeEdit = Boolean(isOwn && onEdit);
+  const reachedReactionLimit = getUniqueReactionCount(messageReactions as Record<string, unknown>) >= MAX_UNIQUE_REACTIONS_PER_MESSAGE;
 
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -500,14 +502,16 @@ const MessageItem = memo(function MessageItem({
   }, [clearLongPressTimer, resetTouchGesture]);
 
   const handleOpenEmojiPickerFromButton = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    if (reachedReactionLimit) return;
     blurActiveComposer();
     onOpenEmojiPicker(message.message_id, event.currentTarget);
-  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker]);
+  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker, reachedReactionLimit]);
 
   const handleOpenEmojiPickerFromReactionBar = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    if (reachedReactionLimit) return;
     blurActiveComposer();
     onOpenEmojiPicker(message.message_id, event.currentTarget, 'bottom');
-  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker]);
+  }, [blurActiveComposer, message.message_id, onOpenEmojiPicker, reachedReactionLimit]);
 
   const handleToggleReactionWithBlur = useCallback((emoji: string) => {
     blurActiveComposer();
@@ -914,8 +918,13 @@ const MessageItem = memo(function MessageItem({
           >
             <button
               onClick={handleOpenEmojiPickerFromButton}
-              className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text"
-              title="React"
+              disabled={reachedReactionLimit}
+              className={`p-1 rounded ${
+                reachedReactionLimit
+                  ? 'cursor-not-allowed text-void-text-muted/45'
+                  : 'text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
+              }`}
+              title={reachedReactionLimit ? 'Maximum of 10 reactions per message' : 'React'}
             >
               <Smile className="w-3.5 h-3.5" />
             </button>

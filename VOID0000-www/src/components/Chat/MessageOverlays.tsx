@@ -14,9 +14,11 @@ import {
   X,
 } from 'lucide-react';
 import type { Message } from '../../Services/Chat/chatService';
+import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../Services/Chat/reactionLimits';
 import type { Friend } from '../../Services/hooks/Friends/useFriends';
 import FriendProfile from '../common/Friends/FriendProfile';
 import UserProfileModal from '../common/Profile/UserProfileModal';
+import EmojiGlyph from './EmojiGlyph';
 import type {
   ContextMenuState,
   EmojiPickerTarget,
@@ -73,6 +75,21 @@ function messageHasUserReaction(message: Message, emoji: string, currentUserId?:
   }
 
   return false;
+}
+
+function messageCanAddReaction(message: Message, emoji?: string) {
+  const reactions = message.reactions as Record<string, unknown> | undefined;
+  const uniqueReactionCount = getUniqueReactionCount(reactions);
+
+  if (uniqueReactionCount < MAX_UNIQUE_REACTIONS_PER_MESSAGE) {
+    return true;
+  }
+
+  if (!emoji) {
+    return false;
+  }
+
+  return hasActiveReactionEntry(reactions, emoji);
 }
 
 export default function MessageOverlays({
@@ -134,9 +151,11 @@ export default function MessageOverlays({
     contextMenu.msg.content !== '[encrypted]' &&
     contextMenu.msg.content !== '[deleted]',
   );
+  const canOpenReactionPicker = contextMenu ? messageCanAddReaction(contextMenu.msg) : false;
 
   const handleQuickReaction = (emoji: string) => {
     if (!contextMenu) return;
+    if (!messageCanAddReaction(contextMenu.msg, emoji)) return;
     onToggleReaction(contextMenu.msg.message_id, emoji);
     onCloseContextMenu();
   };
@@ -174,57 +193,73 @@ export default function MessageOverlays({
                 <div className="mb-3 flex min-w-0 items-center justify-between gap-1 overflow-hidden px-1">
                   {QUICK_REACTIONS.map(({ emoji, label }) => {
                     const isSelected = messageHasUserReaction(contextMenu.msg, emoji, currentUserId);
+                    const isDisabled = !messageCanAddReaction(contextMenu.msg, emoji);
 
                     return (
                       <button
                         key={emoji}
                         type="button"
+                        disabled={isDisabled}
                         onClick={() => handleQuickReaction(emoji)}
-                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-[1.15rem] transition-all active:scale-95 sm:h-10 sm:w-10 sm:text-[1.25rem] ${
-                          isSelected
+                        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl transition-all sm:h-10 sm:w-10 ${
+                          isDisabled
+                            ? 'cursor-not-allowed opacity-40'
+                            : isSelected
                             ? 'bg-void-accent/18 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]'
                             : 'hover:bg-void-bg-hover/80'
                         }`}
                         aria-label={label}
-                        title={label}
+                        title={isDisabled ? 'Maximum of 10 reactions per message' : label}
                         style={{ WebkitTapHighlightColor: 'transparent' }}
                       >
-                        <span className="leading-none">{emoji}</span>
+                        <EmojiGlyph
+                          emoji={emoji}
+                          className="text-[18px] sm:text-[20px]"
+                          fallbackClassName="text-[18px] sm:text-[20px]"
+                        />
                       </button>
                     );
                   })}
 
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
-                        x: rect.left + rect.width / 2,
-                        y: rect.top,
-                      });
-                      onCloseContextMenu();
-                    }}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-void-text-muted transition-all hover:bg-void-bg-hover/80 active:scale-95 sm:h-10 sm:w-10"
-                    aria-label="Add reaction"
-                    title="Add reaction"
-                    style={{ WebkitTapHighlightColor: 'transparent' }}
-                  >
-                    <Plus className="h-5 w-5" />
-                  </button>
+                  {canOpenReactionPicker && (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
+                          x: rect.left + rect.width / 2,
+                          y: rect.top,
+                        });
+                        onCloseContextMenu();
+                      }}
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-void-text-muted transition-all hover:bg-void-bg-hover/80 sm:h-10 sm:w-10"
+                      aria-label="Add reaction"
+                      title="Add reaction"
+                      style={{ WebkitTapHighlightColor: 'transparent' }}
+                    >
+                      <Plus className="h-5 w-5" />
+                    </button>
+                  )}
                 </div>
 
                 <div className="mx-2 mb-2 h-px bg-white/10" />
 
                 <div className="overflow-hidden rounded-2xl">
                   <button
+                    disabled={!canOpenReactionPicker}
                     onClick={() => {
+                      if (!canOpenReactionPicker) return;
                       onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
                         x: contextMenu.x,
                         y: contextMenu.y,
                       });
                       onCloseContextMenu();
                     }}
-                    className="flex w-full touch-manipulation items-center gap-3 rounded-xl px-4 py-3 text-left text-sm text-void-text transition-colors hover:bg-void-bg-hover/90"
+                    className={`flex w-full touch-manipulation items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
+                      canOpenReactionPicker
+                        ? 'text-void-text hover:bg-void-bg-hover/90'
+                        : 'cursor-not-allowed text-void-text-muted/55'
+                    }`}
                     style={{ WebkitTapHighlightColor: 'transparent' }}
                   >
                     <Smile className="h-4 w-4 text-void-accent" />
