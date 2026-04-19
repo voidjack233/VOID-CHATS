@@ -95,40 +95,61 @@ export function useMessageActions({
     return () => window.removeEventListener('keydown', handler);
   }, [closeImageViewer, imageViewer, showNextImage, showPreviousImage]);
 
+  const positionContextMenu = useCallback((
+    position: { x: number; y: number },
+    mode: 'full' | 'reactions',
+  ) => {
+    const viewportPadding = 8;
+
+    if (mode === 'reactions') {
+      const estimatedWidth = 316;
+      const estimatedHeight = 52;
+
+      let x = position.x - estimatedWidth / 2;
+      let y = position.y - estimatedHeight;
+
+      x = Math.max(viewportPadding, Math.min(x, window.innerWidth - estimatedWidth - viewportPadding));
+      y = Math.max(viewportPadding, Math.min(y, window.innerHeight - estimatedHeight - viewportPadding));
+
+      return { x, y };
+    }
+
+    const estimatedWidth = 344;
+    const estimatedHeight = 356;
+    let x = position.x;
+    let y = position.y;
+
+    if (x + estimatedWidth > window.innerWidth - viewportPadding) {
+      x = window.innerWidth - estimatedWidth - viewportPadding;
+    }
+
+    if (y + estimatedHeight > window.innerHeight - viewportPadding) {
+      y = window.innerHeight - estimatedHeight - viewportPadding;
+    }
+
+    x = Math.max(viewportPadding, x);
+    y = Math.max(viewportPadding, y);
+
+    return { x, y };
+  }, []);
+
   const handleContextMenu = useCallback((event: React.MouseEvent, msg: Message) => {
     event.preventDefault();
-    let x = event.clientX;
-    let y = event.clientY;
-    if (window.innerWidth - x < 200) x -= 180;
-    if (window.innerHeight - y < 200) y -= 150;
+    const { x, y } = positionContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+    }, 'full');
     setContextMenu({ msg, x, y, mode: 'full' });
-  }, []);
+  }, [positionContextMenu]);
 
   const openContextMenuAtPosition = useCallback((
     msg: Message,
     position: { x: number; y: number },
     mode: 'full' | 'reactions' = 'full',
   ) => {
-    let x = position.x;
-    let y = position.y;
-
-    if (mode === 'reactions') {
-      const estimatedWidth = 316;
-      const estimatedHeight = 52;
-      const viewportPadding = 8;
-
-      x = position.x - estimatedWidth / 2;
-      y = position.y - estimatedHeight;
-
-      x = Math.max(viewportPadding, Math.min(x, window.innerWidth - estimatedWidth - viewportPadding));
-      y = Math.max(viewportPadding, Math.min(y, window.innerHeight - estimatedHeight - viewportPadding));
-    } else {
-      if (window.innerWidth - x < 200) x -= 180;
-      if (window.innerHeight - y < 200) y -= 150;
-    }
-
+    const { x, y } = positionContextMenu(position, mode);
     setContextMenu({ msg, x, y, mode });
-  }, []);
+  }, [positionContextMenu]);
 
   const blurActiveTextInput = useCallback(() => {
     const activeElement = document.activeElement;
