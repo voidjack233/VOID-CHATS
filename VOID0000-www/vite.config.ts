@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv, type PluginOption } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath, URL } from 'node:url'
 
 function emitBuildVersionPlugin(buildVersion: string): PluginOption {
   return {
@@ -28,6 +29,11 @@ export default defineConfig(({ mode }) => {
   return {
     base: '/',
     plugins: [emitBuildVersionPlugin(buildVersion), react(), tailwindcss()],
+    resolve: {
+      alias: {
+        crypto: fileURLToPath(new URL('./src/shims/browserCrypto.ts', import.meta.url)),
+      },
+    },
     define: {
       __BUILD_VERSION__: JSON.stringify(buildVersion),
     },
@@ -64,6 +70,21 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
       rollupOptions: {
+        onwarn(warning, defaultHandler) {
+          const warningId = 'id' in warning ? warning.id : undefined
+          const warningMessage = typeof warning.message === 'string' ? warning.message : ''
+
+          const isKnownHpkePureAnnotationNoise =
+            typeof warningId === 'string' &&
+            warningId.includes('/node_modules/@hpke/common/') &&
+            warningMessage.includes('contains an annotation that Rollup cannot interpret due to the position of the comment')
+
+          if (isKnownHpkePureAnnotationNoise) {
+            return
+          }
+
+          defaultHandler(warning)
+        },
         output: {
           manualChunks: {
             'vendor-react': ['react', 'react-dom', 'react-router-dom'],
