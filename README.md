@@ -22,6 +22,8 @@ If you clone this, please read the next few sections before you sink hours into 
   Express API, PostgreSQL migrations, Scylla message storage, MinIO media routes
 - `VOID0000-api/void_gateway`
   Phoenix realtime gateway for presence and chat fanout
+- `VOIDADMIN`
+  small internal admin panel for users and security logs
 - `docs`
   setup notes, flow map, security notes, future notes
 

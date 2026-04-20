@@ -1,0 +1,17 @@
+{
+  "name": "voidadmin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "argon2": "^0.44.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "pg": "^8.18.0"
+  }
+}

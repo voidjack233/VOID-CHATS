@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VOIDADMIN</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">VOID Admin</p>
+          <h1>Database access</h1>
+          <p class="muted">Read-only panel for users and security logs.</p>
+        </div>
+        <div class="status" id="healthStatus">Checking DB...</div>
+      </header>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="users">Users</button>
+        <button class="tab" data-tab="logs">Security Logs</button>
+      </div>
+
+      <section class="panel active" id="panel-users">
+        <div class="toolbar">
+          <input id="usersSearch" type="search" placeholder="Search username, email, id, display name" />
+          <button id="usersRefresh">Refresh</button>
+        </div>
+        <div class="meta" id="usersMeta"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Verified</th>
+                <th>Profile</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="usersRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="usersPrev">Previous</button>
+          <span id="usersPageLabel"></span>
+          <button id="usersNext">Next</button>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-logs">
+        <div class="toolbar">
+          <input id="logsSearch" type="search" placeholder="Search action, path, IP, user, fingerprint" />
+          <button id="logsRefresh">Refresh</button>
+        </div>
+        <div class="meta" id="logsMeta"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>User</th>
+                <th>IP</th>
+                <th>Path</th>
+                <th>Fingerprint</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="logsRows"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="logsPrev">Previous</button>
+          <span id="logsPageLabel"></span>
+          <button id="logsNext">Next</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal-backdrop hidden" id="adminModalBackdrop" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="adminModalTitle">
+        <div class="modal-head">
+          <div>
+            <p class="eyebrow" id="adminModalEyebrow">User action</p>
+            <h2 id="adminModalTitle">Update user</h2>
+            <p class="muted" id="adminModalDescription">Make a quick change.</p>
+          </div>
+          <button class="icon-button" id="adminModalClose" type="button" aria-label="Close modal">✕</button>
+        </div>
+
+        <form class="modal-form" id="adminModalForm">
+          <label class="field">
+            <span id="adminModalLabel">Value</span>
+            <input id="adminModalInput" name="value" type="text" autocomplete="off" />
+          </label>
+
+          <div class="modal-actions">
+            <button type="button" id="adminModalCancel">Cancel</button>
+            <button type="submit" id="adminModalSubmit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>
