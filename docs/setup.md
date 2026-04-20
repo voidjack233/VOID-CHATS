@@ -1,119 +1,120 @@
 # Setup
 
-This repo runs as three app services plus four supporting services:
+This setup guide is written for the way this project was actually built:
 
-- Frontend: `VOID0000-www`
-- API: `VOID0000-api`
-- Gateway: `VOID0000-api/void_gateway`
+- Linux
+- local infra
+- multiple services
+- some manual wiring
+
+If you are on Windows or macOS, I am not going to pretend this doc was tested there. Some parts may still work, but Linux is the only setup path I can honestly stand behind right now.
+
+## What You Need
+
+App services:
+
+- `VOID0000-www`
+- `VOID0000-api`
+- `VOID0000-api/void_gateway`
+
+Supporting services:
+
 - PostgreSQL
 - ScyllaDB
 - Valkey
 - MinIO
 
-## Prerequisites
+Tooling:
 
 - Node.js 20+
 - npm
-- PostgreSQL
-- ScyllaDB
-- Valkey or Redis-compatible server
-- MinIO
 - Elixir 1.16+
 - Erlang/OTP compatible with your Elixir install
 
-## 1. Install app dependencies
+## Expected Local Ports
 
-Root:
+- Frontend: `127.0.0.1:5173`
+- API: `127.0.0.1:3001`
+- Gateway: `127.0.0.1:4001`
+- PostgreSQL: `127.0.0.1:5432`
+- ScyllaDB: `127.0.0.1:9042`
+- Valkey: `127.0.0.1:6379`
+- MinIO API: `127.0.0.1:9000`
+
+Expected MinIO buckets:
+
+- `avatars`
+- `group-avatars`
+- `chat-attachments`
+
+## 1. Install Dependencies
+
+Frontend:
 
 ```bash
-cd /path/to/VOIDAPP
+cd /path/to/VOIDAPP/VOID0000-www
 npm install
 ```
 
 API:
 
 ```bash
-cd VOID0000-api
-npm install
-```
-
-Frontend:
-
-```bash
-cd VOID0000-www
+cd /path/to/VOIDAPP/VOID0000-api
 npm install
 ```
 
 Gateway:
 
 ```bash
-cd VOID0000-api/void_gateway
+cd /path/to/VOIDAPP/VOID0000-api/void_gateway
 mix deps.get
 ```
 
-## 2. Prepare supporting services
+## 2. Create The Backend Env File
 
-Expected local defaults:
-
-- PostgreSQL: `127.0.0.1:5432`
-- ScyllaDB: `127.0.0.1:9042`
-- Valkey: `127.0.0.1:6379`
-- MinIO API: `127.0.0.1:9000`
-- Gateway: `127.0.0.1:4001`
-- API: `127.0.0.1:3001`
-- Frontend: `127.0.0.1:5173`
-
-MinIO buckets expected by the app:
-
-- `avatars`
-- `group-avatars`
-- `chat-attachments`
-
-## 3. Create backend env
-
-Copy the example file:
+The backend env file is the important one.
 
 ```bash
 cd /path/to/VOIDAPP
 cp VOID0000-api/.env.example VOID0000-api/.env
 ```
 
-Fill in real values before running the app.
+Fill in the real values before starting anything.
 
-Important values:
+Important values include:
 
-- PostgreSQL connection
-- access and refresh JWT secrets
+- PostgreSQL connection info
+- JWT secrets
 - CSRF encryption key
 - TOTP encryption key
 - MinIO credentials
 - Phoenix secret key base
 - frontend origin
 
-## 4. Optional frontend env
+## 3. Frontend Env
 
-For local development, the frontend can usually run without an env file because it falls back to localhost defaults in dev mode.
+The frontend can usually run in local dev without its own env file because it falls back to localhost defaults in development.
 
-If you want explicit values, create:
+If you still want an explicit frontend env:
 
 ```bash
 cp VOID0000-www/.env.example VOID0000-www/.env.local
 ```
 
-## 5. Run migrations
+## 4. Run Database Migrations
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-api
 npm run migrate
 ```
 
-You can inspect status with:
+Migration status:
 
 ```bash
 npm run migrate:status
 ```
 
-## 6. Start the stack
+## 5. Start The Stack
 
 Start the API:
 
@@ -122,7 +123,7 @@ cd /path/to/VOIDAPP/VOID0000-api
 npm run dev
 ```
 
-Start the gateway in a second shell:
+Start the gateway in another shell:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-api/void_gateway
@@ -132,16 +133,16 @@ set +a
 mix phx.server
 ```
 
-Start the frontend in a third shell:
+Start the frontend in another shell:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-www
 npm run dev
 ```
 
-## 7. Production build
+## 6. Production-ish Commands
 
-Frontend:
+Frontend build:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-www
@@ -165,8 +166,14 @@ set +a
 MIX_ENV=prod mix phx.server
 ```
 
-## 8. Known setup notes
+## Known Setup Notes
 
-- The secure chat path currently depends on `ts-mls`, which upstream has not formally audited yet.
+- This repo is not Docker-first yet.
+- The secure chat path depends on `ts-mls`, which upstream says is not formally audited.
 - Forgot-password chat recovery on a fresh device is still a known limitation.
 - Presence and full friend-list traffic use separate endpoints and separate rate-limit buckets.
+
+If you want the higher-level explanation of how the project fits together, read:
+
+- [../README.md](../README.md)
+- [../VOID0000-www/docs/project-flow-map.md](../VOID0000-www/docs/project-flow-map.md)
