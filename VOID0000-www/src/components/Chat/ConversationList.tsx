@@ -1,6 +1,7 @@
 // src/components/Chat/ConversationList.tsx
 import { useEffect, useRef, useState } from 'react';
 import { MessageCircle, Users, Plus, Search } from 'lucide-react';
+import { Virtuoso } from 'react-virtuoso';
 import { Conversation, getConversations, markAsRead, closeDM, muteDM } from '../../Services/Chat/chatService';
 import {
   applyLiveMessageDeletePreview,
@@ -552,7 +553,7 @@ const ConversationList = ({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto py-2 px-2 flex flex-col">
+    <div className="flex min-h-0 flex-1 flex-col px-2 py-2">
       <div className="px-1 mb-3 shrink-0">
         <div className="flex items-center bg-void-bg-hover/50 rounded-md px-2 py-1.5">
           <Search className="w-3.5 h-3.5 text-void-text-muted mr-1.5" />
@@ -582,7 +583,7 @@ const ConversationList = ({
         )}
       </div>
 
-      <div className="flex-1 bg-void-bg-sec/20 md:bg-transparent">
+      <div className="min-h-0 flex-1 bg-void-bg-sec/20 md:bg-transparent">
         {searchFiltered.length === 0 ? (
           <div className="text-center px-4 py-8">
             <p className="text-sm text-void-text-muted">
@@ -592,7 +593,13 @@ const ConversationList = ({
             </p>
           </div>
         ) : (
-          searchFiltered.map((conv) => <ConvItem key={conv.id} conv={conv} />)
+          <Virtuoso
+            data={searchFiltered}
+            className="h-full"
+            computeItemKey={(_index, conversation) => conversation.id}
+            overscan={320}
+            itemContent={(_index, conv) => <ConvItem conv={conv} />}
+          />
         )}
       </div>
 

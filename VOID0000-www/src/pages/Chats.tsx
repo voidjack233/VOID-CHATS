@@ -880,7 +880,10 @@ const ChatDashboard = () => {
               </div>
             ) : null}
             <div className="flex min-w-0 flex-1 flex-col">
-              <nav className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:static md:bg-void-bg-sec">
+              <nav
+                data-chat-conversation-header="true"
+                className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:static md:bg-void-bg-sec"
+              >
                 <div className="flex items-center min-w-0 flex-1">
                   <button
                     onClick={openMobileMessageList}

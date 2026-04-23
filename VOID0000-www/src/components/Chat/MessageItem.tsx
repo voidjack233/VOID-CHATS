@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   CornerUpRight,
   FileText,
@@ -241,10 +241,14 @@ const MessageItem = memo(function MessageItem({
   const [isHovered, setIsHovered] = useState(false);
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
   const [attachmentDimensions, setAttachmentDimensions] = useState<Record<string, { width: number; height: number }>>({});
+  const [desktopActionRailStyle, setDesktopActionRailStyle] = useState<CSSProperties | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const swipeAnimationFrameRef = useRef<number | null>(null);
   const swipeOffsetRef = useRef(0);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const textActionAnchorRef = useRef<HTMLDivElement | null>(null);
+  const attachmentActionAnchorRef = useRef<HTMLDivElement | null>(null);
+  const desktopActionRailRef = useRef<HTMLDivElement | null>(null);
   const replyIndicatorRef = useRef<HTMLDivElement | null>(null);
   const editIndicatorRef = useRef<HTMLDivElement | null>(null);
   const touchStateRef = useRef<{
@@ -277,6 +281,35 @@ const MessageItem = memo(function MessageItem({
   const canSwipeReply = Boolean(onReply);
   const canSwipeEdit = Boolean(isOwn && onEdit);
   const reachedReactionLimit = getUniqueReactionCount(messageReactions as Record<string, unknown>) >= MAX_UNIQUE_REACTIONS_PER_MESSAGE;
+  const attachmentEntries = useMemo(() => (
+    (message.attachments || []).map((raw, index) => ({
+      raw,
+      originalIndex: index,
+      attachment: parseAttachment(raw),
+    }))
+  ), [message.attachments]);
+  const imageAttachmentEntries = useMemo(
+    () => attachmentEntries.filter(({ attachment }) => looksLikeImageAttachment(attachment)),
+    [attachmentEntries],
+  );
+  const fileAttachmentEntries = useMemo(
+    () => attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment)),
+    [attachmentEntries],
+  );
+  const singleImageEntry = imageAttachmentEntries.length === 1 ? imageAttachmentEntries[0] : null;
+  const singleImageLayoutKey = singleImageEntry
+    ? getAttachmentLayoutKey(singleImageEntry.attachment, singleImageEntry.originalIndex)
+    : null;
+  const singleImageResolvedDimensions = singleImageLayoutKey
+    ? attachmentDimensions[singleImageLayoutKey]
+    : undefined;
+  const singleImagePresentation = singleImageEntry
+    ? getSingleAttachmentPresentation({
+        ...singleImageEntry.attachment,
+        width: singleImageEntry.attachment.width ?? singleImageResolvedDimensions?.width,
+        height: singleImageEntry.attachment.height ?? singleImageResolvedDimensions?.height,
+      })
+    : null;
 
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -547,6 +580,108 @@ const MessageItem = memo(function MessageItem({
     onToggleReaction(message.message_id, emoji);
   }, [blurActiveComposer, message.message_id, onToggleReaction]);
 
+  const updateDesktopActionRailPosition = useCallback(() => {
+    if (!isHovered || isPending || message.is_deleted) {
+      setDesktopActionRailStyle(null);
+      return;
+    }
+
+    const anchor = attachmentEntries.length > 0
+      ? attachmentActionAnchorRef.current
+      : textActionAnchorRef.current;
+
+    if (!anchor) {
+      setDesktopActionRailStyle(null);
+      return;
+    }
+
+    const rect = anchor.getBoundingClientRect();
+    const railWidth = desktopActionRailRef.current?.offsetWidth ?? 110;
+    const railHeight = desktopActionRailRef.current?.offsetHeight ?? 32;
+    const gap = 8;
+    const minInset = 8;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const headerBottom = document
+      .querySelector<HTMLElement>('[data-chat-conversation-header="true"]')
+      ?.getBoundingClientRect()
+      .bottom ?? 0;
+    const minTop = Math.max(minInset, headerBottom + gap);
+
+    const nextLeft = isRightAligned
+      ? Math.max(minInset, rect.left - railWidth - gap)
+      : Math.min(viewportWidth - railWidth - minInset, rect.right + gap);
+    const nextTop = Math.min(
+      viewportHeight - railHeight - minInset,
+      Math.max(minTop, rect.top + Math.max(0, (rect.height - railHeight) / 2)),
+    );
+
+    setDesktopActionRailStyle({
+      left: `${Math.round(nextLeft)}px`,
+      top: `${Math.round(nextTop)}px`,
+    });
+  }, [attachmentEntries.length, isHovered, isPending, isRightAligned, message.is_deleted]);
+
+  useLayoutEffect(() => {
+    updateDesktopActionRailPosition();
+  }, [updateDesktopActionRailPosition]);
+
+  useEffect(() => {
+    if (!isHovered || isPending || message.is_deleted) return;
+
+    const handleReposition = () => updateDesktopActionRailPosition();
+
+    window.addEventListener('resize', handleReposition);
+    window.addEventListener('scroll', handleReposition, true);
+
+    return () => {
+      window.removeEventListener('resize', handleReposition);
+      window.removeEventListener('scroll', handleReposition, true);
+    };
+  }, [isHovered, isPending, message.is_deleted, updateDesktopActionRailPosition]);
+
+  const desktopActionRail = !message.is_deleted && !isPending ? (
+    <div
+      ref={desktopActionRailRef}
+      className={`fixed z-20 hidden md:flex items-center gap-0.5 rounded-md border border-void-bg-hover bg-void-bg-main p-0.5 shadow-lg transition-opacity ${
+        isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
+      }`}
+      style={desktopActionRailStyle ?? { visibility: 'hidden' }}
+    >
+      <button
+        onClick={handleOpenReactionActionsFromButton}
+        className="p-1 rounded text-void-text-muted hover:bg-void-bg-hover hover:text-void-text"
+        title="React"
+      >
+        <Smile className="w-3.5 h-3.5" />
+      </button>
+      {onReply && (
+        <button
+          onClick={() => onReply(message)}
+          className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text"
+        >
+          <Reply className="w-3.5 h-3.5" />
+        </button>
+      )}
+      {isOwn && onEdit && (
+        <button
+          onClick={() => onEdit(message)}
+          className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
+      {isOwn && (
+        <button
+          onClick={() => onDelete(message.message_id)}
+          className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
+  ) : null;
+
   if (isSystem) {
     const hasContent = typeof message.content === 'string' && message.content.trim().length > 0;
     return (
@@ -748,6 +883,7 @@ const MessageItem = memo(function MessageItem({
             if (!hasRealContent && message.attachments?.length) return null;
             return (
               <div
+                ref={textActionAnchorRef}
                 className={`min-w-0 max-w-full overflow-hidden ${d.bubblePadding} rounded-2xl whitespace-pre-wrap break-words ${
                   isRightAligned
                     ? 'rounded-br-sm bg-void-accent text-white'
@@ -783,31 +919,12 @@ const MessageItem = memo(function MessageItem({
           })()}
 
           {!message.is_deleted && message.attachments && message.attachments.length > 0 && (() => {
-            const attachmentEntries = message.attachments.map((raw, index) => ({
-              raw,
-              originalIndex: index,
-              attachment: parseAttachment(raw),
-            }));
-
-            const imageEntries = attachmentEntries.filter(({ attachment }) => looksLikeImageAttachment(attachment));
-            const fileEntries = attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment));
+            const imageEntries = imageAttachmentEntries;
+            const fileEntries = fileAttachmentEntries;
 
             const imageSection = imageEntries.length > 0
               ? (() => {
-                  const singleImageEntry = imageEntries[0];
-                  const singleAttachmentLayoutKey = imageEntries.length === 1 && singleImageEntry
-                    ? getAttachmentLayoutKey(singleImageEntry.attachment, singleImageEntry.originalIndex)
-                    : null;
-                  const singleAttachmentResolvedDimensions = singleAttachmentLayoutKey
-                    ? attachmentDimensions[singleAttachmentLayoutKey]
-                    : undefined;
-                  const singleAttachmentPresentation = imageEntries.length === 1 && singleImageEntry
-                    ? getSingleAttachmentPresentation({
-                        ...singleImageEntry.attachment,
-                        width: singleImageEntry.attachment.width ?? singleAttachmentResolvedDimensions?.width,
-                        height: singleImageEntry.attachment.height ?? singleAttachmentResolvedDimensions?.height,
-                      })
-                    : null;
+                  const singleAttachmentPresentation = imageEntries.length === 1 ? singleImagePresentation : null;
                   const visibleImages = imageEntries.length > 3 ? imageEntries.slice(0, 3) : imageEntries;
                   const hiddenImageCount = Math.max(0, imageEntries.length - visibleImages.length);
                   const viewerRawAttachments = imageEntries.map(({ raw }) => raw);
@@ -904,10 +1021,13 @@ const MessageItem = memo(function MessageItem({
             }
 
             return (
-              <>
+              <div
+                ref={attachmentActionAnchorRef}
+                className={`relative w-fit max-w-full ${isRightAligned ? 'self-end' : 'self-start'}`}
+              >
                 {imageSection ? <div className="pt-1">{imageSection}</div> : null}
                 {fileSection}
-              </>
+              </div>
             );
           })()}
 
@@ -940,44 +1060,7 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
         </div>
-
-        {!message.is_deleted && !isPending && (
-          <div
-            className={`hidden md:flex items-center gap-0.5 bg-void-bg-main border border-void-bg-hover rounded-md p-0.5 shadow-lg shrink-0 transition-opacity ${isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-          >
-            <button
-              onClick={handleOpenReactionActionsFromButton}
-              className="p-1 rounded text-void-text-muted hover:bg-void-bg-hover hover:text-void-text"
-              title="React"
-            >
-              <Smile className="w-3.5 h-3.5" />
-            </button>
-            {onReply && (
-              <button
-                onClick={() => onReply(message)}
-                className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text"
-              >
-                <Reply className="w-3.5 h-3.5" />
-              </button>
-            )}
-            {isOwn && onEdit && (
-              <button
-                onClick={() => onEdit(message)}
-                className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-void-text"
-              >
-                <Pencil className="w-3.5 h-3.5" />
-              </button>
-            )}
-            {isOwn && (
-              <button
-                onClick={() => onDelete(message.message_id)}
-                className="p-1 hover:bg-void-bg-hover rounded text-void-text-muted hover:text-red-400"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        )}
+        {desktopActionRail}
       </div>
     </div>
   );
