@@ -155,6 +155,7 @@ const useMessageListRealtime = ({
         created_at: normalizedMessage.created_at,
         reactions: {},
         attachments: normalizedMessage.attachments,
+        forwarded: normalizedMessage.forwarded ?? undefined,
         protocol: normalizedMessage.protocol ?? null,
         protocol_version: normalizedMessage.protocol_version ?? null,
       };

@@ -29,6 +29,13 @@ export interface LocalMessage {
   created_at: string;
   reactions: Record<string, string[]>;
   attachments?: string[];
+  forwarded?: {
+    original_message_id?: string | null;
+    original_sender_id?: string | null;
+    original_sender_name?: string | null;
+    original_conversation_id?: string | null;
+    original_conversation_name?: string | null;
+  } | null;
   protocol?: 'legacy_aes' | 'mls' | null;
   protocol_version?: number | null;
 }

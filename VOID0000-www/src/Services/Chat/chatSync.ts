@@ -137,6 +137,7 @@ class MessageSync {
           created_at: msg.created_at,
           reactions: (msg as any).reactions || {},
           attachments: msg.attachments,
+          forwarded: msg.forwarded ?? undefined,
           protocol: cryptoMetadata.protocol,
           protocol_version: cryptoMetadata.protocol_version,
         };

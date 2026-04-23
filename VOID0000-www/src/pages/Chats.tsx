@@ -12,10 +12,11 @@ import SettingsModal from '../components/common/Settings/SettingsModal';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
+import ForwardMessageModal from '../components/Chat/ForwardMessageModal';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
 import { gateway } from '../Services/Gateway/gateway';
-import { Message } from '../Services/Chat/chatService';
+import { Message, Conversation, forwardMessageToConversation } from '../Services/Chat/chatService';
 import { matchesConversationIdentifier } from '../Services/Chat/utils/conversationUtils';
 import { useUser } from '../Services/Auth/UserContext';
 import UserAvatar from '../components/common/UserAvatar';
@@ -90,6 +91,7 @@ const ChatDashboard = () => {
   const [convRefresh, setConvRefresh] = useState(0);
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [mlsRecoveryPassword, setMlsRecoveryPassword] = useState('');
   const [mlsRecoveryError, setMlsRecoveryError] = useState('');
   const [isSubmittingMlsRecoveryPassword, setIsSubmittingMlsRecoveryPassword] = useState(false);
@@ -275,6 +277,24 @@ const ChatDashboard = () => {
   const handleEdit = useCallback((message: Message) => {
     setEditingMessage(message);
   }, [setEditingMessage]);
+
+  const getMessageSenderDisplayName = useCallback((message: Message) => {
+    if (message.sender_id === user?.id) {
+      return myProfile?.display_name || user?.username || 'You';
+    }
+
+    const member = messageDisplayMembers[message.sender_id];
+    if (member) {
+      return member.nickname || member.display_name || member.username || 'Unknown';
+    }
+
+    const friend = friends.find((entry) => entry.id === message.sender_id);
+    return friend?.display_name || friend?.username || 'Unknown';
+  }, [friends, messageDisplayMembers, myProfile?.display_name, user?.id, user?.username]);
+
+  const handleForward = useCallback((message: Message) => {
+    setForwardingMessage(message);
+  }, []);
 
   const handleEditComplete = useCallback((messageId: string, newContent: string) => {
     setMessageUpdate({
@@ -666,6 +686,40 @@ const ChatDashboard = () => {
     setIsMobileSidebarOpen(true);
   };
 
+  const handleForwardToConversation = async (targetConversation: Conversation) => {
+    if (!forwardingMessage || !user?.id || !displayConversation) {
+      throw new Error('The message could not be forwarded right now.');
+    }
+
+    const forwarded = {
+      original_message_id: forwardingMessage.message_id,
+      original_sender_id: forwardingMessage.sender_id,
+      original_sender_name: getMessageSenderDisplayName(forwardingMessage),
+      original_conversation_id: displayConversation.id,
+      original_conversation_name:
+        displayConversation.type === 'dm'
+          ? getHeaderName()
+          : displayConversation.name || 'Conversation',
+    };
+
+    const forwardedMessage = await forwardMessageToConversation(
+      targetConversation,
+      forwardingMessage,
+      {
+        currentUserId: user.id,
+        forwarded,
+      },
+    );
+
+    if (targetConversation.id === activeConversation?.id) {
+      handleMessageSent(forwardedMessage);
+      setLastSentConversationId(targetConversation.id);
+    }
+
+    setConvRefresh((count) => count + 1);
+    setForwardingMessage(null);
+  };
+
   return (
     <div
       className="flex flex-col overflow-hidden bg-void-bg-main font-sans text-void-text"
@@ -715,6 +769,13 @@ const ChatDashboard = () => {
           onClose={() => setShowConvSettings(false)}
         />
       )}
+      <ForwardMessageModal
+        isOpen={Boolean(forwardingMessage)}
+        message={forwardingMessage}
+        currentConversationId={displayConversation?.id}
+        onClose={() => setForwardingMessage(null)}
+        onForward={handleForwardToConversation}
+      />
 
       {/* Conversation Sidebar */}
       <div className={`bg-void-bg-main flex-col shrink-0 border-r border-void-bg-sec transition-all ${isMobileSidebarOpen ? 'flex' : 'hidden md:flex'} w-full md:w-72`}>
@@ -934,6 +995,7 @@ const ChatDashboard = () => {
                   members={messageDisplayMembers}
                   typingParticipants={typingParticipants}
                   onReply={handleReply}
+                  onForward={handleForward}
                   onEdit={handleEdit}
                   newMessage={newMessage}
                   userAvatar={myProfile?.avatar_url || undefined}
@@ -957,6 +1019,7 @@ const ChatDashboard = () => {
                   replyTo={replyTo}
                   onCancelReply={() => setReplyTo(null)}
                   onEditComplete={handleEditComplete}
+                  members={Object.values(messageDisplayMembers)}
                 />
               </>
             </div>

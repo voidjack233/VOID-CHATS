@@ -14,6 +14,7 @@ interface FormattedMessageTextProps {
   interactiveSpoilers?: boolean;
   codeBlockVariant?: 'message' | 'composer';
   authoringMode?: boolean;
+  enableMentions?: boolean;
 }
 
 type ContentBlock =
@@ -75,6 +76,7 @@ const MARKERS: Array<{ delimiter: string; type: Exclude<FormatNode['type'], 'tex
   { delimiter: '~~', type: 'strike' },
   { delimiter: '*', type: 'italic' },
 ];
+const MENTION_PATTERN = /@([A-Za-z0-9._-]{1,32})/g;
 
 function isMarkerAt(text: string, index: number, delimiter: string): boolean {
   if (!text.startsWith(delimiter, index)) {
@@ -323,7 +325,52 @@ function renderLeafText(
   keyPrefix: string,
   linkClassName: string,
   onOpenLink?: (url: string) => void,
+  enableMentions: boolean = false,
 ): ReactNode[] {
+  const renderMentionAwarePart = (part: string, partKey: string): ReactNode => {
+    if (!enableMentions) {
+      return <Fragment key={partKey}>{part}</Fragment>;
+    }
+
+    const nodes: ReactNode[] = [];
+    let cursor = 0;
+
+    for (const match of part.matchAll(MENTION_PATTERN)) {
+      const token = match[0];
+      const start = match.index ?? -1;
+      if (start < 0) continue;
+
+      const previousChar = start > 0 ? part[start - 1] : '';
+      if (previousChar && /[A-Za-z0-9._-]/.test(previousChar)) {
+        continue;
+      }
+
+      if (start > cursor) {
+        nodes.push(part.slice(cursor, start));
+      }
+
+      nodes.push(
+        <span
+          key={`${partKey}-mention-${start}`}
+          className="rounded-md bg-void-accent/14 px-1 py-[1px] font-semibold text-current"
+        >
+          {token}
+        </span>,
+      );
+      cursor = start + token.length;
+    }
+
+    if (nodes.length === 0) {
+      return <Fragment key={partKey}>{part}</Fragment>;
+    }
+
+    if (cursor < part.length) {
+      nodes.push(part.slice(cursor));
+    }
+
+    return <Fragment key={partKey}>{nodes}</Fragment>;
+  };
+
   return extractMessageTextSegments(value).flatMap((segment, index) => {
     const segmentParts = segment.value.split('\n');
 
@@ -339,11 +386,9 @@ function renderLeafText(
       });
 
     if (segment.type === 'text') {
-      return withLineBreaks((part, partIndex) => (
-        <Fragment key={`${keyPrefix}-text-${index}-${partIndex}`}>
-          {part}
-        </Fragment>
-      ));
+      return withLineBreaks((part, partIndex) =>
+        renderMentionAwarePart(part, `${keyPrefix}-text-${index}-${partIndex}`),
+      );
     }
 
     if (!onOpenLink) {
@@ -385,6 +430,7 @@ function renderNodes(
   interactiveSpoilers: boolean = true,
   authoringMode: boolean = false,
   renderNestedSpoilerContent?: (content: string, key: string) => ReactNode,
+  enableMentions: boolean = false,
 ): ReactNode[] {
   return nodes.map((node, index) => {
     const nodeKey = `${keyPrefix}-${index}`;
@@ -392,7 +438,7 @@ function renderNodes(
     if (node.type === 'text') {
       return (
         <Fragment key={nodeKey}>
-          {renderLeafText(node.value, nodeKey, linkClassName, onOpenLink)}
+          {renderLeafText(node.value, nodeKey, linkClassName, onOpenLink, enableMentions)}
         </Fragment>
       );
     }
@@ -405,6 +451,7 @@ function renderNodes(
       interactiveSpoilers,
       authoringMode,
       renderNestedSpoilerContent,
+      enableMentions,
     );
     const delimiter = node.type === 'bold'
       ? '**'
@@ -489,6 +536,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
   interactiveSpoilers = true,
   codeBlockVariant = 'message',
   authoringMode = false,
+  enableMentions = false,
 }: FormattedMessageTextProps) {
   const blocks = useMemo(() => parseContentBlocks(content), [content]);
   const [copiedBlockKey, setCopiedBlockKey] = useState<string | null>(null);
@@ -529,10 +577,12 @@ const FormattedMessageText = memo(function FormattedMessageText({
       interactiveSpoilers={interactiveSpoilers}
       codeBlockVariant={codeBlockVariant}
       authoringMode={authoringMode}
+      enableMentions={enableMentions}
     />
   ), [
     authoringMode,
     codeBlockVariant,
+    enableMentions,
     interactiveSpoilers,
     nestedContentClassName,
     onOpenLink,
@@ -626,6 +676,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
               interactiveSpoilers,
               authoringMode,
               renderNestedSpoilerContent,
+              enableMentions,
             )}
           </Fragment>
         );

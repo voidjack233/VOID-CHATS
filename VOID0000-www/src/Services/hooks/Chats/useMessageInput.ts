@@ -567,6 +567,7 @@ export const useMessageInput = ({
           {
             messageType: editingMessage.message_type || null,
             secureAttachments: editingMessage.attachments,
+            forwarded: editingMessage.forwarded,
           }
         );
         onEditComplete?.(editingMessage.message_id, trimmed);

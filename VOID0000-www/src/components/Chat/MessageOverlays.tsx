@@ -41,6 +41,7 @@ interface MessageOverlaysProps {
   onCloseEmojiPicker: () => void;
   onCopyMessageText: (content?: string) => Promise<void>;
   onReply?: (message: Message) => void;
+  onForward?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
   onCloseProfile: () => void;
@@ -106,6 +107,7 @@ export default function MessageOverlays({
   onCloseEmojiPicker,
   onCopyMessageText,
   onReply,
+  onForward,
   onEdit,
   onDelete,
   onCloseProfile,
@@ -150,6 +152,19 @@ export default function MessageOverlays({
     contextMenu?.msg.content &&
     contextMenu.msg.content !== '[encrypted]' &&
     contextMenu.msg.content !== '[deleted]',
+  );
+  const canForwardMessage = Boolean(
+    contextMenu &&
+    onForward &&
+    contextMenu.msg.message_type !== 'system' &&
+    (
+      (
+        contextMenu.msg.content &&
+        contextMenu.msg.content !== '[encrypted]' &&
+        contextMenu.msg.content !== '[deleted]'
+      ) ||
+      (contextMenu.msg.attachments?.length ?? 0) > 0
+    ),
   );
   const canOpenReactionPicker = contextMenu ? messageCanAddReaction(contextMenu.msg) : false;
   const desktopReactionsOnly = !isMobileViewport && contextMenu?.mode === 'reactions';
@@ -298,8 +313,17 @@ export default function MessageOverlays({
                       </button>
                     )}
                     <button
-                      disabled
-                      className="flex w-full cursor-not-allowed items-center gap-3 rounded-xl px-4 py-3 text-left text-sm text-void-text-muted/55"
+                      disabled={!canForwardMessage}
+                      onClick={() => {
+                        if (!canForwardMessage || !contextMenu || !onForward) return;
+                        onForward(contextMenu.msg);
+                        onCloseContextMenu();
+                      }}
+                      className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
+                        canForwardMessage
+                          ? 'text-void-text hover:bg-void-bg-hover/90'
+                          : 'cursor-not-allowed text-void-text-muted/55'
+                      }`}
                       style={{ WebkitTapHighlightColor: 'transparent' }}
                     >
                       <Forward className="h-4 w-4" />
@@ -508,8 +532,17 @@ export default function MessageOverlays({
                 </button>
               )}
               <button
-                disabled
-                className="flex w-full cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-void-text-muted/60"
+                disabled={!canForwardMessage}
+                onClick={() => {
+                  if (!canForwardMessage || !contextMenu || !onForward) return;
+                  onForward(contextMenu.msg);
+                  onCloseContextMenu();
+                }}
+                className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                  canForwardMessage
+                    ? 'text-void-text hover:bg-void-accent hover:text-white'
+                    : 'cursor-not-allowed text-void-text-muted/60'
+                }`}
                 style={{ WebkitTapHighlightColor: 'transparent' }}
               >
                 <Forward className="w-4 h-4" />

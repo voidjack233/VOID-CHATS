@@ -200,6 +200,7 @@ function toLocalMessage(message: LiveMessageEvent, resolved: { content: string |
     created_at: message.created_at || new Date().toISOString(),
     reactions: {},
     attachments: resolved.attachments ?? message.attachments,
+    forwarded: (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
     protocol: message.protocol ?? null,
     protocol_version: message.protocol_version ?? null,
   };

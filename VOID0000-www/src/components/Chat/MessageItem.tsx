@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
+  ArrowRight,
   CornerUpRight,
   FileText,
   Image,
@@ -57,6 +58,7 @@ const PORTRAIT_ATTACHMENT_RATIO_THRESHOLD = 0.9;
 
 interface MessageItemProps {
   message: Message;
+  enableMentions?: boolean;
   startsGroup: boolean;
   showDateSeparator: boolean;
   density: Density;
@@ -189,6 +191,7 @@ function looksLikeImageAttachment(attachment: {
 
 const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
   prev.message === next.message &&
+  prev.enableMentions === next.enableMentions &&
   prev.startsGroup === next.startsGroup &&
   prev.showDateSeparator === next.showDateSeparator &&
   prev.density === next.density &&
@@ -210,6 +213,7 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
 
 const MessageItem = memo(function MessageItem({
   message,
+  enableMentions = false,
   startsGroup,
   showDateSeparator,
   density,
@@ -871,6 +875,18 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
 
+          {message.forwarded ? (
+            <div className={`mb-1.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
+              <div
+                className="inline-flex min-h-[18px] max-w-[260px] items-center gap-1.5 text-void-text-muted"
+                style={{ fontSize: `${replyFontSize}px` }}
+              >
+                <ArrowRight className="w-3 h-3 flex-shrink-0" />
+                <span className="font-semibold text-void-accent/70">Forwarded message</span>
+              </div>
+            </div>
+          ) : null}
+
           {message.is_deleted ? (
             <div
               className={`${d.bubblePadding} rounded-2xl italic text-void-text-muted bg-void-bg-hover/50`}
@@ -898,6 +914,7 @@ const MessageItem = memo(function MessageItem({
                     content={message.content || ''}
                     linkClassName={linkClassName}
                     onOpenLink={onOpenLink}
+                    enableMentions={enableMentions}
                   />
                 ) : (
                   <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>

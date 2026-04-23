@@ -62,6 +62,14 @@ export interface ReactionMap {
   [emoji: string]: string[] | { count: number; me: boolean };
 }
 
+export interface ForwardedMessageMetadata {
+  original_message_id?: string | null;
+  original_sender_id?: string | null;
+  original_sender_name?: string | null;
+  original_conversation_id?: string | null;
+  original_conversation_name?: string | null;
+}
+
 export interface Message {
   conversation_id: string;
   conversation_public_id?: string | null;
@@ -79,6 +87,7 @@ export interface Message {
   created_at: string;
   content?: string;
   reactions?: ReactionMap;
+  forwarded?: ForwardedMessageMetadata | null;
   protocol?: MessageCryptoProtocol | null;
   protocol_version?: number | null;
   decryption_failed?: boolean;

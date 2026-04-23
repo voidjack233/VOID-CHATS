@@ -1,12 +1,13 @@
 // src/components/Chat/MessageInput.tsx
-import { useState, useRef, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Send, Plus, X, Pencil, CornerUpRight, Loader2, Image, FileText, TimerReset } from 'lucide-react';
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
-import { Message, Conversation } from '../../Services/Chat/chatService';
+import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
 import AttachmentLimitModal from './AttachmentLimitModal';
 import FormattedMessageText from './FormattedMessageText';
 import MessagePreviewText from './MessagePreviewText';
+import UserAvatar from '../common/UserAvatar';
 
 interface MessageInputProps {
   currentUserId?: string;
@@ -21,6 +22,50 @@ interface MessageInputProps {
   replyTo?: Message | null;
   onCancelReply?: () => void;
   onEditComplete?: (messageId: string, newContent: string) => void;
+  members?: ConversationMember[];
+}
+
+interface MentionSuggestion {
+  userId: string;
+  username: string;
+  primaryLabel: string;
+  secondaryLabel: string | null;
+  avatarUrl: string | null;
+}
+
+interface MentionQueryState {
+  start: number;
+  end: number;
+  query: string;
+}
+
+function getActiveMentionQuery(text: string, cursor: number) {
+  if (cursor < 0 || cursor > text.length) return null;
+
+  const beforeCursor = text.slice(0, cursor);
+  const start = beforeCursor.lastIndexOf('@');
+  if (start === -1) return null;
+
+  const previousChar = start > 0 ? text[start - 1] : '';
+  if (previousChar && !/[\s([{'"`]/.test(previousChar)) {
+    return null;
+  }
+
+  const rawQuery = text.slice(start + 1, cursor);
+  if (/[\s\n]/.test(rawQuery)) {
+    return null;
+  }
+
+  let end = cursor;
+  while (end < text.length && /[A-Za-z0-9._-]/.test(text[end] || '')) {
+    end += 1;
+  }
+
+  return {
+    start,
+    end,
+    query: rawQuery,
+  };
 }
 
 function formatAttachmentSize(size: number): string {
@@ -62,6 +107,7 @@ const MessageInput = (props: MessageInputProps) => {
   const hasBanner = !!(editingMessage || replyTo);
   const hasCodeFenceDraft = text.includes('```');
   const showComposerPreview = text.length > 0 && !hasCodeFenceDraft;
+  const isGroupConversation = props.conversation.type === 'group';
   const canBootstrapDmOnSend =
     props.conversation.type === 'dm' &&
     Boolean(props.currentUserId) &&
@@ -72,8 +118,74 @@ const MessageInput = (props: MessageInputProps) => {
     (!encryptionKey && !canBootstrapDmOnSend);
 
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [activeMentionQuery, setActiveMentionQuery] = useState<MentionQueryState | null>(null);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const composerPreviewRef = useRef<HTMLDivElement>(null);
+
+  const groupMembers = useMemo(() => {
+    if (!isGroupConversation || !props.members) {
+      return [];
+    }
+
+    const deduped = new Map<string, ConversationMember>();
+    props.members.forEach((member) => {
+      if (!member?.user_id || !member.username) return;
+      deduped.set(member.user_id, member);
+    });
+
+    return Array.from(deduped.values());
+  }, [isGroupConversation, props.members]);
+
+  const mentionSuggestions = useMemo<MentionSuggestion[]>(() => {
+    if (!activeMentionQuery) {
+      return [];
+    }
+
+    const normalizedQuery = activeMentionQuery.query.trim().toLowerCase();
+
+    return groupMembers
+      .map((member) => {
+        const primaryLabel =
+          member.nickname ||
+          member.display_name ||
+          member.username;
+        const secondaryLabel = member.nickname || member.display_name
+          ? `@${member.username}`
+          : null;
+
+        return {
+          userId: member.user_id,
+          username: member.username,
+          primaryLabel,
+          secondaryLabel,
+          avatarUrl: member.avatar_url,
+        };
+      })
+      .filter((member) => {
+        if (!normalizedQuery) return true;
+
+        const haystacks = [
+          member.username,
+          member.primaryLabel,
+          member.secondaryLabel || '',
+        ].map((value) => value.toLowerCase());
+
+        return haystacks.some((value) => value.includes(normalizedQuery));
+      })
+      .sort((a, b) => {
+        const aStarts = a.username.toLowerCase().startsWith(normalizedQuery) ? 0 : 1;
+        const bStarts = b.username.toLowerCase().startsWith(normalizedQuery) ? 0 : 1;
+        if (aStarts !== bStarts) return aStarts - bStarts;
+        return a.primaryLabel.localeCompare(b.primaryLabel);
+      })
+      .slice(0, 6);
+  }, [activeMentionQuery, groupMembers]);
+
+  const showMentionSuggestions =
+    Boolean(activeMentionQuery) &&
+    mentionSuggestions.length > 0 &&
+    !inputDisabled;
 
   useEffect(() => {
     const input = inputRef.current;
@@ -85,6 +197,17 @@ const MessageInput = (props: MessageInputProps) => {
     const targetHeight = Math.min(Math.max(input.scrollHeight, preview.scrollHeight), 120);
     input.style.height = `${targetHeight}px`;
   }, [inputRef, text]);
+
+  useEffect(() => {
+    if (!showMentionSuggestions) {
+      setActiveMentionIndex(0);
+      return;
+    }
+
+    setActiveMentionIndex((current) =>
+      Math.min(current, Math.max(mentionSuggestions.length - 1, 0)),
+    );
+  }, [mentionSuggestions.length, showMentionSuggestions]);
 
   const syncComposerScroll = () => {
     if (!inputRef.current || !composerPreviewRef.current) return;
@@ -103,6 +226,69 @@ const MessageInput = (props: MessageInputProps) => {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [attachMenuOpen]);
+
+  const syncMentionQuery = useCallback((nextText?: string, explicitCursor?: number | null) => {
+    if (!isGroupConversation) {
+      setActiveMentionQuery(null);
+      return;
+    }
+
+    const sourceText = typeof nextText === 'string' ? nextText : text;
+    const cursor = explicitCursor ?? inputRef.current?.selectionStart ?? sourceText.length;
+    setActiveMentionQuery(getActiveMentionQuery(sourceText, cursor));
+  }, [inputRef, isGroupConversation, text]);
+
+  const handleSelectMention = useCallback((member: MentionSuggestion) => {
+    if (!activeMentionQuery) return;
+
+    const mentionToken = `@${member.username}`;
+    const before = text.slice(0, activeMentionQuery.start);
+    const after = text.slice(activeMentionQuery.end);
+    const needsTrailingSpace =
+      after.length === 0 ? true : !/^[\s.,!?;:)\]}]/.test(after);
+    const trailing = needsTrailingSpace ? ' ' : '';
+    const nextValue = `${before}${mentionToken}${trailing}${after}`;
+    const nextCursor = before.length + mentionToken.length + trailing.length;
+
+    setText(nextValue);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(nextCursor, nextCursor);
+      syncMentionQuery(nextValue, nextCursor);
+    });
+  }, [activeMentionQuery, inputRef, setText, syncMentionQuery, text]);
+
+  const handleComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showMentionSuggestions) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setActiveMentionIndex((current) => (current + 1) % mentionSuggestions.length);
+        return;
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveMentionIndex((current) =>
+          current === 0 ? mentionSuggestions.length - 1 : current - 1,
+        );
+        return;
+      }
+
+      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault();
+        handleSelectMention(mentionSuggestions[activeMentionIndex]!);
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setActiveMentionQuery(null);
+        return;
+      }
+    }
+
+    handleKeyDown(event);
+  };
 
   return (
     <>
@@ -297,6 +483,51 @@ const MessageInput = (props: MessageInputProps) => {
         </div>
 
         <div className="relative flex-1">
+          {showMentionSuggestions ? (
+            <div
+              className="absolute bottom-full left-0 right-0 mb-2 overflow-hidden rounded-2xl border border-void-bg-hover bg-void-bg-main/95 shadow-2xl supports-[backdrop-filter]:backdrop-blur"
+            >
+              <div className="border-b border-void-bg-hover/80 px-3 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-void-text-muted">
+                Mention Someone
+              </div>
+              <div className="max-h-64 overflow-y-auto py-1">
+                {mentionSuggestions.map((member, index) => {
+                  const isActive = index === activeMentionIndex;
+
+                  return (
+                    <button
+                      key={member.userId}
+                      type="button"
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        handleSelectMention(member);
+                      }}
+                      className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+                        isActive ? 'bg-void-accent/12' : 'hover:bg-void-bg-hover/80'
+                      }`}
+                    >
+                      <UserAvatar
+                        src={member.avatarUrl}
+                        displayName={member.primaryLabel}
+                        username={member.username}
+                        className="h-8 w-8 shrink-0 rounded-full"
+                        fallbackClassName="text-[11px]"
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-void-text">
+                          {member.primaryLabel}
+                        </div>
+                        <div className="truncate text-xs text-void-text-muted">
+                          {member.secondaryLabel || `@${member.username}`}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
           {showComposerPreview ? (
             <div
               ref={composerPreviewRef}
@@ -310,6 +541,7 @@ const MessageInput = (props: MessageInputProps) => {
                   interactiveSpoilers={false}
                   codeBlockVariant="composer"
                   authoringMode
+                  enableMentions={isGroupConversation}
                 />
               </div>
             </div>
@@ -318,8 +550,14 @@ const MessageInput = (props: MessageInputProps) => {
           <textarea
             ref={inputRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
+            onChange={(e) => {
+              setText(e.target.value);
+              syncMentionQuery(e.target.value, e.target.selectionStart);
+            }}
+            onKeyDown={handleComposerKeyDown}
+            onClick={() => syncMentionQuery()}
+            onKeyUp={() => syncMentionQuery()}
+            onSelect={() => syncMentionQuery()}
             onPaste={handlePaste}
             onScroll={syncComposerScroll}
             placeholder={getPlaceholder()}

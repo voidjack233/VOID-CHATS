@@ -34,6 +34,7 @@ interface MessageViewProps {
   members: Record<string, ConversationMember>;
   typingParticipants?: TypingParticipant[];
   onReply?: (message: Message) => void;
+  onForward?: (message: Message) => void;
   onEdit?: (message: Message) => void;
   newMessage?: Message | null;
   userAvatar?: string;
@@ -69,6 +70,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   members,
   typingParticipants = [],
   onReply,
+  onForward,
   onEdit,
   newMessage,
   userAvatar,
@@ -624,6 +626,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     return (
       <MessageItem
         message={message}
+        enableMentions={conversation.type === 'group'}
         startsGroup={traits.startsGroup}
         showDateSeparator={traits.showDateSeparator}
         density={density}
@@ -674,6 +677,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     messageGroupSpacing,
     metaFontSize,
     onEdit,
+    onForward,
     onReply,
     openContextMenuAtPosition,
     openEmojiPicker,
@@ -755,6 +759,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onCloseEmojiPicker={closeEmojiPicker}
         onCopyMessageText={handleCopyMessageText}
         onReply={onReply}
+        onForward={onForward}
         onEdit={onEdit}
         onDelete={handleDelete}
         onCloseProfile={() => setSelectedProfileId(null)}
