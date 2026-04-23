@@ -8,6 +8,7 @@ import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncr
 import { upsertMlsGroupStates } from '../Crypto/mls/mlsApi';
 import { mlsStore } from '../Crypto/mls/mlsStore';
 import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
+import { uploadSecureBackups as uploadSecureBackupsNow } from './secureBackup';
 import {
   uploadPublicKey,
   backupKeyToServer,
@@ -96,22 +97,6 @@ async function inspectLocalMlsChatState(): Promise<{
     groupStateCount: groups.length,
     groupKeyCount: groupKeys.length,
   };
-}
-
-async function buildMlsBackupFields(
-  userId: string,
-  password: string
-): Promise<{ mls_state_encrypted: string; mls_state_iv: string; mls_state_salt: string } | null> {
-  try {
-    const mlsData = await mlsStore.exportForBackup(userId);
-    const groupKeys = await keyManager.exportGroupKeys();
-    const payload: MlsBackupData = { ...mlsData, groupKeys };
-    const { encrypted, iv, salt } = await keyManager.encryptDataWithPassword(payload, password);
-    return { mls_state_encrypted: encrypted, mls_state_iv: iv, mls_state_salt: salt };
-  } catch (err) {
-    console.warn('🔑 MLS state export failed (non-critical):', err);
-    return null;
-  }
 }
 
 async function restoreMlsStateFromBackup(
@@ -304,22 +289,6 @@ async function restoreMlsStateFromBackup(
   }
 }
 
-let backupTimer: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleGroupKeyBackup(userId: string, password: string): void {
-  if (backupTimer) clearTimeout(backupTimer);
-  backupTimer = setTimeout(async () => {
-    backupTimer = null;
-    try {
-      const keyBackup = await keyManager.prepareBackup(userId, password);
-      const mlsFields = await buildMlsBackupFields(userId, password);
-      await backupKeyToServer({ ...keyBackup, ...mlsFields });
-    } catch {
-      // Non-critical — backup will retry on next key change
-    }
-  }, 5000);
-}
-
 export interface User {
   id: string;
   email: string;
@@ -342,6 +311,7 @@ interface UserContextType {
   refreshKeyStatus: () => Promise<KeyStatus>;
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;
+  refreshSecureBackupsWithPassword: (password: string) => Promise<void>;
   retryMlsRecoveryWithPassword: (password: string) => Promise<void>;
 }
 
@@ -365,11 +335,53 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const loginPasswordRef = useRef<string | null>(null);
+  const loginPasswordClearTimerRef = useRef<number | null>(null);
   const liveConversationKeyVersionsRef = useRef<Record<string, number>>({});
   const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
 
+  const clearLoginPassword = () => {
+    loginPasswordRef.current = null;
+    if (loginPasswordClearTimerRef.current != null) {
+      window.clearTimeout(loginPasswordClearTimerRef.current);
+      loginPasswordClearTimerRef.current = null;
+    }
+  };
+
+  const clearLoginPasswordIfMatches = (password: string | null | undefined) => {
+    if (password && loginPasswordRef.current === password) {
+      clearLoginPassword();
+    }
+  };
+
   const setLoginPassword = (password: string) => {
+    if (!password.trim()) {
+      clearLoginPassword();
+      return;
+    }
+
     loginPasswordRef.current = password;
+    if (loginPasswordClearTimerRef.current != null) {
+      window.clearTimeout(loginPasswordClearTimerRef.current);
+    }
+
+    // Keep the raw password only long enough for immediate login/recovery
+    // bootstrap work. Longer-lived background tasks must not depend on it.
+    loginPasswordClearTimerRef.current = window.setTimeout(() => {
+      clearLoginPassword();
+    }, 2 * 60_000);
+  };
+
+  const refreshSecureBackupsWithPassword = async (password: string) => {
+    if (!user?.id) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    if (!password.trim()) {
+      throw new Error('PASSWORD_REQUIRED');
+    }
+
+    await uploadSecureBackupsNow(user.id, password);
+    setKeyStatus('SECURE');
   };
 
   const clearMlsRecoveryGate = () => {
@@ -475,7 +487,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     setIsLoggingOut(true);
     gateway.disconnect();
     clearDecryptedAttachmentObjectUrlCache();
-    loginPasswordRef.current = null;
+    clearLoginPassword();
     setKeyStatus('UNINITIALIZED');
     setKeyStatusLoading(false);
     clearMlsRecoveryGate();
@@ -495,12 +507,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       throw new Error('AUTH_REQUIRED');
     }
 
-    const normalizedPassword = password.trim();
-    if (!normalizedPassword) {
+    if (!password.trim()) {
       throw new Error('PASSWORD_REQUIRED');
     }
 
-    loginPasswordRef.current = normalizedPassword;
+    setLoginPassword(password);
     setKeyStatusLoading(true);
     clearMlsRecoveryGate();
 
@@ -512,7 +523,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
       let restoreSummary = createEmptyRestoreSummary();
       if (backup) {
-        restoreSummary = await restoreMlsStateFromBackup(user.id, backup, normalizedPassword);
+        restoreSummary = await restoreMlsStateFromBackup(user.id, backup, password);
       }
 
       const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
@@ -539,7 +550,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       });
 
       if (restoreSummary.outcome === 'failed') {
-        loginPasswordRef.current = null;
+        clearLoginPasswordIfMatches(password);
         activateMlsRecoveryGate('password_required', {
           user_id: user.id,
           retry_source: 'inline_password_prompt',
@@ -717,6 +728,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       .catch((err) => {
         if (cancelled) return;
         if (err.message === 'KEY_NEEDS_PASSWORD' || err.message === 'KEY_RESTORE_FAILED') {
+          clearLoginPasswordIfMatches(password);
           console.warn('🔑 Keys are locked on this device');
           setKeyStatus('LOCKED');
           activateMlsRecoveryGate(
@@ -800,20 +812,31 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
 
     // Login: initial bootstrap + backup, then immediate reserve top-up.
-    void chatCryptoProtocolService.bootstrapAccount(userId, true).then(async () => {
-      runKeyPackageTopUp();
-      if (!password || cancelled) return;
+    void (async () => {
       try {
-        const keyBackup = await keyManager.prepareBackup(userId, password);
-        const mlsFields = await buildMlsBackupFields(userId, password);
-        await backupKeyToServer({ ...keyBackup, ...mlsFields });
-        if (!cancelled) {
-          setKeyStatus('SECURE');
+        await chatCryptoProtocolService.bootstrapAccount(userId, true);
+        if (cancelled) return;
+
+        runKeyPackageTopUp();
+
+        if (!password) {
+          return;
+        }
+
+        try {
+          await uploadSecureBackupsNow(userId, password);
+          if (!cancelled) {
+            setKeyStatus('SECURE');
+          }
+        } catch {
+          // Non-critical — we fall back to explicit password flows later.
         }
       } catch {
-        // Non-critical — event-driven backup will catch future changes
+        // Non-critical — follow-up triggers can still bootstrap the account.
+      } finally {
+        clearLoginPasswordIfMatches(password);
       }
-    }).catch(() => {});
+    })();
 
     // Periodic maintenance fallback — run bootstrap + top-up every 60s.
     const maintenanceInterval = window.setInterval(() => {
@@ -840,9 +863,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     const onKeyPackageChanged = () => {
       runBootstrapMaintenance(true);
-      if (loginPasswordRef.current && user?.id) {
-        scheduleGroupKeyBackup(user.id, loginPasswordRef.current);
-      }
     };
 
     // WebSocket READY (fresh identify) / RESUMED (session resume): top-up
@@ -903,18 +923,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
       });
     };
 
-    // Incrementally back up group keys whenever they change during the session.
-    const onKeyChanged = () => {
-      if (loginPasswordRef.current && user?.id) {
-        scheduleGroupKeyBackup(user.id, loginPasswordRef.current);
-      }
-    };
-
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('focus', onFocus);
     window.addEventListener('online', onOnline);
     window.addEventListener('void:mls-key-package-changed', onKeyPackageChanged);
-    window.addEventListener('void:group-key-changed', onKeyChanged);
     gateway.on('READY', onGatewayReady);
     gateway.on('RESUMED', onGatewayResumed);
     gateway.on('KEY_PACKAGE_LOW', onKeyPackageLow);
@@ -928,7 +940,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('void:mls-key-package-changed', onKeyPackageChanged);
-      window.removeEventListener('void:group-key-changed', onKeyChanged);
       gateway.off('READY', onGatewayReady);
       gateway.off('RESUMED', onGatewayResumed);
       gateway.off('KEY_PACKAGE_LOW', onKeyPackageLow);
@@ -1016,6 +1027,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       refreshKeyStatus,
       logout,
       setLoginPassword,
+      refreshSecureBackupsWithPassword,
       retryMlsRecoveryWithPassword,
     }}>
       {children}

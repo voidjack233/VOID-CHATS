@@ -243,7 +243,7 @@ flowchart TD
   B --> C[Check friendship / permissions]
   C --> D[Create conversation records]
   D --> E[Client opens conversation]
-  E --> F[Handshake decides whether secure bootstrap is needed]
+  E --> F[Handshake decides whether encrypted bootstrap is needed]
 ```
 
 Relevant routes:
@@ -372,7 +372,7 @@ flowchart TD
 
 Notes:
 - MinIO stores ciphertext, not readable image files
-- attachment metadata is carried inside the secure message path
+- attachment metadata is carried inside the encrypted message path
 - plaintext attachment uploads are disabled server-side
 
 Key files:
@@ -433,7 +433,7 @@ flowchart TD
   B --> C{No local key?}
   C -- Yes --> D[Try password backup restore]
   D --> E{Success?}
-  E -- No --> F[Secure chat recovery gate]
+  E -- No --> F[Encrypted chat recovery gate]
   E -- Yes --> G[Restore local key + MLS state]
   C -- No --> G
   G --> H[Ensure password backup is current]
@@ -446,7 +446,7 @@ Notes:
 
 ## 18. Current Known Limits
 
-- secure chat recovery after forgot-password is still limited on fresh devices
+- encrypted chat recovery after forgot-password is still limited on fresh devices
 - the current `ts-mls` dependency has no formal upstream security audit yet
 - some flows are durable, but edge-case testing still matters after auth/session/MLS changes
 - this doc is meant to be updated when auth, sessions, friends, conversations, MLS, or recovery behavior changes

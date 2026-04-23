@@ -39,10 +39,26 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       typeof keyBackup.salt === 'string' &&
       typeof keyBackup.key_id === 'string';
 
+    const hasAnyMlsField =
+      keyBackup.mls_state_encrypted != null ||
+      keyBackup.mls_state_iv != null ||
+      keyBackup.mls_state_salt != null;
+    const hasCompleteMlsFields =
+      typeof keyBackup.mls_state_encrypted === 'string' &&
+      typeof keyBackup.mls_state_iv === 'string' &&
+      typeof keyBackup.mls_state_salt === 'string';
+
     if (!hasAllBackupFields) {
       return res.status(400).json({
         success: false,
         message: 'keyBackup must include encrypted_private_key, iv, salt, and key_id'
+      });
+    }
+
+    if (hasAnyMlsField && !hasCompleteMlsFields) {
+      return res.status(400).json({
+        success: false,
+        message: 'mls_state_encrypted, mls_state_iv, and mls_state_salt must all be provided together'
       });
     }
   }
@@ -127,17 +143,42 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
     );
 
     if (keyBackup) {
+      const hasMlsState =
+        typeof keyBackup.mls_state_encrypted === 'string' &&
+        typeof keyBackup.mls_state_iv === 'string' &&
+        typeof keyBackup.mls_state_salt === 'string';
+
       await client.query(
-        `INSERT INTO user_key_backups (user_id, encrypted_private_key, iv, salt, key_id)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO user_key_backups (
+           user_id,
+           encrypted_private_key,
+           iv,
+           salt,
+           key_id,
+           mls_state_encrypted,
+           mls_state_iv,
+           mls_state_salt
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (user_id)
-         DO UPDATE SET encrypted_private_key = $2, iv = $3, salt = $4, key_id = $5, updated_at = NOW()`,
+         DO UPDATE SET
+           encrypted_private_key = $2,
+           iv = $3,
+           salt = $4,
+           key_id = $5,
+           mls_state_encrypted = COALESCE($6, user_key_backups.mls_state_encrypted),
+           mls_state_iv = COALESCE($7, user_key_backups.mls_state_iv),
+           mls_state_salt = COALESCE($8, user_key_backups.mls_state_salt),
+           updated_at = NOW()`,
         [
           userId,
           keyBackup.encrypted_private_key,
           keyBackup.iv,
           keyBackup.salt,
           keyBackup.key_id,
+          hasMlsState ? keyBackup.mls_state_encrypted : null,
+          hasMlsState ? keyBackup.mls_state_iv : null,
+          hasMlsState ? keyBackup.mls_state_salt : null,
         ]
       );
     }

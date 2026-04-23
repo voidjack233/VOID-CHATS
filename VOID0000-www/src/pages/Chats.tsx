@@ -491,7 +491,7 @@ const ChatDashboard = () => {
   const getMlsRecoveryGateCopy = () => {
     if (mlsRecoveryGate.pending) {
       return {
-        title: 'Preparing secure chat',
+        title: 'Preparing...',
         body:
           'This device is still restoring MLS conversation state in the background. Chats will open automatically once secure recovery becomes usable.',
       };
@@ -545,7 +545,7 @@ const ChatDashboard = () => {
     return (
       <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
         <div className="text-void-text text-lg font-medium">
-          {isLoggingOut ? 'Signing you out...' : 'Preparing your secure chat session...'}
+          {isLoggingOut ? 'Signing you out...' : 'Preparing...'}
         </div>
       </div>
     );

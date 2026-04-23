@@ -2,8 +2,6 @@
 
 This folder is the frontend for VOID.
 
-It is not a generic Vite starter anymore, even if some of the original template file names survived early on.
-
 If you are trying to understand or run the project, start here first:
 
 - [../README.md](../README.md)
@@ -17,7 +15,7 @@ Frontend-specific notes:
 
 Important honesty note:
 
-- the current secure chat path is built on `ts-mls`
+- the current MLS / encrypted-chat path is built on `ts-mls`
 - that upstream library is maintained by [`LukaJCB`](https://github.com/LukaJCB)
 - upstream has already warned that it has not gone through a formal security audit yet
 
@@ -25,11 +23,17 @@ So this frontend should be described as:
 
 - real
 - working
-- actively stress-tested in practice
+- still being improved
 
 but not:
 
-- formally audited secure messenger frontend
+- frontend for a formally audited messenger
+
+Another security/recovery note:
+
+- during login or explicit encrypted-chat recovery, the frontend may hold the raw account password in live JS memory briefly to finish password-derived key restore / backup work
+- it is not intended to be persisted in normal browser storage
+- current behavior aims to clear it after the immediate bootstrap pass, with a fallback max window of about 2 minutes
 
 ## Frontend Commands
 

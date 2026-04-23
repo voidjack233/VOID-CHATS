@@ -2,7 +2,7 @@
 
 This is my chat app hobby project.
 
-I am dropping it in public as-is instead of pretending it is a polished startup product. It works, it has real infrastructure behind it, and I care about it a lot, but it is still a rough-edged personal build and there are absolutely places where future me may disappear for a while.
+I am putting it out in public as-is. It works, but it is still a personal project and not a polished product.
 
 If you clone this, please read the next few sections before you sink hours into setup.
 
@@ -10,7 +10,7 @@ If you clone this, please read the next few sections before you sink hours into 
 
 - This setup is only documented and realistically supported on Linux right now.
 - The stack is not a one-command install.
-- This project has secure chat and encrypted media, but it is not formally audited end to end.
+- This project includes encrypted chat/media work, but I am not claiming the project is secure or formally audited end to end.
 - There may still be hidden vulnerabilities, logic mistakes, or rough UX corners.
 - If you want a clean production messenger out of the box, this is probably not that.
 
@@ -64,14 +64,17 @@ npm run dev
 Full setup notes are here:
 
 - [docs/setup.md](docs/setup.md)
+- [docs/nginx-frontend-only.example.conf](docs/nginx-frontend-only.example.conf)
+- [docs/cloudflared-ingress.example.yml](docs/cloudflared-ingress.example.yml)
 
 Please use that doc, because this repo depends on local infra that was originally built around a Linux bare-metal workflow.
+It now also shows the literal current Nginx + Cloudflared deployment shape instead of only vague setup notes.
 
 ## The Story
 
 I work full-time as a store clerk and built VOID as a serious hobby project.
 
-I do not claim that I hand-wrote every line in the most romantic solo-dev way. A lot of this project was built through what I think of as AI conducting: using AI tools to help implement, debug, compare approaches, and sanity-check edge cases while I stayed responsible for the direction, tradeoffs, QA instincts, and all the annoying “what happens if this breaks at 2am?” thinking.
+A lot of this project was built with AI assistance while I stayed responsible for direction, tradeoffs, QA, and edge cases.
 
 That means this repo is a real build, but also a very human one:
 
@@ -80,13 +83,13 @@ That means this repo is a real build, but also a very human one:
 - I kept things that worked
 - I dropped things that were becoming a headache
 
-So this README is not trying to impress anyone. It is here to tell you honestly what this project is.
+This README is here to explain the project honestly.
 
 ## Security Reality
 
-VOID has:
+VOID currently includes:
 
-- secure chat
+- MLS-backed encrypted chat work
 - encrypted media
 - durable MLS sync
 - auth, sessions, presence, and realtime chat infrastructure
@@ -115,6 +118,13 @@ Practical reading of that:
 - the MLS path is promising
 - the MLS path is not something I would market as “formally audited secure messenger”
 
+One more honest implementation note:
+
+- during login or explicit encrypted-chat recovery, the frontend may keep the raw account password in browser memory briefly so it can finish password-derived key restore / backup work
+- that password is not meant to persist in `localStorage`, `sessionStorage`, or IndexedDB
+- current target behavior is short-lived retention only: usually just for the immediate bootstrap pass, with a fallback max window of about 2 minutes before it is cleared
+- this is a tradeoff in the current recovery design, not something I consider ideal forever
+
 Related notes:
 
 - [VOID0000-www/docs/crypto-security-notes.md](VOID0000-www/docs/crypto-security-notes.md)
@@ -138,7 +148,7 @@ Frontend:
 - `socket.io-client`
   realtime client transport
 - `ts-mls`
-  MLS-based secure chat layer
+  MLS-based encrypted chat layer
 - `emoji-picker-react`
   emoji picker UI
 - `blurhash`

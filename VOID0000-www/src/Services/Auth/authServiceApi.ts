@@ -387,7 +387,15 @@ export const authService = {
   async changePassword(
     currentPassword: string,
     newPassword: string,
-    keyBackup?: { encrypted_private_key: string; iv: string; salt: string; key_id: string } | null
+    keyBackup?: {
+      encrypted_private_key: string;
+      iv: string;
+      salt: string;
+      key_id: string;
+      mls_state_encrypted?: string;
+      mls_state_iv?: string;
+      mls_state_salt?: string;
+    } | null
   ): Promise<ApiResponse> {
     const response = await fetchWithAuth('/api/auth/change-password', {
       method: 'POST',
