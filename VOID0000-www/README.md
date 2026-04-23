@@ -13,21 +13,12 @@ Frontend-specific notes:
 - [docs/crypto-security-notes.md](docs/crypto-security-notes.md)
 - [docs/secure-chat-recovery-limitations.md](docs/secure-chat-recovery-limitations.md)
 
-Important honesty note:
+Important note:
 
 - the current MLS / encrypted-chat path is built on `ts-mls`
 - that upstream library is maintained by [`LukaJCB`](https://github.com/LukaJCB)
 - upstream has already warned that it has not gone through a formal security audit yet
-
-So this frontend should be described as:
-
-- real
-- working
-- still being improved
-
-but not:
-
-- frontend for a formally audited messenger
+- this frontend should not be described as part of a formally audited messenger
 
 Another security/recovery note:
 

@@ -2,9 +2,9 @@
 
 This is my chat app hobby project.
 
-I am putting it out in public as-is. It works, but it is still a personal project and not a polished product.
+It works, but it is still a personal project and not a polished product.
 
-If you clone this, please read the next few sections before you sink hours into setup.
+Read the next few sections before trying to set it up.
 
 ## Before You Clone
 
@@ -67,23 +67,14 @@ Full setup notes are here:
 - [docs/nginx-frontend-only.example.conf](docs/nginx-frontend-only.example.conf)
 - [docs/cloudflared-ingress.example.yml](docs/cloudflared-ingress.example.yml)
 
-Please use that doc, because this repo depends on local infra that was originally built around a Linux bare-metal workflow.
-It now also shows the literal current Nginx + Cloudflared deployment shape instead of only vague setup notes.
+Use the setup doc. This repo depends on local infra and a Linux-first workflow.
+It also shows the Nginx + Cloudflared layout used for deployment.
 
 ## The Story
 
-I work full-time as a store clerk and built VOID as a serious hobby project.
+I work full-time as a store clerk and built VOID as a hobby project.
 
-A lot of this project was built with AI assistance while I stayed responsible for direction, tradeoffs, QA, and edge cases.
-
-That means this repo is a real build, but also a very human one:
-
-- I chose pragmatic fixes over architecture theater
-- I changed direction when something was clearly wrong
-- I kept things that worked
-- I dropped things that were becoming a headache
-
-This README is here to explain the project honestly.
+I used AI tools while building it. They helped with implementation, debugging, comparing approaches, and checking edge cases. I still handled the direction, tradeoffs, QA, and decisions.
 
 ## Security Reality
 
@@ -112,11 +103,10 @@ Credit to:
 
 Upstream already warns that `ts-mls` has **not** undergone a formal security audit yet, so I do not want this repo to pretend otherwise.
 
-Practical reading of that:
+What that means:
 
 - the MLS path is real
-- the MLS path is promising
-- the MLS path is not something I would market as “formally audited secure messenger”
+- the MLS path is still not something I would market as a formally audited messenger
 
 One more honest implementation note:
 
@@ -133,7 +123,7 @@ Related notes:
 
 ## Main Open-Source Building Blocks
 
-This is not a full SBOM. It is the short human version of the main stuff doing the work here.
+This is not a full SBOM. It is a short list of the main building blocks used here.
 
 Frontend:
 
