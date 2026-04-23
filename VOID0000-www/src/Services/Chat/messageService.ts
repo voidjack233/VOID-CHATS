@@ -20,10 +20,12 @@ import type {
   Message,
   MessageCryptoProtocol,
   MessageDecryptionContext,
+  MessageMentionMetadata,
 } from './chatTypes';
 import {
   CHAT_API_PREFIX,
   CHAT_DEFAULT_MLS_MESSAGE_TYPE,
+  CHAT_FORWARDED_MLS_MESSAGE_TYPE,
   createApiError,
 } from './chatUtils';
 import { bootstrapDmKey } from './conversationService';
@@ -41,12 +43,16 @@ export async function sendMessage(
     secure_attachments?: string[];
     message_type?: string;
     forwarded?: ForwardedMessageMetadata | null;
+    mentions?: MessageMentionMetadata[] | null;
   },
 ): Promise<Message> {
   const payload = buildEncryptedMessagePayload(
     plaintext,
     options?.secure_attachments,
-    { forwarded: options?.forwarded },
+    {
+      forwarded: options?.forwarded,
+      mentions: options?.mentions,
+    },
   );
   const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const keyVersion = options?.key_version || 1;
@@ -65,6 +71,8 @@ export async function sendMessage(
       protocol_version: protocolVersion,
       reply_to: options?.reply_to || null,
       attachments: options?.attachments || [],
+      forwarded: options?.forwarded || null,
+      mentions: options?.mentions || [],
     }),
   });
 
@@ -84,6 +92,7 @@ export async function sendMessage(
     content: plaintext,
     attachments: options?.secure_attachments || data.message.attachments,
     forwarded: options?.forwarded || undefined,
+    mentions: options?.mentions || undefined,
     protocol: cryptoMetadata.protocol,
     protocol_version: cryptoMetadata.protocol_version,
   };
@@ -121,10 +130,12 @@ export async function sendImageOnlyMessage(
     key_version?: number;
     message_type?: string;
     forwarded?: ForwardedMessageMetadata | null;
+    mentions?: MessageMentionMetadata[] | null;
   },
 ): Promise<Message> {
   const payload = buildEncryptedMessagePayload('', secureAttachments, {
     forwarded: options?.forwarded,
+    mentions: options?.mentions,
   });
   const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const messageType = options?.message_type || CHAT_DEFAULT_MLS_MESSAGE_TYPE;
@@ -141,6 +152,8 @@ export async function sendImageOnlyMessage(
       protocol,
       protocol_version: protocolVersion,
       reply_to: options?.reply_to || null,
+      forwarded: options?.forwarded || null,
+      mentions: options?.mentions || [],
     }),
   });
 
@@ -158,6 +171,7 @@ export async function sendImageOnlyMessage(
     ...data.message,
     attachments: secureAttachments,
     forwarded: options?.forwarded || undefined,
+    mentions: options?.mentions || undefined,
     protocol: cryptoMetadata.protocol,
     protocol_version: cryptoMetadata.protocol_version,
   };
@@ -254,10 +268,12 @@ export async function editMessage(
     messageType?: string | null;
     secureAttachments?: string[];
     forwarded?: ForwardedMessageMetadata | null;
+    mentions?: MessageMentionMetadata[] | null;
   },
 ): Promise<void> {
   const payload = buildEncryptedMessagePayload(newPlaintext, options?.secureAttachments, {
     forwarded: options?.forwarded,
+    mentions: options?.mentions,
   });
   const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const payloadMessageType = options?.messageType || CHAT_DEFAULT_MLS_MESSAGE_TYPE;
@@ -273,6 +289,8 @@ export async function editMessage(
       message_type: payloadMessageType,
       protocol,
       protocol_version: protocolVersion,
+      forwarded: options?.forwarded || null,
+      mentions: options?.mentions || [],
     }),
   });
 
@@ -327,7 +345,7 @@ export async function forwardMessageToConversation(
   if (plaintext) {
     return sendMessage(targetConversation.id, plaintext, sendCrypto.key, {
       key_version: sendCrypto.version,
-      message_type: CHAT_DEFAULT_MLS_MESSAGE_TYPE,
+      message_type: CHAT_FORWARDED_MLS_MESSAGE_TYPE,
       secure_attachments: secureAttachments,
       forwarded: options.forwarded,
     });
@@ -335,7 +353,7 @@ export async function forwardMessageToConversation(
 
   return sendImageOnlyMessage(targetConversation.id, sendCrypto.key, secureAttachments, {
     key_version: sendCrypto.version,
-    message_type: CHAT_DEFAULT_MLS_MESSAGE_TYPE,
+    message_type: CHAT_FORWARDED_MLS_MESSAGE_TYPE,
     forwarded: options.forwarded,
   });
 }

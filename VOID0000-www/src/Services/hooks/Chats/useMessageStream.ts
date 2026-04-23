@@ -21,6 +21,7 @@ import { getHandshakeEntry, setHandshakeEntry, deleteHandshakeEntry } from '../.
 import { deleteConversationDetails } from '../../Chat/conversationCache';
 import { resolveDecryptedMessagePayload } from '../../Chat/messageEnvelope';
 import { keyManager } from '../../Crypto/keyManager';
+import type { MessageUpdate } from './MessageList/messageListTypes';
 
 interface UseMessageStreamParams {
   activeConversation: Conversation | null;
@@ -54,12 +55,7 @@ export const useMessageStream = ({
   getKeyLookupConversation,
 }: UseMessageStreamParams) => {
   const [newMessage, setNewMessage] = useState<Message | null>(null);
-  const [messageUpdate, setMessageUpdate] = useState<{
-    message_id: string;
-    content: string;
-    is_edited: boolean;
-    edited_at: string;
-  } | null>(null);
+  const [messageUpdate, setMessageUpdate] = useState<MessageUpdate | null>(null);
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
 
   const pendingMessages = useRef<any[]>([]);
@@ -203,6 +199,9 @@ export const useMessageStream = ({
           content: resolvedPayload.content || '',
           is_edited: true,
           edited_at: data.edited_at,
+          message_type: data.message_type ?? null,
+          forwarded: resolvedPayload.forwarded ?? undefined,
+          mentions: resolvedPayload.mentions ?? undefined,
         });
       } else {
         setNewMessage({ ...data, ...resolvedPayload });
@@ -224,6 +223,8 @@ export const useMessageStream = ({
         : {
             content,
             attachments: data.attachments,
+            forwarded: undefined,
+            mentions: undefined,
           };
 
       if (isUpdate) {
@@ -232,6 +233,9 @@ export const useMessageStream = ({
           content: resolvedPayload.content || '',
           is_edited: true,
           edited_at: data.edited_at,
+          message_type: data.message_type ?? null,
+          forwarded: resolvedPayload.forwarded ?? undefined,
+          mentions: resolvedPayload.mentions ?? undefined,
         });
       } else {
         setNewMessage({ ...data, ...resolvedPayload });

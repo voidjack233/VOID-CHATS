@@ -36,6 +36,10 @@ export interface LocalMessage {
     original_conversation_id?: string | null;
     original_conversation_name?: string | null;
   } | null;
+  mentions?: Array<{
+    user_id: string;
+    username: string;
+  }>;
   protocol?: 'legacy_aes' | 'mls' | null;
   protocol_version?: number | null;
 }

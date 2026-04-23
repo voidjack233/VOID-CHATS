@@ -6,7 +6,10 @@ import {
   getConversationKeyState,
   getConversationMembers,
   mapStoredMessageRow,
+  normalizeForwardedMetadata,
+  normalizeMentionMetadata,
   normalizeKeyVersion,
+  serializeStoredMessageMetadata,
   resolveConversationContexts,
   scylla,
   verifyMembership,
@@ -60,7 +63,7 @@ router.get('/:messageId', async (req, res) => {
 router.put('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
-  const { encrypted_content, iv, key_version, message_type } = req.body;
+  const { encrypted_content, iv, key_version, message_type, forwarded, mentions } = req.body;
 
   if (!encrypted_content || !iv) {
     return res.status(400).json({ error: 'encrypted_content and iv are required' });
@@ -82,6 +85,15 @@ router.put('/:messageId', async (req, res) => {
     const keyState = await getConversationKeyState(conversation, userId);
     if (!keyState) {
       return res.status(403).json({ error: 'Missing group key membership state' });
+    }
+
+    let normalizedForwarded;
+    let normalizedMentions;
+    try {
+      normalizedForwarded = normalizeForwardedMetadata(forwarded);
+      normalizedMentions = await normalizeMentionMetadata(conversationId, conversation.type, mentions);
+    } catch (metadataError) {
+      return res.status(400).json({ error: metadataError.message || 'Invalid message metadata' });
     }
 
     const requestedKeyVersion = conversation.type === 'dm'
@@ -112,6 +124,8 @@ router.put('/:messageId', async (req, res) => {
     const nextMessageType = typeof message_type === 'string' && message_type.trim()
       ? message_type.trim()
       : (messageRow.message_type || 'text');
+    const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
+    const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
 
     const now = new Date();
     const editId = cassandra.types.TimeUuid.now();
@@ -132,13 +146,15 @@ router.put('/:messageId', async (req, res) => {
     );
 
     await scylla.execute(
-      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, message_type = ?, is_edited = true, edited_at = ?
+      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, message_type = ?, forwarded = ?, mentions = ?, is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
       [
         encrypted_content,
         iv,
         requestedKeyVersion,
         nextMessageType,
+        storedForwarded,
+        storedMentions,
         now,
         cassandra.types.Uuid.fromString(storageConversationId),
         cassandra.types.TimeUuid.fromString(messageId),
@@ -154,6 +170,8 @@ router.put('/:messageId', async (req, res) => {
       iv,
       key_version: requestedKeyVersion,
       message_type: nextMessageType,
+      forwarded: normalizedForwarded || null,
+      mentions: normalizedMentions,
       is_edited: true,
       edited_at: now.toISOString(),
     };

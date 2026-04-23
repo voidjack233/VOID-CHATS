@@ -4,6 +4,7 @@ import { Send, Plus, X, Pencil, CornerUpRight, Loader2, Image, FileText, TimerRe
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
+import { getMentionUsernames, resolveMessageMentions } from '../../Services/Chat/messageMentions';
 import AttachmentLimitModal from './AttachmentLimitModal';
 import FormattedMessageText from './FormattedMessageText';
 import MessagePreviewText from './MessagePreviewText';
@@ -21,7 +22,15 @@ interface MessageInputProps {
   onCancelEdit?: () => void;
   replyTo?: Message | null;
   onCancelReply?: () => void;
-  onEditComplete?: (messageId: string, newContent: string) => void;
+  onEditComplete?: (
+    messageId: string,
+    updates: {
+      content: string;
+      mentions?: Array<{ user_id: string; username: string }>;
+      forwarded?: Message['forwarded'];
+      message_type?: string | null;
+    },
+  ) => void;
   members?: ConversationMember[];
 }
 
@@ -181,6 +190,11 @@ const MessageInput = (props: MessageInputProps) => {
       })
       .slice(0, 6);
   }, [activeMentionQuery, groupMembers]);
+
+  const composerMentionUsernames = useMemo(
+    () => getMentionUsernames(resolveMessageMentions(text, groupMembers)),
+    [groupMembers, text],
+  );
 
   const showMentionSuggestions =
     Boolean(activeMentionQuery) &&
@@ -542,6 +556,7 @@ const MessageInput = (props: MessageInputProps) => {
                   codeBlockVariant="composer"
                   authoringMode
                   enableMentions={isGroupConversation}
+                  mentionUsernames={composerMentionUsernames}
                 />
               </div>
             </div>

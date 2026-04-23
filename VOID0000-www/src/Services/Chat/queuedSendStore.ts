@@ -17,6 +17,10 @@ export interface QueuedSendRecord {
   text: string;
   uploaded_urls: string[];
   reply_to_id: string | null;
+  mentions?: Array<{
+    user_id: string;
+    username: string;
+  }>;
   created_at: string;
 }
 

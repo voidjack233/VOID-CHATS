@@ -1,6 +1,7 @@
 import { Check, Copy } from 'lucide-react';
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { MESSAGE_MENTION_PATTERN } from '../../Services/Chat/messageMentions';
 import { extractMessageTextSegments } from './messageLinks';
 
 type FormatNode =
@@ -15,6 +16,7 @@ interface FormattedMessageTextProps {
   codeBlockVariant?: 'message' | 'composer';
   authoringMode?: boolean;
   enableMentions?: boolean;
+  mentionUsernames?: string[];
 }
 
 type ContentBlock =
@@ -76,8 +78,6 @@ const MARKERS: Array<{ delimiter: string; type: Exclude<FormatNode['type'], 'tex
   { delimiter: '~~', type: 'strike' },
   { delimiter: '*', type: 'italic' },
 ];
-const MENTION_PATTERN = /@([A-Za-z0-9._-]{1,32})/g;
-
 function isMarkerAt(text: string, index: number, delimiter: string): boolean {
   if (!text.startsWith(delimiter, index)) {
     return false;
@@ -326,22 +326,33 @@ function renderLeafText(
   linkClassName: string,
   onOpenLink?: (url: string) => void,
   enableMentions: boolean = false,
+  mentionUsernames?: string[],
 ): ReactNode[] {
+  const normalizedMentionUsernames = new Set(
+    (mentionUsernames || []).map((username) => username.toLowerCase()),
+  );
+
   const renderMentionAwarePart = (part: string, partKey: string): ReactNode => {
-    if (!enableMentions) {
+    const shouldUseMentionHighlighting = enableMentions || normalizedMentionUsernames.size > 0;
+    if (!shouldUseMentionHighlighting) {
       return <Fragment key={partKey}>{part}</Fragment>;
     }
 
     const nodes: ReactNode[] = [];
     let cursor = 0;
 
-    for (const match of part.matchAll(MENTION_PATTERN)) {
+    for (const match of part.matchAll(MESSAGE_MENTION_PATTERN)) {
       const token = match[0];
+      const username = match[1];
       const start = match.index ?? -1;
-      if (start < 0) continue;
+      if (start < 0 || !username) continue;
 
       const previousChar = start > 0 ? part[start - 1] : '';
       if (previousChar && /[A-Za-z0-9._-]/.test(previousChar)) {
+        continue;
+      }
+
+      if (normalizedMentionUsernames.size > 0 && !normalizedMentionUsernames.has(username.toLowerCase())) {
         continue;
       }
 
@@ -431,6 +442,7 @@ function renderNodes(
   authoringMode: boolean = false,
   renderNestedSpoilerContent?: (content: string, key: string) => ReactNode,
   enableMentions: boolean = false,
+  mentionUsernames?: string[],
 ): ReactNode[] {
   return nodes.map((node, index) => {
     const nodeKey = `${keyPrefix}-${index}`;
@@ -438,7 +450,14 @@ function renderNodes(
     if (node.type === 'text') {
       return (
         <Fragment key={nodeKey}>
-          {renderLeafText(node.value, nodeKey, linkClassName, onOpenLink, enableMentions)}
+          {renderLeafText(
+            node.value,
+            nodeKey,
+            linkClassName,
+            onOpenLink,
+            enableMentions,
+            mentionUsernames,
+          )}
         </Fragment>
       );
     }
@@ -452,6 +471,7 @@ function renderNodes(
       authoringMode,
       renderNestedSpoilerContent,
       enableMentions,
+      mentionUsernames,
     );
     const delimiter = node.type === 'bold'
       ? '**'
@@ -537,6 +557,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
   codeBlockVariant = 'message',
   authoringMode = false,
   enableMentions = false,
+  mentionUsernames,
 }: FormattedMessageTextProps) {
   const blocks = useMemo(() => parseContentBlocks(content), [content]);
   const [copiedBlockKey, setCopiedBlockKey] = useState<string | null>(null);
@@ -578,12 +599,14 @@ const FormattedMessageText = memo(function FormattedMessageText({
       codeBlockVariant={codeBlockVariant}
       authoringMode={authoringMode}
       enableMentions={enableMentions}
+      mentionUsernames={mentionUsernames}
     />
   ), [
     authoringMode,
     codeBlockVariant,
     enableMentions,
     interactiveSpoilers,
+    mentionUsernames,
     nestedContentClassName,
     onOpenLink,
   ]);
@@ -677,6 +700,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
               authoringMode,
               renderNestedSpoilerContent,
               enableMentions,
+              mentionUsernames,
             )}
           </Fragment>
         );

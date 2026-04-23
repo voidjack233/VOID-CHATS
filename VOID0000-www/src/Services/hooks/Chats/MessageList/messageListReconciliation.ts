@@ -22,6 +22,12 @@ const getAttachmentSignature = (message: Pick<Message, 'attachments'>) =>
 const getReactionSignature = (message: Pick<Message, 'reactions'>) =>
   JSON.stringify(message.reactions || {});
 
+const getForwardedSignature = (message: Pick<Message, 'forwarded'>) =>
+  JSON.stringify(message.forwarded || null);
+
+const getMentionSignature = (message: Pick<Message, 'mentions'>) =>
+  JSON.stringify(message.mentions || []);
+
 const isEquivalentMessage = (
   existingMessage: Message,
   nextMessage: Message,
@@ -43,7 +49,9 @@ const isEquivalentMessage = (
   (existingMessage.local_status ?? null) === (nextMessage.local_status ?? null) &&
   (existingMessage.local_client_id ?? null) === (nextMessage.local_client_id ?? null) &&
   getAttachmentSignature(existingMessage) === getAttachmentSignature(nextMessage) &&
-  getReactionSignature(existingMessage) === getReactionSignature(nextMessage)
+  getReactionSignature(existingMessage) === getReactionSignature(nextMessage) &&
+  getForwardedSignature(existingMessage) === getForwardedSignature(nextMessage) &&
+  getMentionSignature(existingMessage) === getMentionSignature(nextMessage)
 );
 
 const findOptimisticReplacementId = (

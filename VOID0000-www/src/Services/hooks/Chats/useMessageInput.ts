@@ -10,9 +10,12 @@ import {
   bootstrapDmKey,
   Message,
   Conversation,
+  ConversationMember,
+  MessageMentionMetadata,
 } from '../../Chat/chatService';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { queuedSendStore } from '../../Chat/queuedSendStore';
+import { resolveMessageMentions } from '../../Chat/messageMentions';
 
 export interface PendingAttachment {
   id: string;
@@ -29,6 +32,7 @@ export interface PendingAttachment {
 interface UseMessageInputProps {
   currentUserId?: string;
   conversation: Conversation;
+  members?: ConversationMember[];
   encryptionKey: CryptoKey | null;
   keyVersion: number;
   conversationSecurityState?: ConversationSecurityState;
@@ -38,7 +42,15 @@ interface UseMessageInputProps {
   onCancelEdit?: () => void;
   replyTo?: Message | null;
   onCancelReply?: () => void;
-  onEditComplete?: (messageId: string, newContent: string) => void;
+  onEditComplete?: (
+    messageId: string,
+    updates: {
+      content: string;
+      mentions?: MessageMentionMetadata[];
+      forwarded?: Message['forwarded'];
+      message_type?: string | null;
+    },
+  ) => void;
 }
 
 interface AttachmentAlertState {
@@ -105,6 +117,7 @@ const resolveAttachmentAccess = (conversation: Conversation) => {
 export const useMessageInput = ({
   currentUserId,
   conversation,
+  members,
   encryptionKey,
   keyVersion,
   conversationSecurityState,
@@ -136,6 +149,14 @@ export const useMessageInput = ({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const resolveDraftMentions = useCallback((draftText: string): MessageMentionMetadata[] => {
+    if (conversation.type !== 'group') {
+      return [];
+    }
+
+    return resolveMessageMentions(draftText, members || []);
+  }, [conversation.type, members]);
 
   // Auto-resize textarea as text changes
   useEffect(() => {
@@ -433,12 +454,14 @@ export const useMessageInput = ({
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
               secure_attachments: queued.uploaded_urls,
+              mentions: queued.mentions ?? undefined,
             });
           } else if (queued.uploaded_urls.length > 0) {
             msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, queued.uploaded_urls, {
               key_version: sendCrypto.version,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
+              mentions: queued.mentions ?? undefined,
             });
           } else {
             await queuedSendStore.remove(conversation.id, queued.local_client_id);
@@ -510,6 +533,7 @@ export const useMessageInput = ({
     if (!canSend) return;
 
     const trimmed = text.trim();
+    const resolvedMentions = trimmed ? resolveDraftMentions(trimmed) : [];
     const previousText = text;
     const previousAttachments = attachments;
     const uploadedAttachments = attachments
@@ -538,6 +562,7 @@ export const useMessageInput = ({
           created_at: new Date().toISOString(),
           content: trimmed || undefined,
           reactions: {},
+          mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           local_status: 'sending',
           local_client_id: localClientId as string,
         }
@@ -568,9 +593,15 @@ export const useMessageInput = ({
             messageType: editingMessage.message_type || null,
             secureAttachments: editingMessage.attachments,
             forwarded: editingMessage.forwarded,
+            mentions: resolvedMentions,
           }
         );
-        onEditComplete?.(editingMessage.message_id, trimmed);
+        onEditComplete?.(editingMessage.message_id, {
+          content: trimmed,
+          mentions: resolvedMentions,
+          forwarded: editingMessage.forwarded,
+          message_type: editingMessage.message_type || null,
+        });
         onCancelEdit?.();
       } else if (trimmed) {
         const msg = await sendMessage(conversation.id, trimmed, sendCrypto.key, {
@@ -578,6 +609,7 @@ export const useMessageInput = ({
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
           secure_attachments: uploadedAttachments,
+          mentions: resolvedMentions,
         });
         onMessageSent(localClientId ? {
           ...msg,
@@ -593,6 +625,7 @@ export const useMessageInput = ({
           key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
+          mentions: resolvedMentions,
         });
         onMessageSent(localClientId ? {
           ...msg,
@@ -631,6 +664,7 @@ export const useMessageInput = ({
           text: trimmed,
           uploaded_urls: uploadedAttachments,
           reply_to_id: replyTo?.message_id || null,
+          mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           created_at: optimisticMessage.created_at,
         }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));
         setSendError('');

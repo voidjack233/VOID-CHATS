@@ -7,9 +7,12 @@ import {
   getConversationKeyState,
   getConversationMembers,
   normalizeKeyVersion,
+  normalizeForwardedMetadata,
+  normalizeMentionMetadata,
   pool,
   resolveConversationContexts,
   scylla,
+  serializeStoredMessageMetadata,
   verifyMembership,
 } from './shared.js';
 import { getAvailableKeyPackageCount } from '../mls/shared.js';
@@ -19,7 +22,7 @@ const router = Router({ mergeParams: true });
 router.post('/', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier } = req.params;
-  const { encrypted_content, iv, key_version, message_type, reply_to, attachments, content } = req.body;
+  const { encrypted_content, iv, key_version, message_type, reply_to, attachments, content, forwarded, mentions } = req.body;
   let storageConversationUuid = null;
   let messageId = null;
   let messagePersistedToScylla = false;
@@ -77,6 +80,15 @@ router.post('/', async (req, res) => {
       return res.status(403).json({ error: 'Missing group key membership state' });
     }
 
+    let normalizedForwarded;
+    let normalizedMentions;
+    try {
+      normalizedForwarded = normalizeForwardedMetadata(forwarded);
+      normalizedMentions = await normalizeMentionMetadata(conversationId, conversation.type, mentions);
+    } catch (metadataError) {
+      return res.status(400).json({ error: metadataError.message || 'Invalid message metadata' });
+    }
+
     const requestedKeyVersion = conversation.type === 'dm'
       ? 1
       : normalizeKeyVersion(key_version, 0);
@@ -118,6 +130,8 @@ router.post('/', async (req, res) => {
     const messageIdString = messageId.toString();
     const now = new Date();
     const attachList = Array.isArray(attachments) && attachments.length > 0 ? attachments : null;
+    const storedForwarded = serializeStoredMessageMetadata(normalizedForwarded);
+    const storedMentions = serializeStoredMessageMetadata(normalizedMentions);
 
     const storedContent = isPlaintextSystem ? content.trim() : (encrypted_content || null);
     const storedIv = isPlaintextSystem ? null : (iv || null);
@@ -126,8 +140,8 @@ router.post('/', async (req, res) => {
     await scylla.execute(
       `INSERT INTO messages (
         conversation_id, message_id, sender_id, encrypted_content, iv,
-        key_version, message_type, reply_to, attachments, is_edited, is_deleted, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
+        key_version, message_type, reply_to, attachments, forwarded, mentions, is_edited, is_deleted, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, ?)`,
       [
         storageConversationUuid,
         messageId,
@@ -138,6 +152,8 @@ router.post('/', async (req, res) => {
         message_type || 'text',
         reply_to ? cassandra.types.TimeUuid.fromString(reply_to) : null,
         attachList,
+        storedForwarded,
+        storedMentions,
         now,
       ],
       { prepare: true }
@@ -200,6 +216,8 @@ router.post('/', async (req, res) => {
       message_type: message_type || 'text',
       reply_to: reply_to || null,
       attachments: attachList || [],
+      forwarded: normalizedForwarded || null,
+      mentions: normalizedMentions,
       is_edited: false,
       is_deleted: false,
       created_at: now.toISOString(),

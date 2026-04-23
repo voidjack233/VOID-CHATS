@@ -138,6 +138,7 @@ class MessageSync {
           reactions: (msg as any).reactions || {},
           attachments: msg.attachments,
           forwarded: msg.forwarded ?? undefined,
+          mentions: msg.mentions ?? undefined,
           protocol: cryptoMetadata.protocol,
           protocol_version: cryptoMetadata.protocol_version,
         };
@@ -213,13 +214,15 @@ class MessageSync {
   async handleEdit(
     conversationId: string,
     messageId: string,
-    content: string,
-    editedAt: string
+    updates: Pick<LocalMessage, 'content' | 'edited_at'> & Partial<Pick<LocalMessage, 'forwarded' | 'mentions' | 'message_type'>>
   ): Promise<void> {
     await messageStore.updateMessage(conversationId, messageId, {
-      content,
+      content: updates.content,
       is_edited: true,
-      edited_at: editedAt,
+      edited_at: updates.edited_at,
+      forwarded: updates.forwarded,
+      mentions: updates.mentions,
+      message_type: updates.message_type,
     });
   }
 

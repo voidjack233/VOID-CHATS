@@ -75,6 +75,7 @@ const useMessageListRealtime = ({
           created_at: record.created_at,
           content: record.text || undefined,
           reactions: {},
+          mentions: record.mentions ?? undefined,
           local_status: 'queued' as const,
           local_client_id: record.local_client_id,
         }));
@@ -156,6 +157,7 @@ const useMessageListRealtime = ({
         reactions: {},
         attachments: normalizedMessage.attachments,
         forwarded: normalizedMessage.forwarded ?? undefined,
+        mentions: normalizedMessage.mentions ?? undefined,
         protocol: normalizedMessage.protocol ?? null,
         protocol_version: normalizedMessage.protocol_version ?? null,
       };
@@ -201,7 +203,13 @@ const useMessageListRealtime = ({
     if (!messageUpdate) return;
 
     messageSync
-      .handleEdit(conversationId, messageUpdate.message_id, messageUpdate.content, messageUpdate.edited_at)
+      .handleEdit(conversationId, messageUpdate.message_id, {
+        content: messageUpdate.content,
+        edited_at: messageUpdate.edited_at,
+        forwarded: messageUpdate.forwarded ?? undefined,
+        mentions: messageUpdate.mentions ?? undefined,
+        message_type: messageUpdate.message_type ?? undefined,
+      })
       .catch(console.error);
 
     setMessages((previous) =>
@@ -212,6 +220,9 @@ const useMessageListRealtime = ({
               content: messageUpdate.content,
               is_edited: messageUpdate.is_edited,
               edited_at: messageUpdate.edited_at,
+              forwarded: messageUpdate.forwarded ?? message.forwarded,
+              mentions: messageUpdate.mentions ?? message.mentions,
+              message_type: messageUpdate.message_type ?? message.message_type,
             }
           : message
       ))

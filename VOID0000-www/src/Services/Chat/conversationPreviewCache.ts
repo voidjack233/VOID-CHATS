@@ -139,6 +139,8 @@ export async function hydrateConversationPreviewsFromStore(
 async function resolveLiveMessageContent(message: LiveMessageEvent): Promise<{
   content: string | null;
   attachments?: string[];
+  forwarded?: LocalMessage['forwarded'];
+  mentions?: LocalMessage['mentions'];
 }> {
   if (message.is_deleted) {
     return { content: '[deleted]', attachments: [] };
@@ -148,6 +150,8 @@ async function resolveLiveMessageContent(message: LiveMessageEvent): Promise<{
     return {
       content: normalizeMessageText(message.content || message.encrypted_content) || 'System event',
       attachments: message.attachments,
+      forwarded: (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
+      mentions: (message as { mentions?: LocalMessage['mentions'] }).mentions ?? undefined,
     };
   }
 
@@ -172,6 +176,8 @@ async function resolveLiveMessageContent(message: LiveMessageEvent): Promise<{
         return {
           content: normalizeMessageText(resolved.content) || null,
           attachments: resolved.attachments,
+          forwarded: resolved.forwarded ?? undefined,
+          mentions: resolved.mentions ?? undefined,
         };
       } catch {
         // Leave empty; this device does not currently have the right key material.
@@ -182,10 +188,20 @@ async function resolveLiveMessageContent(message: LiveMessageEvent): Promise<{
   return {
     content: normalizeMessageText(message.content) || null,
     attachments: message.attachments,
+    forwarded: (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
+    mentions: (message as { mentions?: LocalMessage['mentions'] }).mentions ?? undefined,
   };
 }
 
-function toLocalMessage(message: LiveMessageEvent, resolved: { content: string | null; attachments?: string[] }): LocalMessage {
+function toLocalMessage(
+  message: LiveMessageEvent,
+  resolved: {
+    content: string | null;
+    attachments?: string[];
+    forwarded?: LocalMessage['forwarded'];
+    mentions?: LocalMessage['mentions'];
+  },
+): LocalMessage {
   return {
     conversation_id: message.conversation_id,
     message_id: message.message_id,
@@ -200,7 +216,8 @@ function toLocalMessage(message: LiveMessageEvent, resolved: { content: string |
     created_at: message.created_at || new Date().toISOString(),
     reactions: {},
     attachments: resolved.attachments ?? message.attachments,
-    forwarded: (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
+    forwarded: resolved.forwarded ?? (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
+    mentions: resolved.mentions ?? (message as { mentions?: LocalMessage['mentions'] }).mentions ?? undefined,
     protocol: message.protocol ?? null,
     protocol_version: message.protocol_version ?? null,
   };
@@ -238,8 +255,13 @@ export async function applyLiveMessageEditPreview(
     await messageSync.handleEdit(
       message.conversation_id,
       message.message_id,
-      resolved.content,
-      message.edited_at || new Date().toISOString(),
+      {
+        content: resolved.content,
+        edited_at: message.edited_at || new Date().toISOString(),
+        message_type: message.message_type || 'mls_application',
+        forwarded: (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
+        mentions: (message as { mentions?: LocalMessage['mentions'] }).mentions ?? undefined,
+      },
     );
   }
   await hydrateConversationPreviewFromStore(message.conversation_id, currentUserId);

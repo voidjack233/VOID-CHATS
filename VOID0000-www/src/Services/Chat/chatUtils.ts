@@ -4,6 +4,7 @@ import type { Conversation } from './chatTypes';
 export const CHAT_API_PREFIX = '/api/conversations';
 export const CHAT_KEY_ROTATION_ENABLED = true;
 export const CHAT_DEFAULT_MLS_MESSAGE_TYPE = 'mls_application';
+export const CHAT_FORWARDED_MLS_MESSAGE_TYPE = 'mls_forwarded';
 export const CHAT_MLS_ROLLOUT_DATE_MS = Date.parse('2026-03-15T00:00:00.000Z');
 
 const membershipLocks = new Map<string, Promise<unknown>>();

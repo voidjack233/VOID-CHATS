@@ -296,12 +296,20 @@ const ChatDashboard = () => {
     setForwardingMessage(message);
   }, []);
 
-  const handleEditComplete = useCallback((messageId: string, newContent: string) => {
+  const handleEditComplete = useCallback((messageId: string, updates: {
+    content: string;
+    mentions?: Message['mentions'];
+    forwarded?: Message['forwarded'];
+    message_type?: string | null;
+  }) => {
     setMessageUpdate({
       message_id: messageId,
-      content: newContent,
+      content: updates.content,
       is_edited: true,
       edited_at: new Date().toISOString(),
+      mentions: updates.mentions,
+      forwarded: updates.forwarded,
+      message_type: updates.message_type ?? undefined,
     });
   }, [setMessageUpdate]);
 

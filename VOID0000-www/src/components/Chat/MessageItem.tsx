@@ -19,6 +19,8 @@ import InviteEmbed from './InviteEmbed';
 import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../common/UserAvatar';
 import { parseAttachment, parseAttachments } from '../../Services/Chat/chatService';
+import { CHAT_FORWARDED_MLS_MESSAGE_TYPE } from '../../Services/Chat/chatUtils';
+import { getMentionUsernames } from '../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../Services/Chat/reactionLimits';
 import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
@@ -276,6 +278,8 @@ const MessageItem = memo(function MessageItem({
   });
   const d = DENSITY[density];
   const isSystem = message.message_type === 'system';
+  const isForwardedMessage =
+    message.message_type === CHAT_FORWARDED_MLS_MESSAGE_TYPE || Boolean(message.forwarded);
   const isOwn = message.sender_id === currentUserId;
   const isSending = message.local_status === 'sending';
   const isQueued = message.local_status === 'queued';
@@ -875,7 +879,7 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
 
-          {message.forwarded ? (
+          {isForwardedMessage ? (
             <div className={`mb-1.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
               <div
                 className="inline-flex min-h-[18px] max-w-[260px] items-center gap-1.5 text-void-text-muted"
@@ -915,6 +919,7 @@ const MessageItem = memo(function MessageItem({
                     linkClassName={linkClassName}
                     onOpenLink={onOpenLink}
                     enableMentions={enableMentions}
+                    mentionUsernames={enableMentions ? getMentionUsernames(message.mentions) : undefined}
                   />
                 ) : (
                   <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>

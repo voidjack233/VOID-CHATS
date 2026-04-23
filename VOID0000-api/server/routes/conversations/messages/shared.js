@@ -117,11 +117,135 @@ export function mapStoredMessageRow(row, conversationPublic) {
     message_type: row.message_type,
     reply_to: row.reply_to?.toString() || null,
     attachments: row.is_deleted ? [] : (row.attachments || []),
+    forwarded: row.is_deleted ? null : parseStoredMessageMetadata(row.forwarded),
+    mentions: row.is_deleted ? [] : parseStoredMessageMetadata(row.mentions, []),
     is_edited: row.is_edited,
     edited_at: row.edited_at?.toISOString() || null,
     is_deleted: row.is_deleted,
     created_at: row.created_at?.toISOString(),
   };
+}
+
+export function parseStoredMessageMetadata(value, fallback = null) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+export function normalizeForwardedMetadata(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value;
+  const normalized = {};
+
+  if (typeof candidate.original_message_id === 'string' && candidate.original_message_id.trim()) {
+    normalized.original_message_id = candidate.original_message_id.trim();
+  }
+  if (typeof candidate.original_sender_id === 'string' && candidate.original_sender_id.trim()) {
+    normalized.original_sender_id = candidate.original_sender_id.trim();
+  }
+  if (typeof candidate.original_sender_name === 'string' && candidate.original_sender_name.trim()) {
+    normalized.original_sender_name = candidate.original_sender_name.trim();
+  }
+  if (
+    typeof candidate.original_conversation_id === 'string' &&
+    candidate.original_conversation_id.trim()
+  ) {
+    normalized.original_conversation_id = candidate.original_conversation_id.trim();
+  }
+  if (
+    typeof candidate.original_conversation_name === 'string' &&
+    candidate.original_conversation_name.trim()
+  ) {
+    normalized.original_conversation_name = candidate.original_conversation_name.trim();
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+export async function normalizeMentionMetadata(conversationId, conversationType, mentions) {
+  if (mentions == null) {
+    return [];
+  }
+
+  if (!Array.isArray(mentions)) {
+    throw new Error('mentions must be an array');
+  }
+
+  if (mentions.length === 0) {
+    return [];
+  }
+
+  if (conversationType !== 'group') {
+    throw new Error('Mentions are only supported in group conversations');
+  }
+
+  if (mentions.length > 25) {
+    throw new Error('Too many mentions in one message');
+  }
+
+  const orderedIds = [];
+  const seenIds = new Set();
+
+  for (const entry of mentions) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('Invalid mention entry');
+    }
+
+    const userId = typeof entry.user_id === 'string' ? entry.user_id.trim() : '';
+    if (!userId) {
+      throw new Error('Each mention must include a user_id');
+    }
+
+    if (seenIds.has(userId)) {
+      continue;
+    }
+
+    seenIds.add(userId);
+    orderedIds.push(userId);
+  }
+
+  if (orderedIds.length === 0) {
+    return [];
+  }
+
+  const result = await pool.query(
+    `SELECT cm.user_id::text AS user_id, u.username
+     FROM conversation_members cm
+     JOIN users u ON u.id = cm.user_id
+     WHERE cm.conversation_id = $1 AND cm.user_id = ANY($2::uuid[])`,
+    [conversationId, orderedIds]
+  );
+
+  const usernamesById = new Map(result.rows.map((row) => [row.user_id, row.username]));
+  if (usernamesById.size !== orderedIds.length) {
+    throw new Error('One or more mentioned users are not members of this group');
+  }
+
+  return orderedIds.map((userId) => ({
+    user_id: userId,
+    username: usernamesById.get(userId),
+  }));
+}
+
+export function serializeStoredMessageMetadata(value) {
+  if (value == null) {
+    return null;
+  }
+
+  if (Array.isArray(value) && value.length === 0) {
+    return null;
+  }
+
+  return JSON.stringify(value);
 }
 
 export async function batchFetchReactions(conversationId, messageIds, currentUserId) {

@@ -24,6 +24,7 @@ import ExternalLinkModal from './MessageViewParts/ExternalLinkModal';
 import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
 import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
+import type { MessageDelete, MessageUpdate } from '../../Services/hooks/Chats/MessageList/messageListTypes';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -39,8 +40,8 @@ interface MessageViewProps {
   newMessage?: Message | null;
   userAvatar?: string;
   gateway?: any;
-  messageUpdate?: { message_id: string; content: string; is_edited: boolean; edited_at: string } | null;
-  messageDelete?: { message_id: string } | null;
+  messageUpdate?: MessageUpdate | null;
+  messageDelete?: MessageDelete | null;
 }
 
 type MessageListItem =

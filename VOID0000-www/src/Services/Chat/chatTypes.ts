@@ -70,6 +70,11 @@ export interface ForwardedMessageMetadata {
   original_conversation_name?: string | null;
 }
 
+export interface MessageMentionMetadata {
+  user_id: string;
+  username: string;
+}
+
 export interface Message {
   conversation_id: string;
   conversation_public_id?: string | null;
@@ -88,6 +93,7 @@ export interface Message {
   content?: string;
   reactions?: ReactionMap;
   forwarded?: ForwardedMessageMetadata | null;
+  mentions?: MessageMentionMetadata[];
   protocol?: MessageCryptoProtocol | null;
   protocol_version?: number | null;
   decryption_failed?: boolean;
