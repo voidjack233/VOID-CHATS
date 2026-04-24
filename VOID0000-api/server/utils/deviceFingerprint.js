@@ -38,7 +38,7 @@ export class DeviceFingerprint {
 
     const generated = crypto.randomUUID();
     if (res?.cookie) {
-      res.cookie('deviceId', generated, deviceCookieOptions());
+      res.cookie('deviceId', generated, deviceCookieOptions(req));
     }
     if (req.cookies) {
       req.cookies.deviceId = generated;

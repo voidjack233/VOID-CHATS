@@ -179,8 +179,8 @@ router.post('/', async (req, res) => {
     // Record successful login for trust scoring
     await updateTrustScore(trustDeviceId, 'LOGIN_SUCCESS', req);
 
-    res.cookie('accessToken', accessToken, accessCookieOptions());
-    res.cookie('refreshToken', refreshToken, refreshCookieOptions());
+    res.cookie('accessToken', accessToken, accessCookieOptions(req));
+    res.cookie('refreshToken', refreshToken, refreshCookieOptions(req));
 
     res.json({
       success: true,

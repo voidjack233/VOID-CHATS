@@ -46,7 +46,7 @@ export default defineConfig(({ mode }) => {
           secure: false,
         },
         '/gateway': {
-          target: 'ws://localhost:3001',
+          target: 'ws://localhost:4001',
           changeOrigin: true,
           ws: true,
         },
@@ -61,6 +61,12 @@ export default defineConfig(({ mode }) => {
         },
         '/socket.io': {
           target: env.VITE_API_URL,
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
+        '/gateway': {
+          target: env.VITE_GATEWAY_URL || env.VITE_API_URL,
           changeOrigin: true,
           secure: false,
           ws: true,

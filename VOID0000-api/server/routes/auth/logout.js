@@ -11,12 +11,12 @@ const router = Router();
 const REFRESH_SECRET = process.env.REFRESH_SECRET;
 
 // Clear cookies on both domains to kill stale duplicates
-function clearAllCookies(res) {
+function clearAllCookies(req, res) {
   const cookieNames = ['accessToken', 'refreshToken', '_csrf'];
 
   // Clear with domain (.void0000.online)
   cookieNames.forEach(name => {
-    res.clearCookie(name, clearCookieOptions());
+    res.clearCookie(name, clearCookieOptions(req));
   });
 
   // Clear without domain (kills stale api.void0000.online cookies)
@@ -63,7 +63,7 @@ router.post('/', async (req, res) => {
       }
     }
 
-    clearAllCookies(res);
+    clearAllCookies(req, res);
 
     await IPSecurity.logIPActivity(req, 'LOGOUT_SUCCESS', userId);
 
@@ -75,7 +75,7 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('Logout error:', err);
 
-    clearAllCookies(res);
+    clearAllCookies(req, res);
 
     await IPSecurity.logIPActivity(req, 'LOGOUT_FAILED', userId);
 

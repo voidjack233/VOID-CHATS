@@ -102,7 +102,7 @@ router.post('/', async (req, res) => {
 
         const newAccessDecoded = jwt.decode(newAccessToken);
 
-        res.cookie('accessToken', newAccessToken, accessCookieOptions());
+        res.cookie('accessToken', newAccessToken, accessCookieOptions(req));
 
         const touched = await sessionStore.touch(decoded.id, decoded.device_id);
         if (!touched) {
@@ -127,8 +127,8 @@ router.post('/', async (req, res) => {
       }
 
       // No valid token for this device — genuinely invalid
-      res.clearCookie('accessToken', clearCookieOptions());
-      res.clearCookie('refreshToken', clearCookieOptions());
+      res.clearCookie('accessToken', clearCookieOptions(req));
+      res.clearCookie('refreshToken', clearCookieOptions(req));
 
       return res.status(403).json({
         success: false,
@@ -237,8 +237,8 @@ router.post('/', async (req, res) => {
     }
 
     // 6. SET COOKIES
-    res.cookie('accessToken', newAccessToken, accessCookieOptions());
-    res.cookie('refreshToken', newRefreshToken, refreshCookieOptions());
+    res.cookie('accessToken', newAccessToken, accessCookieOptions(req));
+    res.cookie('refreshToken', newRefreshToken, refreshCookieOptions(req));
 
     res.json({
       success: true,
@@ -252,8 +252,8 @@ router.post('/', async (req, res) => {
 
     // Only clear cookies for definitive token errors
     if (err.name === 'TokenExpiredError' || err.name === 'JsonWebTokenError') {
-      res.clearCookie('accessToken', clearCookieOptions());
-      res.clearCookie('refreshToken', clearCookieOptions());
+      res.clearCookie('accessToken', clearCookieOptions(req));
+      res.clearCookie('refreshToken', clearCookieOptions(req));
 
       return res.status(403).json({
         success: false,

@@ -351,8 +351,8 @@ router.post('/', async (req, res) => {
       deviceType: deviceInfo.deviceType,
     });
 
-    res.cookie('accessToken', accessToken, accessCookieOptions());
-    res.cookie('refreshToken', refreshToken, refreshCookieOptions());
+    res.cookie('accessToken', accessToken, accessCookieOptions(req));
+    res.cookie('refreshToken', refreshToken, refreshCookieOptions(req));
 
     res.json({
       success: true,

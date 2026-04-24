@@ -114,7 +114,50 @@ Migration status:
 npm run migrate:status
 ```
 
-## 5. Start The Stack
+## 5. Local Dev Setup
+
+Expected local services:
+
+- frontend: `http://localhost:5173`
+- API: `http://localhost:3001`
+- gateway: `ws://localhost:4001`
+
+If PM2 is already running the backend:
+
+```bash
+pm2 status
+```
+
+You should see:
+
+```text
+voidapp-api
+voidapp-gateway-phoenix
+```
+
+Then start the frontend:
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-www
+npm run dev
+```
+
+Then open:
+
+```text
+http://localhost:5173
+```
+
+Vite proxies local requests:
+
+- `/api` to `http://localhost:3001`
+- `/gateway` to `ws://localhost:4001`
+
+So local dev does not need the public domain.
+
+### Start Every Service Manually
+
+Use this if PM2 is not already running the backend.
 
 Start the API:
 

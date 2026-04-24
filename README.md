@@ -29,23 +29,57 @@ Read the next few sections before trying to set it up.
 
 ## About The Docs
 
-Some of the docs in this repo were written with AI because I wanted the docs to exist without turning document writing into its own project.
+The docs in this repo were written with AI. because im lazy.
 
 So if a page sounds a little uneven, a little too structured, or a little more formal than the rest of the repo, that is probably why.
 
-I would rather have casual, useful docs than polished fake-corporate docs.
-
 ## Setup
 
-Short version:
+### Local Dev Setup
 
-1. Use Linux.
-2. Install Node 20+, npm, PostgreSQL, ScyllaDB, Valkey, MinIO, Elixir, and Erlang.
-3. Create `VOID0000-api/.env`.
-4. Run PostgreSQL migrations.
-5. Start the API, gateway, and frontend in separate shells.
+Expected local services:
 
-Commands:
+- frontend: `http://localhost:5173`
+- API: `http://localhost:3001`
+- gateway: `ws://localhost:4001`
+
+If PM2 is already running the backend:
+
+```bash
+pm2 status
+```
+
+You should see:
+
+```text
+voidapp-api
+voidapp-gateway-phoenix
+```
+
+Then start the frontend:
+
+```bash
+cd VOID0000-www
+npm install
+npm run dev
+```
+
+Then open:
+
+```text
+http://localhost:5173
+```
+
+Vite proxies local requests:
+
+- `/api` to `http://localhost:3001`
+- `/gateway` to `ws://localhost:4001`
+
+So local dev does not need the public domain.
+
+### Full Local Stack
+
+Use this if PM2 is not already running the backend.
 
 ```bash
 cd VOID0000-api
@@ -212,3 +246,6 @@ VOIDAPP/
 Future notes live here:
 
 - [docs/future-notes.md](docs/future-notes.md)
+
+
+If you guys have alot of time and the Setup is not working... (figure it out by yourself)
