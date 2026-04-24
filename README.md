@@ -106,6 +106,7 @@ npm run dev
 Full setup notes are here:
 
 - [docs/setup.md](docs/setup.md)
+- [docs/docker.md](docs/docker.md)
 - [docs/nginx-frontend-only.example.conf](docs/nginx-frontend-only.example.conf)
 - [docs/cloudflared-ingress.example.yml](docs/cloudflared-ingress.example.yml)
 

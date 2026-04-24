@@ -26,4 +26,5 @@ VOID0000-api/scripts/migrate.js
 VOID0000-www/docs/conversation-flow-map.md
 VOID0000-www/docs/channels-roadmap.md
 VOID0000-www-safe-path/
+VOID0000-api/void_gateway/erl_crash.dump
 VOID0000-www/.*/

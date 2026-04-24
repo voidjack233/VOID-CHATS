@@ -1,0 +1,147 @@
+name: voidapp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: void_dev_password
+      POSTGRES_DB: void-app
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d void-app"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  scylla:
+    image: scylladb/scylla:latest
+    command:
+      - --developer-mode=1
+      - --overprovisioned=1
+      - --smp=1
+      - --memory=1G
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 60s
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "${HOST_MINIO_API_PORT:-9000}:9000"
+      - "${HOST_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
+      mc mb --ignore-existing local/avatars local/group-avatars local/chat-attachments;
+      mc anonymous set download local/avatars;
+      mc anonymous set download local/group-avatars;
+      mc anonymous set download local/chat-attachments;
+      "
+
+  migrate:
+    build:
+      context: ./VOID0000-api
+    env_file:
+      - ./docker/dev.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+    volumes:
+      - ./VOID0000-api:/app
+      - api-node-modules:/app/node_modules
+    command: ["npm", "run", "migrate"]
+    restart: "no"
+
+  api:
+    build:
+      context: ./VOID0000-api
+    env_file:
+      - ./docker/dev.env
+    environment:
+      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
+      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${HOST_API_PORT:-3001}:3001"
+    volumes:
+      - ./VOID0000-api:/app
+      - api-node-modules:/app/node_modules
+    command: ["npm", "run", "dev"]
+
+  gateway:
+    build:
+      context: ./VOID0000-api/void_gateway
+    env_file:
+      - ./docker/dev.env
+    depends_on:
+      valkey:
+        condition: service_healthy
+    ports:
+      - "${HOST_GATEWAY_PORT:-4001}:4001"
+    volumes:
+      - ./VOID0000-api/void_gateway:/app
+      - gateway-deps:/app/deps
+      - gateway-build:/app/_build
+    command: ["mix", "phx.server"]
+
+  frontend:
+    build:
+      context: ./VOID0000-www
+    env_file:
+      - ./docker/dev.env
+    depends_on:
+      - api
+      - gateway
+    ports:
+      - "${HOST_FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./VOID0000-www:/app
+      - frontend-node-modules:/app/node_modules
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
+volumes:
+  postgres-data:
+  valkey-data:
+  scylla-data:
+  minio-data:
+  api-node-modules:
+  gateway-deps:
+  gateway-build:
+  frontend-node-modules:

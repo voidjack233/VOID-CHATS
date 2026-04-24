@@ -1,0 +1,6 @@
+node_modules
+.env
+npm-debug.log
+void_gateway/deps
+void_gateway/_build
+void_gateway/erl_crash.dump

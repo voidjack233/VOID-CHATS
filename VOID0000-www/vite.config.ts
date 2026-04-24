@@ -26,6 +26,8 @@ function emitBuildVersionPlugin(buildVersion: string): PluginOption {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const buildVersion = Date.now().toString()
+  const apiProxyTarget = env.VITE_API_URL || 'http://localhost:3001'
+  const gatewayProxyTarget = env.VITE_GATEWAY_URL || 'ws://localhost:4001'
   return {
     base: '/',
     plugins: [emitBuildVersionPlugin(buildVersion), react(), tailwindcss()],
@@ -41,12 +43,12 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       proxy: {
         '/api': {
-          target: 'http://localhost:3001',
+          target: apiProxyTarget,
           changeOrigin: true,
           secure: false,
         },
         '/gateway': {
-          target: 'ws://localhost:4001',
+          target: gatewayProxyTarget,
           changeOrigin: true,
           ws: true,
         },
@@ -55,18 +57,18 @@ export default defineConfig(({ mode }) => {
     preview: {
       proxy: {
         '/api': {
-          target: env.VITE_API_URL,
+          target: apiProxyTarget,
           changeOrigin: true,
           secure: false,
         },
         '/socket.io': {
-          target: env.VITE_API_URL,
+          target: apiProxyTarget,
           changeOrigin: true,
           secure: false,
           ws: true,
         },
         '/gateway': {
-          target: env.VITE_GATEWAY_URL || env.VITE_API_URL,
+          target: gatewayProxyTarget,
           changeOrigin: true,
           secure: false,
           ws: true,
