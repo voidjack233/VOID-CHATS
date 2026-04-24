@@ -10,7 +10,6 @@ If you are trying to understand or run the project, start here first:
 Frontend-specific notes:
 
 - [docs/project-flow-map.md](docs/project-flow-map.md)
-- [docs/crypto-security-notes.md](docs/crypto-security-notes.md)
 - [docs/secure-chat-recovery-limitations.md](docs/secure-chat-recovery-limitations.md)
 
 Important note:

@@ -25,7 +25,15 @@ Read the next few sections before trying to set it up.
 - `VOIDADMIN`
   small internal admin panel for users and security logs
 - `docs`
-  setup notes, flow map, security notes, future notes
+  setup notes, flow map, recovery notes, future notes
+
+## About The Docs
+
+Some of the docs in this repo were written with AI because I wanted the docs to exist without turning document writing into its own project.
+
+So if a page sounds a little uneven, a little too structured, or a little more formal than the rest of the repo, that is probably why.
+
+I would rather have casual, useful docs than polished fake-corporate docs.
 
 ## Setup
 
@@ -117,7 +125,6 @@ One more honest implementation note:
 
 Related notes:
 
-- [VOID0000-www/docs/crypto-security-notes.md](VOID0000-www/docs/crypto-security-notes.md)
 - [VOID0000-www/docs/secure-chat-recovery-limitations.md](VOID0000-www/docs/secure-chat-recovery-limitations.md)
 - [VOID0000-www/docs/project-flow-map.md](VOID0000-www/docs/project-flow-map.md)
 
