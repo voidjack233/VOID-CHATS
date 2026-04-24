@@ -14,7 +14,6 @@ import type {
 import { base64ToBytes, wrapArchiveKey } from './mlsUtils';
 
 interface CacheDerivedGroupKeyOptions {
-  aliasVersionOne?: boolean;
   aliasVersion?: number | null;
   userId?: string;
 }
@@ -152,7 +151,7 @@ export class MlsStorageService {
 
   async syncArchivedGroupKeys(
     userId: string,
-    options?: { conversationId?: string | null },
+    options?: { conversationId?: string | null; replaceExisting?: boolean },
   ): Promise<number> {
     const identityBytes = await keyManager.getIdentityKeyBytes(userId);
     if (!identityBytes) {
@@ -160,7 +159,12 @@ export class MlsStorageService {
     }
 
     const exportedKeys = await keyManager.exportGroupKeys();
-    const archiveInputs: Array<{ conversationId: string; keyVersion: number; keyData: string }> = [];
+    const archiveInputs: Array<{
+      conversationId: string;
+      keyVersion: number;
+      keyData: string;
+      replaceExisting?: boolean;
+    }> = [];
 
     for (const entry of exportedKeys) {
       const conversationId = extractConversationIdFromExportedGroupKey(entry.id, entry.version);
@@ -184,6 +188,7 @@ export class MlsStorageService {
           conversationId,
           keyVersion: entry.version,
           keyData,
+          replaceExisting: options?.replaceExisting === true,
         });
       } catch (err) {
         console.warn('[MLS_ARCHIVE] skipping local group key during archive reconciliation', {
@@ -224,10 +229,6 @@ export class MlsStorageService {
   ): Promise<Pick<MlsDistributeKeyResult, 'key' | 'keyVersion'>> {
     const result = await deriveGroupAesKey(state, conversationId, impl);
     await keyManager.storeGroupKey(conversationId, result.keyVersion, result.key);
-
-    if (options?.aliasVersionOne && result.keyVersion !== 1) {
-      await keyManager.storeGroupKey(conversationId, 1, result.key);
-    }
 
     if (
       options?.aliasVersion != null &&

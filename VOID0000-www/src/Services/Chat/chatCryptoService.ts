@@ -106,7 +106,9 @@ export function createMessageKeyResolver(
 
   const versionCache = new Map<number, Promise<CryptoKey>>();
   const currentVersion = normalizeKeyVersion(context.currentKeyVersion, 1);
-  versionCache.set(currentVersion, Promise.resolve(fallbackKey));
+  if (context.conversation.type !== 'dm') {
+    versionCache.set(currentVersion, Promise.resolve(fallbackKey));
+  }
 
   return async (message: VersionedDecryptableMessage) => {
     const targetVersion = normalizeKeyVersion(message.key_version, currentVersion);
@@ -132,6 +134,7 @@ export async function distributeGroupSenderKeyWithProtocol(
   participantIds: string[],
   options?: {
     allowFreshGroupBootstrap?: boolean;
+    forceKeyVersionBump?: boolean;
   },
 ): Promise<{
   key: CryptoKey;
@@ -145,6 +148,7 @@ export async function distributeGroupSenderKeyWithProtocol(
     conversation,
     memberUserIds: uniqueParticipants,
     allowFreshGroupBootstrap: options?.allowFreshGroupBootstrap,
+    forceKeyVersionBump: options?.forceKeyVersionBump,
   });
 
   return {
@@ -189,6 +193,8 @@ export async function getEncryptionKey(
   const requestedVersion = hasRequestedVersion ? (requestedKeyVersion as number) : null;
   const allowNewerGroupVersion =
     conversation.type !== 'dm' && options?.allowNewerGroupVersion === true;
+  const allowLatestDmVersion =
+    conversation.type === 'dm' && requestedVersion == null;
 
   const targetVersion = hasRequestedVersion
     ? (requestedKeyVersion as number)
@@ -214,6 +220,19 @@ export async function getEncryptionKey(
         });
       }
     }
+  }
+
+  if (isDm && !dmCoverageValid) {
+    const versionsToDelete = new Set<number>([targetVersion]);
+    if (requestedVersion != null) {
+      versionsToDelete.add(requestedVersion);
+    }
+
+    await Promise.all(
+      Array.from(versionsToDelete).map((version) =>
+        keyManager.deleteGroupKey(keyConversationId, version).catch(() => {})
+      )
+    );
   }
 
   if (dmCoverageValid) {
@@ -245,7 +264,7 @@ export async function getEncryptionKey(
     return { key: syncedGroupKey, version: targetVersion };
   }
 
-  if (allowNewerGroupVersion) {
+  if (allowNewerGroupVersion || allowLatestDmVersion) {
     const newerGroupKey = await keyManager.findAnyGroupKey(keyConversationId);
     if (newerGroupKey && newerGroupKey.version > targetVersion) {
       console.log('[KEY_RESOLVE] accepting newer synced group version', {
@@ -260,31 +279,21 @@ export async function getEncryptionKey(
 
   const fallback = await keyManager.findAnyGroupKey(keyConversationId);
   if (fallback) {
-    if (conversation.type !== 'dm') {
-      if (fallback.version === targetVersion) {
-        return { key: fallback.key, version: targetVersion };
-      }
-      // Different version — do NOT alias-cache. Aliasing a newer key under an
-      // older version permanently poisons the cache: the wrong key fails AES-GCM
-      // decryption AND the archived-key import skips "existing" entries, blocking
-      // same-account multi-device old-history recovery.
-      console.warn('[KEY_RESOLVE] group key version mismatch — not aliasing to preserve archive import path', {
-        conversation_id: keyConversationId,
-        conversation_type: conversation.type,
-        found_version: fallback.version,
-        target_version: targetVersion,
-      });
-      throw new Error(`No group sender key available for version ${targetVersion}`);
+    if (fallback.version === targetVersion) {
+      return { key: fallback.key, version: targetVersion };
     }
 
-    console.warn('[KEY_RESOLVE] version-alias fallback', {
+    // Different version — do NOT alias-cache. Aliasing a key under a different
+    // message version permanently poisons the cache: the wrong key fails AES-GCM
+    // decryption AND archived-key import skips "existing" entries, blocking
+    // same-account multi-device recovery.
+    console.warn('[KEY_RESOLVE] group key version mismatch — not aliasing to preserve archive import path', {
       conversation_id: keyConversationId,
+      conversation_type: conversation.type,
       found_version: fallback.version,
       target_version: targetVersion,
-      versions_match: fallback.version === targetVersion,
     });
-    await keyManager.storeGroupKey(keyConversationId, targetVersion, fallback.key);
-    return { key: fallback.key, version: targetVersion };
+    throw new Error(`No group sender key available for version ${targetVersion}`);
   }
 
   throw new Error(`No group sender key available for version ${targetVersion}`);

@@ -8,6 +8,7 @@ import {
   uploadEncryptedAttachments,
   sendTypingStart,
   bootstrapDmKey,
+  getEncryptionKey,
   Message,
   Conversation,
   ConversationMember,
@@ -338,13 +339,36 @@ export const useMessageInput = ({
         localMembers.includes(peerUserId);
 
       if (hasValidLocalCoverage) {
-        return { key: encryptionKey, version: keyVersion, bootstrapped: false };
+        try {
+          const refreshed = await getEncryptionKey(currentUserId, conversation);
+          return { ...refreshed, bootstrapped: true };
+        } catch {
+          return { key: encryptionKey, version: keyVersion, bootstrapped: false };
+        }
       }
 
       console.warn('[DM_SEND] in-memory DM key missing peer coverage, repairing before send', {
         conversation_id: conversation.id,
         local_members: localMembers,
         expected_peer: peerUserId,
+      });
+    }
+
+    try {
+      const recovered = await getEncryptionKey(currentUserId, conversation);
+      const recoveredMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(conversation.id);
+      const recoveredCoverageValid =
+        recoveredMembers != null &&
+        recoveredMembers.includes(currentUserId) &&
+        recoveredMembers.includes(peerUserId);
+
+      if (recoveredCoverageValid) {
+        return { ...recovered, bootstrapped: true };
+      }
+    } catch (err) {
+      console.warn('[DM_SEND] account-synced DM key recovery before bootstrap failed', {
+        conversation_id: conversation.id,
+        error: err instanceof Error ? err.message : String(err || ''),
       });
     }
 

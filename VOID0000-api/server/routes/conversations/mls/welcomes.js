@@ -12,6 +12,7 @@ import {
   normalizeRequiredString,
   normalizeUserId,
   notEnabled,
+  parsePositiveInt,
   resolveCapabilities,
 } from './shared.js';
 
@@ -45,12 +46,22 @@ router.post('/welcomes', async (req, res) => {
         item?.conversation_id ?? item?.conversationId,
         128
       );
+      const keyVersionRaw = item?.key_version ?? item?.keyVersion;
+      const keyVersion = keyVersionRaw == null ? null : parsePositiveInt(keyVersionRaw, -1);
 
       if (!welcomeRef || !payload) {
         await client.query('ROLLBACK');
         return res.status(400).json({
           success: false,
           error: 'Each item requires welcome_ref and payload',
+        });
+      }
+
+      if (keyVersion === -1) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          error: 'key_version must be a positive integer when provided',
         });
       }
 
@@ -65,20 +76,22 @@ router.post('/welcomes', async (req, res) => {
       }
 
       const result = await client.query(
-        `INSERT INTO mls_welcome_messages (user_id, welcome_ref, conversation_id, payload, received_at, consumed_at)
-         VALUES ($1::UUID, $2, $3::UUID, $4, NOW(), NULL)
+        `INSERT INTO mls_welcome_messages (user_id, welcome_ref, conversation_id, payload, key_version, received_at, consumed_at)
+         VALUES ($1::UUID, $2, $3::UUID, $4, $5, NOW(), NULL)
          ON CONFLICT (user_id, welcome_ref)
          DO UPDATE SET
            conversation_id = EXCLUDED.conversation_id,
            payload = EXCLUDED.payload,
+           key_version = EXCLUDED.key_version,
            received_at = NOW(),
            consumed_at = NULL
          RETURNING user_id::text AS user_id,
                    welcome_ref,
                    conversation_id::text AS conversation_id,
+                   key_version,
                    received_at,
                    consumed_at`,
-        [userId, welcomeRef, conversationId, payload]
+        [userId, welcomeRef, conversationId, payload, keyVersion]
       );
 
       inserted.push(result.rows[0]);

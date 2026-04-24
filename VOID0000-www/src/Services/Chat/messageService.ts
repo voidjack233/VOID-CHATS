@@ -1,6 +1,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { decryptMessages, encryptMessage } from '../Crypto/messageEncryption';
 import { encryptAttachmentFile } from '../Crypto/attachmentEncryption';
+import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import {
   createMessageKeyResolver,
@@ -27,6 +28,8 @@ import {
   CHAT_DEFAULT_MLS_MESSAGE_TYPE,
   CHAT_FORWARDED_MLS_MESSAGE_TYPE,
   createApiError,
+  getConversationKeyId,
+  normalizeKeyVersion,
 } from './chatUtils';
 import { bootstrapDmKey } from './conversationService';
 
@@ -217,6 +220,63 @@ export async function uploadEncryptedAttachments(
   );
 }
 
+type DecryptedMessage = Message & { content: string; decryption_failed?: boolean };
+
+function isFailedEncryptedMessage(
+  message: (Pick<Message, 'encrypted_content' | 'iv'> & { decryption_failed?: boolean }) | null | undefined,
+): boolean {
+  return Boolean(
+    message?.decryption_failed === true &&
+    message?.encrypted_content &&
+    message?.iv,
+  );
+}
+
+async function retryDmDecryptionAfterKeyRepair(
+  sourceMessages: Message[],
+  firstPass: DecryptedMessage[],
+  fallbackKey: CryptoKey,
+  context?: MessageDecryptionContext,
+): Promise<DecryptedMessage[]> {
+  if (context?.conversation?.type !== 'dm' || !context.userId) {
+    return firstPass;
+  }
+
+  const failedVersions = sourceMessages.reduce<Set<number>>((versions, message, index) => {
+    if (isFailedEncryptedMessage(firstPass[index])) {
+      versions.add(normalizeKeyVersion(message.key_version, context.currentKeyVersion ?? 1));
+    }
+    return versions;
+  }, new Set<number>());
+
+  if (failedVersions.size === 0) {
+    return firstPass;
+  }
+
+  const keyConversationId = getConversationKeyId(context.conversation);
+  await Promise.all(
+    Array.from(failedVersions).map((version) =>
+      keyManager.deleteGroupKey(keyConversationId, version).catch(() => {})
+    )
+  );
+
+  console.warn('[DM_DECRYPT_REPAIR] retrying message decrypt after deleting stale group key versions', {
+    conversation_id: keyConversationId,
+    key_versions: Array.from(failedVersions),
+  });
+
+  const retryResolver = createMessageKeyResolver(fallbackKey, context);
+  const retryPass = await decryptMessages(sourceMessages, retryResolver || fallbackKey) as DecryptedMessage[];
+
+  return retryPass.map((message, index) => {
+    const previous = firstPass[index];
+    if (previous && !isFailedEncryptedMessage(previous)) {
+      return previous;
+    }
+    return message;
+  });
+}
+
 export async function getMessages(
   conversationId: string,
   encryptionKey: CryptoKey,
@@ -242,8 +302,14 @@ export async function getMessages(
     };
   });
 
-  const decryptedByIndex: Array<Record<string, any> | null> = new Array(sourceMessages.length).fill(null);
-  const decrypted = await decryptMessages(sourceMessages, keyResolver || encryptionKey);
+  const decryptedByIndex: Array<Partial<Message> | null> = new Array(sourceMessages.length).fill(null);
+  const firstPass = await decryptMessages(sourceMessages, keyResolver || encryptionKey) as DecryptedMessage[];
+  const decrypted = await retryDmDecryptionAfterKeyRepair(
+    sourceMessages,
+    firstPass,
+    encryptionKey,
+    options,
+  );
   decrypted.forEach((message, index) => {
     decryptedByIndex[index] = message || null;
   });

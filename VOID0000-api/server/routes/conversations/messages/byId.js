@@ -97,7 +97,7 @@ router.put('/:messageId', async (req, res) => {
     }
 
     const requestedKeyVersion = conversation.type === 'dm'
-      ? 1
+      ? normalizeKeyVersion(key_version, keyState.currentKeyVersion)
       : normalizeKeyVersion(key_version, 0);
 
     if (requestedKeyVersion !== keyState.currentKeyVersion) {

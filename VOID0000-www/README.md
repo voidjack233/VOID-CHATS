@@ -25,6 +25,14 @@ Another security/recovery note:
 - it is not intended to be persisted in normal browser storage
 - current behavior aims to clear it after the immediate bootstrap pass, with a fallback max window of about 2 minutes
 
+Known ugly encrypted-chat edge while this is still new:
+
+- the DM key-version path has already had one nasty bug where a repair / re-bootstrap could keep using `key_version = 1`
+- that path now bumps to newer versions, but encrypted chat recovery is still young and should be tested like it can break
+- if a device does not have the exact key that encrypted a message, that message can stay stuck as encrypted text on that device
+- the server cannot decrypt it for us, which is the point of E2EE but still painful when recovery data is wrong
+- do not treat the current encrypted-chat path as battle-tested yet, especially across multiple devices
+
 ## Frontend Commands
 
 ```bash

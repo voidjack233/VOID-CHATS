@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
+import { emitConversationUpdate } from '../../../utils/groupMembership.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
   cassandra,
@@ -90,10 +91,15 @@ router.post('/', async (req, res) => {
     }
 
     const requestedKeyVersion = conversation.type === 'dm'
-      ? 1
+      ? normalizeKeyVersion(key_version, keyState.currentKeyVersion)
       : normalizeKeyVersion(key_version, 0);
+    const dmKeyVersionBump =
+      conversation.type === 'dm' && requestedKeyVersion > keyState.currentKeyVersion;
+    const isStaleKeyVersion = conversation.type === 'dm'
+      ? requestedKeyVersion < keyState.currentKeyVersion
+      : requestedKeyVersion !== keyState.currentKeyVersion;
 
-    if (requestedKeyVersion !== keyState.currentKeyVersion) {
+    if (isStaleKeyVersion) {
       return res.status(409).json({
         error: `Expected key_version ${keyState.currentKeyVersion}`,
         code: 'STALE_KEY_VERSION',
@@ -171,6 +177,17 @@ router.post('/', async (req, res) => {
     try {
       await pgClient.query('BEGIN');
 
+      if (dmKeyVersionBump) {
+        await pgClient.query(
+          `UPDATE conversations
+           SET current_key_version = GREATEST(COALESCE(current_key_version, 1), $2),
+               updated_at = NOW()
+           WHERE id = $1
+             AND type = 'dm'`,
+          [conversationId, requestedKeyVersion]
+        );
+      }
+
       await pgClient.query(
         `UPDATE conversations
          SET updated_at = NOW(),
@@ -225,6 +242,14 @@ router.post('/', async (req, res) => {
     };
 
     const members = await getConversationMembers(conversationId);
+    if (dmKeyVersionBump) {
+      await emitConversationUpdate(
+        { ...conversation, current_key_version: requestedKeyVersion },
+        members,
+        requestedKeyVersion,
+        members.length
+      );
+    }
     console.log('[WS_FANOUT] MESSAGE_CREATE', {
       conversation_id: conversationId,
       sender_id: userId,

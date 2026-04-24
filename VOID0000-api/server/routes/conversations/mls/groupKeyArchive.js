@@ -42,20 +42,34 @@ router.post('/group-key-archive', async (req, res) => {
       );
       const keyVersion = parsePositiveInt(item.key_version ?? item.keyVersion, null);
       const keyData = normalizeRequiredString(item.key_data ?? item.keyData, MAX_PACKAGE_DATA_LENGTH);
+      const replaceExisting =
+        item.replace_existing === true ||
+        item.replaceExisting === true ||
+        req.body?.replace_existing === true ||
+        req.body?.replaceExisting === true;
 
       if (!conversationIdentifier || !keyVersion || !keyData) continue;
 
       const resolved = await resolveAccessibleConversationId(conversationIdentifier, requesterUserId, client);
       if (resolved.error) continue;
 
-      const result = await client.query(
-        `INSERT INTO mls_group_key_archive (conversation_id, key_version, user_id, key_data, created_at)
-         VALUES ($1::UUID, $2, $3::UUID, $4, NOW())
-         ON CONFLICT (conversation_id, key_version, user_id) DO UPDATE SET
-           key_data = EXCLUDED.key_data
-         RETURNING conversation_id::text AS conversation_id, key_version`,
-        [resolved.conversationId, keyVersion, requesterUserId, keyData]
-      );
+      const result = replaceExisting
+        ? await client.query(
+            `INSERT INTO mls_group_key_archive (conversation_id, key_version, user_id, key_data, created_at)
+             VALUES ($1::UUID, $2, $3::UUID, $4, NOW())
+             ON CONFLICT (conversation_id, key_version, user_id) DO UPDATE SET
+               key_data = EXCLUDED.key_data,
+               created_at = NOW()
+             RETURNING conversation_id::text AS conversation_id, key_version`,
+            [resolved.conversationId, keyVersion, requesterUserId, keyData]
+          )
+        : await client.query(
+            `INSERT INTO mls_group_key_archive (conversation_id, key_version, user_id, key_data, created_at)
+             VALUES ($1::UUID, $2, $3::UUID, $4, NOW())
+             ON CONFLICT (conversation_id, key_version, user_id) DO NOTHING
+             RETURNING conversation_id::text AS conversation_id, key_version`,
+            [resolved.conversationId, keyVersion, requesterUserId, keyData]
+          );
 
       if (result.rows[0]) {
         upserted.push(result.rows[0]);

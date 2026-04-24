@@ -27,6 +27,7 @@ export interface Conversation {
   parent_public_id?: string | null;
   created_at: string;
   updated_at: string;
+  first_message_at?: string | null;
   role: string;
   last_read_message_id: string | null;
   unread_count?: number;

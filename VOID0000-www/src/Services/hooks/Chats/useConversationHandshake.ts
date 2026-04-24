@@ -152,8 +152,12 @@ export const useConversationHandshake = ({
   };
 
   const requiredConversationKeyVersion = useMemo(() => {
-    if (!activeConversation || activeConversation.type === 'dm') {
+    if (!activeConversation) {
       return null;
+    }
+
+    if (activeConversation.type === 'dm') {
+      return normalizeRequiredVersion(activeConversation.current_key_version ?? null);
     }
 
     return normalizeRequiredVersion(
@@ -437,7 +441,11 @@ export const useConversationHandshake = ({
           // No retry loop — avoids the 3-attempt + delay handshake theater
           // that wastes ~2s on brand-new DMs where no state exists yet.
           try {
-            keyResult = await getEncryptionKey(user.id, keyLookupConversation);
+            keyResult = await getEncryptionKey(
+              user.id,
+              keyLookupConversation,
+              requiredGroupVersion || undefined,
+            );
           } catch {
             if (ignore) return;
             // Cache + sync didn't resolve it — bootstrap the MLS group directly.
@@ -531,16 +539,15 @@ export const useConversationHandshake = ({
         });
         delete preparingRetryAttemptsRef.current[preparingRetryKey];
 
-        if (
-          ownerConversation &&
-          ownerConversation.type !== 'dm' &&
-          requiredGroupVersion &&
-          version > requiredGroupVersion
-        ) {
-          console.log('[HANDSHAKE] accepted newer group version than conversation metadata', {
+        const ownerCurrentKeyVersion = ownerConversation
+          ? normalizeRequiredVersion(ownerConversation.current_key_version) ?? 0
+          : 0;
+        if (ownerConversation && version > ownerCurrentKeyVersion) {
+          console.log('[HANDSHAKE] accepted newer version than conversation metadata', {
             conversation_id: ownerConversation.id,
-            required_group_version: requiredGroupVersion,
-            resolved_group_version: version,
+            conversation_type: ownerConversation.type,
+            metadata_key_version: ownerCurrentKeyVersion || null,
+            resolved_key_version: version,
           });
           onPatchConversationRef.current({
             ...ownerConversation,

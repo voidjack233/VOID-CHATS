@@ -9,6 +9,7 @@ export interface DistributeGroupKeyInput {
   conversation: Conversation;
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
+  forceKeyVersionBump?: boolean;
 }
 
 export interface ChatCryptoProtocolService {
@@ -65,6 +66,7 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
       conversation: input.conversation,
       memberUserIds: input.memberUserIds,
       allowFreshGroupBootstrap: input.allowFreshGroupBootstrap,
+      forceKeyVersionBump: input.forceKeyVersionBump,
     });
   }
 

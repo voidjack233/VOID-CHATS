@@ -27,6 +27,7 @@ const REQUIRED_MLS_TABLES = [
 const REQUIRED_MLS_COLUMNS = [
   ['mls_group_states', 'user_id'],
   ['mls_group_states', 'key_version'],
+  ['mls_welcome_messages', 'key_version'],
   ['mls_group_key_archive', 'user_id'],
 ];
 const REQUIRED_MLS_INDEXES = [

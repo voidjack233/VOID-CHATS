@@ -6,6 +6,7 @@ import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncryption';
 import { upsertMlsGroupStates } from '../Crypto/mls/mlsApi';
+import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
 import { mlsStore } from '../Crypto/mls/mlsStore';
 import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
 import { uploadSecureBackups as uploadSecureBackupsNow } from './secureBackup';
@@ -17,6 +18,12 @@ import {
 } from '../Chat/chatService';
 
 type MlsRestoreOutcome = 'skipped' | 'already_local' | 'restored' | 'failed';
+
+declare global {
+  interface Window {
+    __voidRescueMlsArchive?: (conversationId?: string) => Promise<number>;
+  }
+}
 interface MlsRestoreSummary {
   outcome: MlsRestoreOutcome;
   backupGroupStateCount: number;
@@ -1013,6 +1020,34 @@ export function UserProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('void:group-key-changed', onGroupKeyChanged);
     };
   }, [keyStatus, keyStatusLoading, mlsRecoveryGate.pending, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) {
+      delete window.__voidRescueMlsArchive;
+      return;
+    }
+
+    const userId = user.id;
+    const rescueArchive = async (conversationId?: string) => {
+      const archived = await mlsStorageService.syncArchivedGroupKeys(userId, {
+        conversationId: conversationId || null,
+        replaceExisting: true,
+      });
+      console.log('[MLS_ARCHIVE_RESCUE] force-refreshed local group key archive', {
+        user_id: userId,
+        conversation_id: conversationId || null,
+        archived,
+      });
+      return archived;
+    };
+
+    window.__voidRescueMlsArchive = rescueArchive;
+    return () => {
+      if (window.__voidRescueMlsArchive === rescueArchive) {
+        delete window.__voidRescueMlsArchive;
+      }
+    };
+  }, [user?.id]);
 
   return (
     <UserContext.Provider value={{

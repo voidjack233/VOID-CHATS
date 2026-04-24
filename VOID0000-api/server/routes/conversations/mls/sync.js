@@ -86,11 +86,14 @@ router.post('/sync', async (req, res) => {
                     welcomes.payload,
                     welcomes.conversation_id::text AS conversation_id,
                     welcomes.received_at,
+                    COALESCE(welcomes.key_version, conversations.current_key_version, cm.joined_key_version, 1) AS key_version,
                     COALESCE(cm.joined_key_version, 1) AS joined_key_version_floor
              FROM mls_welcome_messages AS welcomes
              JOIN conversation_members cm
                ON cm.conversation_id = welcomes.conversation_id
               AND cm.user_id = welcomes.user_id
+             JOIN conversations
+               ON conversations.id = welcomes.conversation_id
              WHERE welcomes.user_id = $1::UUID
                AND welcomes.consumed_at IS NULL
                AND welcomes.conversation_id IS NOT NULL

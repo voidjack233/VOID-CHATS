@@ -80,7 +80,7 @@ export const useMessageStream = ({
   shouldAutoRecoverRef.current = shouldAutoRecover;
 
   const resolveMessageKey = async (data: any, fallbackKey: CryptoKey): Promise<CryptoKey> => {
-    if (!activeConversation || !user?.id || activeConversation.type === 'dm') {
+    if (!activeConversation || !user?.id) {
       return fallbackKey;
     }
 
@@ -163,7 +163,11 @@ export const useMessageStream = ({
     }
 
     try {
-      return await decryptMessage(data.encrypted_content, data.iv, key);
+      return await decryptMessage(
+        data.encrypted_content,
+        data.iv,
+        await resolveMessageKey(data, key),
+      );
     } catch (err) {
       // Return null — not '[unable to decrypt]' — so the healer in
       // attemptDecryption wipes the cache and re-runs syncInbox.
@@ -285,10 +289,17 @@ export const useMessageStream = ({
       // through to syncInbox on the next attempt instead of returning the
       // locally-bootstrapped key that short-circuits recovery.
       if (activeConversation?.type === 'dm' && keyScopeId) {
-        void keyManager.deleteGroupKey(keyScopeId, keyVersion).catch(() => {});
+        const failedKeyVersion =
+          Number.isInteger(data?.key_version) && data.key_version > 0
+            ? data.key_version
+            : keyVersion;
+        const staleVersions = [...new Set([keyVersion, failedKeyVersion])];
+        void Promise.all(
+          staleVersions.map((version) => keyManager.deleteGroupKey(keyScopeId, version).catch(() => {}))
+        ).catch(() => {});
         console.log('[DECRYPT_HEALER] deleted stale DM group key from IndexedDB', {
           keyScopeId,
-          keyVersion,
+          keyVersions: staleVersions,
         });
       }
 

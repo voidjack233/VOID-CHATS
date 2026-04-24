@@ -87,6 +87,7 @@ export function normalizeConversationRow(conv) {
     public_id: conv.public_id ? String(conv.public_id) : null,
     parent_public_id: conv.parent_public_id ? String(conv.parent_public_id) : null,
     current_key_version: conv.current_key_version != null ? parseInt(conv.current_key_version, 10) : null,
+    first_message_at: conv.first_message_at ? new Date(conv.first_message_at).toISOString() : null,
     member_count: conv.member_count != null ? parseInt(conv.member_count, 10) : 0,
     unread_count: conv.unread_count != null ? parseInt(conv.unread_count, 10) : 0,
     slowmode_seconds: conv.slowmode_seconds != null ? parseInt(conv.slowmode_seconds, 10) : 0,

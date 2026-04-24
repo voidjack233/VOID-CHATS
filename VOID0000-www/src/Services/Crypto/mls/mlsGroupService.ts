@@ -145,6 +145,9 @@ export class MlsGroupService {
     const otherMembers = desiredMembers.filter((id) => id !== input.userId);
     const isDmConversation = input.conversation.type === 'dm';
     const requiredServerVersion = normalizePositiveVersion(input.conversation.current_key_version);
+    const currentDmServerVersion = requiredServerVersion ?? 1;
+    const forceDmVersionBump = isDmConversation && input.forceKeyVersionBump === true;
+    let bumpDmVersionForFreshBootstrap = false;
 
     let missingMemberUserIds: string[] = [];
     let existingState = await mlsStorageService.loadGroupState(conversationId);
@@ -154,6 +157,7 @@ export class MlsGroupService {
       conversation_type: input.conversation.type,
       requested_member_user_ids: desiredMembers,
       required_server_version: requiredServerVersion,
+      force_key_version_bump: forceDmVersionBump,
       has_existing_state: Boolean(existingState),
     });
 
@@ -254,15 +258,20 @@ export class MlsGroupService {
         });
         await mlsStorageService.deleteGroupState(conversationId);
         existingState = null;
+        bumpDmVersionForFreshBootstrap = true;
         // Reset vars that may have been partially set.
         newMembersForWelcome = [];
         missingMemberUserIds = [];
         // Skip the rest of the existing-state branch; the fresh-bootstrap
         // branch below (if !existingState && !newState) handles the rebuild.
       } else if (toAdd.length === 0 && toRemove.length === 0) {
-        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl, { userId: input.userId });
+        const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, existingState, impl, {
+          aliasVersion: isDmConversation ? currentDmServerVersion : undefined,
+          userId: input.userId,
+        });
         return {
           ...result,
+          keyVersion: isDmConversation ? currentDmServerVersion : result.keyVersion,
           includedMemberUserIds: currentMembers,
           missingMemberUserIds: [],
         };
@@ -437,10 +446,14 @@ export class MlsGroupService {
       throw new Error('MLS group state creation failed');
     }
 
+    const distributionKeyVersion = isDmConversation
+      ? (bumpDmVersionForFreshBootstrap || forceDmVersionBump ? currentDmServerVersion + 1 : currentDmServerVersion)
+      : requiredServerVersion;
+
     const distributeSource = existingState ? 'distribute_update' : 'distribute_bootstrap';
     const durableUploadCount = await this.persistGroupState(conversationId, newState, {
       source: distributeSource,
-      keyVersion: requiredServerVersion,
+      keyVersion: distributionKeyVersion,
     });
 
     if (durableUploadCount === 0) {
@@ -448,7 +461,7 @@ export class MlsGroupService {
         conversation_id: conversationId,
         source: distributeSource,
         epoch: Number(newState.groupContext.epoch),
-        key_version: requiredServerVersion,
+        key_version: distributionKeyVersion,
       });
     }
 
@@ -456,7 +469,10 @@ export class MlsGroupService {
       zeroOutPrivateKeyPackage(deferredKeyCleanup);
     }
 
-    const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, newState, impl, { userId: input.userId });
+    const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, newState, impl, {
+      aliasVersion: distributionKeyVersion,
+      userId: input.userId,
+    });
 
     if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
       const welcomeRef = crypto.randomUUID();
@@ -473,6 +489,7 @@ export class MlsGroupService {
             welcomeRef,
             payload: welcomePayload!,
             conversationId,
+            keyVersion: distributionKeyVersion,
           })),
         );
       } catch (welcomeErr) {
@@ -486,6 +503,7 @@ export class MlsGroupService {
             welcomeRef: crypto.randomUUID(),
             payload: welcomePayload!,
             conversationId,
+            keyVersion: distributionKeyVersion,
           })),
         );
       }
@@ -508,6 +526,9 @@ export class MlsGroupService {
 
     return {
       ...result,
+      keyVersion: isDmConversation && distributionKeyVersion != null
+        ? distributionKeyVersion
+        : result.keyVersion,
       includedMemberUserIds: getMemberUserIds(newState),
       missingMemberUserIds,
     };
@@ -586,6 +607,12 @@ export class MlsGroupService {
       welcome.joinedKeyVersionFloor > 0
         ? welcome.joinedKeyVersionFloor
         : null;
+    const welcomeKeyVersion =
+      typeof welcome.keyVersion === 'number' &&
+      Number.isInteger(welcome.keyVersion) &&
+      welcome.keyVersion > 0
+        ? welcome.keyVersion
+        : null;
 
     const welcomeBytes = base64ToBytes(welcome.payload);
     const decoded = decodeMlsMessage(welcomeBytes, 0);
@@ -629,10 +656,10 @@ export class MlsGroupService {
 
         await this.persistGroupState(conversationId, joinedState, {
           source: 'welcome_join',
-          keyVersion: derivedKey.keyVersion,
+          keyVersion: welcomeKeyVersion ?? derivedKey.keyVersion,
         });
         const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, joinedState, impl, {
-          aliasVersionOne: true,
+          aliasVersion: welcomeKeyVersion,
           userId,
         });
         await mlsStorageService.markKeyPackageConsumed(userId, kpRecord.packageRef);
@@ -642,6 +669,7 @@ export class MlsGroupService {
           conversation_id: conversationId,
           welcome_ref: welcome.welcomeRef,
           key_version: result.keyVersion,
+          welcome_key_version: welcomeKeyVersion,
         });
         return true;
       } catch {

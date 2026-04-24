@@ -63,8 +63,8 @@ router.post('/:userId', async (req, res) => {
     }
 
     const convResult = await client.query(
-      `INSERT INTO conversations (type, public_id, owner_id)
-       VALUES ('dm', $1, $2)
+      `INSERT INTO conversations (type, public_id, owner_id, current_key_version)
+       VALUES ('dm', $1, $2, 1)
        RETURNING id, public_id`,
       [conversationSnowflake.nextId(), currentUserId]
     );

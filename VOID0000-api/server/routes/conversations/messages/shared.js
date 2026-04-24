@@ -34,7 +34,7 @@ export function normalizeKeyVersion(value, fallback = 1) {
 export async function getConversationKeyState(conversation, userId) {
   if (!conversation || conversation.type === 'dm') {
     return {
-      currentKeyVersion: 1,
+      currentKeyVersion: normalizeKeyVersion(conversation?.current_key_version, 1),
       historyStartVersion: 1,
       joinedAt: null,
       role: null,

@@ -187,17 +187,25 @@ export async function bootstrapDmKey(
   }
 
   const participantIds = [currentUserId, peerUserId];
+  const currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+  const isExistingDmBootstrap =
+    currentKeyVersion > 1 ||
+    Boolean(conversation.first_message_at) ||
+    Boolean(conversation.last_message_id);
 
   console.log('[DM_BOOTSTRAP] attempting secure DM bootstrap', {
     conversation_id: conversation.id,
     current_user_id: currentUserId,
     peer_user_id: peerUserId,
+    current_key_version: currentKeyVersion,
+    existing_dm_bootstrap: isExistingDmBootstrap,
   });
 
   const result = await distributeGroupSenderKeyWithProtocol(
     { ...conversation, id: conversation.id },
     currentUserId,
     participantIds,
+    { forceKeyVersionBump: isExistingDmBootstrap },
   );
 
   if (!result.includedMemberUserIds.includes(peerUserId)) {
@@ -207,11 +215,6 @@ export async function bootstrapDmKey(
       missing_member_user_ids: result.missingMemberUserIds,
     });
     throw new Error('DM peer device is not ready for secure chat yet');
-  }
-
-  if (result.version !== 1) {
-    await keyManager.storeGroupKey(conversation.id, 1, result.key);
-    return { key: result.key, version: 1 };
   }
 
   return result;

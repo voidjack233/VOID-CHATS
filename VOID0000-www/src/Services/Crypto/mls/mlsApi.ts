@@ -276,6 +276,7 @@ export async function ingestMlsWelcomes(items: MlsUploadWelcomeInput[]): Promise
         welcome_ref: item.welcomeRef,
         payload: item.payload,
         ...(item.conversationId ? { conversation_id: item.conversationId } : {}),
+        ...(item.keyVersion != null ? { key_version: item.keyVersion } : {}),
       })),
     }),
   });
@@ -361,7 +362,7 @@ export async function applyMlsCommit(conversationId: string, commitRef: string):
 }
 
 export async function archiveGroupKeys(
-  items: Array<{ conversationId: string; keyVersion: number; keyData: string }>,
+  items: Array<{ conversationId: string; keyVersion: number; keyData: string; replaceExisting?: boolean }>,
 ): Promise<number> {
   if (items.length === 0) return 0;
 
@@ -372,6 +373,7 @@ export async function archiveGroupKeys(
         conversation_id: item.conversationId,
         key_version: item.keyVersion,
         key_data: item.keyData,
+        ...(item.replaceExisting ? { replace_existing: true } : {}),
       })),
     }),
   });
@@ -438,6 +440,7 @@ function normalizeSyncWelcomes(raw: unknown, userId: string): MlsSyncWelcomeUpda
     if (!welcomeRef || !payload) return [];
     const conversationId = pickString(obj, ['conversation_id', 'conversationId']);
     const receivedAt = pickString(obj, ['received_at', 'receivedAt']);
+    const keyVersion = pickNumber(obj, ['key_version', 'keyVersion']);
     const joinedKeyVersionFloor = pickNumber(obj, [
       'joined_key_version_floor',
       'joinedKeyVersionFloor',
@@ -451,6 +454,7 @@ function normalizeSyncWelcomes(raw: unknown, userId: string): MlsSyncWelcomeUpda
       payload,
       conversationId,
       receivedAt,
+      keyVersion,
       joinedKeyVersionFloor,
     }];
   });

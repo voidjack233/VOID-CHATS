@@ -90,6 +90,7 @@ export interface MlsDistributeGroupInput {
   conversation: Conversation;
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
+  forceKeyVersionBump?: boolean;
   _retried?: boolean;
 }
 
@@ -132,6 +133,7 @@ export interface MlsSyncWelcomeUpdate {
   payload: string;
   conversationId?: string | null;
   receivedAt?: string | null;
+  keyVersion?: number | null;
   joinedKeyVersionFloor?: number | null;
 }
 
@@ -162,6 +164,7 @@ export interface MlsUploadWelcomeInput {
   welcomeRef: string;
   payload: string;
   conversationId?: string | null;
+  keyVersion?: number | null;
 }
 
 export interface MlsUploadCommitInput {
