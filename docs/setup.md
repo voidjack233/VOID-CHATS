@@ -273,31 +273,17 @@ So the honest reading is:
 - Nginx does not proxy `/api`
 - Nginx does not proxy `/gateway`
 
-### Cloudflared Routing Example
+### Cloudflared Routing
 
-Example file:
+Cloudflared is the thing routing public hostnames to the local services.
 
-- `~/.cloudflared/config.yml`
+The live shape on this machine is:
 
-Example routing shape:
-
-```yml
-tunnel: YOUR_TUNNEL_NAME
-credentials-file: /home/your-user/.cloudflared/YOUR-TUNNEL-ID.json
-ingress:
-  - hostname: your-domain.example
-    service: http://localhost:80
-  - hostname: www.your-domain.example
-    service: http://localhost:80
-  - hostname: api.your-domain.example
-    path: /gateway
-    service: http://localhost:4001
-  - hostname: api.your-domain.example
-    service: http://localhost:3001
-  - hostname: cdn.your-domain.example
-    service: http://localhost:9000
-  - service: http_status:404
-```
+- frontend host -> `localhost:80`
+- `www` host -> `localhost:80`
+- API host -> `localhost:3001`
+- API host with `/gateway` path -> `localhost:4001`
+- CDN host -> `localhost:9000`
 
 That is why:
 
@@ -307,22 +293,26 @@ That is why:
 
 ### Frontend Build Deployment
 
-The currently deployed frontend is served from:
+The current machine serves the frontend from:
 
-- `/var/www/your-frontend-build`
+- `/var/www/void0000-www`
+
+If you deploy this somewhere else, use your own frontend build path instead.
 
 The usual update flow is:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-www
 npm run build
-rsync -av --delete dist/ /var/www/your-frontend-build/
+rsync -av --delete dist/ /var/www/void0000-www/
 ```
 
 Reference files copied from this shape:
 
 - [nginx-frontend-only.example.conf](./nginx-frontend-only.example.conf)
-- [cloudflared-ingress.example.yml](./cloudflared-ingress.example.yml)
+
+Cloudflared is intentionally described in prose here instead of a copy-paste example file.
+You need to wire your own tunnel, hostnames, and local services to match your machine.
 
 ### Matching Env Values
 
@@ -347,11 +337,12 @@ CDN_URL=https://cdn.your-domain.example
 
 ### Backend Process Startup
 
-The backend on this machine is managed by:
+The current machine has both of these process-management layers:
 
 - PM2 app config: `VOID0000-api/ecosystem.config.cjs`
 - gateway launcher: `VOID0000-api/startup/run-phoenix-gateway.sh`
-- systemd unit: `voidapp-backend.service`
+- PM2 systemd unit: `pm2-void0000.service`
+- backend wrapper systemd unit: `voidapp-backend.service`
 - cloudflared systemd unit: `cloudflared.service`
 
 Current process names under PM2:
@@ -359,14 +350,14 @@ Current process names under PM2:
 - `voidapp-api`
 - `voidapp-gateway-phoenix`
 
-That means the practical restart path is closer to:
+That means the practical restart path on this machine is closer to:
 
 ```bash
 sudo systemctl restart voidapp-backend.service
 sudo systemctl restart cloudflared.service
 ```
 
-or, if you are operating as the app user directly:
+If you are using PM2 directly as the app user:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-api
