@@ -10,7 +10,7 @@ Why:
 - they add realtime media infrastructure, not just UI work
 - forcing them into the current chat/MLS path would create unnecessary complexity
 
-Current direction when we return to this:
+Current direction soon:
 
 - keep chat and MLS separate from call media
 - use dedicated call infrastructure instead of building raw call orchestration into the current stack

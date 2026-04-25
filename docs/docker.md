@@ -145,4 +145,3 @@ docker compose exec scylla cqlsh
 - If PM2 or another local service is already using these ports, use the
   throwaway host port command above. No need to touch the running PM2 process
   just to test Docker.
-- Scylla can be slow to become healthy on the first boot. Let it breathe.

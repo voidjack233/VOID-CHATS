@@ -8,7 +8,7 @@ Read the next few sections before trying to set it up.
 
 ## Before You Clone
 
-- This setup is only documented and realistically supported on Linux right now.
+- This setup is only supported on Linux.
 - The stack is not a one-command install.
 - This project includes encrypted chat/media work, but I am not claiming the project is secure or formally audited end to end.
 - There may still be hidden vulnerabilities, logic mistakes, or rough UX corners.
@@ -42,6 +42,10 @@ Short version:
 3. Create `VOID0000-api/.env`.
 4. Run PostgreSQL migrations.
 5. Start the API, gateway, and frontend in separate shells.
+
+or
+
+You can use Docker. it work on my machine :) 
 
 Commands:
 
@@ -77,9 +81,11 @@ It also shows the Nginx + Cloudflared layout used for deployment.
 
 ## The Story
 
-I work full-time as a store clerk and built VOID as a hobby project.
+I work full-time as a store clerk (now endo) and built VOID as a hobby project.
 
 I used AI tools while building it. They helped with implementation, debugging, comparing approaches, and checking edge cases. I still handled the direction, tradeoffs, QA, and decisions.
+
+The stack of the project sounds ambitious.. cant help, i always thinking "what if i have millions of users" (i only have 3 to 4 users atmost)
 
 ## Security Reality
 
@@ -212,3 +218,6 @@ Future notes live here:
 
 
 If you guys have alot of time and the Setup step is not working... (figure it out by yourself) XD
+
+
+One last note: if you see the root `package.json`, `package-lock.json`, or `server.js`, they are remnants from the early development setup. The app used to run the frontend and Express backend from the repo root. The current setup uses `VOID0000-www`, `VOID0000-api`, and `VOID0000-api/void_gateway`, so those root files are not part of the normal run path.

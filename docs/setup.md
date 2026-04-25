@@ -388,7 +388,6 @@ So the honest answer is:
 
 ## Known Setup Notes
 
-- This repo is not Docker-first yet.
 - The MLS / encrypted-chat path depends on `ts-mls`, which upstream says is not formally audited.
 - Forgot-password chat recovery on a fresh device is still a known limitation.
 - Presence and full friend-list traffic use separate endpoints and separate rate-limit buckets.
@@ -397,3 +396,4 @@ If you want the higher-level explanation of how the project fits together, read:
 
 - [../README.md](../README.md)
 - [../VOID0000-www/docs/project-flow-map.md](../VOID0000-www/docs/project-flow-map.md)
+
