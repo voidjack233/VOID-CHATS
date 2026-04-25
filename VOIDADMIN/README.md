@@ -42,3 +42,5 @@ http://127.0.0.1:4310
 - It can update user email, password, and verification state.
 - If you want different credentials or port, create a local `.env` in `VOIDADMIN/`.
 - If you expose it beyond localhost, put it behind HTTPS and an extra network restriction if possible.
+
+- This only work in Linux setup not tested yet in docker

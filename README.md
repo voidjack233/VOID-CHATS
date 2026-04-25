@@ -119,7 +119,7 @@ What that means:
 - the MLS path is real
 - the MLS path is still not something I would market as a formally audited messenger
 
-One more honest implementation note:
+One more implementation note:
 
 - during login or explicit encrypted-chat recovery, the frontend may keep the raw account password in browser memory briefly so it can finish password-derived key restore / backup work
 - that password is not meant to persist in `localStorage`, `sessionStorage`, or IndexedDB
