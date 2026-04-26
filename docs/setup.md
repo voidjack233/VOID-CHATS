@@ -251,10 +251,24 @@ Example content:
 ```nginx
 server {
     listen 80;
-    server_name your-domain.example *.your-domain.example;
+    server_name www.your-domain.example;
+
+    return 301 https://your-domain.example$request_uri;
+}
+
+server {
+    listen 80;
+    server_name your-domain.example;
     
     root /var/www/your-frontend-build;
     index index.html;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.your-domain.example; font-src 'self' data:; connect-src 'self' https://api.your-domain.example wss://api.your-domain.example https://cdn.your-domain.example; media-src 'self' data: blob: https://cdn.your-domain.example; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=(self), fullscreen=(self)" always;
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -263,6 +277,12 @@ server {
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
         expires 1y;
         add_header Cache-Control "public, immutable";
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.your-domain.example; font-src 'self' data:; connect-src 'self' https://api.your-domain.example wss://api.your-domain.example https://cdn.your-domain.example; media-src 'self' data: blob: https://cdn.your-domain.example; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=(self), fullscreen=(self)" always;
     }
 }
 ```
@@ -373,8 +393,8 @@ If you deploy under a different domain, you will need to change them.
 
 Important files:
 
-- `VOID0000-www/index.html`
-  currently redirects the `www` host to the apex host
+- `docs/nginx-frontend-only.example.conf`
+  redirects the `www` host to the apex host and sets frontend security headers
 - `VOID0000-api/server/utils/cookieConfig.js`
   currently sets a project-specific cookie domain in production
 - `VOID0000-api/server/middleware/xss/csp.js`
@@ -396,4 +416,3 @@ If you want the higher-level explanation of how the project fits together, read:
 
 - [../README.md](../README.md)
 - [../VOID0000-www/docs/project-flow-map.md](../VOID0000-www/docs/project-flow-map.md)
-
