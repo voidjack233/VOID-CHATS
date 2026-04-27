@@ -260,6 +260,14 @@ export const useConversationHandshake = ({
   useEffect(() => {
     let ignore = false;
     let scheduledPrepareRetry: number | null = null;
+    let keySetupTimeout: number | null = null;
+
+    const clearKeySetupTimeout = () => {
+      if (keySetupTimeout != null) {
+        window.clearTimeout(keySetupTimeout);
+        keySetupTimeout = null;
+      }
+    };
 
     const setupConversation = async () => {
       if (!activeConversation || !user?.id) return;
@@ -268,6 +276,31 @@ export const useConversationHandshake = ({
       const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
       const keyLookupConversation = getKeyLookupConversation(activeConversation);
       const preparingRetryKey = `${keyScopeId}:${requiredGroupVersion || 'none'}`;
+
+      setEncryptionError(null);
+      setConversationSecurityState(createConversationSecurityState({
+        status: 'recovering',
+        reason: 'preparing',
+        message: 'Preparing secure chat...',
+        detail: 'Messages and sending will unlock once encryption keys are ready.',
+        canSend: false,
+        canRetry: false,
+        showCachedHistoryFallback: true,
+      }));
+      clearKeySetupTimeout();
+      keySetupTimeout = window.setTimeout(() => {
+        if (ignore) return;
+        setConversationSecurityState(createConversationSecurityState({
+          status: 'blocked',
+          reason: 'key_load_failed',
+          message: 'Secure chat is taking longer than expected.',
+          detail: 'Check your connection, or close and reopen this conversation to retry key setup.',
+          canSend: false,
+          canRetry: true,
+          showCachedHistoryFallback: true,
+        }));
+        setEncryptionError('Secure chat is taking longer than expected.');
+      }, 12_000);
 
       console.log('[HANDSHAKE] starting conversation handshake', {
         conversation_id: activeConversation.id,
@@ -289,6 +322,7 @@ export const useConversationHandshake = ({
           key_version: cached.version,
           required_group_version: requiredGroupVersion ?? null,
         });
+        clearKeySetupTimeout();
         setEncryptionError(null);
         setConversationSecurityState(getReadyConversationSecurityState());
         setMembers(cached.members);
@@ -411,6 +445,7 @@ export const useConversationHandshake = ({
             : undefined;
 
         if (activeConversation.type === 'dm' && !peerId) {
+          clearKeySetupTimeout();
           setConversationSecurityState(createConversationSecurityState({
             status: 'blocked',
             reason: 'recipient_details_missing',
@@ -462,6 +497,7 @@ export const useConversationHandshake = ({
               if (ignore) return;
               const dmReason = dmErr instanceof Error ? dmErr.message : String(dmErr || '');
               if (dmReason.includes('DM peer device is not ready')) {
+                clearKeySetupTimeout();
                 setConversationSecurityState(createConversationSecurityState({
                   status: 'blocked',
                   reason: 'peer_not_ready',
@@ -474,6 +510,7 @@ export const useConversationHandshake = ({
                 return;
               }
               if (dmReason.includes('DM peer could not be resolved')) {
+                clearKeySetupTimeout();
                 setConversationSecurityState(createConversationSecurityState({
                   status: 'blocked',
                   reason: 'recipient_details_missing',
@@ -530,6 +567,7 @@ export const useConversationHandshake = ({
         const { key, version } = keyResult;
 
         if (ignore) return;
+        clearKeySetupTimeout();
 
         console.log('[HANDSHAKE] resolved encryption key', {
           conversation_id: activeConversation.id,
@@ -579,6 +617,7 @@ export const useConversationHandshake = ({
 
       } catch (err: any) {
         if (ignore) return;
+        clearKeySetupTimeout();
         console.error('[HANDSHAKE] failed', {
           conversation_id: activeConversation?.id,
           conversation_type: activeConversation?.type,
@@ -769,6 +808,7 @@ export const useConversationHandshake = ({
       if (scheduledPrepareRetry != null) {
         window.clearTimeout(scheduledPrepareRetry);
       }
+      clearKeySetupTimeout();
     };
   }, [
     activeConversation?.id,
@@ -1019,6 +1059,16 @@ export const useConversationHandshake = ({
 
   const retryHandshake = () => {
     setEncryptionKey(null);
+    setEncryptionError(null);
+    setConversationSecurityState(createConversationSecurityState({
+      status: 'recovering',
+      reason: 'preparing',
+      message: 'Preparing secure chat...',
+      detail: 'Messages and sending will unlock once encryption keys are ready.',
+      canSend: false,
+      canRetry: false,
+      showCachedHistoryFallback: true,
+    }));
     setHandshakeRetryToken((t) => t + 1);
   };
 

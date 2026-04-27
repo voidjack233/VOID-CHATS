@@ -117,14 +117,12 @@ const MessageInput = (props: MessageInputProps) => {
   const hasCodeFenceDraft = text.includes('```');
   const showComposerPreview = text.length > 0 && !hasCodeFenceDraft;
   const isGroupConversation = props.conversation.type === 'group';
-  const canBootstrapDmOnSend =
-    props.conversation.type === 'dm' &&
-    Boolean(props.currentUserId) &&
-    Boolean(props.conversation.dm_user_id) &&
-    props.conversationSecurityState?.canSend !== false;
   const inputDisabled =
     props.conversationSecurityState?.canSend === false ||
-    (!encryptionKey && !canBootstrapDmOnSend);
+    !encryptionKey;
+  const isSecureChatPreparing =
+    !encryptionKey &&
+    props.conversationSecurityState?.status !== 'blocked';
 
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [activeMentionQuery, setActiveMentionQuery] = useState<MentionQueryState | null>(null);
@@ -592,7 +590,7 @@ const MessageInput = (props: MessageInputProps) => {
           disabled={!canSend}
           className="text-void-text-muted hover:text-void-accent ml-3 pb-1 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
-          {sending ? (
+          {sending || isSecureChatPreparing ? (
             <Loader2 className="w-5 h-5 animate-spin" />
           ) : (
             <Send className="w-5 h-5" />

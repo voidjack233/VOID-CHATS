@@ -298,12 +298,6 @@ export const useMessageInput = ({
     }
   }, [addFiles, attachmentsAllowed]);
 
-  const canBootstrapDmOnSend =
-    conversation.type === 'dm' &&
-    Boolean(currentUserId) &&
-    Boolean(conversation.dm_user_id) &&
-    conversationSecurityState?.canSend !== false;
-
   const resolveSendCrypto = useCallback(async (): Promise<{
     key: CryptoKey;
     version: number;
@@ -391,7 +385,7 @@ export const useMessageInput = ({
       return 'Secure chat recovery required before sending';
     }
 
-    if (!encryptionKey && !canBootstrapDmOnSend) return 'Setting up encryption...';
+    if (!encryptionKey) return 'Setting up encryption...';
     if (!editingMessage && slowmodeRemaining > 0) {
       return `Slowmode active: wait ${slowmodeRemaining}s`;
     }
@@ -407,7 +401,7 @@ export const useMessageInput = ({
     slowmodeRemaining > 0 &&
     !['owner', 'admin'].includes(conversation.role);
 
-  const hasSendCrypto = !!encryptionKey || canBootstrapDmOnSend;
+  const hasSendCrypto = !!encryptionKey;
 
   const canSend =
     !sending &&

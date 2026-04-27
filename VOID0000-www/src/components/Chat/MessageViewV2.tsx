@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown } from 'lucide-react';
+import { ArrowDown, Loader2 } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
@@ -299,6 +299,10 @@ const MessageViewV2 = memo(function MessageViewV2({
         encryptionError
       ),
   );
+  const isSecureChatPreparing =
+    !encryptionKey &&
+    !encryptionError &&
+    conversationSecurityState?.status !== 'blocked';
 
   // ── Preview cache ──
   useEffect(() => {
@@ -713,11 +717,27 @@ const MessageViewV2 = memo(function MessageViewV2({
         )}
 
         {listItems.length === 0 ? (
+          isSecureChatPreparing ? (
+            <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full border border-blue-400/25 bg-blue-500/10">
+                <Loader2 className="h-5 w-5 animate-spin text-blue-300" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-void-text">
+                  Preparing secure chat...
+                </p>
+                <p className="mt-1 text-xs text-void-text-muted">
+                  Waiting for encryption keys before messages can load.
+                </p>
+              </div>
+            </div>
+          ) : (
           <p className="text-center text-void-text-muted text-sm py-8">
             {showCachedHistoryFallback
               ? conversationSecurityState?.detail || 'Cached history will appear here after this device regains the latest conversation keys.'
               : 'No messages yet. Say something!'}
           </p>
+          )
         ) : (
           listItems.map((item) => (
             <Fragment key={item.kind === 'message' ? item.message.message_id : item.id}>

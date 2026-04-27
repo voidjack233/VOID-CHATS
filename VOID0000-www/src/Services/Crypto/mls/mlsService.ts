@@ -223,18 +223,32 @@ export class MlsService {
     // Use server-provided thresholds when available, fall back to caller args.
     const effectiveTarget = Math.max(target, status.targetRecommended || target);
     const effectiveMinimum = Math.max(minimum, status.minimumRequired || minimum);
+    const localKeyPackages = await mlsStorageService.listKeyPackages(userId);
+    const localUsablePackages = localKeyPackages.filter(
+      (record) => !record.consumedAt && Boolean(record.privateData),
+    );
+    const localPublishedUsableCount = localUsablePackages.filter(
+      (record) => Boolean(record.publishedAt),
+    ).length;
 
-    if (status.availableCount >= effectiveTarget) {
+    if (status.availableCount >= effectiveTarget && localPublishedUsableCount >= effectiveMinimum) {
       return { published: 0, serverCount: status.availableCount };
     }
 
-    const deficit = effectiveTarget - status.availableCount;
+    const serverDeficit = Math.max(0, effectiveTarget - status.availableCount);
+    const localUsableDeficit = Math.max(0, effectiveMinimum - localPublishedUsableCount);
+    const desiredLocalUsableTopUp =
+      localUsableDeficit > 0
+        ? Math.max(localUsableDeficit, effectiveTarget - localPublishedUsableCount)
+        : 0;
+    const deficit = Math.max(serverDeficit, desiredLocalUsableTopUp);
     let published = 0;
 
-    // Stage 1: publish any genuinely local-unpublished packages (ones that
-    // were generated but never reached the server).  Already-published
-    // packages may have been consumed server-side — never re-publish them.
-    const localUnpublished = await mlsStorageService.listUnpublishedKeyPackages(userId);
+    // Stage 1: publish any genuinely local-unpublished packages that this
+    // device can open. Server-synced public-only packages are not enough for
+    // incoming welcomes because this browser lacks their private half.
+    const localUnpublished = (await mlsStorageService.listUnpublishedKeyPackages(userId))
+      .filter((record) => Boolean(record.privateData));
     const stage1Candidates = localUnpublished.slice(0, deficit);
     for (const record of stage1Candidates) {
       const ok = await this.publishKeyPackageRecord(record, 'server_repair');
@@ -268,6 +282,7 @@ export class MlsService {
         target: effectiveTarget,
         minimum: effectiveMinimum,
         published,
+        local_published_usable_count: localPublishedUsableCount,
       });
     } else {
       console.log('[MLS_KEY_PACKAGE] server reserve topped up', {
@@ -275,6 +290,7 @@ export class MlsService {
         server_count: finalCount,
         target: effectiveTarget,
         published,
+        local_published_usable_count: localPublishedUsableCount,
       });
     }
 
