@@ -4,6 +4,7 @@ import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext'; 
 import { gateway } from '../../Gateway/gateway';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
+import { fetchAppBootstrap } from '../../bootstrap';
 
 export interface FriendRequest {
   friendship_id: number;
@@ -71,6 +72,16 @@ export function FriendProvider({ children }: { children: ReactNode }) {
     if (!user) return;
     try {
       setLoading(true);
+      if (!hasFetched.current) {
+        const bootstrap = await fetchAppBootstrap();
+        if (bootstrap?.user?.id === user.id && bootstrap.friend_requests) {
+          setIncoming(bootstrap.friend_requests.incoming || []);
+          setOutgoing(bootstrap.friend_requests.outgoing || []);
+          hasFetched.current = true;
+          return;
+        }
+      }
+
       const [inRes, outRes] = await Promise.all([
         fetch(`${API_URL}/api/friends/requests/incoming`, { credentials: 'include' }),
         fetch(`${API_URL}/api/friends/requests/outgoing`, { credentials: 'include' }),

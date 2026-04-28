@@ -1,6 +1,7 @@
 // src/Services/Auth/UserContext.tsx
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { authService, fetchWithAuth } from './authServiceApi';
+import { clearAppBootstrap, fetchAppBootstrap } from '../bootstrap';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
@@ -443,8 +444,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const fetchFullUser = async (): Promise<User | null> => {
+  const fetchFullUser = async (force = false): Promise<User | null> => {
     try {
+      if (!force) {
+        const bootstrap = await fetchAppBootstrap();
+        if (bootstrap?.user?.username) {
+          return bootstrap.user;
+        }
+      }
+
       const authResponse = await fetchWithAuth('/api/me');
       if (!authResponse.ok) return null;
       const authData = await authResponse.json();
@@ -466,7 +474,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const refreshUser = async () => {
     try {
-      const freshUser = await fetchFullUser();
+      const freshUser = await fetchFullUser(true);
       if (freshUser) setUser(freshUser as User);
     } catch (err) {
       console.error('Failed to refresh user:', err);
@@ -495,6 +503,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     gateway.disconnect();
     clearDecryptedAttachmentObjectUrlCache();
     clearLoginPassword();
+    clearAppBootstrap();
     setKeyStatus('UNINITIALIZED');
     setKeyStatusLoading(false);
     clearMlsRecoveryGate();

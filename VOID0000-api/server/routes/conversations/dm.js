@@ -21,6 +21,10 @@ router.post('/:userId', async (req, res) => {
   try {
     client = await pool.connect();
     await client.query('BEGIN');
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1)::bigint)',
+      [`dm:${userA}:${userB}`]
+    );
 
     const existing = await client.query(
       `SELECT dp.conversation_id, c.public_id

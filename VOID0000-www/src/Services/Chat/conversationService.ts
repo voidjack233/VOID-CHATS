@@ -1,4 +1,5 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
+import { fetchAppBootstrap } from '../bootstrap';
 import { keyManager } from '../Crypto/keyManager';
 import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove, reuploadGroupState } from './chatCryptoService';
 import type {
@@ -19,6 +20,8 @@ import {
   withMembershipLock,
 } from './chatUtils';
 
+let usedBootstrapConversations = false;
+
 async function rollbackFailedRotateAdd(
   keyConversationId: string,
   memberIds: string[],
@@ -38,6 +41,14 @@ async function rollbackFailedRotateAdd(
 }
 
 export async function getConversations(): Promise<Conversation[]> {
+  if (!usedBootstrapConversations) {
+    const bootstrap = await fetchAppBootstrap();
+    if (Array.isArray(bootstrap?.conversations)) {
+      usedBootstrapConversations = true;
+      return bootstrap.conversations;
+    }
+  }
+
   const response = await fetchWithAuth(CHAT_API_PREFIX);
   const data = await response.json();
   if (!data.success) throw new Error(data.error);

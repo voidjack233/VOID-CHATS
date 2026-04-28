@@ -105,6 +105,78 @@ services:
       - api-node-modules:/app/node_modules
     command: ["npm", "run", "dev"]
 
+  message-api:
+    build:
+      context: ./VOID0000-api
+    env_file:
+      - ./docker/dev.env
+    environment:
+      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
+      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      MESSAGE_SERVICE_PORT: 3002
+      PORT: 3002
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${HOST_MESSAGE_API_PORT:-3002}:3002"
+    volumes:
+      - ./VOID0000-api:/app
+      - api-node-modules:/app/node_modules
+    command: ["npm", "run", "dev:messages"]
+
+  conversation-api:
+    build:
+      context: ./VOID0000-api
+    env_file:
+      - ./docker/dev.env
+    environment:
+      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
+      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      CONVERSATION_SERVICE_PORT: 3005
+      PORT: 3005
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${HOST_CONVERSATION_API_PORT:-3005}:3005"
+    volumes:
+      - ./VOID0000-api:/app
+      - api-node-modules:/app/node_modules
+    command: ["npm", "run", "dev:conversations"]
+
+  social-api:
+    build:
+      context: ./VOID0000-api
+    env_file:
+      - ./docker/dev.env
+    environment:
+      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
+      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      SOCIAL_SERVICE_PORT: 3004
+      PORT: 3004
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${HOST_SOCIAL_API_PORT:-3004}:3004"
+    volumes:
+      - ./VOID0000-api:/app
+      - api-node-modules:/app/node_modules
+    command: ["npm", "run", "dev:social"]
+
   gateway:
     build:
       context: ./VOID0000-api/void_gateway
@@ -121,6 +193,25 @@ services:
       - gateway-build:/app/_build
     command: ["mix", "phx.server"]
 
+  worker:
+    build:
+      context: ./VOID0000-api
+    env_file:
+      - ./docker/dev.env
+    environment:
+      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    volumes:
+      - ./VOID0000-api:/app
+      - api-node-modules:/app/node_modules
+    command: ["npm", "run", "dev:workers"]
+
   frontend:
     build:
       context: ./VOID0000-www
@@ -128,7 +219,11 @@ services:
       - ./docker/dev.env
     depends_on:
       - api
+      - message-api
+      - conversation-api
+      - social-api
       - gateway
+      - worker
     ports:
       - "${HOST_FRONTEND_PORT:-5173}:5173"
     volumes:

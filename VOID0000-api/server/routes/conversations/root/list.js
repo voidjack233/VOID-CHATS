@@ -103,12 +103,9 @@ async function hydrateConversationPreview(row, userId) {
   }
 }
 
-router.get('/', async (req, res) => {
-  const userId = req.user.id;
-
-  try {
-    const result = await pool.query(
-      `SELECT
+export async function getUserConversations(userId) {
+  const result = await pool.query(
+    `SELECT
          c.id,
          c.public_id,
          c.type,
@@ -184,17 +181,23 @@ router.get('/', async (req, res) => {
            )
          )
        ORDER BY c.updated_at DESC`,
-      [userId]
-    );
+    [userId]
+  );
 
-    const conversations = await Promise.all(
-      result.rows.map(async (row) => {
-        const hydrated = await hydrateConversationPreview(row, userId);
-        const { storage_conversation_id, ...conversationRow } = hydrated;
-        return normalizeConversationRow(conversationRow);
-      })
-    );
+  return Promise.all(
+    result.rows.map(async (row) => {
+      const hydrated = await hydrateConversationPreview(row, userId);
+      const { storage_conversation_id, ...conversationRow } = hydrated;
+      return normalizeConversationRow(conversationRow);
+    })
+  );
+}
 
+router.get('/', async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const conversations = await getUserConversations(userId);
     res.json({ success: true, conversations });
   } catch (err) {
     console.error('Conversations GET error:', err);

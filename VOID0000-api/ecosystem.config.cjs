@@ -23,7 +23,7 @@ if (clusterEnabled) {
   // CLUSTER MODE: multiple API workers + external gateway transport
   apps.push({
     name: 'voidapp-api',
-    script: 'server/server.js',
+    script: 'server/entrypoints/account-server.js',
     instances: workers,
     exec_mode: 'cluster',
     env: {
@@ -38,7 +38,7 @@ if (clusterEnabled) {
   // SINGLE INSTANCE API with external Phoenix gateway.
   apps.push({
     name: 'voidapp-api',
-    script: 'server/server.js',
+    script: 'server/entrypoints/account-server.js',
     instances: 1,
     exec_mode: 'fork',
     env: {
@@ -52,6 +52,48 @@ if (clusterEnabled) {
 }
 
 apps.push({
+  name: 'voidapp-message-service',
+  script: 'server/entrypoints/message-server.js',
+  instances: 1,
+  exec_mode: 'fork',
+  env: {
+    NODE_ENV: 'production',
+    MESSAGE_SERVICE_PORT: 3002,
+  },
+  max_memory_restart: '350M',
+  watch: false,
+  autorestart: true,
+});
+
+apps.push({
+  name: 'voidapp-conversation-service',
+  script: 'server/entrypoints/conversation-server.js',
+  instances: 1,
+  exec_mode: 'fork',
+  env: {
+    NODE_ENV: 'production',
+    CONVERSATION_SERVICE_PORT: 3005,
+  },
+  max_memory_restart: '350M',
+  watch: false,
+  autorestart: true,
+});
+
+apps.push({
+  name: 'voidapp-social-profile-service',
+  script: 'server/entrypoints/social-server.js',
+  instances: 1,
+  exec_mode: 'fork',
+  env: {
+    NODE_ENV: 'production',
+    SOCIAL_SERVICE_PORT: 3004,
+  },
+  max_memory_restart: '350M',
+  watch: false,
+  autorestart: true,
+});
+
+apps.push({
   name: 'voidapp-gateway-phoenix',
   script: 'startup/run-phoenix-gateway.sh',
   instances: 1,
@@ -63,6 +105,19 @@ apps.push({
     GATEWAY_PORT: 4001,
   },
   max_memory_restart: '300M',
+  watch: false,
+  autorestart: true,
+});
+
+apps.push({
+  name: 'voidapp-worker-service',
+  script: 'server/entrypoints/worker-server.js',
+  instances: 1,
+  exec_mode: 'fork',
+  env: {
+    NODE_ENV: 'production',
+  },
+  max_memory_restart: '350M',
   watch: false,
   autorestart: true,
 });

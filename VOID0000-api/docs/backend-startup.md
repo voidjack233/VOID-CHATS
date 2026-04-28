@@ -4,7 +4,7 @@ This note explains how the current `VOID0000-api` backend starts up on a machine
 
 It covers:
 
-- the Node API
+- the Node API services
 - the Phoenix websocket gateway
 - Postgres
 - Valkey
@@ -19,15 +19,30 @@ The backend is not one single process.
 At runtime it is split into:
 
 - `voidapp-api`
-  - Node/Express API
-  - runs from `server/server.js`
+  - account/control API
+  - runs from `server/entrypoints/account-server.js`
   - default port: `3001`
+- `voidapp-message-service`
+  - messages, reactions, and attachment uploads
+  - runs from `server/entrypoints/message-server.js`
+  - default port: `3002`
+- `voidapp-social-profile-service`
+  - profiles, friends, and user search
+  - runs from `server/entrypoints/social-server.js`
+  - default port: `3004`
+- `voidapp-conversation-service`
+  - conversations, groups, members, invites, and MLS metadata
+  - runs from `server/entrypoints/conversation-server.js`
+  - default port: `3005`
 - `voidapp-gateway-phoenix`
   - Phoenix websocket gateway
   - runs from `startup/run-phoenix-gateway.sh`
   - default port: `4001`
+- `voidapp-worker-service`
+  - image jobs, cleanup, and presence fanout
+  - runs from `server/entrypoints/worker-server.js`
 
-PM2 manages those two app processes.
+PM2 manages those app processes.
 
 PM2 does **not** start the databases or object storage for you.
 
@@ -53,7 +68,11 @@ That migration command now covers:
 Main runtime files:
 
 - `ecosystem.config.cjs`
-- `server/server.js`
+- `server/entrypoints/account-server.js`
+- `server/entrypoints/message-server.js`
+- `server/entrypoints/social-server.js`
+- `server/entrypoints/conversation-server.js`
+- `server/entrypoints/worker-server.js`
 - `server/config.json`
 - `startup/run-phoenix-gateway.sh`
 - `void_gateway/config/runtime.exs`
@@ -72,12 +91,20 @@ PM2 reads:
 
 - `ecosystem.config.cjs`
 
-That file defines two apps:
+That file defines the backend apps:
 
 1. `voidapp-api`
-   - script: `server/server.js`
-2. `voidapp-gateway-phoenix`
+   - script: `server/entrypoints/account-server.js`
+2. `voidapp-message-service`
+   - script: `server/entrypoints/message-server.js`
+3. `voidapp-conversation-service`
+   - script: `server/entrypoints/conversation-server.js`
+4. `voidapp-social-profile-service`
+   - script: `server/entrypoints/social-server.js`
+5. `voidapp-gateway-phoenix`
    - script: `startup/run-phoenix-gateway.sh`
+6. `voidapp-worker-service`
+   - script: `server/entrypoints/worker-server.js`
 
 `server/config.json` controls:
 
@@ -92,31 +119,26 @@ If it is not, the backend intentionally fails fast.
 
 ## Node API Startup Flow
 
-Entry:
+Account/control entry:
 
-- `server/server.js`
+- `server/entrypoints/account-server.js`
 
 Startup sequence:
 
 1. Load `.env`
-2. Read `server/config.json`
-3. Verify `gateway.mode === "phoenix"`
-4. Build the Express app
-5. Register middleware and routes
-6. Initialize Valkey pub/sub publisher
-7. Initialize the presence fanout subscriber bridge
-8. Start the image worker
-9. Start the HTTP server on `PORT` (default `3001`)
+2. Build the Express app
+3. Register account, auth, security, preferences, CSRF, and captcha routes
+4. Start the HTTP server on `PORT` (default `3001`)
 
 Important detail:
 
 The Node API does **not** run the websocket server itself anymore.
 
-It only:
+The Node service set:
 
-- serves REST/API routes
-- publishes realtime events into Valkey
-- bridges some presence-related fanout logic
+- serves REST/API routes across the account, message, social, and conversation services
+- publishes realtime events into Valkey where needed
+- runs background cleanup, image processing, and presence fanout in `voidapp-worker-service`
 
 So seeing `phoenix gateway mode` in Node logs means:
 

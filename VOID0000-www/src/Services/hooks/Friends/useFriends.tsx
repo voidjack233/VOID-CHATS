@@ -4,6 +4,7 @@ import { ensureCSRFToken, fetchWithAuth } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
+import { fetchAppBootstrap } from '../../bootstrap';
 
 const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
 
@@ -59,6 +60,17 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
         setLoading(true);
         setError(null);
 
+        if (!hasFetched.current) {
+          const bootstrap = await fetchAppBootstrap();
+          const bootstrapFriends = bootstrap?.friends;
+          if (bootstrap?.user?.id === user?.id && Array.isArray(bootstrapFriends)) {
+            setFriends(bootstrapFriends);
+            hasFetched.current = true;
+            lastFetchAtRef.current = Date.now();
+            return;
+          }
+        }
+
         const res = await fetchWithAuth('/api/friends');
 
         if (!res.ok) throw new Error('Failed to fetch friends');
@@ -77,7 +89,7 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
 
     fetchInFlightRef.current = task;
     return task;
-  }, []);
+  }, [user?.id]);
 
   const removeFriend = async (friendshipId: number) => {
     try {

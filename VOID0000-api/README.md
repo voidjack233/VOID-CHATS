@@ -1,14 +1,18 @@
 # VOID0000 API
 
-Backend service for VOID0000. This package owns the REST API, authentication, user profiles, friendships, conversations, media uploads, security middleware, database migrations, and background image processing.
+Backend services for VOID0000. This package owns authentication, user profiles, friendships, conversations, messages, media uploads, security middleware, database migrations, and background workers.
 
-Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. The Node API publishes realtime events through Valkey and serves the HTTP API on port `3001` by default.
+Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. The Node services publish realtime events through Valkey.
 
 ## Runtime Shape
 
-- `server/server.js` - Node/Express API entrypoint.
+- `server/entrypoints/account-server.js` - account/control API on port `3001`.
+- `server/entrypoints/message-server.js` - messages, reactions, and attachment uploads on port `3002`.
+- `server/entrypoints/social-server.js` - profiles, friends, and user search on port `3004`.
+- `server/entrypoints/conversation-server.js` - conversations, groups, members, invites, and MLS metadata on port `3005`.
+- `server/entrypoints/worker-server.js` - background workers, cleanup, and presence fanout.
 - `void_gateway` - Phoenix websocket gateway.
-- `ecosystem.config.cjs` - PM2 process definition for the API and gateway.
+- `ecosystem.config.cjs` - PM2 process definitions.
 - `db/migrations` - canonical Postgres schema migrations.
 - `db/scylla-migrations` - canonical ScyllaDB message storage migrations.
 - `docs/backend-startup.md` - detailed startup notes.
@@ -37,7 +41,7 @@ npm run migrate
 npm run dev
 ```
 
-The development API runs on:
+The default development account/control API runs on:
 
 ```text
 http://localhost:3001
@@ -54,7 +58,11 @@ pm2 start ecosystem.config.cjs --update-env
 Expected PM2 apps:
 
 - `voidapp-api`
+- `voidapp-message-service`
+- `voidapp-social-profile-service`
+- `voidapp-conversation-service`
 - `voidapp-gateway-phoenix`
+- `voidapp-worker-service`
 
 ## Scripts
 
