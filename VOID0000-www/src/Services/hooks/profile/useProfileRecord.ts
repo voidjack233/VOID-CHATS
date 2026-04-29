@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { isGeneratedFallbackAvatarUrl } from '../../Chat/avatarFallback';
+import { API_URL } from '../../config';
 
 export interface ProfileRecord {
   id: string;
@@ -12,35 +13,51 @@ export interface ProfileRecord {
   created_at: string;
 }
 
-import { API_URL } from '../../config';
 const PROFILE_CACHE_KEY = 'void_profile';
+const PROFILE_CACHE_EVENT = 'void:profile-cache-update';
 
-const getCachedProfile = (profileId: string): ProfileRecord | null => {
-  const cached = localStorage.getItem(`${PROFILE_CACHE_KEY}_${profileId}`);
-  if (!cached) return null;
-
-  const parsed = JSON.parse(cached) as ProfileRecord;
-  if (isGeneratedFallbackAvatarUrl(parsed.avatar_url)) {
-    parsed.avatar_url = undefined;
-  }
-  return parsed;
+type ProfileCacheEventDetail = {
+  profileId: string;
+  profile: ProfileRecord | null;
 };
 
-const setCachedProfile = (profileId: string, data: ProfileRecord) => {
+const getCachedProfile = (profileId: string): ProfileRecord | null => {
+  try {
+    const cached = localStorage.getItem(`${PROFILE_CACHE_KEY}_${profileId}`);
+    if (!cached) return null;
+
+    const parsed = JSON.parse(cached) as ProfileRecord;
+    if (isGeneratedFallbackAvatarUrl(parsed.avatar_url)) {
+      parsed.avatar_url = undefined;
+    }
+    return parsed;
+  } catch {
+    localStorage.removeItem(`${PROFILE_CACHE_KEY}_${profileId}`);
+    return null;
+  }
+};
+
+const notifyProfileCacheUpdate = (profileId: string, profile: ProfileRecord | null) => {
+  window.dispatchEvent(new CustomEvent<ProfileCacheEventDetail>(PROFILE_CACHE_EVENT, {
+    detail: { profileId, profile },
+  }));
+};
+
+export const writeProfileCache = (profileId: string, data: ProfileRecord) => {
   localStorage.setItem(`${PROFILE_CACHE_KEY}_${profileId}`, JSON.stringify(data));
+  notifyProfileCacheUpdate(profileId, data);
 };
 
 export const clearProfileCache = (profileId: string) => {
   localStorage.removeItem(`${PROFILE_CACHE_KEY}_${profileId}`);
+  notifyProfileCacheUpdate(profileId, null);
 };
 
 export const useProfileRecord = (profileId: string) => {
-  const cached = getCachedProfile(profileId);
-  
-  const [profile, setProfile] = useState<ProfileRecord | null>(cached);
-  const [draftProfile, setDraftProfile] = useState<ProfileRecord | null>(cached);
+  const [profile, setProfile] = useState<ProfileRecord | null>(() => getCachedProfile(profileId));
+  const [draftProfile, setDraftProfile] = useState<ProfileRecord | null>(() => getCachedProfile(profileId));
   const [isEditing, setIsEditing] = useState(false);
-  const [loading, setLoading] = useState(!cached);
+  const [loading, setLoading] = useState(() => !getCachedProfile(profileId));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,14 +85,23 @@ export const useProfileRecord = (profileId: string) => {
 
   useEffect(() => {
     if (!profileId || !/^\d+$/.test(profileId)) {
+      setProfile(null);
+      setDraftProfile(null);
       setError('No profile ID provided');
       setLoading(false);
       return;
     }
 
+    const cached = getCachedProfile(profileId);
     if (cached) {
+      setProfile(cached);
+      setDraftProfile(cached);
+      setError(null);
+      setLoading(false);
       return;
     }
+
+    let cancelled = false;
 
     const fetchProfile = async () => {
       setLoading(true);
@@ -93,22 +119,46 @@ export const useProfileRecord = (profileId: string) => {
         if (!res.ok) await handleFetchError(res, 'fetch');
 
         const data = await res.json();
-        
-        setCachedProfile(profileId, data);
+
+        if (cancelled) return;
+
+        writeProfileCache(profileId, data);
         setProfile(data);
         setDraftProfile(data);
       } catch (err: any) {
+        if (cancelled) return;
         setError(err.message || 'Failed to load profile');
       } finally {
+        if (cancelled) return;
         setLoading(false);
       }
     };
 
     fetchProfile();
-  }, [profileId, cached]);
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
 
-  const saveProfileFields = async () => {
-    if (!draftProfile) return;
+  useEffect(() => {
+    const handleProfileCacheUpdate = (event: Event) => {
+      const { profileId: updatedProfileId, profile: updatedProfile } =
+        (event as CustomEvent<ProfileCacheEventDetail>).detail || {};
+
+      if (updatedProfileId !== profileId) return;
+
+      setProfile(updatedProfile);
+      setDraftProfile(updatedProfile);
+      setError(null);
+      setLoading(false);
+    };
+
+    window.addEventListener(PROFILE_CACHE_EVENT, handleProfileCacheUpdate);
+    return () => window.removeEventListener(PROFILE_CACHE_EVENT, handleProfileCacheUpdate);
+  }, [profileId]);
+
+  const saveProfileFields = async (): Promise<ProfileRecord | null> => {
+    if (!draftProfile) return null;
 
     try {
       setSaving(true);
@@ -131,18 +181,21 @@ export const useProfileRecord = (profileId: string) => {
 
       const updatedProfile = await res.json();
 
+      const baseProfile = profile || draftProfile;
       const newProfileData = {
-        ...profile!,
+        ...baseProfile,
         display_name: updatedProfile.display_name ?? normalizedDisplayName,
         bio: updatedProfile.bio
       };
 
-      setCachedProfile(profileId, newProfileData);
+      writeProfileCache(profileId, newProfileData);
       setProfile(newProfileData);
       setDraftProfile(newProfileData);
       setIsEditing(false);
+      return newProfileData;
     } catch (err: any) {
       setError(err.message || 'Failed to save profile changes');
+      throw err;
     } finally {
       setSaving(false);
     }

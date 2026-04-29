@@ -2,13 +2,9 @@ import { useState } from 'react';
 import { Camera, Loader2, Save, CheckCircle } from 'lucide-react';
 import { ProfileFormSkeleton } from '../Skeleton';
 import { useUser } from '../../../Services/Auth/UserContext';
-import { useProfileRecord } from '../../../Services/hooks/profile/useProfileRecord';
+import { useProfileRecord, writeProfileCache } from '../../../Services/hooks/profile/useProfileRecord';
 import { useProfileAvatarUpload } from '../../../Services/hooks/profile/useProfileAvatarUpload';
 import UserAvatar from '../../common/UserAvatar';
-
-const updateLocalCache = (profileId: string, data: any) => {
-  localStorage.setItem(`void_profile_${profileId}`, JSON.stringify(data));
-};
 
 const ProfileTab = () => {
   const { user } = useUser();
@@ -97,25 +93,25 @@ const ProfileTab = () => {
         newAvatarUrl = await uploadProfileAvatar(pendingFile);
       }
 
-      await saveProfileFields();
+      const savedProfile = await saveProfileFields();
+      const baseProfile = savedProfile || profile || draftProfile;
+      if (!baseProfile) {
+        throw new Error('Profile is not loaded.');
+      }
 
-      setProfile((prev) => {
-        if (!prev) return null;
+      let finalAvatarUrl = newAvatarUrl || baseProfile.avatar_url;
+      if (newAvatarUrl) {
+        finalAvatarUrl = `${newAvatarUrl}?t=${Date.now()}`;
+      }
 
-        let finalAvatarUrl = newAvatarUrl || prev.avatar_url;
-        if (newAvatarUrl) {
-          finalAvatarUrl = `${newAvatarUrl}?t=${Date.now()}`;
-        }
+      const finalProfile = {
+        ...baseProfile,
+        avatar_url: finalAvatarUrl,
+      };
 
-        const finalProfile = {
-          ...prev,
-          avatar_url: finalAvatarUrl,
-        };
-
-        setDraftProfile(finalProfile);
-        updateLocalCache(profileId, finalProfile);
-        return finalProfile;
-      });
+      setProfile(finalProfile);
+      setDraftProfile(finalProfile);
+      writeProfileCache(profileId, finalProfile);
 
       setPendingFile(null);
       setPreviewUrl(null);
