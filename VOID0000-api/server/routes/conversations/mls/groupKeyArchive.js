@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
+import { mlsGroupKeyArchiveLimiter } from '../../../middleware/rate_limit.js';
 import {
   ensureSchema,
   MAX_BATCH_ITEMS,
@@ -15,7 +16,7 @@ import {
 
 const router = Router();
 
-router.post('/group-key-archive', async (req, res) => {
+router.post('/group-key-archive', mlsGroupKeyArchiveLimiter, async (req, res) => {
   const capabilities = resolveCapabilities();
   if (!capabilities.supported) {
     return notEnabled(res, 'group_state');

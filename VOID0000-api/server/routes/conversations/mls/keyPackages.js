@@ -2,6 +2,10 @@ import { Router } from 'express';
 import { pool } from '../../../db.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import {
+  mlsKeyPackageCheckLimiter,
+  mlsKeyPackagePublishLimiter,
+} from '../../../middleware/rate_limit.js';
+import {
   ensureSchema,
   getAvailableKeyPackageCount,
   isEnabledFor,
@@ -18,7 +22,7 @@ import {
 
 const router = Router();
 
-router.post('/key-packages', async (req, res) => {
+router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
   const capabilities = resolveCapabilities();
   if (!isEnabledFor(capabilities, 'key_packages')) {
     return notEnabled(res, 'key_packages');
@@ -96,7 +100,7 @@ router.post('/key-packages', async (req, res) => {
   }
 });
 
-router.get('/key-packages/:userId/check', async (req, res) => {
+router.get('/key-packages/:userId/check', mlsKeyPackageCheckLimiter, async (req, res) => {
   const capabilities = resolveCapabilities();
   if (!isEnabledFor(capabilities, 'key_packages')) {
     return notEnabled(res, 'key_packages');
@@ -132,7 +136,7 @@ router.get('/key-packages/:userId/check', async (req, res) => {
   }
 });
 
-router.get('/key-packages/:userId', async (req, res) => {
+router.get('/key-packages/:userId', mlsKeyPackageCheckLimiter, async (req, res) => {
   const capabilities = resolveCapabilities();
   if (!isEnabledFor(capabilities, 'key_packages')) {
     return notEnabled(res, 'key_packages');

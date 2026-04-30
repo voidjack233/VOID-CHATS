@@ -14,7 +14,7 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js');
 const { authenticateUser } = await import('../middleware/jwt.js');
-const { messageReactionToggleLimiter, messagesFetchLimiter } = await import('../middleware/rate_limit.js');
+const { messageReactionToggleLimiter } = await import('../middleware/rate_limit.js');
 const { noCache } = await import('../middleware/noCache.js');
 const { default: attachmentsRouter } = await import('../routes/conversations/attachments.js');
 const { default: batchReactionsRouter } = await import('../routes/conversations/batchReactions.js');
@@ -66,7 +66,6 @@ app.use(
   '/api/conversations/:conversationId/messages',
   noCache,
   authenticateUser,
-  messagesFetchLimiter,
   messagesRouter
 );
 app.use(

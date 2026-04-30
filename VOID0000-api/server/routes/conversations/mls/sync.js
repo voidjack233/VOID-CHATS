@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
+import { mlsSyncLimiter } from '../../../middleware/rate_limit.js';
 import {
   DEFAULT_SYNC_LIMIT,
   ensureSchema,
@@ -11,7 +12,7 @@ import {
 
 const router = Router();
 
-router.post('/sync', async (req, res) => {
+router.post('/sync', mlsSyncLimiter, async (req, res) => {
   const capabilities = resolveCapabilities();
   if (!capabilities.supported) {
     return res.json({

@@ -14,7 +14,6 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js');
 const { authenticateUser } = await import('../middleware/jwt.js');
-const { profileUpdateLimiter, avatarUploadLimiter } = await import('../middleware/rate_limit.js');
 const { default: profileReadRouter } = await import('../routes/user/profileRead.js');
 const { default: profileFieldsRouter } = await import('../routes/user/profileFields.js');
 const { default: profileAvatarRouter } = await import('../routes/user/profileAvatar.js');
@@ -56,8 +55,6 @@ app.get('/health', (_req, res) => {
 
 app.use(encryptedCSRFProtection);
 
-app.use('/api/users/profile', profileUpdateLimiter);
-app.use('/api/users/profile/avatar', avatarUploadLimiter);
 app.use('/api/users/search', userSearchRouter);
 app.use('/api/users', authenticateUser, profileFieldsRouter, profileAvatarRouter);
 app.use('/api/users', profileReadRouter);

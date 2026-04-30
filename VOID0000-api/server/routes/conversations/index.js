@@ -1,9 +1,6 @@
 import { Router } from 'express';
 import { authenticateUser } from '../../middleware/jwt.js';
-import {
-  messageReactionToggleLimiter,
-  messagesFetchLimiter,
-} from '../../middleware/rate_limit.js';
+import { messageReactionToggleLimiter } from '../../middleware/rate_limit.js';
 import attachmentsRouter from './attachments.js';
 import batchReactionsRouter from './batchReactions.js';
 import dmRouter from './dm.js';
@@ -26,7 +23,7 @@ router.use('/mls', authenticateUser, mlsRouter);
 router.use('/invite-links', inviteLinksRouter);
 router.use('/:conversationId/invites', authenticateUser, invitesRouter);
 router.use('/:conversationId/members', authenticateUser, membersRouter);
-router.use('/:conversationId/messages', authenticateUser, messagesFetchLimiter, messagesRouter);
+router.use('/:conversationId/messages', authenticateUser, messagesRouter);
 router.use(
   '/:conversationId/messages/:messageId/reactions',
   authenticateUser,

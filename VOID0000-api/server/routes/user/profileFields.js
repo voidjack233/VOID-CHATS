@@ -2,6 +2,7 @@ import express from 'express';
 import { pool as db } from '../../db.js';
 import { EVENTS } from '../../gateway/protocol.js';
 import { broadcastLiveEventToFriends } from '../../gateway/client.js';
+import { profileUpdateLimiter } from '../../middleware/rate_limit.js';
 
 const router = express.Router();
 
@@ -18,7 +19,7 @@ const authenticateUser = (req, res, next) => {
 router.use(authenticateUser);
 
 // PUT /api/users/profile
-router.put('/profile', async (req, res) => {
+router.put('/profile', profileUpdateLimiter, async (req, res) => {
   const profile_id = req.userProfileId; // Use authenticated user's profile_id
   const { display_name, bio } = req.body;
 

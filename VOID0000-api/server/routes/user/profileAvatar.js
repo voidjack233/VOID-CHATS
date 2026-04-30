@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import { EVENTS } from '../../gateway/protocol.js';
 import { broadcastLiveEventToFriends } from '../../gateway/client.js';
 import { profileCache } from '../../middleware/profileCache.js';
+import { avatarUploadLimiter } from '../../middleware/rate_limit.js';
 import { queueImageUpload, imageQueueEvents } from '../../queues/imageQueue.js';
 import { minioClient, BUCKET } from '../../minio.js';
 import { resolveUserAvatarUrl } from '../../utils/avatarFallback.js';
@@ -53,7 +54,7 @@ router.use(authenticateUser);
 // ==================== UPLOAD ====================
 
 // PUT /api/users/profile/avatar
-router.put('/profile/avatar', async (req, res) => {
+router.put('/profile/avatar', avatarUploadLimiter, async (req, res) => {
   const { avatar } = req.body;
   const profile_id = req.userProfileId;
 

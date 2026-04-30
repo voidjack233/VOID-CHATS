@@ -72,7 +72,9 @@ import {
   resetDeviceLimiter,
   registerDeviceLimiter,
   authCheckLimiter,
-  captchaGenerateLimiter
+  refreshTokenLimiter,
+  captchaGenerateLimiter,
+  captchaCheckLimiter
 } from '../middleware/rate_limit.js';
 
 // ================== API ROUTES ==================
@@ -119,6 +121,7 @@ app.use('/api/auth/forgot-password', forgotPasswordLimiter);
 app.use('/api/auth/reset-password', resetDeviceLimiter);
 app.use('/api/auth/register', registerDeviceLimiter);
 app.use('/api/auth/me', authCheckLimiter);
+app.use('/api/auth/refresh', refreshTokenLimiter);
 
 app.post('/api/security/csp-report', 
   express.json({ type: 'application/csp-report' }), 
@@ -132,7 +135,9 @@ app.post('/api/security/csp-report',
 
 // CSRF token
 app.use('/api/csrf', csrfRouter);
-app.use('/api/captcha', captchaGenerateLimiter, captchaRouter);
+app.use('/api/captcha/generate', captchaGenerateLimiter);
+app.use('/api/captcha/check', captchaCheckLimiter);
+app.use('/api/captcha', captchaRouter);
 
 // CSRF protection
 app.use(encryptedCSRFProtection);

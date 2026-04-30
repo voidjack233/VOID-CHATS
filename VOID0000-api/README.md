@@ -141,13 +141,12 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 | `dompurify` and `jsdom` | Server-side sanitization support. |
 | `dotenv` | Loads `.env` during startup. |
 | `express` | HTTP API framework. |
-| `ioredis` | Valkey/Redis client for pub/sub, coordination, and rate-limit backing storage. |
+| `ioredis` | Valkey/Redis client for pub/sub, coordination, sessions/cache, and custom rate-limit storage. |
 | `jsonwebtoken` | Access and refresh token signing. |
 | `minio` | Object storage client. |
 | `nodemailer` | Gmail SMTP email delivery. |
 | `pg` | Postgres client. |
 | `qrcode` | QR code generation for authenticator-app 2FA setup. |
-| `rate-limit-redis` | Redis-backed rate limiting. |
 | `sharp` | Image processing and metadata stripping. |
 | `socket.io` | Currently listed, but websocket serving has moved to the Phoenix gateway. |
 | `uuid` | Token IDs and unique identifiers. |
