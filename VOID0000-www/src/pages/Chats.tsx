@@ -22,6 +22,7 @@ import { useUser } from '../Services/Auth/UserContext';
 import UserAvatar from '../components/common/UserAvatar';
 import { ConversationPaneSkeleton } from '../components/common/Skeleton';
 import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
+import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -49,6 +50,8 @@ const ChatDashboard = () => {
 
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const { isOnline, showReconnectBanner } = useConnectionStatus();
+  const serviceHealth = useServiceHealth();
+  const serviceIssue = serviceHealth.issues[0] || null;
 
   // Independently detect bootstrap stalls (API down before the gateway ever
   // connects). The gateway stall timer in useConnectionStatus only fires once
@@ -742,6 +745,15 @@ const ChatDashboard = () => {
           {isOnline
             ? 'Reconnecting\u2026'
             : 'You\u2019re offline \u2014 reconnecting when network returns'}
+        </div>
+      )}
+      {isOnline && serviceIssue && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-amber-400/15 bg-amber-500/10 px-4 py-2 text-xs text-amber-100/85">
+          <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-200/90" />
+          <span className="min-w-0 truncate">
+            {serviceIssue.message}
+            {serviceHealth.issues.length > 1 ? ` +${serviceHealth.issues.length - 1} more` : ''}
+          </span>
         </div>
       )}
       <div className="relative flex flex-1 min-h-0 overflow-hidden">

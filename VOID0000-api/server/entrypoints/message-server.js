@@ -16,10 +16,15 @@ const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js
 const { authenticateUser } = await import('../middleware/jwt.js');
 const { messageReactionToggleLimiter } = await import('../middleware/rate_limit.js');
 const { noCache } = await import('../middleware/noCache.js');
+const { pool } = await import('../db.js');
+const { default: valkey } = await import('../valkey.js');
+const { default: scyllaClient } = await import('../scylla.js');
+const { minioClient, ATTACH_BUCKET } = await import('../minio.js');
 const { default: attachmentsRouter } = await import('../routes/conversations/attachments.js');
 const { default: batchReactionsRouter } = await import('../routes/conversations/batchReactions.js');
 const { default: messagesRouter } = await import('../routes/conversations/messages.js');
 const { default: reactionsRouter } = await import('../routes/conversations/reactions.js');
+const { createReadinessHandler } = await import('../health/readiness.js');
 const { initPublisher } = await import('../valkey-pubsub.js');
 
 const app = express();
@@ -53,6 +58,16 @@ app.get('/health', (_req, res) => {
     pid: process.pid,
   });
 });
+
+app.get('/ready', createReadinessHandler({
+  service: 'voidapp-message-service',
+  checks: {
+    postgres: () => pool.query('SELECT 1'),
+    valkey: () => valkey.ping(),
+    scylla: () => scyllaClient.execute('SELECT key FROM system.local'),
+    minio: () => minioClient.bucketExists(ATTACH_BUCKET),
+  },
+}));
 
 app.use(encryptedCSRFProtection);
 app.use(

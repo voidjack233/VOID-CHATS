@@ -11,6 +11,11 @@ const getLocalClientId = (message: Pick<Message, 'message_id' | 'local_client_id
 const isLocalOnlyMessage = (message: Pick<Message, 'message_id'>): boolean =>
   typeof message.message_id === 'string' && message.message_id.startsWith('local-');
 
+const isPendingLocalMessage = (message: Message): boolean => (
+  (message.local_status === 'sending' || message.local_status === 'queued') &&
+  Boolean(getLocalClientId(message))
+);
+
 const normalizeMessageContent = (content?: string | null) => {
   const trimmed = typeof content === 'string' ? content.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
@@ -99,6 +104,16 @@ interface MergeResult {
 
 const sortMessages = (messages: Message[]): Message[] =>
   [...messages].sort((left, right) => {
+    const leftPending = isPendingLocalMessage(left);
+    const rightPending = isPendingLocalMessage(right);
+
+    // Pending bubbles are local UI state, so their created_at can be wrong when
+    // a device clock is skewed. Keep them at the present edge until the server
+    // response replaces them with a real server timestamp.
+    if (leftPending !== rightPending) {
+      return leftPending ? 1 : -1;
+    }
+
     const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
     if (timeDiff !== 0) return timeDiff;
     return left.message_id.localeCompare(right.message_id);
@@ -195,6 +210,7 @@ const getNewestServerBackedMessage = (messages: Message[]): Message | undefined 
 export {
   getLocalClientId,
   getNewestServerBackedMessage,
+  isPendingLocalMessage,
   isLocalOnlyMessage,
   mergeMessagesWithReconciliation,
   trimMessages,

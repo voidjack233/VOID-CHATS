@@ -1,4 +1,5 @@
 import { API_URL } from '../config';
+import { reportApiNetworkFailure, reportApiResponse } from '../Network/serviceHealth';
 
 // ============== TYPES ==============
 interface User {
@@ -153,12 +154,20 @@ async function fetchWithAuth(
     }
   }
 
-  const performRequest = () =>
-    fetch(fullUrl, {
-      ...options,
-      credentials: 'include',
-      headers,
-    });
+  const performRequest = async () => {
+    try {
+      const response = await fetch(fullUrl, {
+        ...options,
+        credentials: 'include',
+        headers,
+      });
+      reportApiResponse(fullUrl, response.status);
+      return response;
+    } catch (err) {
+      reportApiNetworkFailure(fullUrl);
+      throw err;
+    }
+  };
 
   let response = await performRequest();
 

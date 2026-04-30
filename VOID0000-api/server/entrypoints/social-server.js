@@ -25,6 +25,11 @@ const app = express();
 const PORT = process.env.SOCIAL_SERVICE_PORT || process.env.PORT || 3004;
 const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
 
+const { pool } = await import('../db.js');
+const { default: valkey } = await import('../valkey.js');
+const { minioClient, BUCKET, GROUP_AVATAR_BUCKET } = await import('../minio.js');
+const { createReadinessHandler } = await import('../health/readiness.js');
+
 const allowedOrigins = [
   FRONT_URL,
   'https://void0000.online',
@@ -52,6 +57,16 @@ app.get('/health', (_req, res) => {
     pid: process.pid,
   });
 });
+
+app.get('/ready', createReadinessHandler({
+  service: 'voidapp-social-profile-service',
+  checks: {
+    postgres: () => pool.query('SELECT 1'),
+    valkey: () => valkey.ping(),
+    minioAvatars: () => minioClient.bucketExists(BUCKET),
+    minioGroupAvatars: () => minioClient.bucketExists(GROUP_AVATAR_BUCKET),
+  },
+}));
 
 app.use(encryptedCSRFProtection);
 

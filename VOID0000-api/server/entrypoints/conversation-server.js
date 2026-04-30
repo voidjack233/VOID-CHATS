@@ -15,6 +15,8 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js');
 const { authenticateUser } = await import('../middleware/jwt.js');
 const { noCache } = await import('../middleware/noCache.js');
+const { pool } = await import('../db.js');
+const { default: valkey } = await import('../valkey.js');
 const { default: bootstrapRouter } = await import('../routes/bootstrap.js');
 const { default: dmRouter } = await import('../routes/conversations/dm.js');
 const { default: dmSettingsRouter } = await import('../routes/conversations/dm-settings.js');
@@ -25,6 +27,7 @@ const { default: membersRouter } = await import('../routes/conversations/members
 const { default: mlsRouter } = await import('../routes/conversations/mls.js');
 const { default: permissionsRouter } = await import('../routes/conversations/permissions.js');
 const { default: rootRouter } = await import('../routes/conversations/root/index.js');
+const { createReadinessHandler } = await import('../health/readiness.js');
 const { initPublisher } = await import('../valkey-pubsub.js');
 
 const app = express();
@@ -58,6 +61,14 @@ app.get('/health', (_req, res) => {
     pid: process.pid,
   });
 });
+
+app.get('/ready', createReadinessHandler({
+  service: 'voidapp-conversation-service',
+  checks: {
+    postgres: () => pool.query('SELECT 1'),
+    valkey: () => valkey.ping(),
+  },
+}));
 
 const conversationRouter = Router();
 

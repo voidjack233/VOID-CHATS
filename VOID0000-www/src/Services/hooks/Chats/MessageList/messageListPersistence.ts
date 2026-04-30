@@ -42,8 +42,25 @@ const compareByCreatedAtAsc = (
   return a.message_id.localeCompare(b.message_id);
 };
 
+const isPendingLocalMessage = (message: Message): boolean => (
+  (message.local_status === 'sending' || message.local_status === 'queued') &&
+  (
+    Boolean(message.local_client_id) ||
+    (typeof message.message_id === 'string' && message.message_id.startsWith('local-'))
+  )
+);
+
 const sortMessages = (messages: Message[]) =>
-  [...messages].sort(compareByCreatedAtAsc);
+  [...messages].sort((left, right) => {
+    const leftPending = isPendingLocalMessage(left);
+    const rightPending = isPendingLocalMessage(right);
+
+    if (leftPending !== rightPending) {
+      return leftPending ? 1 : -1;
+    }
+
+    return compareByCreatedAtAsc(left, right);
+  });
 
 const sortLocalMessages = (messages: LocalMessage[]) =>
   [...messages].sort(compareByCreatedAtAsc);

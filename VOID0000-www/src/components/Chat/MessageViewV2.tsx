@@ -751,13 +751,15 @@ const MessageViewV2 = memo(function MessageViewV2({
       </div>
 
       {!isAtBottom && (hasNewer || hasUnseenMessages) && (
-        <button
-          onClick={handleJumpToPresent}
-          className="fixed bottom-20 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-4 py-2 bg-void-accent hover:bg-void-accent-hover text-white text-xs font-bold rounded-full shadow-lg transition-all z-10"
-        >
-          <ArrowDown className="w-3.5 h-3.5" />
-          Jump to Present
-        </button>
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
+          <button
+            onClick={handleJumpToPresent}
+            className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-void-accent px-4 py-2 text-xs font-bold text-white shadow-lg transition-colors hover:bg-void-accent-hover"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+            Jump to Present
+          </button>
+        </div>
       )}
 
       <ExternalLinkModal

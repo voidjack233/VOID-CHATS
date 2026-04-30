@@ -7,6 +7,9 @@ import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { securityMiddleware } from '../middleware/xss/index.js';
 import captchaRouter from '../routes/captcha/index.js';
+import { pool } from '../db.js';
+import valkey from '../valkey.js';
+import { createReadinessHandler } from '../health/readiness.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -86,6 +89,14 @@ app.get('/health', (_req, res) => {
     pid: process.pid,
   });
 });
+
+app.get('/ready', createReadinessHandler({
+  service: 'voidapp-account-control-service',
+  checks: {
+    postgres: () => pool.query('SELECT 1'),
+    valkey: () => valkey.ping(),
+  },
+}));
 
 app.get('/api/debug/ws-stats', (req, res) => {
   res.json({
