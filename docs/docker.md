@@ -6,8 +6,12 @@ some polished production container story.
 It starts:
 
 - frontend on `http://localhost:5173`
-- API on `http://localhost:3001`
+- account/control API on `http://localhost:3001`
+- message service on `http://localhost:3002`
+- social/profile service on `http://localhost:3004`
+- conversation service on `http://localhost:3005`
 - gateway on `ws://localhost:4001`
+- worker service inside the Docker network
 - MinIO on `http://localhost:9000`
 - MinIO console on `http://localhost:9001`
 - Postgres, Valkey, and Scylla inside the Docker network
@@ -39,6 +43,9 @@ the Docker stack on throwaway host ports:
 ```bash
 HOST_FRONTEND_PORT=15173 \
 HOST_API_PORT=13001 \
+HOST_MESSAGE_API_PORT=13002 \
+HOST_SOCIAL_API_PORT=13004 \
+HOST_CONVERSATION_API_PORT=13005 \
 HOST_GATEWAY_PORT=14001 \
 HOST_MINIO_API_PORT=19000 \
 HOST_MINIO_CONSOLE_PORT=19001 \
@@ -126,6 +133,30 @@ Gateway shell:
 docker compose exec gateway sh
 ```
 
+Message service shell:
+
+```bash
+docker compose exec message-api sh
+```
+
+Conversation service shell:
+
+```bash
+docker compose exec conversation-api sh
+```
+
+Social service shell:
+
+```bash
+docker compose exec social-api sh
+```
+
+Worker shell:
+
+```bash
+docker compose exec worker sh
+```
+
 Postgres shell:
 
 ```bash
@@ -136,6 +167,24 @@ Scylla shell:
 
 ```bash
 docker compose exec scylla cqlsh
+```
+
+## Service Checks
+
+Quick health checks from the host:
+
+```bash
+curl http://localhost:3001/ready
+curl http://localhost:3002/ready
+curl http://localhost:3004/ready
+curl http://localhost:3005/ready
+curl http://localhost:4001/ready
+```
+
+The worker has no HTTP port. Check it with:
+
+```bash
+docker compose logs worker
 ```
 
 ## Known Rough Edges

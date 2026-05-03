@@ -14,7 +14,11 @@ If you are on Windows or macOS, I am not going to pretend this doc was tested th
 App services:
 
 - `VOID0000-www`
-- `VOID0000-api`
+- `VOID0000-api` account/control service
+- `VOID0000-api` message service
+- `VOID0000-api` social/profile service
+- `VOID0000-api` conversation service
+- `VOID0000-api` worker service
 - `VOID0000-api/void_gateway`
 
 Supporting services:
@@ -34,7 +38,10 @@ Tooling:
 ## Expected Local Ports
 
 - Frontend: `127.0.0.1:5173`
-- API: `127.0.0.1:3001`
+- Account/control API: `127.0.0.1:3001`
+- Message service: `127.0.0.1:3002`
+- Social/profile service: `127.0.0.1:3004`
+- Conversation service: `127.0.0.1:3005`
 - Gateway: `127.0.0.1:4001`
 - PostgreSQL: `127.0.0.1:5432`
 - ScyllaDB: `127.0.0.1:9042`
@@ -93,12 +100,21 @@ Important values include:
 
 ## 3. Frontend Env
 
-The frontend can usually run in local dev without its own env file because it falls back to localhost defaults in development.
-
-If you still want an explicit frontend env:
+The frontend should know the split local service ports when you run the backend manually.
 
 ```bash
 cp VOID0000-www/.env.example VOID0000-www/.env.local
+```
+
+Expected local values:
+
+```env
+VITE_API_URL=http://localhost:3001
+VITE_MESSAGE_API_URL=http://localhost:3002
+VITE_SOCIAL_API_URL=http://localhost:3004
+VITE_CONVERSATION_API_URL=http://localhost:3005
+VITE_GATEWAY_URL=http://localhost:4001
+CDN_URL=http://127.0.0.1:9000
 ```
 
 ## 4. Run Database Migrations
@@ -119,7 +135,10 @@ npm run migrate:status
 Expected local services:
 
 - frontend: `http://localhost:5173`
-- API: `http://localhost:3001`
+- account/control API: `http://localhost:3001`
+- message service: `http://localhost:3002`
+- social/profile service: `http://localhost:3004`
+- conversation service: `http://localhost:3005`
 - gateway: `ws://localhost:4001`
 
 If PM2 is already running the backend:
@@ -132,7 +151,11 @@ You should see:
 
 ```text
 voidapp-api
+voidapp-message-service
+voidapp-conversation-service
+voidapp-social-profile-service
 voidapp-gateway-phoenix
+voidapp-worker-service
 ```
 
 Then start the frontend:
@@ -150,7 +173,10 @@ http://localhost:5173
 
 Vite proxies local requests:
 
-- `/api` to `http://localhost:3001`
+- account/auth/general `/api` routes to `http://localhost:3001`
+- message routes to `http://localhost:3002`
+- social/profile/friends routes to `http://localhost:3004`
+- conversation/group/MLS routes to `http://localhost:3005`
 - `/gateway` to `ws://localhost:4001`
 
 So local dev does not need the public domain.
@@ -159,11 +185,39 @@ So local dev does not need the public domain.
 
 Use this if PM2 is not already running the backend.
 
-Start the API:
+Start the account/control API:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-api
 npm run dev
+```
+
+Start the message service in another shell:
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run dev:messages
+```
+
+Start the social/profile service in another shell:
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run dev:social
+```
+
+Start the conversation service in another shell:
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run dev:conversations
+```
+
+Start the worker service in another shell:
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run dev:workers
 ```
 
 Start the gateway in another shell:
@@ -192,11 +246,33 @@ cd /path/to/VOIDAPP/VOID0000-www
 npm run build
 ```
 
-API:
+Backend services:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-api
 npm run start
+```
+
+In separate shells if you are not using PM2, run one command per shell:
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run start:messages
+```
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run start:social
+```
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run start:conversations
+```
+
+```bash
+cd /path/to/VOIDAPP/VOID0000-api
+npm run start:workers
 ```
 
 Gateway:
@@ -218,7 +294,7 @@ The real deployment shape is:
 - `cloudflared`
   exposes the public hostnames and routes them to the right local service
 - `pm2`
-  runs the Node API and Phoenix gateway
+  runs the split Node services, worker, and Phoenix gateway
 - `systemd`
   keeps `cloudflared` and the backend process manager alive across boots
 
@@ -233,8 +309,14 @@ Very important:
   frontend static build through Nginx on `localhost:80`
 - `www.your-domain.example`
   same frontend through Nginx on `localhost:80`
-- `api.your-domain.example`
-  Node API on `localhost:3001`
+- `api.your-domain.example` account/auth/general API paths
+  account/control API on `localhost:3001`
+- `api.your-domain.example` message/reaction/attachment paths
+  message service on `localhost:3002`
+- `api.your-domain.example` friends/profile/search paths
+  social/profile service on `localhost:3004`
+- `api.your-domain.example` conversation/group/MLS paths
+  conversation service on `localhost:3005`
 - `api.your-domain.example/gateway`
   Phoenix websocket gateway on `localhost:4001`
 - `cdn.your-domain.example`
@@ -301,15 +383,27 @@ The live shape on this machine is:
 
 - frontend host -> `localhost:80`
 - `www` host -> `localhost:80`
-- API host -> `localhost:3001`
+- API host auth/account/general paths -> `localhost:3001`
+- API host message/reaction/attachment paths -> `localhost:3002`
+- API host friends/profile/search paths -> `localhost:3004`
+- API host conversation/group/MLS paths -> `localhost:3005`
 - API host with `/gateway` path -> `localhost:4001`
 - CDN host -> `localhost:9000`
 
 That is why:
 
 - `/gateway` shows up in Cloudflared routing
+- message/social/conversation API subpaths also need their own routing
 - not in Nginx
 - and `api.your-domain.example` is split by path between Phoenix and Node
+
+The path split roughly follows the Vite dev proxy:
+
+- `/api/conversations/:id/messages`, `/api/conversations/:id/reactions`, `/api/conversations/:id/attachments` -> message service `3002`
+- `/api/friends`, `/api/users/search`, `/api/users/profile`, profile reads -> social/profile service `3004`
+- `/api/bootstrap`, `/api/conversations`, conversation members, invites, MLS, keys -> conversation service `3005`
+- `/api/auth`, `/api/me`, `/api/csrf`, `/api/captcha`, account/session/preference routes -> account/control service `3001`
+- `/gateway` -> Phoenix gateway `4001`
 
 ### Frontend Build Deployment
 
@@ -343,6 +437,9 @@ Backend `.env`:
 ```env
 FRONT_URL=https://your-domain.example
 PORT=3001
+MESSAGE_SERVICE_PORT=3002
+SOCIAL_SERVICE_PORT=3004
+CONVERSATION_SERVICE_PORT=3005
 GATEWAY_PORT=4001
 CDN_URL=https://cdn.your-domain.example
 ```
@@ -354,6 +451,8 @@ VITE_API_URL=https://api.your-domain.example
 VITE_GATEWAY_URL=https://api.your-domain.example
 CDN_URL=https://cdn.your-domain.example
 ```
+
+In production, the frontend still points at one API hostname. Your reverse proxy or tunnel has to route paths on that hostname to the correct backend service.
 
 ### Backend Process Startup
 
@@ -368,7 +467,11 @@ The current machine has both of these process-management layers:
 Current process names under PM2:
 
 - `voidapp-api`
+- `voidapp-message-service`
+- `voidapp-conversation-service`
+- `voidapp-social-profile-service`
 - `voidapp-gateway-phoenix`
+- `voidapp-worker-service`
 
 That means the practical restart path on this machine is closer to:
 
@@ -382,7 +485,11 @@ If you are using PM2 directly as the app user:
 ```bash
 cd /path/to/VOIDAPP/VOID0000-api
 pm2 restart voidapp-api
+pm2 restart voidapp-message-service
+pm2 restart voidapp-conversation-service
+pm2 restart voidapp-social-profile-service
 pm2 restart voidapp-gateway-phoenix
+pm2 restart voidapp-worker-service
 ```
 
 ### Current Domain Assumptions
@@ -409,7 +516,7 @@ So the honest answer is:
 ## Known Setup Notes
 
 - The MLS / encrypted-chat path depends on `ts-mls`, which upstream says is not formally audited.
-- Forgot-password chat recovery on a fresh device is still a known limitation.
+- Recovery keys now exist, but users still need to save the key. Forgot-password recovery without an existing recovery key can still be painful on a fresh device.
 - Presence and full friend-list traffic use separate endpoints and separate rate-limit buckets.
 
 If you want the higher-level explanation of how the project fits together, read:

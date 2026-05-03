@@ -351,13 +351,21 @@ pm2 ls
 Expected apps:
 
 - `voidapp-api`
+- `voidapp-message-service`
+- `voidapp-conversation-service`
+- `voidapp-social-profile-service`
 - `voidapp-gateway-phoenix`
+- `voidapp-worker-service`
 
 Useful logs:
 
 ```bash
 pm2 logs voidapp-api
+pm2 logs voidapp-message-service
+pm2 logs voidapp-conversation-service
+pm2 logs voidapp-social-profile-service
 pm2 logs voidapp-gateway-phoenix
+pm2 logs voidapp-worker-service
 ```
 
 ## Saving Startup State For Reboot
@@ -385,16 +393,36 @@ You generally need both.
 
 ## Health Checks
 
-API status:
+Account/control API:
 
 ```bash
 curl http://127.0.0.1:3001/api/debug/ws-stats
+curl http://127.0.0.1:3001/ready
+```
+
+Message service:
+
+```bash
+curl http://127.0.0.1:3002/ready
+```
+
+Social/profile service:
+
+```bash
+curl http://127.0.0.1:3004/ready
+```
+
+Conversation service:
+
+```bash
+curl http://127.0.0.1:3005/ready
 ```
 
 Phoenix gateway health:
 
 ```bash
 curl http://127.0.0.1:4001/health
+curl http://127.0.0.1:4001/ready
 ```
 
 Expected:
@@ -419,7 +447,11 @@ For another machine, the backend startup recipe is:
 
 The app processes are:
 
-- Node API
+- Node account/control service
+- Node message service
+- Node social/profile service
+- Node conversation service
+- Node worker service
 - Phoenix gateway
 
 The infrastructure services are:

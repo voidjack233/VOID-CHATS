@@ -18,7 +18,7 @@ Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. 
 - `docs/backend-startup.md` - detailed startup notes.
 - `docs/database-migrations.md` - migration behavior and limitations.
 
-The app processes are separate from the infrastructure services. PM2 starts the Node API and Phoenix gateway, but Postgres, Valkey, ScyllaDB, and MinIO must already be running.
+The app processes are separate from the infrastructure services. PM2 starts the split Node services, worker, and Phoenix gateway, but Postgres, Valkey, ScyllaDB, and MinIO must already be running.
 
 ## Requirements
 
@@ -47,6 +47,24 @@ The default development account/control API runs on:
 http://localhost:3001
 ```
 
+For the full local backend without PM2, also start these in separate shells:
+
+```bash
+npm run dev:messages
+```
+
+```bash
+npm run dev:social
+```
+
+```bash
+npm run dev:conversations
+```
+
+```bash
+npm run dev:workers
+```
+
 For a PM2-style production start:
 
 ```bash
@@ -68,8 +86,16 @@ Expected PM2 apps:
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Start the API with `nodemon`. |
-| `npm start` | Start the API with Node. |
+| `npm run dev` | Start the account/control service with `nodemon`. |
+| `npm run dev:messages` | Start the message/reaction/attachment service with `nodemon`. |
+| `npm run dev:conversations` | Start the conversation/group/MLS service with `nodemon`. |
+| `npm run dev:social` | Start the friends/profile/search service with `nodemon`. |
+| `npm run dev:workers` | Start the background worker service with `nodemon`. |
+| `npm start` | Start the account/control service with Node. |
+| `npm run start:messages` | Start the message service with Node. |
+| `npm run start:conversations` | Start the conversation service with Node. |
+| `npm run start:social` | Start the social/profile service with Node. |
+| `npm run start:workers` | Start the worker service with Node. |
 | `npm run lint` | Run ESLint. |
 | `npm run migrate` | Apply pending Postgres and ScyllaDB migrations. |
 | `npm run migrate:status` | Show migration status without applying changes. |
@@ -89,7 +115,7 @@ Important groups:
 - Auth: `ACCESS_SECRET`, `REFRESH_SECRET`
 - CSRF and 2FA: `CSRF_ENCRYPTION_KEY`, `TOTP_ENCRYPTION_KEY`
 - Email: `EMAIL_USER`, `EMAIL_PASS`
-- Frontend/API: `FRONT_URL`, `VITE_API_URL`, `PORT`
+- Frontend/API: `FRONT_URL`, `VITE_API_URL`, `PORT`, `MESSAGE_SERVICE_PORT`, `SOCIAL_SERVICE_PORT`, `CONVERSATION_SERVICE_PORT`
 - Phoenix gateway: `GATEWAY_PORT`, `PHX_SECRET_KEY_BASE`
 
 ## Data Stores
@@ -159,10 +185,20 @@ API gateway mode:
 curl http://127.0.0.1:3001/api/debug/ws-stats
 ```
 
+Readiness checks:
+
+```bash
+curl http://127.0.0.1:3001/ready
+curl http://127.0.0.1:3002/ready
+curl http://127.0.0.1:3004/ready
+curl http://127.0.0.1:3005/ready
+```
+
 Phoenix gateway:
 
 ```bash
 curl http://127.0.0.1:4001/health
+curl http://127.0.0.1:4001/ready
 ```
 
 If the API starts but realtime, uploads, or message history behave strangely, check the external services first: Postgres, Valkey, ScyllaDB, and MinIO.

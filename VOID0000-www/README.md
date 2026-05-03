@@ -21,9 +21,11 @@ Important note:
 
 Another security/recovery note:
 
-- during login or explicit encrypted-chat recovery, the frontend may hold the raw account password in live JS memory briefly to finish password-derived key restore / backup work
+- recovery keys now exist and are the preferred fresh-device recovery path after setup
+- during login or legacy encrypted-chat recovery, the frontend may hold the raw account password in live JS memory briefly to finish password-derived key restore / backup work
 - it is not intended to be persisted in normal browser storage
 - current behavior aims to clear it after the immediate bootstrap pass, with a fallback max window of about 2 minutes
+- the current browser may keep the recovery key in an encrypted local browser record so it can refresh recovery-key backups later
 
 Known ugly encrypted-chat edge while this is still new:
 
@@ -32,6 +34,11 @@ Known ugly encrypted-chat edge while this is still new:
 - if a device does not have the exact key that encrypted a message, that message can stay stuck as encrypted text on that device
 - the server cannot decrypt it for us, which is the point of E2EE but still painful when recovery data is wrong
 - do not treat the current encrypted-chat path as battle-tested yet, especially across multiple devices
+
+Multi-service dev note:
+
+- in development, Vite proxies message, conversation, social/profile, account, and gateway paths to different local services
+- in production, the frontend still points at one API hostname, so the deploy tunnel/reverse proxy must split those paths correctly
 
 ## Frontend Commands
 

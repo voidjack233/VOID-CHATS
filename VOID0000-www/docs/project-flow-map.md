@@ -22,13 +22,12 @@ flowchart LR
   end
 
   subgraph API
-    AuthAPI[/Auth routes/]
-    UserAPI[/User routes/]
-    FriendsAPI[/Friends routes/]
-    ConvAPI[/Conversation routes/]
-    MLSAPI[/MLS routes/]
-    AttachAPI[/Attachment route/]
-    GatewayAPI[Gateway server]
+    AccountSvc[Account/control service :3001]
+    MessageSvc[Message service :3002]
+    SocialSvc[Social/profile service :3004]
+    ConvSvc[Conversation service :3005]
+    WorkerSvc[Worker service]
+    GatewayAPI[Phoenix gateway :4001]
     RateLimit[Rate limiting]
   end
 
@@ -45,9 +44,10 @@ flowchart LR
   UI --> Friends
   UI --> ChatMgr
 
-  Auth --> AuthAPI
-  Settings --> UserAPI
-  Friends --> FriendsAPI
+  Auth --> AccountSvc
+  Settings --> AccountSvc
+  Settings --> SocialSvc
+  Friends --> SocialSvc
   ChatMgr --> Handshake
   ChatMgr --> Stream
   ChatMgr --> Composer
@@ -65,31 +65,34 @@ flowchart LR
   ChatMgr --> GatewayClient
   GatewayClient --> GatewayAPI
 
-  AuthAPI --> RateLimit
-  FriendsAPI --> RateLimit
-  ConvAPI --> RateLimit
-  MLSAPI --> RateLimit
+  AccountSvc --> RateLimit
+  SocialSvc --> RateLimit
+  ConvSvc --> RateLimit
+  MessageSvc --> RateLimit
 
-  AuthAPI --> PG
-  UserAPI --> PG
-  FriendsAPI --> PG
-  ConvAPI --> PG
-  MLSAPI --> PG
-  ConvAPI --> SCY
-  AttachAPI --> MINIO
-  AuthAPI --> VALKEY
-  FriendsAPI --> VALKEY
-  ConvAPI --> VALKEY
+  AccountSvc --> PG
+  SocialSvc --> PG
+  ConvSvc --> PG
+  MessageSvc --> PG
+  MessageSvc --> SCY
+  MessageSvc --> MINIO
+  SocialSvc --> MINIO
+  WorkerSvc --> MINIO
+  AccountSvc --> VALKEY
+  SocialSvc --> VALKEY
+  ConvSvc --> VALKEY
+  MessageSvc --> VALKEY
+  WorkerSvc --> VALKEY
   GatewayAPI --> VALKEY
 
   KeyMgr --> LOCAL
   MLSClient --> LOCAL
   Media --> LOCAL
-  Composer --> ConvAPI
-  Media --> AttachAPI
-  Handshake --> MLSAPI
-  Stream --> ConvAPI
-  Friends --> FriendsAPI
+  Composer --> MessageSvc
+  Media --> MessageSvc
+  Handshake --> ConvSvc
+  Stream --> MessageSvc
+  Friends --> SocialSvc
 ```
 
 Use this section as the “how everything connects” map.
@@ -101,13 +104,23 @@ The sections below zoom into one lane at a time so the details stay readable.
 flowchart LR
   UI[React UI] --> Hooks[Frontend hooks]
   Hooks --> Services[Frontend services]
-  Services --> API[Express API]
-  Services --> Gateway[WebSocket gateway]
+  Services --> AccountAPI[Account/control API]
+  Services --> MessageAPI[Message API]
+  Services --> SocialAPI[Social/profile API]
+  Services --> ConversationAPI[Conversation API]
+  Services --> Gateway[Phoenix WebSocket gateway]
   Services --> LocalState[IndexedDB / local browser state]
-  API --> Postgres[(Postgres)]
-  API --> Scylla[(Scylla messages)]
-  API --> MinIO[(MinIO attachments)]
-  API --> Valkey[(Valkey sessions / rate limits)]
+  AccountAPI --> Postgres[(Postgres)]
+  SocialAPI --> Postgres
+  ConversationAPI --> Postgres
+  MessageAPI --> Postgres
+  MessageAPI --> Scylla[(Scylla messages)]
+  MessageAPI --> MinIO[(MinIO attachments)]
+  SocialAPI --> MinIO
+  AccountAPI --> Valkey[(Valkey sessions / rate limits)]
+  SocialAPI --> Valkey
+  ConversationAPI --> Valkey
+  MessageAPI --> Valkey
   Gateway --> Presence[Presence + live events]
 ```
 
@@ -118,11 +131,12 @@ Main frontend layers:
 - gateway: [gateway.ts](/home/void0000/Desktop/VOIDAPP/VOID0000-www/src/Services/Gateway/gateway.ts)
 
 Main backend surfaces:
-- auth routes: [/server/routes/auth](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/auth)
-- user routes: [/server/routes/user](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/user)
-- friends routes: [/server/routes/friends](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/friends)
-- conversation routes: [/server/routes/conversations](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations)
-- gateway: [/server/gateway](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/gateway)
+- account/control service: [account-server.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/entrypoints/account-server.js)
+- message service: [message-server.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/entrypoints/message-server.js)
+- social/profile service: [social-server.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/entrypoints/social-server.js)
+- conversation service: [conversation-server.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/entrypoints/conversation-server.js)
+- worker service: [worker-server.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/entrypoints/worker-server.js)
+- Phoenix gateway: [/void_gateway](/home/void0000/Desktop/VOIDAPP/VOID0000-api/void_gateway)
 
 ## 2. Auth Login Flow
 
@@ -356,6 +370,12 @@ Relevant files:
 - [reactions.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/reactions.js)
 - [batchReactions.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/batchReactions.js)
 
+Reaction consistency notes:
+- reaction writes live in Scylla reaction tables
+- live reaction fanout is micro-batched through the gateway path
+- the frontend coalesces rapid taps from the same user before sending the final desired state
+- old cached pages are validated against the server before rendering so stale IndexedDB reaction maps do not disagree with a fresh browser
+
 ## 13. Encrypted Attachment Flow
 
 ```mermaid
@@ -408,11 +428,12 @@ Gateway files:
 - Valkey:
   active sessions, rate limits, some short-lived auth state
 - Browser local state:
-  account key material, MLS local state, caches, decrypted-in-memory media cache
+  account key material, locally stored recovery key record, MLS local state, caches, decrypted-in-memory media cache
 
 ## 16. Rate Limiting Map
 
-Main limiter buckets live in [rate_limit.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/middleware/rate_limit.js).
+Main limiter exports live in [rate_limit.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/middleware/rate_limit.js).
+Policy definitions live in [policies.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/middleware/rateLimits/policies.js).
 
 Important current buckets:
 - auth login
@@ -431,22 +452,27 @@ Important current buckets:
 flowchart TD
   A[Key manager starts] --> B[Load local account key if present]
   B --> C{No local key?}
-  C -- Yes --> D[Try password backup restore]
-  D --> E{Success?}
-  E -- No --> F[Encrypted chat recovery gate]
-  E -- Yes --> G[Restore local key + MLS state]
-  C -- No --> G
-  G --> H[Ensure password backup is current]
+  C -- Yes --> D{Recovery key backup exists?}
+  D -- Yes --> E[Ask for recovery key]
+  D -- No --> F[Try legacy password backup restore]
+  E --> G{Recovery key works?}
+  F --> G
+  G -- No --> H[Encrypted chat recovery gate]
+  G -- Yes --> I[Restore local key + MLS state]
+  C -- No --> I
+  I --> J[Refresh password backup if password is still available]
+  I --> K[Refresh recovery-key backup if local recovery key exists]
 ```
 
 Notes:
-- password backup is the active recovery path
-- forgot-password on a fresh device can still require the old password
+- recovery key is the preferred explicit fresh-device recovery path after setup
+- password backup still exists for legacy/fallback recovery
+- forgot-password on a fresh device can still fail if the user never saved a recovery key
 - full limitation doc: [secure-chat-recovery-limitations.md](./secure-chat-recovery-limitations.md)
 
 ## 18. Current Known Limits
 
-- encrypted chat recovery after forgot-password is still limited on fresh devices
+- encrypted chat recovery after forgot-password is still limited on fresh devices without a saved recovery key
 - the current `ts-mls` dependency has no formal upstream security audit yet
 - some flows are durable, but edge-case testing still matters after auth/session/MLS changes
 - this doc is meant to be updated when auth, sessions, friends, conversations, MLS, or recovery behavior changes

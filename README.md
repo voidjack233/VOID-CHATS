@@ -8,7 +8,8 @@ Read the next few sections before trying to set it up.
 
 ## Before You Clone
 
-- This setup is only supported on Linux.
+- Bare-metal/manual setup is only supported on Linux.
+- Docker Compose exists for local dev/testing and may work outside Linux, but it is not the production deployment story.
 - The stack is not a one-command install.
 - This project includes encrypted chat/media work, but I am not claiming the project is secure or formally audited end to end.
 - There may still be hidden vulnerabilities, logic mistakes, or rough UX corners.
@@ -19,7 +20,7 @@ Read the next few sections before trying to set it up.
 - `VOID0000-www`
   React + TypeScript + Vite frontend
 - `VOID0000-api`
-  Express API, PostgreSQL migrations, Scylla message storage, MinIO media routes
+  split Express services, PostgreSQL migrations, Scylla message storage, MinIO media routes, workers
 - `VOID0000-api/void_gateway`
   Phoenix realtime gateway for presence and chat fanout
 - `VOIDADMIN`
@@ -41,7 +42,7 @@ Short version:
 2. Install Node 20+, npm, PostgreSQL, ScyllaDB, Valkey, MinIO, Elixir, and Erlang.
 3. Create `VOID0000-api/.env`.
 4. Run PostgreSQL migrations.
-5. Start the API, gateway, and frontend in separate shells.
+5. Start the account, message, social, conversation, worker, gateway, and frontend services.
 
 or
 
@@ -54,6 +55,24 @@ cd VOID0000-api
 npm install
 npm run migrate
 npm run dev
+```
+
+The command above starts only the account/control service. For the full split backend, run these in separate shells too:
+
+```bash
+npm run dev:messages
+```
+
+```bash
+npm run dev:conversations
+```
+
+```bash
+npm run dev:social
+```
+
+```bash
+npm run dev:workers
 ```
 
 ```bash
@@ -121,10 +140,12 @@ What that means:
 
 One more implementation note:
 
-- during login or explicit encrypted-chat recovery, the frontend may keep the raw account password in browser memory briefly so it can finish password-derived key restore / backup work
+- the newer recovery path uses a user-created recovery key so fresh devices do not have to depend only on the old account password
+- during login or legacy password-based encrypted-chat recovery, the frontend may keep the raw account password in browser memory briefly so it can finish password-derived key restore / backup work
 - that password is not meant to persist in `localStorage`, `sessionStorage`, or IndexedDB
 - current target behavior is short-lived retention only: usually just for the immediate bootstrap pass, with a fallback max window of about 2 minutes before it is cleared
-- this is a tradeoff in the current recovery design, not something I consider ideal forever
+- the current device may store the recovery key locally in an encrypted browser record so it can refresh recovery-key backups later
+- this is still a tradeoff in the current recovery design, not something I consider perfect forever
 
 Related notes:
 
@@ -207,8 +228,8 @@ VOIDAPP/
 
 ## A Few Final Honest Notes
 
-- This repo was built around Linux infra, not Docker-first portability.
-- If you are on Windows or macOS, you are outside the setup path I actually used.
+- This repo was built around Linux infra first, but there is now a local Docker Compose setup for testing.
+- If you are on Windows or macOS without Docker, you are outside the setup path I actually used.
 - If you deploy this publicly, do your own security review.
 - If you fork this, feel free to simplify things. I did not optimize it for textbook purity.
 
@@ -220,4 +241,4 @@ Future notes live here:
 If you guys have alot of time and the Setup step is not working... (figure it out by yourself) XD
 
 
-One last note: if you see the root `package.json`, `package-lock.json`, or `server.js`, they are remnants from the early development setup. The app used to run the frontend and Express backend from the repo root. The current setup uses `VOID0000-www`, `VOID0000-api`, and `VOID0000-api/void_gateway`, so those root files are not part of the normal run path.
+One last note: if you see the root `package.json`, `package-lock.json`, or `server.js`, they are remnants from the early development setup. The current setup uses `VOID0000-www`, split services inside `VOID0000-api`, and `VOID0000-api/void_gateway`, so those root files are not part of the normal run path.
