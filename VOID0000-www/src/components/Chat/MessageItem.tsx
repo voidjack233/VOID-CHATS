@@ -614,14 +614,26 @@ const MessageItem = memo(function MessageItem({
       .querySelector<HTMLElement>('[data-chat-conversation-header="true"]')
       ?.getBoundingClientRect()
       .bottom ?? 0;
+    const composerTop = document
+      .querySelector<HTMLElement>('[data-chat-message-input="true"]')
+      ?.getBoundingClientRect()
+      .top ?? viewportHeight;
     const minTop = Math.max(minInset, headerBottom + gap);
+    const maxTop = Math.max(
+      minTop,
+      Math.min(
+        viewportHeight - railHeight - minInset,
+        composerTop - railHeight - gap,
+      ),
+    );
+    const preferredTop = rect.top + ((rect.height - railHeight) / 2);
 
     const nextLeft = isRightAligned
       ? Math.max(minInset, rect.left - railWidth - gap)
       : Math.min(viewportWidth - railWidth - minInset, rect.right + gap);
     const nextTop = Math.min(
-      viewportHeight - railHeight - minInset,
-      Math.max(minTop, rect.top + Math.max(0, (rect.height - railHeight) / 2)),
+      maxTop,
+      Math.max(minTop, preferredTop),
     );
 
     setDesktopActionRailStyle({
@@ -651,7 +663,7 @@ const MessageItem = memo(function MessageItem({
   const desktopActionRail = !message.is_deleted && !isPending ? (
     <div
       ref={desktopActionRailRef}
-      className={`fixed z-20 hidden md:flex items-center gap-0.5 rounded-md border border-void-bg-hover bg-void-bg-main p-0.5 shadow-lg transition-opacity ${
+      className={`fixed z-30 hidden md:flex items-center gap-0.5 rounded-md border border-void-bg-hover bg-void-bg-main p-0.5 shadow-lg transition-opacity ${
         isHovered ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}
       style={desktopActionRailStyle ?? { visibility: 'hidden' }}

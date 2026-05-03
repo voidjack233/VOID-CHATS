@@ -134,16 +134,6 @@ const useMessageListPagination = ({
   firstItemIndexRef.current = firstItemIndex;
   const olderServerPrefetchInFlightRef = useRef<Set<string>>(new Set());
   const olderServerPrefetchedAnchorsRef = useRef<Set<string>>(new Set());
-  const pendingOlderExhaustionRef = useRef<{
-    conversationId: string;
-    anchorMessageId: string | null;
-  } | null>(null);
-
-  useEffect(() => {
-    return () => {
-      pendingOlderExhaustionRef.current = null;
-    };
-  }, []);
 
   const getOlderServerPrefetchState = useCallback((anchorMessageId: string | null) => {
     if (!anchorMessageId) {
@@ -160,7 +150,6 @@ const useMessageListPagination = ({
   useEffect(() => {
     olderServerPrefetchInFlightRef.current.clear();
     olderServerPrefetchedAnchorsRef.current.clear();
-    pendingOlderExhaustionRef.current = null;
     replaceWindow({
       messages: [],
       firstItemIndex: messageListBaseIndex,
@@ -422,16 +411,6 @@ const useMessageListPagination = ({
     const forceServer = options?.forceServer === true;
 
     if (
-      pendingOlderExhaustionRef.current &&
-      pendingOlderExhaustionRef.current.conversationId === conversationId &&
-      !loadingOlder
-    ) {
-      pendingOlderExhaustionRef.current = null;
-      setHasOlder(false);
-      return;
-    }
-
-    if (
       !encryptionKeyRef.current ||
       loadingOlder ||
       !hasOlder ||
@@ -462,16 +441,7 @@ const useMessageListPagination = ({
 
       if (olderUI.length > 0) {
         applySummary = applyOlderMessages(olderUI, seamBreakBeforeId);
-        if (!hasMore) {
-          pendingOlderExhaustionRef.current = {
-            conversationId,
-            anchorMessageId: nextOldestLoadedMessageId,
-          };
-          setHasOlder(true);
-        } else {
-          pendingOlderExhaustionRef.current = null;
-          setHasOlder(true);
-        }
+        setHasOlder(hasMore);
         if (!forceServer) {
           if (nextOldestLoadedMessageId) {
             void warmOlderServerHistory(nextOldestLoadedMessageId);
@@ -485,7 +455,6 @@ const useMessageListPagination = ({
           firstItemIndex: firstItemIndexRef.current,
         });
       } else {
-        pendingOlderExhaustionRef.current = null;
         setHasOlder(false);
       }
 
@@ -514,7 +483,7 @@ const useMessageListPagination = ({
           nextVisibleCount: applySummary?.nextCount ?? messagesRef.current.length,
           prependedCount: applySummary?.prependedCount ?? 0,
           forceServer,
-          exhaustionStateCommitStrategy: olderUI.length > 0 && !hasMore ? 'defer_until_next_top_hit' : 'immediate',
+          exhaustionStateCommitStrategy: 'immediate',
         };
         rawDebugMessageList('older_fetch_boundary', boundaryPayload);
         debugMessageList('older_fetch_boundary', boundaryPayload);

@@ -327,6 +327,7 @@ function renderLeafText(
   onOpenLink?: (url: string) => void,
   enableMentions: boolean = false,
   mentionUsernames?: string[],
+  authoringMode: boolean = false,
 ): ReactNode[] {
   const normalizedMentionUsernames = new Set(
     (mentionUsernames || []).map((username) => username.toLowerCase()),
@@ -363,7 +364,11 @@ function renderLeafText(
       nodes.push(
         <span
           key={`${partKey}-mention-${start}`}
-          className="rounded-md bg-void-accent/14 px-1 py-[1px] font-semibold text-current"
+          className={
+            authoringMode
+              ? 'rounded-sm bg-void-accent/14 text-current'
+              : 'rounded-md bg-void-accent/14 px-1 py-[1px] font-semibold text-current'
+          }
         >
           {token}
         </span>,
@@ -457,6 +462,7 @@ function renderNodes(
             onOpenLink,
             enableMentions,
             mentionUsernames,
+            authoringMode,
           )}
         </Fragment>
       );

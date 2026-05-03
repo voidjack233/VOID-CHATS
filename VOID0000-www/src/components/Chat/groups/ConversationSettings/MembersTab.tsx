@@ -119,10 +119,18 @@ export default function MembersTab({
             const isKickBusy =
               busyMemberAction?.userId === member.user_id &&
               busyMemberAction.action === 'kick';
-            const hasModActions =
-              (canChangeMemberRoles || canKickMembers) &&
+            const isRegularMember = member.role === 'member' || member.role === 'viewer';
+            const canChangeThisMemberRole =
+              canChangeMemberRoles &&
               member.user_id !== currentUserId &&
-              member.role !== 'owner';
+              member.role !== 'owner' &&
+              (isOwner || isRegularMember);
+            const canKickThisMember =
+              canKickMembers &&
+              member.user_id !== currentUserId &&
+              member.role !== 'owner' &&
+              (isOwner || isRegularMember);
+            const hasModActions = canChangeThisMemberRole || canKickThisMember;
 
             const primaryLabel = member.nickname || getMemberLabel(member);
             const secondaryLabel = member.nickname
@@ -188,7 +196,7 @@ export default function MembersTab({
                           <div className="my-2 h-px bg-void-bg-hover" />
                         )}
 
-                        {canChangeMemberRoles && hasModActions && (
+                        {canChangeThisMemberRole && (
                           <button
                             type="button"
                             onClick={() => onToggleRoleEditor(member.user_id)}
@@ -203,7 +211,7 @@ export default function MembersTab({
                           </button>
                         )}
 
-                        {canKickMembers && hasModActions && (
+                        {canKickThisMember && (
                           <button
                             type="button"
                             onClick={() => onRequestKickMember(member)}
@@ -221,7 +229,7 @@ export default function MembersTab({
                   </div>
                 </div>
 
-                {canChangeMemberRoles && member.user_id !== currentUserId && member.role !== 'owner' && isRoleEditorOpen && (
+                {canChangeThisMemberRole && isRoleEditorOpen && (
                   <div className="rounded-xl border border-void-bg-hover bg-void-bg-main/55 px-4 py-3">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>

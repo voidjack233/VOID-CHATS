@@ -48,6 +48,11 @@ type MessageListItem =
   | { kind: 'message'; message: Message }
   | { kind: 'typing'; id: 'typing-indicator' };
 
+interface OlderLoadScrollSnapshot {
+  scrollHeight: number;
+  scrollTop: number;
+}
+
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
@@ -56,11 +61,16 @@ const normalizeText = (value?: string | null) => {
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
 const emptyReactions: Record<string, unknown> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
+const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
+const OLDER_HISTORY_LOADER_SLOT_HEIGHT = 48;
+const OLDER_HISTORY_LOADER_SLOT_CLASS = 'h-12';
+const TOP_LOAD_THRESHOLD = OLDER_HISTORY_LOADER_SLOT_HEIGHT;
+const TOP_SCROLL_LOCK_THRESHOLD = OLDER_HISTORY_LOADER_SLOT_HEIGHT + 8;
 
-// How far above the viewport the older-messages sentinel triggers.
-// Larger = earlier prefetch = messages arrive before user reaches top.
-const OLDER_SENTINEL_ROOT_MARGIN = '800px 0px 0px 0px';
+// Chat history should load at the top boundary, not while the user is only
+// browsing nearby. This avoids the list feeling like it pulls upward.
+const OLDER_SENTINEL_ROOT_MARGIN = '0px 0px 0px 0px';
 
 const MessageViewV2 = memo(function MessageViewV2({
   conversation,
@@ -87,12 +97,13 @@ const MessageViewV2 = memo(function MessageViewV2({
   const forceFollowOutputRef = useRef(false);
   const initialLatestRestoreDoneRef = useRef(false);
   const previousListCountRef = useRef(0);
+  const pendingOlderLoadScrollSnapshotRef = useRef<OlderLoadScrollSnapshot | null>(null);
+  const loadingOlderStateRef = useRef(false);
   const loadingOlderRequestInFlightRef = useRef(false);
   const loadingNewerRequestInFlightRef = useRef(false);
   const autofillOlderRequestInFlightRef = useRef(false);
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const [hasUnseenMessages, setHasUnseenMessages] = useState(false);
 
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
@@ -133,6 +144,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     handleInitReactionsFromMessages,
     waitForEncryptionBootstrap,
   );
+  loadingOlderStateRef.current = loadingOlder;
 
   const { reactions, handleToggleReaction, initReactionsFromMessages } =
     useReactions(conversation.id, gateway, user?.id, isAtPresent);
@@ -178,11 +190,12 @@ const MessageViewV2 = memo(function MessageViewV2({
     forceFollowOutputRef.current = false;
     initialLatestRestoreDoneRef.current = false;
     previousListCountRef.current = 0;
+    pendingOlderLoadScrollSnapshotRef.current = null;
+    loadingOlderStateRef.current = false;
     loadingOlderRequestInFlightRef.current = false;
     loadingNewerRequestInFlightRef.current = false;
     autofillOlderRequestInFlightRef.current = false;
     setIsAtBottom(true);
-    setHasUnseenMessages(false);
     if (scrollerRef.current) scrollerRef.current.style.opacity = '0';
   }, [conversation.id]);
 
@@ -198,9 +211,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       return;
     }
 
-    if (!atBottomRef.current) {
-      setHasUnseenMessages(true);
-    }
   }, [conversation.id, newMessage, user?.id]);
 
   // ── Stable refs for callbacks ──
@@ -340,9 +350,29 @@ const MessageViewV2 = memo(function MessageViewV2({
     scroller.scrollTop = scroller.scrollHeight;
   }, []);
 
+  const captureOlderLoadScrollSnapshot = useCallback((): OlderLoadScrollSnapshot | null => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return null;
+
+    const snapshot = {
+      scrollHeight: scroller.scrollHeight,
+      scrollTop: scroller.scrollTop,
+    };
+    pendingOlderLoadScrollSnapshotRef.current = snapshot;
+    return snapshot;
+  }, []);
+
   const syncScrollState = useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+
+    const pendingOlderSnapshot = pendingOlderLoadScrollSnapshotRef.current;
+    if (
+      pendingOlderSnapshot &&
+      Math.abs(scroller.scrollHeight - pendingOlderSnapshot.scrollHeight) <= OLDER_LOAD_SCROLL_UPDATE_THRESHOLD
+    ) {
+      pendingOlderSnapshot.scrollTop = scroller.scrollTop;
+    }
 
     const distanceFromBottom = scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
     const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD;
@@ -351,7 +381,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     setIsAtBottom(atBottom);
 
     if (atBottom) {
-      setHasUnseenMessages(false);
       forceFollowOutputRef.current = false;
     }
 
@@ -365,6 +394,109 @@ const MessageViewV2 = memo(function MessageViewV2({
       setIsAtPresent(atBottom && !hasNewer);
     }
   }, [hasNewer, loadNewer, loadingNewer, setIsAtPresent]);
+
+  const loadOlderPreservingViewport = useCallback(async () => {
+    const snapshot = captureOlderLoadScrollSnapshot();
+    await loadOlder();
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!snapshot || pendingOlderLoadScrollSnapshotRef.current !== snapshot) {
+          return;
+        }
+
+        const scroller = scrollerRef.current;
+        if (!scroller) {
+          pendingOlderLoadScrollSnapshotRef.current = null;
+          return;
+        }
+
+        const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
+        if (Math.abs(scrollHeightDelta) > 0.5) {
+          scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
+          syncScrollState();
+        }
+
+        pendingOlderLoadScrollSnapshotRef.current = null;
+      });
+    });
+  }, [captureOlderLoadScrollSnapshot, loadOlder, syncScrollState]);
+
+  const maybeStartOlderBoundaryLoad = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (
+      !scroller ||
+      !initialLatestRestoreDoneRef.current ||
+      !hasOlder ||
+      loadingOlderRequestInFlightRef.current ||
+      loadingOlderStateRef.current ||
+      scroller.scrollTop > TOP_LOAD_THRESHOLD
+    ) {
+      return false;
+    }
+
+    loadingOlderRequestInFlightRef.current = true;
+    void loadOlderPreservingViewport().finally(() => {
+      loadingOlderRequestInFlightRef.current = false;
+    });
+    return true;
+  }, [hasOlder, loadOlderPreservingViewport]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+
+    let lastTouchY: number | null = null;
+    const shouldLockOlderBoundary = () => (
+      (loadingOlderRequestInFlightRef.current ||
+        loadingOlderStateRef.current ||
+        pendingOlderLoadScrollSnapshotRef.current !== null) &&
+      scroller.scrollTop <= TOP_SCROLL_LOCK_THRESHOLD
+    );
+
+    const handleWheelBoundaryLock = (event: WheelEvent) => {
+      if (event.deltaY < 0 && shouldLockOlderBoundary()) {
+        event.preventDefault();
+        scroller.scrollTop = Math.max(0, scroller.scrollTop);
+      }
+    };
+
+    const handleTouchStartBoundaryLock = (event: TouchEvent) => {
+      lastTouchY = event.touches[0]?.clientY ?? null;
+    };
+
+    const handleTouchMoveBoundaryLock = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY ?? null;
+      if (nextY === null || lastTouchY === null) {
+        lastTouchY = nextY;
+        return;
+      }
+
+      const isPullingTowardOlderHistory = nextY > lastTouchY;
+      if (isPullingTowardOlderHistory && shouldLockOlderBoundary()) {
+        event.preventDefault();
+      }
+      lastTouchY = nextY;
+    };
+
+    const clearTouchBoundaryLock = () => {
+      lastTouchY = null;
+    };
+
+    scroller.addEventListener('wheel', handleWheelBoundaryLock, { passive: false });
+    scroller.addEventListener('touchstart', handleTouchStartBoundaryLock, { passive: true });
+    scroller.addEventListener('touchmove', handleTouchMoveBoundaryLock, { passive: false });
+    scroller.addEventListener('touchend', clearTouchBoundaryLock);
+    scroller.addEventListener('touchcancel', clearTouchBoundaryLock);
+
+    return () => {
+      scroller.removeEventListener('wheel', handleWheelBoundaryLock);
+      scroller.removeEventListener('touchstart', handleTouchStartBoundaryLock);
+      scroller.removeEventListener('touchmove', handleTouchMoveBoundaryLock);
+      scroller.removeEventListener('touchend', clearTouchBoundaryLock);
+      scroller.removeEventListener('touchcancel', clearTouchBoundaryLock);
+    };
+  }, [conversation.id]);
 
   const keepPresentPinnedToBottom = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -409,7 +541,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     return true;
   }, [initialHydrationSettled, scrollToBottom, syncScrollState, visualMessages.length]);
 
-  // ── IntersectionObserver: load older messages (Pinterest sentinel) ──
+  // ── IntersectionObserver: load older messages at the top boundary ──
   useEffect(() => {
     const sentinel = olderSentinelRef.current;
     const scroller = scrollerRef.current;
@@ -421,19 +553,11 @@ const MessageViewV2 = memo(function MessageViewV2({
         if (!initialLatestRestoreDoneRef.current) {
           return;
         }
-        if (
-          !entry?.isIntersecting ||
-          loadingOlderRequestInFlightRef.current ||
-          !hasOlder ||
-          loadingOlder
-        ) {
+        if (!entry?.isIntersecting) {
           return;
         }
 
-        loadingOlderRequestInFlightRef.current = true;
-        void loadOlder().finally(() => {
-          loadingOlderRequestInFlightRef.current = false;
-        });
+        maybeStartOlderBoundaryLoad();
       },
       {
         root: scroller,
@@ -444,7 +568,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasOlder, loadOlder, loadingOlder, conversation.id]);
+  }, [maybeStartOlderBoundaryLoad, conversation.id]);
 
   // ── IntersectionObserver: load newer messages ──
   useEffect(() => {
@@ -486,12 +610,12 @@ const MessageViewV2 = memo(function MessageViewV2({
   // ── Scroll event: sync bottom state only ──
   const handleScroll = useCallback(() => {
     syncScrollState();
-  }, [syncScrollState]);
+    maybeStartOlderBoundaryLoad();
+  }, [maybeStartOlderBoundaryLoad, syncScrollState]);
 
   const handleJumpToPresent = useCallback(async () => {
     forceFollowOutputRef.current = true;
     await jumpToPresent();
-    setHasUnseenMessages(false);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         scrollToBottom('auto');
@@ -590,11 +714,32 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     autofillOlderRequestInFlightRef.current = true;
-    void loadOlder().finally(() => {
+    void loadOlderPreservingViewport().finally(() => {
       autofillOlderRequestInFlightRef.current = false;
     });
     return true;
-  }, [hasOlder, initialHydrationSettled, loadOlder, loading, loadingOlder]);
+  }, [hasOlder, initialHydrationSettled, loadOlderPreservingViewport, loading, loadingOlder]);
+
+  useLayoutEffect(() => {
+    const snapshot = pendingOlderLoadScrollSnapshotRef.current;
+    const scroller = scrollerRef.current;
+    if (!snapshot || !scroller) {
+      return;
+    }
+
+    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
+    if (Math.abs(scrollHeightDelta) > 0.5) {
+      scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
+    }
+
+    pendingOlderLoadScrollSnapshotRef.current = null;
+    syncScrollState();
+  }, [
+    hasOlder,
+    syncScrollState,
+    visualMessages.length,
+    visualMessages[0]?.message_id,
+  ]);
 
   useEffect(() => {
     void maybeAutofillOlder();
@@ -705,8 +850,20 @@ const MessageViewV2 = memo(function MessageViewV2({
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
         style={{ overflowAnchor: 'auto', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}
       >
-        {/* Older sentinel: triggers prefetch via IntersectionObserver */}
-        {hasOlder && <div ref={olderSentinelRef} className="h-px w-full" />}
+        {/* Older boundary slot: reserves space so the spinner can be replaced by history without kicking the list. */}
+        {hasOlder && (
+          <div
+            ref={olderSentinelRef}
+            className={`${OLDER_HISTORY_LOADER_SLOT_CLASS} flex w-full items-center justify-center`}
+          >
+            {loadingOlder ? (
+              <div className="inline-flex items-center gap-2 rounded-full border border-void-bg-hover bg-void-bg-main/70 px-3 py-1.5 text-xs font-medium text-void-text-muted">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-void-accent" />
+                <span>Loading...</span>
+              </div>
+            ) : null}
+          </div>
+        )}
 
         {!hasOlder && (
           <MessageViewHeader
@@ -750,7 +907,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         {hasNewer && <div ref={newerSentinelRef} className="h-px w-full" />}
       </div>
 
-      {!isAtBottom && (hasNewer || hasUnseenMessages) && (
+      {!isAtBottom && (
         <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
           <button
             onClick={handleJumpToPresent}

@@ -131,7 +131,9 @@ export function useGroupSettings({
     ? 'Transfer ownership before leaving this group.'
     : 'Secure leave is not available yet. Ask the group owner to remove you from this group.';
   const canChangeMemberRoles = isOwner || currentUserRole === 'admin';
-  const canKickMembers = isOwner;
+  const canKickMembers =
+    isOwner ||
+    (currentUserRole === 'admin' && (conversation.permissions?.admin_can_remove_members ?? true));
 
   const trimmedProfileName = profileName.trim();
   const displayedIconUrl = removeCurrentIcon
@@ -279,6 +281,18 @@ export function useGroupSettings({
     return isSelfChange
       ? `${targetLabel} cleared their nickname.`
       : `${actorLabel} cleared ${targetLabel}'s nickname.`;
+  };
+
+  const buildRoleSystemMessage = (
+    targetMember: ConversationMember,
+    nextRole: 'admin' | 'member'
+  ) => {
+    const actorLabel = getActorLabel();
+    const targetLabel = getMemberLabel(targetMember);
+
+    return nextRole === 'admin'
+      ? `${actorLabel} made ${targetLabel} an admin.`
+      : `${actorLabel} removed ${targetLabel}'s admin role.`;
   };
 
   // ── invite handlers ───────────────────────────────────────────────────────
@@ -576,6 +590,10 @@ export function useGroupSettings({
       );
       setExpandedRoleEditorUserId(null);
       setMemberMenuUserId(null);
+      void postMembershipSystemMessage(
+        buildRoleSystemMessage(targetMember, nextRole),
+        currentKeyVersion
+      );
       void onMembershipChanged?.();
     } catch (error) {
       console.error('Failed to update member role:', error);

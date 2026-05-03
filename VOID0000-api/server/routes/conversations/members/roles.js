@@ -50,8 +50,17 @@ export function registerMemberRoleRoutes(router) {
         return res.status(404).json({ error: 'Target member not found' });
       }
 
-      if (targetMemberResult.rows[0].role === 'owner') {
+      const targetRole = targetMemberResult.rows[0].role;
+
+      if (targetRole === 'owner') {
         return res.status(400).json({ error: 'Cannot change the owner role' });
+      }
+
+      if (actorRole === 'admin' && targetRole !== 'member' && targetRole !== 'viewer') {
+        return res.status(403).json({
+          error: 'Admins can only change regular member roles',
+          code: 'TARGET_ROLE_PROTECTED',
+        });
       }
 
       await pool.query(

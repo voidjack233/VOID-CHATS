@@ -310,7 +310,10 @@ const MessageInput = (props: MessageInputProps) => {
         title={attachmentAlert?.title}
         message={attachmentAlert?.message || ''}
       />
-      <div className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4">
+      <div
+        data-chat-message-input="true"
+        className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4"
+      >
       {/* Edit / Reply banner */}
       {hasBanner && (
         <div className="flex items-center gap-2 px-2 py-1.5 bg-void-bg-hover/50 rounded-t-lg text-sm text-void-text-muted">
@@ -405,7 +408,7 @@ const MessageInput = (props: MessageInputProps) => {
       )}
 
       {/* Main input row */}
-      <div className={`bg-void-bg-hover flex items-end px-4 py-2.5 ${hasBanner || hasAttachments ? 'rounded-b-lg' : 'rounded-lg'}`}>
+      <div className={`bg-void-bg-hover flex items-center px-4 py-2.5 ${hasBanner || hasAttachments ? 'rounded-b-lg' : 'rounded-lg'}`}>
         {/* Hidden file input */}
         <input
           ref={mediaInputRef}
@@ -424,7 +427,7 @@ const MessageInput = (props: MessageInputProps) => {
         />
 
         {/* Attach menu */}
-        <div ref={attachMenuRef} className="relative mr-3 pb-1">
+        <div ref={attachMenuRef} className="relative mr-3">
           <button
             onClick={() => setAttachMenuOpen((o) => !o)}
             disabled={inputDisabled || attachments.length >= 5}
@@ -544,7 +547,7 @@ const MessageInput = (props: MessageInputProps) => {
             <div
               ref={composerPreviewRef}
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 overflow-hidden py-1 text-void-text"
+              className="pointer-events-none absolute inset-0 overflow-hidden py-1.5 text-void-text"
             >
               <div className="whitespace-pre-wrap break-words leading-5">
                 <FormattedMessageText
@@ -579,7 +582,7 @@ const MessageInput = (props: MessageInputProps) => {
             spellCheck="false"
             enterKeyHint="enter"
             rows={1}
-            className={`w-full border-none bg-transparent focus:outline-none placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1 leading-5 ${
+            className={`block w-full min-h-8 border-none bg-transparent focus:outline-none placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1.5 leading-5 ${
               showComposerPreview ? 'text-transparent caret-void-text' : 'text-void-text'
             }`}
           />
@@ -588,7 +591,7 @@ const MessageInput = (props: MessageInputProps) => {
         <button
           onClick={handleSend}
           disabled={!canSend}
-          className="text-void-text-muted hover:text-void-accent ml-3 pb-1 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          className="text-void-text-muted hover:text-void-accent ml-3 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
           {sending || isSecureChatPreparing ? (
             <Loader2 className="w-5 h-5 animate-spin" />

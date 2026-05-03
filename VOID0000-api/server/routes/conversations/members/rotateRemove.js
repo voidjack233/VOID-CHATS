@@ -9,6 +9,43 @@ import {
 } from '../../../utils/groupMembership.js';
 import { meetsAdminToggle, resolvePermissions } from '../../../utils/groupPermissions.js';
 
+const ADMIN_REMOVABLE_TARGET_ROLES = new Set(['member', 'viewer']);
+
+function authorizeMemberRemoval({ actorRole, targetRole, actorUserId, targetUserId }) {
+  if (actorUserId === targetUserId) {
+    return {
+      allowed: false,
+      status: 403,
+      code: 'SELF_LEAVE_ROTATION_UNAVAILABLE',
+      error: 'Secure self-leave is not available yet. Ask another admin or the owner to remove you.',
+    };
+  }
+
+  if (targetRole === 'owner') {
+    return {
+      allowed: false,
+      status: 403,
+      code: 'OWNER_TRANSFER_REQUIRED',
+      error: 'Transfer ownership before removing the owner',
+    };
+  }
+
+  if (actorRole === 'owner') {
+    return { allowed: true };
+  }
+
+  if (actorRole === 'admin' && ADMIN_REMOVABLE_TARGET_ROLES.has(targetRole)) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    status: 403,
+    code: 'TARGET_ROLE_PROTECTED',
+    error: 'Admins can only remove regular members',
+  };
+}
+
 export function registerMemberRotateRemoveRoutes(router) {
   router.post('/rotate-remove', async (req, res) => {
     const actorUserId = req.user.id;
@@ -68,11 +105,19 @@ export function registerMemberRotateRemoveRoutes(router) {
         return res.status(404).json({ error: 'User is not a member' });
       }
 
-      if (targetMemberResult.rows[0].role === 'owner') {
+      const targetRole = targetMemberResult.rows[0].role;
+      const removalAuth = authorizeMemberRemoval({
+        actorRole: membership.role,
+        targetRole,
+        actorUserId,
+        targetUserId,
+      });
+
+      if (!removalAuth.allowed) {
         await client.query('ROLLBACK');
-        return res.status(403).json({
-          error: 'Transfer ownership before leaving this group',
-          code: 'OWNER_TRANSFER_REQUIRED',
+        return res.status(removalAuth.status).json({
+          error: removalAuth.error,
+          code: removalAuth.code,
         });
       }
 
@@ -274,6 +319,59 @@ export function registerMemberRotateRemoveRoutes(router) {
 
       const targetUserId = pendingTarget;
       const newKeyVersion = pendingKeyVersion;
+
+      const targetMemberResult = await client.query(
+        `SELECT role
+         FROM conversation_members
+         WHERE conversation_id = $1 AND user_id = $2
+         LIMIT 1`,
+        [conversation.id, targetUserId]
+      );
+
+      if (targetMemberResult.rows.length === 0) {
+        await client.query(
+          `UPDATE conversations
+           SET pending_remove_target = NULL,
+               pending_remove_key_version = NULL,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [conversation.id]
+        );
+        await client.query('COMMIT');
+        return res.status(409).json({
+          error: 'Pending removal target is no longer a member',
+          code: 'PENDING_REMOVE_TARGET_MISSING',
+        });
+      }
+
+      const targetRole = targetMemberResult.rows[0].role;
+      const removalAuth = authorizeMemberRemoval({
+        actorRole: membership.role,
+        targetRole,
+        actorUserId,
+        targetUserId,
+      });
+
+      if (!removalAuth.allowed) {
+        if (removalAuth.code === 'TARGET_ROLE_PROTECTED' || removalAuth.code === 'SELF_LEAVE_ROTATION_UNAVAILABLE') {
+          await client.query(
+            `UPDATE conversations
+             SET pending_remove_target = NULL,
+                 pending_remove_key_version = NULL,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [conversation.id]
+          );
+          await client.query('COMMIT');
+        } else {
+          await client.query('ROLLBACK');
+        }
+
+        return res.status(removalAuth.status).json({
+          error: removalAuth.error,
+          code: removalAuth.code,
+        });
+      }
 
       await client.query(
         `DELETE FROM conversation_members
