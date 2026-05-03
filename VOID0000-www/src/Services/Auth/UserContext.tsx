@@ -10,7 +10,10 @@ import { upsertMlsGroupStates } from '../Crypto/mls/mlsApi';
 import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
 import { mlsStore } from '../Crypto/mls/mlsStore';
 import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
-import { uploadSecureBackups as uploadSecureBackupsNow } from './secureBackup';
+import {
+  uploadRecoverySecureBackups as uploadRecoverySecureBackupsNow,
+  uploadSecureBackups as uploadSecureBackupsNow,
+} from './secureBackup';
 import {
   uploadPublicKey,
   backupKeyToServer,
@@ -31,7 +34,7 @@ interface MlsRestoreSummary {
   backupGroupKeyCount: number;
   hasConversationArtifacts: boolean;
 }
-type MlsRecoveryGateReason = 'password_required' | 'restore_failed' | 'sync_import_missing';
+type MlsRecoveryGateReason = 'recovery_key_required' | 'password_required' | 'restore_failed' | 'sync_import_missing';
 
 interface MlsRecoveryGateState {
   active: boolean;
@@ -56,12 +59,29 @@ function hasMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
   );
 }
 
+function hasRecoveryMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
+  return Boolean(
+    backup?.recovery_mls_state_encrypted &&
+    backup.recovery_mls_state_iv &&
+    backup.recovery_mls_state_salt
+  );
+}
+
 function hasPasswordBackupPayload(backup: KeyBackupRecord | null): boolean {
   return Boolean(
     backup?.encrypted_private_key &&
     backup.iv &&
     backup.salt &&
     backup.key_id
+  );
+}
+
+function hasRecoveryBackupPayload(backup: KeyBackupRecord | null): boolean {
+  return Boolean(
+    backup?.recovery_encrypted_private_key &&
+    backup.recovery_iv &&
+    backup.recovery_salt &&
+    backup.recovery_key_id
   );
 }
 
@@ -110,9 +130,14 @@ async function inspectLocalMlsChatState(): Promise<{
 async function restoreMlsStateFromBackup(
   userId: string,
   backup: KeyBackupRecord,
-  password: string
+  secret: string,
+  mode: 'password' | 'recovery_key' = 'password'
 ): Promise<MlsRestoreSummary> {
-  if (!hasMlsBackupPayload(backup)) {
+  const hasPayload = mode === 'recovery_key'
+    ? hasRecoveryMlsBackupPayload(backup)
+    : hasMlsBackupPayload(backup);
+
+  if (!hasPayload) {
     return {
       outcome: 'skipped',
       backupGroupStateCount: 0,
@@ -122,12 +147,19 @@ async function restoreMlsStateFromBackup(
   }
 
   try {
-    const payload = await keyManager.decryptDataWithPassword(
-      backup.mls_state_encrypted!,
-      backup.mls_state_iv!,
-      backup.mls_state_salt!,
-      password
-    ) as MlsBackupData;
+    const payload = mode === 'recovery_key'
+      ? await keyManager.decryptDataWithRecoveryPhrase(
+          backup.recovery_mls_state_encrypted!,
+          backup.recovery_mls_state_iv!,
+          backup.recovery_mls_state_salt!,
+          secret
+        ) as MlsBackupData
+      : await keyManager.decryptDataWithPassword(
+          backup.mls_state_encrypted!,
+          backup.mls_state_iv!,
+          backup.mls_state_salt!,
+          secret
+        ) as MlsBackupData;
 
     const existingAccount = await mlsStore.getAccountState(userId);
     const existingGroups = await mlsStore.listGroupStates();
@@ -320,6 +352,9 @@ interface UserContextType {
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;
   refreshSecureBackupsWithPassword: (password: string) => Promise<void>;
+  generateRecoveryKey: () => string;
+  setupRecoveryKey: (recoveryKey: string) => Promise<void>;
+  retryMlsRecoveryWithRecoveryKey: (recoveryKey: string) => Promise<void>;
   retryMlsRecoveryWithPassword: (password: string) => Promise<void>;
 }
 
@@ -392,6 +427,22 @@ export function UserProvider({ children }: { children: ReactNode }) {
     setKeyStatus('SECURE');
   };
 
+  const generateRecoveryKey = () => keyManager.generateRecoveryPhrase();
+
+  const setupRecoveryKey = async (recoveryKey: string) => {
+    if (!user?.id) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    if (!keyManager.validateRecoveryPhrase(recoveryKey)) {
+      throw new Error('INVALID_RECOVERY_KEY');
+    }
+
+    await uploadRecoverySecureBackupsNow(user.id, recoveryKey);
+    await keyManager.storeRecoveryKeyForBackup(user.id, recoveryKey);
+    setKeyStatus('SECURE');
+  };
+
   const clearMlsRecoveryGate = () => {
     setMlsRecoveryGate({ active: false, pending: false, reason: null });
   };
@@ -419,7 +470,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   };
 
   const resolveKeyStatusFromBackup = (backup: KeyBackupRecord | null): KeyStatus => {
-    return hasPasswordBackupPayload(backup) ? 'SECURE' : 'UNINITIALIZED';
+    return hasPasswordBackupPayload(backup) || hasRecoveryBackupPayload(backup) ? 'SECURE' : 'UNINITIALIZED';
   };
 
   const createKeyCallbacks = () => ({
@@ -515,6 +566,77 @@ export function UserProvider({ children }: { children: ReactNode }) {
         if (key.startsWith('void_')) localStorage.removeItem(key);
       });
       setIsLoggingOut(false);
+    }
+  };
+
+  const retryMlsRecoveryWithRecoveryKey = async (recoveryKey: string) => {
+    if (!user?.id) {
+      throw new Error('AUTH_REQUIRED');
+    }
+
+    if (!keyManager.validateRecoveryPhrase(recoveryKey)) {
+      throw new Error('INVALID_RECOVERY_KEY');
+    }
+
+    setKeyStatusLoading(true);
+    clearMlsRecoveryGate();
+
+    try {
+      const backup = await fetchKeyBackup();
+      if (!backup) {
+        throw new Error('RECOVERY_NOT_CONFIGURED');
+      }
+
+      await keyManager.restoreFromRecoveryPhrase(user.id, recoveryKey, null, createKeyCallbacks());
+      await keyManager.storeRecoveryKeyForBackup(user.id, recoveryKey);
+      setKeyStatus(resolveKeyStatusFromBackup(backup));
+
+      const restoreSummary = await restoreMlsStateFromBackup(user.id, backup, recoveryKey, 'recovery_key');
+      const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
+      const localChatState = await inspectLocalMlsChatState();
+      const hasLocalChatState =
+        localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
+      const hasRecoverableServerState =
+        restoreSummary.hasConversationArtifacts ||
+        syncResult.syncedGroupStates > 0 ||
+        syncResult.syncedWelcomes > 0 ||
+        syncResult.syncedCommits > 0;
+
+      console.log('[MLS_RECOVERY_GATE] recovery key retry inspection', {
+        user_id: user.id,
+        restore_outcome: restoreSummary.outcome,
+        backup_group_state_count: restoreSummary.backupGroupStateCount,
+        backup_group_key_count: restoreSummary.backupGroupKeyCount,
+        has_backup_conversation_artifacts: restoreSummary.hasConversationArtifacts,
+        synced_group_states: syncResult.syncedGroupStates,
+        synced_welcomes: syncResult.syncedWelcomes,
+        synced_commits: syncResult.syncedCommits,
+        local_group_states: localChatState.groupStateCount,
+        local_group_keys: localChatState.groupKeyCount,
+      });
+
+      if (restoreSummary.outcome === 'failed') {
+        activateMlsRecoveryGate('recovery_key_required', {
+          user_id: user.id,
+          retry_source: 'inline_recovery_key_prompt',
+        });
+        throw new Error('INVALID_RECOVERY_KEY');
+      }
+
+      if (hasRecoverableServerState && !hasLocalChatState) {
+        markMlsRecoveryPending('sync_import_missing', {
+          user_id: user.id,
+          retry_source: 'inline_recovery_key_prompt',
+          synced_group_states: syncResult.syncedGroupStates,
+          synced_welcomes: syncResult.syncedWelcomes,
+          synced_commits: syncResult.syncedCommits,
+        });
+      } else {
+        clearMlsRecoveryGate();
+      }
+    } finally {
+      setKeyStatusLoading(false);
+      setKeyInitResolved(true);
     }
   };
 
@@ -660,7 +782,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
         console.log('🔑 Encryption keys ready');
         try {
           const backup = await callbacks.fetchBackup();
-          const hasMlsBackup = hasMlsBackupPayload(backup);
+          const hasPasswordMlsBackup = hasMlsBackupPayload(backup);
+          const hasRecoveryMlsBackup = hasRecoveryMlsBackupPayload(backup);
+          const hasMlsBackup = hasPasswordMlsBackup || hasRecoveryMlsBackup;
+          const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
           let restoreSummary: MlsRestoreSummary = createEmptyRestoreSummary();
           if (!cancelled) {
             setKeyStatus(resolveKeyStatusFromBackup(backup));
@@ -677,7 +802,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
             localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
           const hasBackupConversationArtifacts = password
             ? restoreSummary.hasConversationArtifacts
-            : false;
+            : hasRecoveryMlsBackup;
           const hasRecoverableServerState =
             hasBackupConversationArtifacts ||
             syncResult.syncedGroupStates > 0 ||
@@ -687,6 +812,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
           console.log('[MLS_RESTORE] recovery inspection complete', {
             user_id: userId,
             has_password: Boolean(password),
+            has_recovery_backup: hasRecoveryBackup,
+            has_recovery_mls_backup: hasRecoveryMlsBackup,
             has_mls_backup: hasMlsBackup,
             restore_outcome: restoreSummary.outcome,
             backup_group_state_count: restoreSummary.backupGroupStateCount,
@@ -700,7 +827,18 @@ export function UserProvider({ children }: { children: ReactNode }) {
           });
 
           if (!cancelled && hasRecoverableServerState && !hasLocalChatState) {
-            if (!password && hasMlsBackup) {
+            if (hasRecoveryMlsBackup || hasRecoveryBackup) {
+              activateMlsRecoveryGate('recovery_key_required', {
+                user_id: userId,
+                has_mls_backup: hasMlsBackup,
+                has_recovery_backup: hasRecoveryBackup,
+                has_recovery_mls_backup: hasRecoveryMlsBackup,
+                has_backup_conversation_artifacts: hasBackupConversationArtifacts,
+                synced_group_states: syncResult.syncedGroupStates,
+                synced_welcomes: syncResult.syncedWelcomes,
+                synced_commits: syncResult.syncedCommits,
+              });
+            } else if (!password && hasPasswordMlsBackup) {
               activateMlsRecoveryGate('password_required', {
                 user_id: userId,
                 has_mls_backup: hasMlsBackup,
@@ -741,17 +879,24 @@ export function UserProvider({ children }: { children: ReactNode }) {
           }
         }
       })
-      .catch((err) => {
+      .catch(async (err) => {
         if (cancelled) return;
         if (err.message === 'KEY_NEEDS_PASSWORD' || err.message === 'KEY_RESTORE_FAILED') {
           clearLoginPasswordIfMatches(password);
+          const backup = await callbacks.fetchBackup().catch(() => null);
+          const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
           console.warn('🔑 Keys are locked on this device');
           setKeyStatus('LOCKED');
           activateMlsRecoveryGate(
-            err.message === 'KEY_RESTORE_FAILED' ? 'restore_failed' : 'password_required',
+            hasRecoveryBackup
+              ? 'recovery_key_required'
+              : err.message === 'KEY_RESTORE_FAILED'
+                ? 'restore_failed'
+                : 'password_required',
             {
               user_id: userId,
               source: 'key_init',
+              has_recovery_backup: hasRecoveryBackup,
             }
           );
         } else {
@@ -835,12 +980,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
         runKeyPackageTopUp();
 
-        if (!password) {
-          return;
-        }
-
         try {
-          await uploadSecureBackupsNow(userId, password);
+          if (password) {
+            await uploadSecureBackupsNow(userId, password);
+          }
+
+          const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
+          if (recoveryKey) {
+            await uploadRecoverySecureBackupsNow(userId, recoveryKey);
+          }
+
           if (!cancelled) {
             setKeyStatus('SECURE');
           }
@@ -1072,6 +1221,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
       logout,
       setLoginPassword,
       refreshSecureBackupsWithPassword,
+      generateRecoveryKey,
+      setupRecoveryKey,
+      retryMlsRecoveryWithRecoveryKey,
       retryMlsRecoveryWithPassword,
     }}>
       {children}

@@ -7,6 +7,7 @@ const DB_VERSION = 1;
 const KEY_STORE = 'keys';
 const LOCAL_KEY_WRAP_ID = 'meta:local_key_wrap';
 const LOCAL_PRIVATE_KEY_STORAGE_VERSION = 1;
+const LOCAL_RECOVERY_KEY_STORAGE_VERSION = 1;
 
 // ============== IndexedDB Helpers ==============
 
@@ -125,6 +126,28 @@ async function encryptPrivateKeyForLocalStorage(
     encrypted: arrayBufferToBase64(encrypted),
     iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
   };
+}
+
+async function encryptStringForLocalStorage(value: string): Promise<{ encrypted: string; iv: string }> {
+  return encryptPrivateKeyForLocalStorage(value);
+}
+
+async function decryptStringFromLocalStorage(record: any): Promise<string | null> {
+  if (
+    typeof record?.encrypted !== 'string' ||
+    typeof record?.iv !== 'string'
+  ) {
+    return null;
+  }
+
+  const wrapKey = await getOrCreateLocalWrapKey();
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToArrayBuffer(record.iv) },
+    wrapKey,
+    base64ToArrayBuffer(record.encrypted)
+  );
+
+  return new TextDecoder().decode(decrypted);
 }
 
 async function decryptStoredPrivateKey(record: any): Promise<string | null> {
@@ -479,6 +502,9 @@ interface KeyBackupRecord {
   recovery_iv?: string | null;
   recovery_salt?: string | null;
   recovery_key_id?: string | null;
+  recovery_mls_state_encrypted?: string | null;
+  recovery_mls_state_iv?: string | null;
+  recovery_mls_state_salt?: string | null;
 }
 
 interface PasswordWrappedKeyBackup {
@@ -747,6 +773,43 @@ async function decryptDataWithPassword(
   return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
+async function encryptDataWithRecoveryPhrase(
+  data: unknown,
+  recoveryPhrase: string
+): Promise<{ encrypted: string; iv: string; salt: string }> {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrappingKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase, salt);
+  const encoder = new TextEncoder();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    wrappingKey,
+    encoder.encode(JSON.stringify(data))
+  );
+  return {
+    encrypted: arrayBufferToBase64(encrypted),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+    salt: arrayBufferToBase64(salt.buffer as ArrayBuffer),
+  };
+}
+
+async function decryptDataWithRecoveryPhrase(
+  encryptedBase64: string,
+  ivBase64: string,
+  saltBase64: string,
+  recoveryPhrase: string
+): Promise<unknown> {
+  const salt = new Uint8Array(base64ToArrayBuffer(saltBase64));
+  const iv = base64ToArrayBuffer(ivBase64);
+  const wrappingKey = await deriveKeyFromRecoveryPhrase(recoveryPhrase, salt);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    wrappingKey,
+    base64ToArrayBuffer(encryptedBase64)
+  );
+  return JSON.parse(new TextDecoder().decode(decrypted));
+}
+
 // ============== Cleanup ==============
 
 async function clearAllKeys(): Promise<void> {
@@ -817,6 +880,27 @@ async function prepareRecoveryBackup(
   return createRecoveryWrappedBackup(privateKeyBase64, recoveryPhrase, stored.keyId);
 }
 
+async function storeRecoveryKeyForBackup(userId: string, recoveryKey: string): Promise<void> {
+  if (!isValidRecoveryPhrase(recoveryKey)) {
+    throw new Error('INVALID_RECOVERY_KEY');
+  }
+
+  const encrypted = await encryptStringForLocalStorage(recoveryKey);
+  await dbPut({
+    id: `recovery_key:${userId}`,
+    encrypted: encrypted.encrypted,
+    iv: encrypted.iv,
+    storageVersion: LOCAL_RECOVERY_KEY_STORAGE_VERSION,
+    updatedAt: Date.now(),
+  });
+}
+
+async function getStoredRecoveryKeyForBackup(userId: string): Promise<string | null> {
+  const stored = await dbGet(`recovery_key:${userId}`);
+  const recoveryKey = stored ? await decryptStringFromLocalStorage(stored).catch(() => null) : null;
+  return recoveryKey && isValidRecoveryPhrase(recoveryKey) ? recoveryKey : null;
+}
+
 async function restoreFromRecoveryPhrase(
   userId: string,
   recoveryPhrase: string,
@@ -873,12 +957,16 @@ export const keyManager = {
   generateFreshKeys,
   prepareBackup,
   prepareRecoveryBackup,
+  storeRecoveryKeyForBackup,
+  getStoredRecoveryKeyForBackup,
   reEncryptBackup,
   restoreFromRecoveryPhrase,
   clearAllKeys,
   generateKeyFingerprint,
   encryptDataWithPassword,
   decryptDataWithPassword,
+  encryptDataWithRecoveryPhrase,
+  decryptDataWithRecoveryPhrase,
   exportGroupKeys: async (): Promise<Array<{ id: string; version: number; key: string }>> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {

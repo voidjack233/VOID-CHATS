@@ -376,23 +376,24 @@ const useMessageListPagination = ({
       localHasMore = result.has_more;
       localHadUndecryptable = hasUndecryptableMessage(result.messages);
 
-      if (result.messages.length < FETCH_SIZE || !result.has_more || localHadUndecryptable) {
-        serverRequested = true;
-        const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
-          before: oldestMessageId,
-          limit: FETCH_SIZE,
-          conversation: decryptionConversation,
-          userId,
-          currentKeyVersion: currentKeyVersionRef.current,
-        });
-        serverCount = serverResult.messages.length;
-        serverHasMore = serverResult.has_more;
-        const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
-        result = {
-          messages: mergeLocalMessages(result.messages, localMessages),
-          has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
-        };
-      }
+      // Local older pages can be structurally complete but have stale reaction maps.
+      // Validate the page with the server before rendering so old cached messages
+      // do not disagree with a fresh browser.
+      serverRequested = true;
+      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+        before: oldestMessageId,
+        limit: FETCH_SIZE,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion: currentKeyVersionRef.current,
+      });
+      serverCount = serverResult.messages.length;
+      serverHasMore = serverResult.has_more;
+      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      result = {
+        messages: mergeLocalMessages(result.messages, localMessages),
+        has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+      };
     }
 
     const visibleOlderMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);

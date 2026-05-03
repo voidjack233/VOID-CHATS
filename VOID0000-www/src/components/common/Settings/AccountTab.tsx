@@ -1,21 +1,65 @@
-import { useState } from 'react';
-import { Shield, ChevronRight, LogOut } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, ChevronRight, Copy, KeyRound, LogOut, Shield } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAccountSettings } from '../../../Services/hooks/Settings/useAccount';
 import { useUser } from '../../../Services/Auth/UserContext';
+import { fetchKeyBackup } from '../../../Services/Chat/chatService';
 import ChangePasswordModal from './ChangePassword/ChangePasswordModal';
 import ActiveSessionsModal from './ActiveSessions/ActiveSessionsModal';
 import TwoFactorSettingsModal from './2FA/TwoFactorModal';
 
 const AccountTab = () => {
   const navigate = useNavigate();
-  const { logout, keyStatus, keyStatusLoading } = useUser();
+  const {
+    generateRecoveryKey,
+    logout,
+    keyStatus,
+    keyStatusLoading,
+    setupRecoveryKey,
+  } = useUser();
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showActiveSessions, setShowActiveSessions] = useState(false);
   const [showTwoFactor, setShowTwoFactor] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [recoveryKey, setRecoveryKey] = useState('');
+  const [recoveryKeyCopied, setRecoveryKeyCopied] = useState(false);
+  const [recoveryKeyStatus, setRecoveryKeyStatus] = useState('');
+  const [recoveryKeyConfigured, setRecoveryKeyConfigured] = useState<boolean | null>(null);
+  const [recoveryKeyConfiguredAt, setRecoveryKeyConfiguredAt] = useState<string | null>(null);
+  const [confirmRecoveryKeyRotation, setConfirmRecoveryKeyRotation] = useState(false);
+  const [isSettingRecoveryKey, setIsSettingRecoveryKey] = useState(false);
 
   const { account, loading } = useAccountSettings();
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRecoveryKeyStatus = async () => {
+      try {
+        const backup = await fetchKeyBackup();
+        if (cancelled) return;
+
+        const isConfigured = Boolean(
+          backup?.recovery_encrypted_private_key &&
+          backup.recovery_iv &&
+          backup.recovery_salt &&
+          backup.recovery_key_id
+        );
+        setRecoveryKeyConfigured(isConfigured);
+        setRecoveryKeyConfiguredAt(backup?.recovery_configured_at || null);
+      } catch {
+        if (cancelled) return;
+        setRecoveryKeyConfigured(false);
+        setRecoveryKeyConfiguredAt(null);
+      }
+    };
+
+    void loadRecoveryKeyStatus();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -27,6 +71,50 @@ const AccountTab = () => {
       console.error('Logout failed', error);
       setIsLoggingOut(false);
     }
+  };
+
+  const handleGenerateRecoveryKey = async () => {
+    if (recoveryKeyConfigured && !confirmRecoveryKeyRotation && !recoveryKey) {
+      setConfirmRecoveryKeyRotation(true);
+      setRecoveryKeyStatus('');
+      return;
+    }
+
+    setIsSettingRecoveryKey(true);
+    setRecoveryKeyStatus('');
+    setRecoveryKeyCopied(false);
+
+    try {
+      const nextRecoveryKey = generateRecoveryKey();
+      await setupRecoveryKey(nextRecoveryKey);
+      setRecoveryKey(nextRecoveryKey);
+      setRecoveryKeyConfigured(true);
+      setRecoveryKeyConfiguredAt(new Date().toISOString());
+      setConfirmRecoveryKeyRotation(false);
+      setRecoveryKeyStatus('Recovery key is ready. Save it somewhere safe; it will not be shown again after you close settings.');
+    } catch (error) {
+      console.error('Failed to set up recovery key', error);
+      setRecoveryKey('');
+      setConfirmRecoveryKeyRotation(false);
+      setRecoveryKeyStatus(
+        error instanceof Error && error.message === 'PASSWORD_BACKUP_REQUIRED'
+          ? 'Secure chat backup is still initializing. Try again after opening chat once.'
+          : 'Could not create a recovery key yet. Try again in a moment.'
+      );
+    } finally {
+      setIsSettingRecoveryKey(false);
+    }
+  };
+
+  const recoveryConfiguredLabel = recoveryKeyConfiguredAt
+    ? `Configured ${new Date(recoveryKeyConfiguredAt).toLocaleDateString()}`
+    : 'Configured';
+
+  const handleCopyRecoveryKey = async () => {
+    if (!recoveryKey) return;
+    await navigator.clipboard.writeText(recoveryKey);
+    setRecoveryKeyCopied(true);
+    window.setTimeout(() => setRecoveryKeyCopied(false), 1600);
   };
 
   return (
@@ -67,7 +155,7 @@ const AccountTab = () => {
                     {keyStatusLoading
                       ? 'Checking secure backup status...'
                       : keyStatus === 'SECURE'
-                        ? 'Your chat identity is backed up automatically and restored with your account password.'
+                        ? 'Your chat identity is backed up. Add a recovery key so new devices do not need your old password.'
                         : 'Your secure chat backup is being initialized automatically for this account.'}
                   </p>
                 </div>
@@ -78,6 +166,107 @@ const AccountTab = () => {
                   <Shield className="w-4 h-4 text-void-text-muted hidden sm:block" />
                 </div>
               </div>
+            </div>
+
+            <div className="rounded-lg border border-void-border bg-gray-900 px-3 py-3 md:px-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium text-void-text">Recovery Key</p>
+                    {recoveryKeyConfigured ? (
+                      <span className="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+                        {recoveryConfiguredLabel}
+                      </span>
+                    ) : recoveryKeyConfigured === null ? (
+                      <span className="rounded-full border border-void-border bg-void-bg-main/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-void-text-muted">
+                        Checking
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-orange-500/25 bg-orange-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-300">
+                        Not set
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-void-text-muted">
+                    {recoveryKeyConfigured && !recoveryKey
+                      ? 'A recovery key is already active. VOID cannot show it again. Rotate only if you lost it, because the old key will stop working.'
+                      : 'Use this key to restore encrypted chats on a new device. Keep it private; losing it can lock you out of old chat history.'}
+                  </p>
+                </div>
+                <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-void-text-muted" />
+              </div>
+
+              {confirmRecoveryKeyRotation && !recoveryKey ? (
+                <div className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3">
+                  <p className="text-xs text-orange-100/90">
+                    Rotating creates a new recovery key and replaces the old one. If another device only has the old key, that old key will no longer unlock future recovery backups.
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={handleGenerateRecoveryKey}
+                      disabled={isSettingRecoveryKey}
+                      className="inline-flex justify-center rounded-lg bg-orange-600 px-3 py-2 text-xs font-semibold text-white hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isSettingRecoveryKey ? 'Rotating...' : 'Yes, Rotate Key'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmRecoveryKeyRotation(false);
+                        setRecoveryKeyStatus('');
+                      }}
+                      disabled={isSettingRecoveryKey}
+                      className="inline-flex justify-center rounded-lg border border-void-border bg-void-bg-main/80 px-3 py-2 text-xs font-semibold text-void-text hover:bg-void-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {recoveryKey ? (
+                <div className="mt-3 rounded-xl border border-blue-500/20 bg-blue-500/10 p-3">
+                  <code className="block break-all font-mono text-sm tracking-wide text-blue-100">
+                    {recoveryKey}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleCopyRecoveryKey}
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                  >
+                    {recoveryKeyCopied ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    {recoveryKeyCopied ? 'Copied' : 'Copy recovery key'}
+                  </button>
+                </div>
+              ) : null}
+
+              {recoveryKeyStatus ? (
+                <p className={`mt-2 text-xs ${recoveryKey ? 'text-emerald-300' : 'text-orange-300'}`}>
+                  {recoveryKeyStatus}
+                </p>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={handleGenerateRecoveryKey}
+                disabled={
+                  isSettingRecoveryKey ||
+                  keyStatusLoading ||
+                  recoveryKeyConfigured === null ||
+                  confirmRecoveryKeyRotation ||
+                  Boolean(recoveryKey)
+                }
+                className="mt-3 w-full rounded-lg border border-void-border bg-void-bg-main/70 px-3 py-2.5 text-sm font-medium text-void-text transition-all hover:border-blue-500 hover:bg-void-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSettingRecoveryKey
+                  ? 'Creating recovery key...'
+                  : recoveryKey
+                    ? 'Recovery Key Created'
+                    : recoveryKeyConfigured
+                      ? 'Rotate Recovery Key'
+                      : 'Create Recovery Key'}
+              </button>
             </div>
 
             <button

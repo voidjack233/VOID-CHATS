@@ -76,6 +76,7 @@ router.get('/backup', async (req, res) => {
       `SELECT encrypted_private_key, iv, salt, key_id, created_at
              , recovery_encrypted_private_key, recovery_iv, recovery_salt, recovery_key_id, recovery_configured_at
              , mls_state_encrypted, mls_state_iv, mls_state_salt
+             , recovery_mls_state_encrypted, recovery_mls_state_iv, recovery_mls_state_salt
        FROM user_key_backups
        WHERE user_id = $1`,
       [userId]
@@ -99,6 +100,25 @@ router.post('/backup/recovery', async (req, res) => {
 
   if (!hasEncryptedKeyPayload(payload)) {
     return res.status(400).json({ error: 'encrypted_private_key, iv, salt, and key_id required' });
+  }
+
+  const hasRecoveryMlsState = Boolean(
+    payload.recovery_mls_state_encrypted &&
+    payload.recovery_mls_state_iv &&
+    payload.recovery_mls_state_salt
+  );
+
+  const hasPartialRecoveryMlsState = Boolean(
+    payload.recovery_mls_state_encrypted ||
+    payload.recovery_mls_state_iv ||
+    payload.recovery_mls_state_salt
+  );
+
+  if (hasPartialRecoveryMlsState && !hasRecoveryMlsState) {
+    return res.status(400).json({
+      error: 'recovery_mls_state_encrypted, recovery_mls_state_iv, and recovery_mls_state_salt must all be provided together',
+      code: 'INVALID_RECOVERY_MLS_BACKUP',
+    });
   }
 
   let client;
@@ -147,10 +167,22 @@ router.post('/backup/recovery', async (req, res) => {
            recovery_iv = $3,
            recovery_salt = $4,
            recovery_key_id = $5,
+           recovery_mls_state_encrypted = COALESCE($6, recovery_mls_state_encrypted),
+           recovery_mls_state_iv = COALESCE($7, recovery_mls_state_iv),
+           recovery_mls_state_salt = COALESCE($8, recovery_mls_state_salt),
            recovery_configured_at = COALESCE(recovery_configured_at, NOW()),
            updated_at = NOW()
        WHERE user_id = $1`,
-      [userId, payload.encrypted_private_key, payload.iv, payload.salt, payload.key_id]
+      [
+        userId,
+        payload.encrypted_private_key,
+        payload.iv,
+        payload.salt,
+        payload.key_id,
+        hasRecoveryMlsState ? payload.recovery_mls_state_encrypted : null,
+        hasRecoveryMlsState ? payload.recovery_mls_state_iv : null,
+        hasRecoveryMlsState ? payload.recovery_mls_state_salt : null,
+      ]
     );
 
     await client.query('COMMIT');

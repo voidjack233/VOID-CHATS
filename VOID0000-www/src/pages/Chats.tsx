@@ -45,6 +45,7 @@ const ChatDashboard = () => {
     mlsRecoveryGate,
     isLoggingOut,
     retryMlsRecoveryWithPassword,
+    retryMlsRecoveryWithRecoveryKey,
     logout,
   } = useUser();
 
@@ -95,9 +96,9 @@ const ChatDashboard = () => {
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
-  const [mlsRecoveryPassword, setMlsRecoveryPassword] = useState('');
+  const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
   const [mlsRecoveryError, setMlsRecoveryError] = useState('');
-  const [isSubmittingMlsRecoveryPassword, setIsSubmittingMlsRecoveryPassword] = useState(false);
+  const [isSubmittingMlsRecoveryKey, setIsSubmittingMlsRecoveryKey] = useState(false);
   const memberDisplayCacheRef = useRef<Record<string, any>>({});
 
   const {
@@ -260,9 +261,9 @@ const ChatDashboard = () => {
   }, [members]);
 
   useEffect(() => {
-    setMlsRecoveryPassword('');
+    setMlsRecoveryKey('');
     setMlsRecoveryError('');
-    setIsSubmittingMlsRecoveryPassword(false);
+    setIsSubmittingMlsRecoveryKey(false);
   }, [mlsRecoveryGate.active, mlsRecoveryGate.reason]);
 
   const messageDisplayMembers = useMemo(
@@ -501,11 +502,17 @@ const ChatDashboard = () => {
     }
 
     switch (mlsRecoveryGate.reason) {
+      case 'recovery_key_required':
+        return {
+          title: 'Secure chat recovery needs your recovery key',
+          body:
+            'This device has secure chat state to restore. Enter the recovery key you saved for this account to unlock encrypted chat on this device.',
+        };
       case 'password_required':
         return {
-          title: 'Secure chat recovery needs your password',
+          title: 'Legacy secure chat recovery needs your password',
           body:
-            'This device has secure chat state to restore, but it needs your account password to decrypt that MLS backup. Enter your password below to continue without signing out.',
+            'This account only has the older password-wrapped chat backup. Enter your current account password below, then set up a recovery key in Account settings after recovery finishes.',
         };
       case 'restore_failed':
         return {
@@ -582,6 +589,7 @@ const ChatDashboard = () => {
 
   if (mlsRecoveryGate.active) {
     const gateCopy = getMlsRecoveryGateCopy();
+    const canRetryWithRecoveryKey = mlsRecoveryGate.reason === 'recovery_key_required';
     const canRetryWithPassword =
       mlsRecoveryGate.reason === 'password_required' || mlsRecoveryGate.reason === 'restore_failed';
     return (
@@ -599,21 +607,23 @@ const ChatDashboard = () => {
             </div>
           </div>
 
-          {canRetryWithPassword && (
+          {(canRetryWithRecoveryKey || canRetryWithPassword) && (
             <div className="space-y-3">
               <label className="block">
-                <span className="mb-2 block text-sm font-medium text-void-text">Account Password</span>
+                <span className="mb-2 block text-sm font-medium text-void-text">
+                  {canRetryWithRecoveryKey ? 'Recovery Key' : 'Account Password'}
+                </span>
                 <input
-                  type="password"
-                  value={mlsRecoveryPassword}
+                  type={canRetryWithRecoveryKey ? 'text' : 'password'}
+                  value={mlsRecoveryKey}
                   onChange={(e) => {
-                    setMlsRecoveryPassword(e.target.value);
+                    setMlsRecoveryKey(e.target.value);
                     if (mlsRecoveryError) setMlsRecoveryError('');
                   }}
-                  placeholder="Enter your password"
-                  autoComplete="current-password"
+                  placeholder={canRetryWithRecoveryKey ? 'XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX' : 'Enter your password'}
+                  autoComplete={canRetryWithRecoveryKey ? 'off' : 'current-password'}
                   className="w-full rounded-xl border border-void-border bg-gray-900 px-4 py-3 text-sm text-void-text placeholder-void-text-muted focus:outline-none focus:border-blue-500"
-                  disabled={isSubmittingMlsRecoveryPassword}
+                  disabled={isSubmittingMlsRecoveryKey}
                 />
               </label>
 
@@ -626,20 +636,54 @@ const ChatDashboard = () => {
           )}
 
           <div className="flex flex-col sm:flex-row gap-3">
+            {canRetryWithRecoveryKey && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!mlsRecoveryKey.trim()) {
+                    setMlsRecoveryError('Enter your recovery key to continue secure chat recovery.');
+                    return;
+                  }
+
+                  setIsSubmittingMlsRecoveryKey(true);
+                  setMlsRecoveryError('');
+
+                  try {
+                    await retryMlsRecoveryWithRecoveryKey(mlsRecoveryKey);
+                  } catch (err) {
+                    if (
+                      err instanceof Error &&
+                      ['INVALID_RECOVERY_KEY', 'RECOVERY_NOT_CONFIGURED', 'RECOVERY_KEY_MISMATCH'].includes(err.message)
+                    ) {
+                      setMlsRecoveryError('That recovery key could not unlock this chat backup. Check the key and try again.');
+                    } else {
+                      setMlsRecoveryError('Secure chat recovery could not continue yet. Try again.');
+                    }
+                  } finally {
+                    setIsSubmittingMlsRecoveryKey(false);
+                  }
+                }}
+                disabled={isSubmittingMlsRecoveryKey}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white px-4 py-3 font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <KeyRound className="w-4 h-4" />
+                {isSubmittingMlsRecoveryKey ? 'Trying recovery key...' : 'Continue with Recovery Key'}
+              </button>
+            )}
             {canRetryWithPassword && (
               <button
                 type="button"
                 onClick={async () => {
-                  if (!mlsRecoveryPassword.trim()) {
+                  if (!mlsRecoveryKey.trim()) {
                     setMlsRecoveryError('Enter your account password to continue secure chat recovery.');
                     return;
                   }
 
-                  setIsSubmittingMlsRecoveryPassword(true);
+                  setIsSubmittingMlsRecoveryKey(true);
                   setMlsRecoveryError('');
 
                   try {
-                    await retryMlsRecoveryWithPassword(mlsRecoveryPassword);
+                    await retryMlsRecoveryWithPassword(mlsRecoveryKey);
                   } catch (err) {
                     if (err instanceof Error && err.message === 'INVALID_ACCOUNT_PASSWORD') {
                       setMlsRecoveryError('That password could not unlock your secure chat backup. Try your current password again.');
@@ -649,14 +693,14 @@ const ChatDashboard = () => {
                       setMlsRecoveryError('Secure chat recovery could not continue yet. Try again.');
                     }
                   } finally {
-                    setIsSubmittingMlsRecoveryPassword(false);
+                    setIsSubmittingMlsRecoveryKey(false);
                   }
                 }}
-                disabled={isSubmittingMlsRecoveryPassword}
+                disabled={isSubmittingMlsRecoveryKey}
                 className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 text-white px-4 py-3 font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <KeyRound className="w-4 h-4" />
-                {isSubmittingMlsRecoveryPassword ? 'Trying password...' : 'Continue with Password'}
+                {isSubmittingMlsRecoveryKey ? 'Trying password...' : 'Continue with Password'}
               </button>
             )}
             <button
@@ -665,7 +709,7 @@ const ChatDashboard = () => {
                 await logout();
                 navigate('/auth', { replace: true });
               }}
-              disabled={isSubmittingMlsRecoveryPassword}
+              disabled={isSubmittingMlsRecoveryKey}
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-border bg-gray-900 text-void-text px-4 py-3 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Sign Out

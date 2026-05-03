@@ -296,28 +296,26 @@ const useMessageListLoading = ({
           setSyncing(false);
           setHasOlder((previous) => previous || syncResult.hasMore);
 
-          if (syncResult.newMessages.length > 0) {
-            const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
-            if (ignore) return;
+          const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
+          if (ignore) return;
 
-            const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
-            const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
-            mergeVisibleMessages({
-              incoming: freshUI,
-              currentUserId: userId,
-              trimFrom: 'old',
-              hasOlder: resolveInitialHasOlder({
-                localHasMore: fresh.has_more,
-                localCount: freshUI.length,
-                requestedLimit: initialLimit,
-                sessionSnapshot,
-                syncHasMore: syncResult.hasMore,
-              }),
-              hasNewer: false,
-              isAtPresent: true,
-            });
-            onMessagesLoaded?.(freshUI);
-          }
+          const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+          const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
+          mergeVisibleMessages({
+            incoming: freshUI,
+            currentUserId: userId,
+            trimFrom: 'old',
+            hasOlder: resolveInitialHasOlder({
+              localHasMore: fresh.has_more,
+              localCount: freshUI.length,
+              requestedLimit: initialLimit,
+              sessionSnapshot,
+              syncHasMore: syncResult.hasMore,
+            }),
+            hasNewer: false,
+            isAtPresent: true,
+          });
+          onMessagesLoaded?.(freshUI);
           settleInitialHydration();
           return;
         }

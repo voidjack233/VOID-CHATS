@@ -330,6 +330,9 @@ export async function backupRecoveryKeyToServer(data: {
   iv: string;
   salt: string;
   key_id: string;
+  recovery_mls_state_encrypted?: string;
+  recovery_mls_state_iv?: string;
+  recovery_mls_state_salt?: string;
 }): Promise<void> {
   const response = await fetchWithAuth('/api/conversations/keys/backup/recovery', {
     method: 'POST',

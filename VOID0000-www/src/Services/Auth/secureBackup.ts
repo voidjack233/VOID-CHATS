@@ -1,7 +1,7 @@
 import { keyManager } from '../Crypto/keyManager';
 import { mlsStore } from '../Crypto/mls/mlsStore';
 import type { MlsBackupData } from '../Crypto/mls/mlsTypes';
-import { backupKeyToServer } from '../Chat/chatService';
+import { backupKeyToServer, backupRecoveryKeyToServer } from '../Chat/chatService';
 
 export interface SecureKeyBackupPayload {
   encrypted_private_key: string;
@@ -11,6 +11,16 @@ export interface SecureKeyBackupPayload {
   mls_state_encrypted?: string;
   mls_state_iv?: string;
   mls_state_salt?: string;
+}
+
+export interface RecoveryKeyBackupPayload {
+  encrypted_private_key: string;
+  iv: string;
+  salt: string;
+  key_id: string;
+  recovery_mls_state_encrypted?: string;
+  recovery_mls_state_iv?: string;
+  recovery_mls_state_salt?: string;
 }
 
 export async function buildMlsBackupFields(
@@ -29,6 +39,26 @@ export async function buildMlsBackupFields(
   }
 }
 
+export async function buildRecoveryMlsBackupFields(
+  userId: string,
+  recoveryKey: string
+): Promise<Pick<RecoveryKeyBackupPayload, 'recovery_mls_state_encrypted' | 'recovery_mls_state_iv' | 'recovery_mls_state_salt'> | null> {
+  try {
+    const mlsData = await mlsStore.exportForBackup(userId);
+    const groupKeys = await keyManager.exportGroupKeys();
+    const payload: MlsBackupData = { ...mlsData, groupKeys };
+    const { encrypted, iv, salt } = await keyManager.encryptDataWithRecoveryPhrase(payload, recoveryKey);
+    return {
+      recovery_mls_state_encrypted: encrypted,
+      recovery_mls_state_iv: iv,
+      recovery_mls_state_salt: salt,
+    };
+  } catch (err) {
+    console.warn('🔑 Recovery MLS state export failed (non-critical):', err);
+    return null;
+  }
+}
+
 export async function prepareSecureBackup(
   userId: string,
   password: string
@@ -43,4 +73,20 @@ export async function prepareSecureBackup(
 
 export async function uploadSecureBackups(userId: string, password: string): Promise<void> {
   await backupKeyToServer(await prepareSecureBackup(userId, password));
+}
+
+export async function prepareRecoverySecureBackup(
+  userId: string,
+  recoveryKey: string
+): Promise<RecoveryKeyBackupPayload> {
+  const keyBackup = await keyManager.prepareRecoveryBackup(userId, recoveryKey);
+  const mlsFields = await buildRecoveryMlsBackupFields(userId, recoveryKey);
+  return {
+    ...keyBackup,
+    ...(mlsFields || {}),
+  };
+}
+
+export async function uploadRecoverySecureBackups(userId: string, recoveryKey: string): Promise<void> {
+  await backupRecoveryKeyToServer(await prepareRecoverySecureBackup(userId, recoveryKey));
 }
