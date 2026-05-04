@@ -45,7 +45,8 @@ The Docker Nginx edge is the normal local entrypoint. It routes:
 - friends/profile routes to `social-api:3004`
 - conversation/group/MLS routes to `conversation-api:3005`
 - `/gateway` to the Phoenix gateway on `gateway:4001`
-- media bucket paths to MinIO
+- public avatar bucket paths to MinIO
+- private chat attachment downloads to the message API
 
 You can still open `http://localhost:5173` if you specifically want to bypass
 the Docker Nginx edge and use Vite's dev proxy directly.

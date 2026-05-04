@@ -319,7 +319,8 @@ Startup behavior:
 On startup, the backend tries to:
 
 1. ensure the required buckets exist
-2. apply public read policy to those buckets
+2. apply public read policy to avatar buckets
+3. clear public read policy from the chat attachment bucket
 
 Expected buckets:
 
@@ -330,6 +331,7 @@ Expected buckets:
 Success logs look like:
 
 - `MinIO bucket 'avatars' public read policy set`
+- `MinIO bucket 'chat-attachments' private policy set`
 - `MinIO connected`
 
 Important detail:
@@ -338,14 +340,14 @@ PM2 does not manage MinIO.
 
 It must already be running before the app expects uploads and object URLs to work.
 
-Current privacy tradeoff:
+Attachment privacy split:
 
 - avatars and group avatars are public by nature
-- chat attachments are encrypted client-side, but the encrypted blob bucket is
-  still public-read
-- that is workable for a hobby deployment, but a stricter production design
-  should make chat attachments private and serve them with short-lived signed
-  URLs or an authenticated download proxy
+- new chat attachments are encrypted client-side and downloaded through an
+  authenticated API route
+- old encrypted attachment URLs can still be served through a compatibility
+  API path after membership checks, because their original public object names
+  were already stored inside encrypted message payloads
 
 ## Recommended Service Startup Order
 

@@ -335,7 +335,11 @@ Very important:
 - `api.your-domain.example/gateway`
   Nginx routes to Phoenix websocket gateway on `127.0.0.1:4001`
 - `cdn.your-domain.example`
-  Nginx routes GET/HEAD requests to MinIO on `127.0.0.1:9000`
+  Nginx routes public avatar reads to MinIO on `127.0.0.1:9000`
+
+Chat attachments are different. They live in the private `chat-attachments`
+bucket and are downloaded through authenticated API paths under
+`/api/conversations/:id/attachments/...`.
 
 Reference router config:
 

@@ -348,7 +348,9 @@ const MessageViewV2 = memo(function MessageViewV2({
       parseAttachments(message.attachments)
         .filter(isEncryptedAttachment)
         .forEach((attachment) => {
-          void resolveAttachmentObjectUrl(attachment).catch(() => {});
+          void resolveAttachmentObjectUrl(attachment, {
+            conversationId: message.conversation_public_id || message.conversation_id,
+          }).catch(() => {});
         });
     });
   }, [visualMessages]);

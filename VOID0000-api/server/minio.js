@@ -39,13 +39,27 @@ async function ensurePublicReadBucket(bucket) {
   console.log(`✅ MinIO bucket '${bucket}' public read policy set`);
 }
 
+async function ensurePrivateBucket(bucket) {
+  await ensureBucketExists(bucket);
+  try {
+    await minioClient.setBucketPolicy(bucket, '');
+  } catch (err) {
+    const code = err?.code || err?.name || '';
+    const message = err?.message || '';
+    if (!String(code).includes('NoSuchBucketPolicy') && !message.includes('policy does not exist')) {
+      throw err;
+    }
+  }
+  console.log(`✅ MinIO bucket '${bucket}' private policy set`);
+}
+
 // Ensure buckets exist on startup
 (async () => {
   try {
     await Promise.all([
       ensurePublicReadBucket(BUCKET),
       ensurePublicReadBucket(GROUP_AVATAR_BUCKET),
-      ensurePublicReadBucket(ATTACH_BUCKET),
+      ensurePrivateBucket(ATTACH_BUCKET),
     ]);
     console.log('✅ MinIO connected');
   } catch (err) {

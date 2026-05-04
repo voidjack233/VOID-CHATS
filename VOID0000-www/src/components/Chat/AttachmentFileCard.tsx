@@ -13,6 +13,7 @@ import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncr
 
 interface AttachmentFileCardProps {
   attachment: Attachment;
+  conversationId?: string | null;
   disabled?: boolean;
 }
 
@@ -74,6 +75,7 @@ function getAttachmentIcon(mime: string | undefined) {
 
 export default function AttachmentFileCard({
   attachment,
+  conversationId,
   disabled = false,
 }: AttachmentFileCardProps) {
   const [downloading, setDownloading] = useState(false);
@@ -85,7 +87,7 @@ export default function AttachmentFileCard({
 
     setDownloading(true);
     try {
-      const url = await resolveAttachmentObjectUrl(attachment);
+      const url = await resolveAttachmentObjectUrl(attachment, { conversationId });
       const anchor = document.createElement('a');
       anchor.href = url;
       anchor.download = displayName;

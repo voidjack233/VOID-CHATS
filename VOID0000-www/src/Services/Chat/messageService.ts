@@ -1,6 +1,6 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { decryptMessages, encryptMessage } from '../Crypto/messageEncryption';
-import { encryptAttachmentFile } from '../Crypto/attachmentEncryption';
+import { encryptAttachmentFile, resolveAttachmentBlob } from '../Crypto/attachmentEncryption';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import {
@@ -13,6 +13,7 @@ import {
   buildEncryptedMessagePayload,
 } from './messageEnvelope';
 import {
+  parseAttachment,
   serializeAttachment,
 } from './messageAttachments';
 import type {
@@ -388,11 +389,38 @@ async function resolveForwardSendCrypto(
   );
 }
 
+async function cloneAttachmentsForForward(
+  targetConversationId: string,
+  sourceAttachments: string[],
+  sourceConversationId?: string | null,
+): Promise<string[]> {
+  const files = await Promise.all(
+    sourceAttachments.map(async (rawAttachment, index) => {
+      const attachment = parseAttachment(rawAttachment);
+      const blob = await resolveAttachmentBlob(attachment, { conversationId: sourceConversationId });
+      const fallbackName = `forwarded-attachment-${index + 1}`;
+      const filename = attachment.name?.trim() || fallbackName;
+      const mime = attachment.mime || blob.type || 'application/octet-stream';
+
+      return new File([blob], filename, { type: mime });
+    }),
+  );
+
+  return uploadEncryptedAttachments(targetConversationId, files);
+}
+
 export async function forwardMessageToConversation(
   targetConversation: Conversation,
   sourceMessage: Pick<
     Message,
-    'message_id' | 'sender_id' | 'content' | 'attachments' | 'created_at' | 'message_type'
+    | 'conversation_id'
+    | 'conversation_public_id'
+    | 'message_id'
+    | 'sender_id'
+    | 'content'
+    | 'attachments'
+    | 'created_at'
+    | 'message_type'
   >,
   options: {
     currentUserId: string;
@@ -400,13 +428,18 @@ export async function forwardMessageToConversation(
   },
 ): Promise<Message> {
   const plaintext = typeof sourceMessage.content === 'string' ? sourceMessage.content.trim() : '';
-  const secureAttachments = sourceMessage.attachments || [];
+  const sourceAttachments = sourceMessage.attachments || [];
 
-  if (!plaintext && secureAttachments.length === 0) {
+  if (!plaintext && sourceAttachments.length === 0) {
     throw new Error('Only messages with text or attachments can be forwarded right now.');
   }
 
   const sendCrypto = await resolveForwardSendCrypto(targetConversation, options.currentUserId);
+  const sourceConversationId = sourceMessage.conversation_public_id || sourceMessage.conversation_id;
+  const isSameConversation = String(targetConversation.id) === String(sourceConversationId);
+  const secureAttachments = sourceAttachments.length > 0 && !isSameConversation
+    ? await cloneAttachmentsForForward(targetConversation.id, sourceAttachments, sourceConversationId)
+    : sourceAttachments;
 
   if (plaintext) {
     return sendMessage(targetConversation.id, plaintext, sendCrypto.key, {

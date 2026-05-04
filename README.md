@@ -232,7 +232,7 @@ VOIDAPP/
 - If you are on Windows or macOS without Docker, you are outside the setup path I actually used.
 - If you deploy this publicly, do your own security review.
 - Keep raw backend, gateway, and MinIO ports loopback-only. Let Nginx or your tunnel be the public door.
-- Chat attachment objects are encrypted before upload, but the current MinIO bucket is still public-read. That is a hobby-project compromise, not the final boss security design.
+- Profile and group pictures are public-read. Chat attachment blobs are private and downloaded through the authenticated API path.
 - If you fork this, feel free to simplify things. I did not optimize it for textbook purity.
 
 Future notes live here:

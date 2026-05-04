@@ -64,7 +64,7 @@ services:
       mc mb --ignore-existing local/avatars local/group-avatars local/chat-attachments;
       mc anonymous set download local/avatars;
       mc anonymous set download local/group-avatars;
-      mc anonymous set download local/chat-attachments;
+      mc anonymous set none local/chat-attachments;
       "
 
   migrate:

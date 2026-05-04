@@ -285,6 +285,7 @@ const MessageItem = memo(function MessageItem({
   const isQueued = message.local_status === 'queued';
   const isPending = isSending || isQueued;
   const pendingStatusLabel = isQueued ? 'queued' : 'sending...';
+  const attachmentConversationId = message.conversation_public_id || message.conversation_id;
   const isRightAligned = isOwn && density === 'comfortable';
   const canSwipeReply = Boolean(onReply);
   const canSwipeEdit = Boolean(isOwn && onEdit);
@@ -388,7 +389,9 @@ const MessageItem = memo(function MessageItem({
     setOpeningImageViewer(true);
     try {
       const resolvedUrls = await Promise.all(
-        parseAttachments(attachmentUrls).map((attachment) => resolveAttachmentObjectUrl(attachment))
+        parseAttachments(attachmentUrls).map((attachment) =>
+          resolveAttachmentObjectUrl(attachment, { conversationId: attachmentConversationId })
+        )
       );
       onOpenImageViewer(resolvedUrls, index);
     } catch (error) {
@@ -396,7 +399,7 @@ const MessageItem = memo(function MessageItem({
     } finally {
       setOpeningImageViewer(false);
     }
-  }, [isPending, onOpenImageViewer, openingImageViewer]);
+  }, [attachmentConversationId, isPending, onOpenImageViewer, openingImageViewer]);
   const showSenderMeta = startsGroup;
   const showAvatar = showSenderMeta && (density === 'compact' ? true : !isOwn);
   const leftIndent = !isRightAligned && showAvatar ? AVATAR_OFFSET : '';
@@ -999,6 +1002,7 @@ const MessageItem = memo(function MessageItem({
                           >
                             <AttachmentImage
                               attachment={attachment}
+                              conversationId={attachmentConversationId}
                               alt="attachment"
                               className="w-full h-full object-cover hover:opacity-90"
                               onLoad={onAttachmentLoad}
@@ -1044,6 +1048,7 @@ const MessageItem = memo(function MessageItem({
                   <AttachmentFileCard
                     key={`${originalIndex}-${attachment.url}`}
                     attachment={attachment}
+                    conversationId={attachmentConversationId}
                     disabled={isPending}
                   />
                 ))}

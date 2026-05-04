@@ -10,6 +10,7 @@ import BlurImage, { BlurhashPlaceholder } from '../common/BlurImage';
 
 interface AttachmentImageProps {
   attachment: Attachment;
+  conversationId?: string | null;
   alt?: string;
   className?: string;
   onLoad?: () => void;
@@ -19,6 +20,7 @@ interface AttachmentImageProps {
 
 export default function AttachmentImage({
   attachment,
+  conversationId,
   alt = '',
   className = '',
   onLoad,
@@ -62,7 +64,7 @@ export default function AttachmentImage({
 
     setSrc(null);
 
-    resolveAttachmentObjectUrl(attachment)
+    resolveAttachmentObjectUrl(attachment, { conversationId })
       .then((nextUrl) => {
         if (!cancelled) {
           setSrc(nextUrl);
@@ -85,6 +87,7 @@ export default function AttachmentImage({
     attachment.iv,
     attachment.key,
     attachment.mime,
+    conversationId,
     canLoad,
   ]);
 

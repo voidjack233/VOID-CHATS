@@ -1,5 +1,7 @@
 import type { Attachment } from '../Chat/chatTypes';
 import { encode } from 'blurhash';
+import { fetchWithAuth } from '../Auth/authServiceApi';
+import { API_URL } from '../config';
 
 interface EncryptedAttachment extends Attachment {
   encrypted: true;
@@ -18,6 +20,11 @@ const BLURHASH_MAX_DIMENSION = 32;
 const BLURHASH_COMPONENT_X = 4;
 const BLURHASH_COMPONENT_Y = 4;
 const DECRYPTED_ATTACHMENT_URL_TTL_MS = 60_000;
+const LEGACY_ATTACHMENT_BUCKET_PATH = '/chat-attachments/';
+
+interface AttachmentResolveOptions {
+  conversationId?: string | null;
+}
 
 interface ImageAttachmentPreviewData {
   blurhash?: string;
@@ -66,6 +73,56 @@ function getAttachmentCacheKey(attachment: EncryptedAttachment): string {
     attachment.key,
     attachment.mime,
   ].join('::');
+}
+
+function getLegacyAttachmentObjectKey(url: string): string | null {
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const markerIndex = parsed.pathname.indexOf(LEGACY_ATTACHMENT_BUCKET_PATH);
+    if (markerIndex === -1) {
+      return null;
+    }
+
+    const objectKey = parsed.pathname.slice(markerIndex + LEGACY_ATTACHMENT_BUCKET_PATH.length);
+    if (!objectKey || objectKey.includes('/')) {
+      return null;
+    }
+
+    return decodeURIComponent(objectKey);
+  } catch {
+    return null;
+  }
+}
+
+function resolveAttachmentDownloadUrl(url: string, options?: AttachmentResolveOptions): string {
+  const legacyObjectKey = options?.conversationId
+    ? getLegacyAttachmentObjectKey(url)
+    : null;
+
+  if (legacyObjectKey) {
+    return `/api/conversations/${encodeURIComponent(options!.conversationId!)}/attachments/legacy/${encodeURIComponent(legacyObjectKey)}`;
+  }
+
+  return url;
+}
+
+function shouldUseAuthenticatedFetch(url: string): boolean {
+  if (url.startsWith('/api/')) {
+    return true;
+  }
+
+  try {
+    const parsed = new URL(url, window.location.origin);
+    const apiBase = API_URL ? new URL(API_URL, window.location.origin) : null;
+
+    if (parsed.pathname.startsWith('/api/') && parsed.origin === window.location.origin) {
+      return true;
+    }
+
+    return Boolean(apiBase && parsed.origin === apiBase.origin && parsed.pathname.startsWith('/api/'));
+  } catch {
+    return false;
+  }
 }
 
 function clearResolvedUrlExpiry(cacheKey: string): void {
@@ -203,13 +260,25 @@ export async function encryptAttachmentFile(file: File): Promise<{
   };
 }
 
-async function decryptAttachmentToBlob(attachment: EncryptedAttachment): Promise<Blob> {
-  const response = await fetch(attachment.url, { cache: 'force-cache' });
+async function downloadAttachmentBlob(url: string): Promise<Blob> {
+  const response = shouldUseAuthenticatedFetch(url)
+    ? await fetchWithAuth(url, { cache: 'force-cache' })
+    : await fetch(url, { cache: 'force-cache' });
+
   if (!response.ok) {
     throw new Error(`Attachment download failed with status ${response.status}`);
   }
 
-  const encryptedData = await response.arrayBuffer();
+  return response.blob();
+}
+
+async function decryptAttachmentToBlob(
+  attachment: EncryptedAttachment,
+  options?: AttachmentResolveOptions,
+): Promise<Blob> {
+  const downloadUrl = resolveAttachmentDownloadUrl(attachment.url, options);
+  const encryptedBlob = await downloadAttachmentBlob(downloadUrl);
+  const encryptedData = await encryptedBlob.arrayBuffer();
   const key = await crypto.subtle.importKey(
     'raw',
     base64ToUint8Array(attachment.key),
@@ -229,7 +298,22 @@ async function decryptAttachmentToBlob(attachment: EncryptedAttachment): Promise
   });
 }
 
-export async function resolveAttachmentObjectUrl(attachment: Attachment): Promise<string> {
+export async function resolveAttachmentBlob(
+  attachment: Attachment,
+  options?: AttachmentResolveOptions,
+): Promise<Blob> {
+  if (isEncryptedAttachment(attachment)) {
+    return decryptAttachmentToBlob(attachment, options);
+  }
+
+  const downloadUrl = resolveAttachmentDownloadUrl(attachment.url, options);
+  return downloadAttachmentBlob(downloadUrl);
+}
+
+export async function resolveAttachmentObjectUrl(
+  attachment: Attachment,
+  options?: AttachmentResolveOptions,
+): Promise<string> {
   if (!isEncryptedAttachment(attachment)) {
     return attachment.url;
   }
@@ -242,7 +326,7 @@ export async function resolveAttachmentObjectUrl(attachment: Attachment): Promis
   }
 
   if (!decryptedUrlCache.has(cacheKey)) {
-    const pendingUrl = decryptAttachmentToBlob(attachment)
+    const pendingUrl = decryptAttachmentToBlob(attachment, options)
       .then((blob) => {
         const objectUrl = URL.createObjectURL(blob);
         resolvedUrlCache.set(cacheKey, objectUrl);
