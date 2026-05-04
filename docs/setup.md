@@ -67,6 +67,45 @@ minio server /path/to/minio-data --address "127.0.0.1:9000" --console-address "1
 The console should not be public internet-facing. Keep it loopback-only and
 reach it through SSH forwarding if you need it remotely.
 
+## Basic Firewall
+
+If this server is directly exposed to the internet through Nginx, keep the
+public firewall boring:
+
+- allow `22/tcp` for SSH
+- allow `80/tcp` for HTTP
+- allow `443/tcp` for HTTPS
+- do not expose backend service ports like `3001`, `3002`, `3004`, `3005`,
+  `4001`, `5432`, `6379`, `9000`, `9001`, or `9042`
+
+Helper script:
+
+```bash
+sudo ./scripts/configure-firewall.sh
+```
+
+Preview first:
+
+```bash
+./scripts/configure-firewall.sh --dry-run
+```
+
+If you only use Cloudflared and do not accept direct public traffic, you may not
+need to open `80/443` publicly. In that setup, Cloudflared reaches local Nginx
+from inside the machine and the tunnel itself uses outbound connections.
+
+Small future storage note:
+
+- Hot storage means the live MinIO data folder the app reads/writes every day.
+  For a better production box, point this at a mounted data drive like
+  `/srv/voidapp/minio-data`, not a random folder inside the repo or OS home
+  folder.
+- Cold storage means backups/archive copies that are not used by the running
+  app. This can be another disk, external drive, NAS, or another machine.
+- Do not manually move old `chat-attachments` objects out of live MinIO unless
+  the app has an archive/restore flow for them. The database still points at
+  those objects, so moving them blindly will make old attachments fail to load.
+
 ## 1. Install Dependencies
 
 Frontend:
@@ -453,6 +492,7 @@ Reference files copied from this shape:
 
 - [nginx-router.example.conf](./nginx-router.example.conf)
 - [nginx-frontend-only.example.conf](./nginx-frontend-only.example.conf)
+- [backups.md](./backups.md)
 
 Cloudflared is intentionally described in prose here instead of a copy-paste
 example file. You need to wire your own tunnel, hostnames, and local Nginx

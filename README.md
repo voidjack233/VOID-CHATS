@@ -239,6 +239,10 @@ Future notes live here:
 
 - [docs/future-notes.md](docs/future-notes.md)
 
+Backup notes live here:
+
+- [docs/backups.md](docs/backups.md)
+
 
 If you guys have alot of time and the Setup step is not working... (figure it out by yourself) XD
 
