@@ -110,7 +110,7 @@ const ChatDashboard = () => {
     encryptionError,
     conversationSecurityState,
     typingUsers,
-    newMessage,
+    messageEvents,
     editingMessage,
     replyTo,
     messageUpdate,
@@ -1061,7 +1061,7 @@ const ChatDashboard = () => {
                   onReply={handleReply}
                   onForward={handleForward}
                   onEdit={handleEdit}
-                  newMessage={newMessage}
+                  messageEvents={messageEvents}
                   userAvatar={myProfile?.avatar_url || undefined}
                   gateway={gateway}
                   messageUpdate={messageUpdate}

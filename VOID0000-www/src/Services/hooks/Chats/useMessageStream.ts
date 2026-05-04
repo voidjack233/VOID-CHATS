@@ -1,7 +1,7 @@
 // src/Services/hooks/Chats/useMessageStream.ts
 //
 // Owns the live message stream for the active conversation:
-//   - newMessage / messageUpdate / messageDelete state
+//   - append-only messageEvents / messageUpdate / messageDelete state
 //   - pendingMessages buffer (retry queue when key isn't ready yet)
 //   - Buffer flush effect (drains queue once encryptionKey arrives)
 //   - MESSAGE_CREATE / MESSAGE_UPDATE / MESSAGE_DELETE gateway effects
@@ -12,7 +12,7 @@
 // Conversation sync logic (CONVERSATION_UPDATE, MEMBER_LEAVE, channel guard)
 // lives in useConversationSync.
 
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
 import { Conversation, Message, getEncryptionKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
@@ -21,7 +21,7 @@ import { getHandshakeEntry, setHandshakeEntry, deleteHandshakeEntry } from '../.
 import { deleteConversationDetails } from '../../Chat/conversationCache';
 import { resolveDecryptedMessagePayload } from '../../Chat/messageEnvelope';
 import { keyManager } from '../../Crypto/keyManager';
-import type { MessageUpdate } from './MessageList/messageListTypes';
+import type { MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
 
 interface UseMessageStreamParams {
   activeConversation: Conversation | null;
@@ -54,11 +54,17 @@ export const useMessageStream = ({
   getConversationKeyScopePublicId,
   getKeyLookupConversation,
 }: UseMessageStreamParams) => {
-  const [newMessage, setNewMessage] = useState<Message | null>(null);
+  const [messageEvents, setMessageEvents] = useState<MessageStreamEvent[]>([]);
   const [messageUpdate, setMessageUpdate] = useState<MessageUpdate | null>(null);
   const [messageDelete, setMessageDelete] = useState<{ message_id: string } | null>(null);
 
   const pendingMessages = useRef<any[]>([]);
+  const messageEventSequenceRef = useRef(0);
+  const pushMessageEvent = useCallback((message: Message) => {
+    const sequence = messageEventSequenceRef.current + 1;
+    messageEventSequenceRef.current = sequence;
+    setMessageEvents((previous) => [...previous, { sequence, message }]);
+  }, []);
   const shouldAutoRecover =
     !conversationSecurityState ||
     conversationSecurityState.status === 'ready' ||
@@ -189,7 +195,7 @@ export const useMessageStream = ({
       if (isUpdate) {
         setMessageUpdate({ message_id: data.message_id, content, is_edited: true, edited_at: data.edited_at });
       } else {
-        setNewMessage({ ...data, content });
+        pushMessageEvent({ ...data, content });
       }
       return;
     }
@@ -208,7 +214,7 @@ export const useMessageStream = ({
           mentions: resolvedPayload.mentions ?? undefined,
         });
       } else {
-        setNewMessage({ ...data, ...resolvedPayload });
+        pushMessageEvent({ ...data, ...resolvedPayload });
       }
       return;
     }
@@ -242,7 +248,7 @@ export const useMessageStream = ({
           mentions: resolvedPayload.mentions ?? undefined,
         });
       } else {
-        setNewMessage({ ...data, ...resolvedPayload });
+        pushMessageEvent({ ...data, ...resolvedPayload });
       }
     } catch (err) {
       if (!shouldAutoRecover) {
@@ -357,7 +363,7 @@ export const useMessageStream = ({
         // encryptionKey is briefly changing references.
         if (data.message_type === 'system' && !data.iv) {
           const content = data.content || data.encrypted_content || 'System event';
-          setNewMessage({ ...data, content });
+          pushMessageEvent({ ...data, content });
         } else if (encryptionKeyRef.current) {
           await attemptDecryption(data, encryptionKeyRef.current);
         } else if (shouldAutoRecoverRef.current) {
@@ -398,17 +404,18 @@ export const useMessageStream = ({
   }, [activeConversation?.id, user?.id]);
 
   const resetMessageStream = () => {
-    setNewMessage(null);
+    setMessageEvents([]);
     setMessageUpdate(null);
     setMessageDelete(null);
+    messageEventSequenceRef.current = 0;
     pendingMessages.current = [];
   };
 
   return {
-    newMessage,
+    messageEvents,
     messageUpdate,
     messageDelete,
-    setNewMessage,
+    pushMessageEvent,
     setMessageUpdate,
     resetMessageStream,
   };

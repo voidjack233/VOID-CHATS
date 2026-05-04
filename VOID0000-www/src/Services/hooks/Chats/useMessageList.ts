@@ -9,7 +9,7 @@ import { createHistoryAccessFence, normalizeHistoryVersion, } from './MessageLis
 import { mergeMessagesWithReconciliation } from './MessageList/messageListReconciliation';
 import { sortMessages } from './MessageList/messageListPersistence';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
-import type { MessageDelete, MessageUpdate } from './MessageList/messageListTypes';
+import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
 import { useMessageListLoading } from './MessageList/useMessageListLoading';
 import { useMessageListPagination } from './MessageList/useMessageListPagination';
 import { useMessageListRealtime } from './MessageList/useMessageListRealtime';
@@ -283,7 +283,7 @@ export const useMessageList = (
   currentMember: ConversationMember | null | undefined,
   encryptionKey: CryptoKey | null,
   currentKeyVersion = 1,
-  newMessage?: Message | null,
+  messageEvents?: MessageStreamEvent[],
   messageUpdate?: MessageUpdate | null,
   messageDelete?: MessageDelete | null,
   onMessagesLoaded?: (messages: Message[]) => void,
@@ -505,7 +505,7 @@ export const useMessageList = (
     conversationId,
     userId,
     historyAccessFence,
-    newMessage,
+    messageEvents,
     messageUpdate,
     messageDelete,
     setMessages,

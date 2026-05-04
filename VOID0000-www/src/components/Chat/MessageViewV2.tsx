@@ -24,7 +24,11 @@ import ExternalLinkModal from './MessageViewParts/ExternalLinkModal';
 import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
 import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
-import type { MessageDelete, MessageUpdate } from '../../Services/hooks/Chats/MessageList/messageListTypes';
+import type {
+  MessageDelete,
+  MessageStreamEvent,
+  MessageUpdate,
+} from '../../Services/hooks/Chats/MessageList/messageListTypes';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -37,7 +41,7 @@ interface MessageViewProps {
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
   onEdit?: (message: Message) => void;
-  newMessage?: Message | null;
+  messageEvents?: MessageStreamEvent[];
   userAvatar?: string;
   gateway?: any;
   messageUpdate?: MessageUpdate | null;
@@ -83,7 +87,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   onReply,
   onForward,
   onEdit,
-  newMessage,
+  messageEvents = [],
   userAvatar,
   gateway,
   messageUpdate,
@@ -97,6 +101,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const forceFollowOutputRef = useRef(false);
   const initialLatestRestoreDoneRef = useRef(false);
   const previousListCountRef = useRef(0);
+  const lastFollowedMessageEventSequenceRef = useRef(0);
   const pendingOlderLoadScrollSnapshotRef = useRef<OlderLoadScrollSnapshot | null>(null);
   const loadingOlderStateRef = useRef(false);
   const loadingOlderRequestInFlightRef = useRef(false);
@@ -138,7 +143,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     currentMember,
     encryptionKey,
     keyVersion,
-    newMessage,
+    messageEvents,
     messageUpdate,
     messageDelete,
     handleInitReactionsFromMessages,
@@ -190,6 +195,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     forceFollowOutputRef.current = false;
     initialLatestRestoreDoneRef.current = false;
     previousListCountRef.current = 0;
+    lastFollowedMessageEventSequenceRef.current = 0;
     pendingOlderLoadScrollSnapshotRef.current = null;
     loadingOlderStateRef.current = false;
     loadingOlderRequestInFlightRef.current = false;
@@ -201,17 +207,27 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   // ── Track unseen messages from others ──
   useEffect(() => {
-    if (!newMessage) return;
-    if (String(newMessage.conversation_id || conversation.id) !== String(conversation.id)) {
+    const pendingEvents = messageEvents.filter(
+      (event) => event.sequence > lastFollowedMessageEventSequenceRef.current
+    );
+    if (pendingEvents.length === 0) {
       return;
     }
 
-    if (newMessage.sender_id === user?.id) {
+    lastFollowedMessageEventSequenceRef.current = Math.max(
+      ...pendingEvents.map((event) => event.sequence),
+      lastFollowedMessageEventSequenceRef.current,
+    );
+
+    const hasOwnMessageEvent = pendingEvents.some(({ message }) => (
+      String(message.conversation_id || conversation.id) === String(conversation.id) &&
+      message.sender_id === user?.id
+    ));
+
+    if (hasOwnMessageEvent) {
       forceFollowOutputRef.current = true;
-      return;
     }
-
-  }, [conversation.id, newMessage, user?.id]);
+  }, [conversation.id, messageEvents, user?.id]);
 
   // ── Stable refs for callbacks ──
   const friendsRef = useRef(friends);

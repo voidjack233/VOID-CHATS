@@ -14,6 +14,7 @@ import {
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
+import type { LocalMessage } from '../../../Chat/chatStore';
 import { gateway } from '../../../Gateway/gateway';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
 import { debugMessageList, rawDebugMessageList } from './messageListDebug';
@@ -23,7 +24,6 @@ import {
 } from './messageListReconciliation';
 import {
   hasUndecryptableMessage,
-  mergeLocalMessages,
   persistFetchedMessagesSafely,
   sortMessages,
   toUIMessage,
@@ -160,7 +160,7 @@ const useMessageListPagination = ({
       hasNewer: false,
       isAtPresent: true,
     });
-  }, [conversationId, messageListBaseIndex]);
+  }, [conversationId, messageListBaseIndex, replaceWindow]);
 
   const warmOlderServerHistory = useCallback(async (nextOldestMessageId: string) => {
     if (!encryptionKeyRef.current) {
@@ -320,11 +320,18 @@ const useMessageListPagination = ({
       firstPrependedId: prependedMessages[0]?.message_id || null,
       lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
     };
-  }, [applyPrependedWindow, conversationId, messagesRef, onMessagesLoaded]);
+  }, [
+    applyPrependedWindow,
+    conversationId,
+    messagesRef,
+    onMessagesLoaded,
+    setHasNewer,
+    setIsAtPresent,
+  ]);
 
   const fetchOlderMessages = useCallback(async (oldestMessageId: string, options?: { forceServer?: boolean }) => {
     const forceServer = options?.forceServer === true;
-    let result: { messages: any[]; has_more: boolean };
+    let result: { messages: LocalMessage[]; has_more: boolean };
     let localCount = 0;
     let localHasMore = false;
     let localHadUndecryptable = false;
@@ -353,8 +360,8 @@ const useMessageListPagination = ({
       serverHasMore = serverResult.has_more;
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       result = {
-        messages: mergeLocalMessages(localResult.messages, localMessages),
-        has_more: localResult.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+        messages: localMessages,
+        has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
       };
     } else {
       result = await messageSync.readLocal(conversationId, {
@@ -380,8 +387,8 @@ const useMessageListPagination = ({
       serverHasMore = serverResult.has_more;
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       result = {
-        messages: mergeLocalMessages(result.messages, localMessages),
-        has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+        messages: localMessages,
+        has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
       };
     }
 
@@ -538,8 +545,11 @@ const useMessageListPagination = ({
         });
         const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
         result = {
-          messages: mergeLocalMessages(result.messages, localMessages),
-          has_more: result.has_more || serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+          // Newer pagination must stay contiguous. Local IndexedDB can already
+          // contain a far-future live message, so merging sparse local rows here
+          // can create a fake gap like "Thursday -> Today".
+          messages: localMessages,
+          has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
         };
       }
 
@@ -576,7 +586,9 @@ const useMessageListPagination = ({
     }
   }, [
     conversationId,
+    currentKeyVersionRef,
     decryptionConversation,
+    encryptionKeyRef,
     hasNewer,
     hasQueuedNewer,
     historyAccessFence,
@@ -586,11 +598,16 @@ const useMessageListPagination = ({
     messages,
     onMessagesLoaded,
     queueNewerMessages,
+    setHasNewer,
+    setIsAtPresent,
+    setLoadingNewer,
     userId,
     flushQueuedNewerMessages,
   ]);
 
-  const reconcileRecentMessages = useCallback(async (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
+  type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed' | 'tab_visible' | 'message_create';
+
+  const reconcileRecentMessages = useCallback(async (source: RecentReconcileSource) => {
     if (!encryptionKeyRef.current) return;
 
     const newestMessage = getNewestServerBackedMessage(messagesRef.current);
@@ -603,6 +620,37 @@ const useMessageListPagination = ({
     });
 
     try {
+      const latestServerResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+        limit: FETCH_SIZE,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion: currentKeyVersionRef.current,
+      });
+      const latestLocalMessages = await persistFetchedMessagesSafely(latestServerResult.messages);
+      const visibleLatestMessages = filterMessagesByHistoryFence(latestLocalMessages, historyAccessFence);
+      const latestUI = sortMessages(visibleLatestMessages.map(toUIMessage));
+      const visibleMessageIds = new Set(messagesRef.current.map((message) => String(message.message_id)));
+      const latestPageTouchesCurrentWindow = latestUI.some(
+        (message) => visibleMessageIds.has(String(message.message_id))
+      );
+
+      if (latestUI.length > 0 && isAtPresentRef.current) {
+        mergeVisibleMessages({
+          incoming: latestUI,
+          currentUserId: userId,
+          trimFrom: 'old',
+          hasNewer: false,
+          isAtPresent: true,
+        });
+        onMessagesLoaded?.(latestUI);
+        return;
+      }
+
+      if (latestUI.length > 0 && latestPageTouchesCurrentWindow) {
+        setHasNewer(true);
+        setIsAtPresent(false);
+      }
+
       const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
         after: newestMessage.message_id,
         limit: FETCH_SIZE,
@@ -645,12 +693,17 @@ const useMessageListPagination = ({
     }
   }, [
     conversationId,
+    currentKeyVersionRef,
     decryptionConversation,
+    encryptionKeyRef,
     historyAccessFence,
     initialHydrationSettled,
     mergeVisibleMessages,
+    messagesRef,
     onMessagesLoaded,
     queueNewerMessages,
+    setHasNewer,
+    setIsAtPresent,
     userId,
   ]);
 
@@ -667,7 +720,7 @@ const useMessageListPagination = ({
 
     let lastResyncAt = 0;
 
-    const runResync = (source: 'gateway_ready' | 'gateway_resumed' | 'tab_visible') => {
+    const runResync = (source: RecentReconcileSource) => {
       const now = Date.now();
       if (now - lastResyncAt < 1500) {
         return;
@@ -683,17 +736,24 @@ const useMessageListPagination = ({
         runResync('tab_visible');
       }
     };
+    const handleMessageCreate = (data: { conversation_id?: string | null }) => {
+      if (String(data?.conversation_id || '') === String(conversationId)) {
+        runResync('message_create');
+      }
+    };
 
     gateway.on('READY', handleReady);
     gateway.on('RESUMED', handleResumed);
+    gateway.on('MESSAGE_CREATE', handleMessageCreate);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       gateway.off('READY', handleReady);
       gateway.off('RESUMED', handleResumed);
+      gateway.off('MESSAGE_CREATE', handleMessageCreate);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [encryptionKey, initialHydrationSettled, loading, reconcileRecentMessages, syncing]);
+  }, [conversationId, encryptionKey, initialHydrationSettled, loading, reconcileRecentMessages, syncing]);
 
   const jumpToPresent = useCallback(async () => {
     if (!encryptionKey) return;
@@ -702,15 +762,21 @@ const useMessageListPagination = ({
 
     try {
       const presentLimit = FETCH_SIZE;
-      const fresh = await messageSync.readLocal(conversationId, { limit: presentLimit });
-      const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+        limit: presentLimit,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion: currentKeyVersionRef.current,
+      });
+      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      const visibleFreshMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
       const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
 
       replaceWindow({
         messages: freshUI,
         firstItemIndex: messageListBaseIndex,
         groupBreakBeforeIds: new Set(),
-        hasOlder: fresh.has_more,
+        hasOlder: serverResult.has_more || serverResult.messages.length >= presentLimit,
         hasNewer: false,
         isAtPresent: true,
       });
@@ -722,11 +788,16 @@ const useMessageListPagination = ({
     }
   }, [
     conversationId,
+    currentKeyVersionRef,
+    decryptionConversation,
     encryptionKey,
+    encryptionKeyRef,
     historyAccessFence,
     messageListBaseIndex,
     onMessagesLoaded,
     replaceWindow,
+    setLoadingNewer,
+    userId,
   ]);
 
   return {

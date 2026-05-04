@@ -1,7 +1,13 @@
 import type {
   ForwardedMessageMetadata,
+  Message,
   MessageMentionMetadata,
 } from '../../../Chat/chatTypes';
+
+export interface MessageStreamEvent {
+  sequence: number;
+  message: Message;
+}
 
 export interface MessageUpdate {
   message_id: string;

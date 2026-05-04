@@ -6,9 +6,13 @@ import {
   VIEWPORT_FILL_BUFFER,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
-import { type Conversation, type Message } from '../../../Chat/chatService';
+import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
-import { sortMessages, toUIMessage } from './messageListPersistence';
+import {
+  persistFetchedMessagesSafely,
+  sortMessages,
+  toUIMessage,
+} from './messageListPersistence';
 import {
   getConversationWindowSnapshot,
   resolveInitialHasOlder,
@@ -192,6 +196,23 @@ const useMessageListLoading = ({
       });
     };
 
+    const fetchAuthoritativeLatestWindow = async (limit: number) => {
+      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+        limit,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion: currentKeyVersionRef.current,
+      });
+      const localServerMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      const visibleServerMessages = filterMessagesByHistoryFence(localServerMessages, historyAccessFence);
+      const serverUI = sortMessages(visibleServerMessages.map(toUIMessage));
+
+      return {
+        messages: serverUI,
+        hasOlder: serverResult.has_more || serverResult.messages.length >= limit,
+      };
+    };
+
     const loadLocalOnly = async () => {
       const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
       lastLoadedConversationIdRef.current = conversationId;
@@ -260,6 +281,7 @@ const useMessageListLoading = ({
           conversationId,
           encryptionKeyRef.current!,
           {
+            forceSync: true,
             preferSessionCache: true,
             initialLimit,
             syncLimit: INITIAL_OPEN_LIMIT,
@@ -296,26 +318,17 @@ const useMessageListLoading = ({
           setSyncing(false);
           setHasOlder((previous) => previous || syncResult.hasMore);
 
-          const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
+          const authoritative = await fetchAuthoritativeLatestWindow(initialLimit);
           if (ignore) return;
 
-          const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
-          const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
-          mergeVisibleMessages({
-            incoming: freshUI,
-            currentUserId: userId,
-            trimFrom: 'old',
-            hasOlder: resolveInitialHasOlder({
-              localHasMore: fresh.has_more,
-              localCount: freshUI.length,
-              requestedLimit: initialLimit,
-              sessionSnapshot,
-              syncHasMore: syncResult.hasMore,
-            }),
+          applyVisibleMessages(authoritative.messages, false, 'old', {
+            hasOlder: authoritative.hasOlder || syncResult.hasMore,
             hasNewer: false,
             isAtPresent: true,
+            loading: false,
+            syncing: false,
           });
-          onMessagesLoaded?.(freshUI);
+          onMessagesLoaded?.(authoritative.messages);
           settleInitialHydration();
           return;
         }
@@ -325,24 +338,17 @@ const useMessageListLoading = ({
         if (ignore) return;
         setSyncing(false);
 
-        const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
+        const authoritative = await fetchAuthoritativeLatestWindow(initialLimit);
         if (ignore) return;
 
-        const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
-        const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
-        applyVisibleMessages(freshUI, shouldPreserveMessages, 'old', {
-          hasOlder: resolveInitialHasOlder({
-            localHasMore: fresh.has_more,
-            localCount: freshUI.length,
-            requestedLimit: initialLimit,
-            sessionSnapshot,
-            syncHasMore: syncResult.hasMore,
-          }),
+        applyVisibleMessages(authoritative.messages, false, 'old', {
+          hasOlder: authoritative.hasOlder || syncResult.hasMore,
           hasNewer: false,
           isAtPresent: true,
           loading: false,
+          syncing: false,
         });
-        onMessagesLoaded?.(freshUI);
+        onMessagesLoaded?.(authoritative.messages);
         settleInitialHydration();
       } catch (error) {
         if (ignore) return;

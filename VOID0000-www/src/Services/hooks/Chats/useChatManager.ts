@@ -143,10 +143,10 @@ export const useChatManager = (user: any) => {
   });
 
   const {
-    newMessage,
+    messageEvents,
     messageUpdate,
     messageDelete,
-    setNewMessage,
+    pushMessageEvent,
     setMessageUpdate,
     resetMessageStream,
   } = useMessageStream({
@@ -310,9 +310,9 @@ export const useChatManager = (user: any) => {
   return {
     members, activeConversation, activeGroup, encryptionKey, keyVersion, encryptionError, conversationSecurityState,
     typingUsers,
-    newMessage, editingMessage, replyTo, messageUpdate, messageDelete,
+    messageEvents, editingMessage, replyTo, messageUpdate, messageDelete,
     setEditingMessage, setReplyTo, setMessageUpdate,
-    handleSelectConversation, refreshActiveGroup, patchConversationInState, handleMessageSent: setNewMessage,
+    handleSelectConversation, refreshActiveGroup, patchConversationInState, handleMessageSent: pushMessageEvent,
     handleBackToMe, handleStartDM, openConversationByIdentifier, openGroupByIdentifier,
     handleEncryptionKeyResolved: updateKey,
     retryHandshake,

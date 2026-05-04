@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react';
 import {
   deleteMessage,
   resolveMessageCryptoMetadata,
@@ -9,13 +9,13 @@ import { type LocalMessage } from '../../../Chat/chatStore';
 import { queuedSendStore } from '../../../Chat/queuedSendStore';
 import { type HistoryAccessFence, isMessageVisibleForHistoryFence } from './messageListHistory';
 import { getLocalClientId, mergeMessagesWithReconciliation } from './messageListReconciliation';
-import type { MessageDelete, MessageUpdate } from './messageListTypes';
+import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './messageListTypes';
 
 interface UseMessageListRealtimeParams {
   conversationId: string;
   userId?: string;
   historyAccessFence: HistoryAccessFence | null;
-  newMessage?: Message | null;
+  messageEvents?: MessageStreamEvent[];
   messageUpdate?: MessageUpdate | null;
   messageDelete?: MessageDelete | null;
   setMessages: Dispatch<SetStateAction<Message[]>>;
@@ -40,7 +40,7 @@ const useMessageListRealtime = ({
   conversationId,
   userId,
   historyAccessFence,
-  newMessage,
+  messageEvents = [],
   messageUpdate,
   messageDelete,
   setMessages,
@@ -49,6 +49,12 @@ const useMessageListRealtime = ({
   isAtPresent,
   initialHydrationSettled,
 }: UseMessageListRealtimeParams) => {
+  const lastProcessedMessageEventSequenceRef = useRef(0);
+
+  useEffect(() => {
+    lastProcessedMessageEventSequenceRef.current = 0;
+  }, [conversationId]);
+
   useEffect(() => {
     let ignore = false;
 
@@ -98,94 +104,109 @@ const useMessageListRealtime = ({
   }, [conversationId, setMessages, userId]);
 
   useEffect(() => {
-    if (!newMessage) return;
-
-    const normalizedConversationId = newMessage.conversation_id || conversationId;
-    if (String(normalizedConversationId) !== String(conversationId)) {
+    const pendingEvents = messageEvents.filter(
+      (event) => event.sequence > lastProcessedMessageEventSequenceRef.current
+    );
+    if (pendingEvents.length === 0) {
       return;
     }
 
-    const localStatus = newMessage.local_status;
-    const localClientId = getLocalClientId(newMessage);
-
-    if (localStatus === 'failed' && localClientId) {
-      setMessages((previous) => previous.filter((message) =>
-        message.message_id !== localClientId && message.local_client_id !== localClientId
-      ));
-      return;
-    }
-
-    const cryptoMetadata = resolveMessageCryptoMetadata(newMessage);
-    const normalizedMessage: Message = {
-      ...newMessage,
-      conversation_id: normalizedConversationId,
-      message_type: newMessage.message_type || 'mls_application',
-      reply_to: newMessage.reply_to ?? null,
-      is_edited: Boolean(newMessage.is_edited),
-      edited_at: newMessage.edited_at ?? null,
-      is_deleted: Boolean(newMessage.is_deleted),
-      created_at: newMessage.created_at || new Date().toISOString(),
-      reactions: newMessage.reactions || {},
-      protocol: cryptoMetadata.protocol,
-      protocol_version: cryptoMetadata.protocol_version,
-      local_status: localStatus,
-      local_client_id: localClientId,
-    };
-
-    if (!isMessageVisibleForHistoryFence(normalizedMessage, historyAccessFence)) {
-      return;
-    }
-
-    const isLocalPendingOnly = (
-      normalizedMessage.local_status === 'sending' ||
-      normalizedMessage.local_status === 'queued'
-    ) && Boolean(localClientId);
-
-    if (!isLocalPendingOnly) {
-      const localMessage: LocalMessage = {
-        conversation_id: normalizedMessage.conversation_id,
-        message_id: normalizedMessage.message_id,
-        sender_id: normalizedMessage.sender_id,
-        content: normalizedMessage.content ?? null,
-        key_version: normalizedMessage.key_version ?? null,
-        message_type: normalizedMessage.message_type,
-        reply_to: normalizedMessage.reply_to,
-        is_edited: normalizedMessage.is_edited,
-        edited_at: normalizedMessage.edited_at,
-        is_deleted: normalizedMessage.is_deleted,
-        created_at: normalizedMessage.created_at,
-        reactions: {},
-        attachments: normalizedMessage.attachments,
-        forwarded: normalizedMessage.forwarded ?? undefined,
-        mentions: normalizedMessage.mentions ?? undefined,
-        protocol: normalizedMessage.protocol ?? null,
-        protocol_version: normalizedMessage.protocol_version ?? null,
-      };
-
-      messageSync.storeIncomingMessage(localMessage).catch(console.error);
-    }
-
-    const shouldApplyImmediately = (
-      !initialHydrationSettled ||
-      isAtPresent ||
-      normalizedMessage.sender_id === userId ||
-      normalizedMessage.local_status === 'sending' ||
-      normalizedMessage.local_status === 'queued'
+    lastProcessedMessageEventSequenceRef.current = Math.max(
+      ...pendingEvents.map((event) => event.sequence),
+      lastProcessedMessageEventSequenceRef.current,
     );
 
-    if (shouldApplyImmediately) {
-      mergeVisibleMessages({
-        incoming: [normalizedMessage],
-        currentUserId: userId,
-        trimFrom: 'old',
-      });
-      return;
-    }
+    pendingEvents.forEach(({ message: newMessage }) => {
+      const normalizedConversationId = newMessage.conversation_id || conversationId;
+      if (String(normalizedConversationId) !== String(conversationId)) {
+        return;
+      }
 
-    queueNewerMessages({
-      incoming: [normalizedMessage],
-      hasNewerAfterFlush: false,
-      isAtPresentAfterFlush: true,
+      const localStatus = newMessage.local_status;
+      const localClientId = getLocalClientId(newMessage);
+
+      if (localStatus === 'failed' && localClientId) {
+        setMessages((previous) => previous.filter((message) =>
+          message.message_id !== localClientId && message.local_client_id !== localClientId
+        ));
+        return;
+      }
+
+      const cryptoMetadata = resolveMessageCryptoMetadata(newMessage);
+      const normalizedMessage: Message = {
+        ...newMessage,
+        conversation_id: normalizedConversationId,
+        message_type: newMessage.message_type || 'mls_application',
+        reply_to: newMessage.reply_to ?? null,
+        is_edited: Boolean(newMessage.is_edited),
+        edited_at: newMessage.edited_at ?? null,
+        is_deleted: Boolean(newMessage.is_deleted),
+        created_at: newMessage.created_at || new Date().toISOString(),
+        reactions: newMessage.reactions || {},
+        protocol: cryptoMetadata.protocol,
+        protocol_version: cryptoMetadata.protocol_version,
+        local_status: localStatus,
+        local_client_id: localClientId,
+      };
+
+      if (!isMessageVisibleForHistoryFence(normalizedMessage, historyAccessFence)) {
+        return;
+      }
+
+      const isLocalPendingOnly = (
+        normalizedMessage.local_status === 'sending' ||
+        normalizedMessage.local_status === 'queued'
+      ) && Boolean(localClientId);
+
+      if (!isLocalPendingOnly) {
+        const localMessage: LocalMessage = {
+          conversation_id: normalizedMessage.conversation_id,
+          message_id: normalizedMessage.message_id,
+          sender_id: normalizedMessage.sender_id,
+          content: normalizedMessage.content ?? null,
+          key_version: normalizedMessage.key_version ?? null,
+          message_type: normalizedMessage.message_type,
+          reply_to: normalizedMessage.reply_to,
+          is_edited: normalizedMessage.is_edited,
+          edited_at: normalizedMessage.edited_at,
+          is_deleted: normalizedMessage.is_deleted,
+          created_at: normalizedMessage.created_at,
+          reactions: {},
+          attachments: normalizedMessage.attachments,
+          forwarded: normalizedMessage.forwarded ?? undefined,
+          mentions: normalizedMessage.mentions ?? undefined,
+          protocol: normalizedMessage.protocol ?? null,
+          protocol_version: normalizedMessage.protocol_version ?? null,
+        };
+
+        messageSync.storeIncomingMessage(localMessage).catch(console.error);
+      }
+
+      const shouldApplyImmediately = (
+        !initialHydrationSettled ||
+        isAtPresent ||
+        normalizedMessage.sender_id === userId ||
+        normalizedMessage.local_status === 'sending' ||
+        normalizedMessage.local_status === 'queued'
+      );
+
+      if (shouldApplyImmediately) {
+        mergeVisibleMessages({
+          incoming: [normalizedMessage],
+          currentUserId: userId,
+          trimFrom: 'old',
+        });
+        return;
+      }
+
+      // The live message may be far ahead of the current window. Do not append
+      // it directly below old history, or the UI can create a false contiguous
+      // list like "Thursday -> Today" while "Yesterday" is still unloaded.
+      queueNewerMessages({
+        incoming: [],
+        hasNewerAfterFlush: true,
+        isAtPresentAfterFlush: false,
+      });
     });
   }, [
     conversationId,
@@ -193,7 +214,7 @@ const useMessageListRealtime = ({
     initialHydrationSettled,
     isAtPresent,
     mergeVisibleMessages,
-    newMessage,
+    messageEvents,
     queueNewerMessages,
     setMessages,
     userId,
