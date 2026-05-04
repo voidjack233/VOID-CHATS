@@ -28,6 +28,7 @@ if (clusterEnabled) {
     exec_mode: 'cluster',
     env: {
       PORT: 3001,
+      HOST: '127.0.0.1',
       NODE_ENV: 'production',
     },
     max_memory_restart: '300M',
@@ -43,6 +44,7 @@ if (clusterEnabled) {
     exec_mode: 'fork',
     env: {
       PORT: 3001,
+      HOST: '127.0.0.1',
       NODE_ENV: 'production',
     },
     max_memory_restart: '500M',
@@ -59,6 +61,7 @@ apps.push({
   env: {
     NODE_ENV: 'production',
     MESSAGE_SERVICE_PORT: 3002,
+    HOST: '127.0.0.1',
   },
   max_memory_restart: '350M',
   watch: false,
@@ -73,6 +76,7 @@ apps.push({
   env: {
     NODE_ENV: 'production',
     CONVERSATION_SERVICE_PORT: 3005,
+    HOST: '127.0.0.1',
   },
   max_memory_restart: '350M',
   watch: false,
@@ -87,6 +91,7 @@ apps.push({
   env: {
     NODE_ENV: 'production',
     SOCIAL_SERVICE_PORT: 3004,
+    HOST: '127.0.0.1',
   },
   max_memory_restart: '350M',
   watch: false,
@@ -103,6 +108,7 @@ apps.push({
     NODE_ENV: 'production',
     MIX_ENV: 'prod',
     GATEWAY_PORT: 4001,
+    GATEWAY_HOST: '127.0.0.1',
   },
   max_memory_restart: '300M',
   watch: false,

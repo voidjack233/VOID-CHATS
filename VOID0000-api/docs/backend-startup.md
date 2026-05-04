@@ -46,6 +46,11 @@ PM2 manages those app processes.
 
 PM2 does **not** start the databases or object storage for you.
 
+For the normal PM2 deployment, the app services bind to `127.0.0.1` through
+`ecosystem.config.cjs`. Public traffic should reach them through Nginx,
+Cloudflared, or another trusted local reverse proxy, not by exposing raw Node or
+Phoenix ports directly.
+
 Those services must already exist and be reachable:
 
 - Postgres
@@ -128,7 +133,15 @@ Startup sequence:
 1. Load `.env`
 2. Build the Express app
 3. Register account, auth, security, preferences, CSRF, and captcha routes
-4. Start the HTTP server on `PORT` (default `3001`)
+4. Start the HTTP server on `HOST:PORT`
+
+Host/port env:
+
+- `PORT` / service-specific port env, such as `MESSAGE_SERVICE_PORT`
+- `HOST` or `BIND_HOST`
+
+Default manual bind is `0.0.0.0` for compatibility, but the PM2 config sets
+`HOST=127.0.0.1` for the host deployment.
 
 Important detail:
 
@@ -171,11 +184,15 @@ Important env used there:
 - `VALKEY_HOST`
 - `VALKEY_PORT`
 - `GATEWAY_PORT`
+- `GATEWAY_HOST` or `BIND_HOST`
 - `FRONT_URL`
 
 Phoenix serves the websocket gateway on:
 
-- `0.0.0.0:4001` by default
+- `GATEWAY_HOST:GATEWAY_PORT`
+
+The default manual bind is `0.0.0.0:4001`, but the PM2 config sets
+`GATEWAY_HOST=127.0.0.1`.
 
 ## Required Service Dependencies
 
@@ -320,6 +337,15 @@ Important detail:
 PM2 does not manage MinIO.
 
 It must already be running before the app expects uploads and object URLs to work.
+
+Current privacy tradeoff:
+
+- avatars and group avatars are public by nature
+- chat attachments are encrypted client-side, but the encrypted blob bucket is
+  still public-read
+- that is workable for a hobby deployment, but a stricter production design
+  should make chat attachments private and serve them with short-lived signed
+  URLs or an authenticated download proxy
 
 ## Recommended Service Startup Order
 

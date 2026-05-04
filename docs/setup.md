@@ -37,6 +37,10 @@ Tooling:
 
 ## Expected Local Ports
 
+These are expected to be loopback-only. If `ss -tulpn` shows these app ports on
+`0.0.0.0` or `*`, fix the service bind host or firewall before treating the box
+as public.
+
 - Frontend: `127.0.0.1:5173`
 - Account/control API: `127.0.0.1:3001`
 - Message service: `127.0.0.1:3002`
@@ -53,6 +57,15 @@ Expected MinIO buckets:
 - `avatars`
 - `group-avatars`
 - `chat-attachments`
+
+For a host MinIO systemd service, the bind shape should look like this:
+
+```text
+minio server /path/to/minio-data --address "127.0.0.1:9000" --console-address "127.0.0.1:9001"
+```
+
+The console should not be public internet-facing. Keep it loopback-only and
+reach it through SSH forwarding if you need it remotely.
 
 ## 1. Install Dependencies
 
@@ -285,14 +298,14 @@ set +a
 MIX_ENV=prod mix phx.server
 ```
 
-## 7. Production Shape This Repo Actually Uses
+## 7. Production Shape This Repo Expects
 
-The real deployment shape is:
+The recommended deployment shape is:
 
 - `nginx`
-  serves only the built frontend on port `80`
+  serves the built frontend and routes API/gateway/media paths to local services
 - `cloudflared`
-  exposes the public hostnames and routes them to the right local service
+  or your normal TLS/proxy layer exposes public hostnames to Nginx
 - `pm2`
   runs the split Node services, worker, and Phoenix gateway
 - `systemd`
@@ -300,8 +313,10 @@ The real deployment shape is:
 
 Very important:
 
-- if you look in Nginx, you will **not** see `/gateway`
-- that route is handled by `cloudflared`, not by Nginx
+- public users should hit Nginx or your tunnel, not raw backend ports
+- PM2 binds the Node services and Phoenix gateway to `127.0.0.1` by default
+- Docker binds published debug ports to `127.0.0.1` too
+- if you intentionally expose raw ports, use a firewall and know exactly why
 
 ### What Serves What
 
@@ -310,17 +325,25 @@ Very important:
 - `www.your-domain.example`
   same frontend through Nginx on `localhost:80`
 - `api.your-domain.example` account/auth/general API paths
-  account/control API on `localhost:3001`
+  Nginx routes to account/control API on `127.0.0.1:3001`
 - `api.your-domain.example` message/reaction/attachment paths
-  message service on `localhost:3002`
+  Nginx routes to message service on `127.0.0.1:3002`
 - `api.your-domain.example` friends/profile/search paths
-  social/profile service on `localhost:3004`
+  Nginx routes to social/profile service on `127.0.0.1:3004`
 - `api.your-domain.example` conversation/group/MLS paths
-  conversation service on `localhost:3005`
+  Nginx routes to conversation service on `127.0.0.1:3005`
 - `api.your-domain.example/gateway`
-  Phoenix websocket gateway on `localhost:4001`
+  Nginx routes to Phoenix websocket gateway on `127.0.0.1:4001`
 - `cdn.your-domain.example`
-  MinIO on `localhost:9000`
+  Nginx routes GET/HEAD requests to MinIO on `127.0.0.1:9000`
+
+Reference router config:
+
+- [nginx-router.example.conf](./nginx-router.example.conf)
+
+That file uses fake domains on purpose. Replace `your-domain.example`,
+`api.your-domain.example`, `cdn.your-domain.example`, and the frontend build
+path with your own values.
 
 ### Nginx Frontend Example
 
@@ -369,33 +392,34 @@ server {
 }
 ```
 
-So the honest reading is:
+So the simple frontend-only reading is:
 
 - Nginx serves frontend files only
 - Nginx does not proxy `/api`
 - Nginx does not proxy `/gateway`
 
-### Cloudflared Routing
+For the full split backend, use the router config above instead of this
+frontend-only config.
 
-Cloudflared is the thing routing public hostnames to the local services.
+### Public Tunnel Or TLS Proxy
 
-The live shape on this machine is:
+Cloudflared, Caddy, a VPS load balancer, or any other public TLS layer should
+route public hostnames to Nginx where possible.
 
-- frontend host -> `localhost:80`
-- `www` host -> `localhost:80`
-- API host auth/account/general paths -> `localhost:3001`
-- API host message/reaction/attachment paths -> `localhost:3002`
-- API host friends/profile/search paths -> `localhost:3004`
-- API host conversation/group/MLS paths -> `localhost:3005`
-- API host with `/gateway` path -> `localhost:4001`
-- CDN host -> `localhost:9000`
+Recommended shape:
 
-That is why:
+- frontend host -> Nginx
+- API host -> Nginx
+- CDN host -> Nginx
+- Nginx -> loopback backend ports
 
-- `/gateway` shows up in Cloudflared routing
-- message/social/conversation API subpaths also need their own routing
-- not in Nginx
-- and `api.your-domain.example` is split by path between Phoenix and Node
+If you choose to route Cloudflared directly to each backend service instead,
+target loopback URLs like `http://127.0.0.1:3001`, not public interfaces. That
+still works, but it spreads routing rules across more places and is easier to
+misconfigure.
+
+That is why the Nginx router config keeps all the path splitting in one file.
+It is less magical and easier to review later.
 
 The path split roughly follows the Vite dev proxy:
 
@@ -423,10 +447,12 @@ rsync -av --delete dist/ /var/www/void0000-www/
 
 Reference files copied from this shape:
 
+- [nginx-router.example.conf](./nginx-router.example.conf)
 - [nginx-frontend-only.example.conf](./nginx-frontend-only.example.conf)
 
-Cloudflared is intentionally described in prose here instead of a copy-paste example file.
-You need to wire your own tunnel, hostnames, and local services to match your machine.
+Cloudflared is intentionally described in prose here instead of a copy-paste
+example file. You need to wire your own tunnel, hostnames, and local Nginx
+service to match your machine.
 
 ### Matching Env Values
 
@@ -437,10 +463,12 @@ Backend `.env`:
 ```env
 FRONT_URL=https://your-domain.example
 PORT=3001
+BIND_HOST=127.0.0.1
 MESSAGE_SERVICE_PORT=3002
 SOCIAL_SERVICE_PORT=3004
 CONVERSATION_SERVICE_PORT=3005
 GATEWAY_PORT=4001
+GATEWAY_HOST=127.0.0.1
 CDN_URL=https://cdn.your-domain.example
 ```
 

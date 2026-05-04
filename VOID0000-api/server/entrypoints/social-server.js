@@ -23,6 +23,7 @@ const { initPublisher } = await import('../valkey-pubsub.js');
 
 const app = express();
 const PORT = process.env.SOCIAL_SERVICE_PORT || process.env.PORT || 3004;
+const HOST = process.env.HOST || process.env.BIND_HOST || '0.0.0.0';
 const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
 
 const { pool } = await import('../db.js');
@@ -77,6 +78,6 @@ app.use('/api/friends', friendRouter);
 
 const httpServer = createServer(app);
 
-httpServer.listen(PORT, () => {
-  console.log(`✅ Social/profile service running on port ${PORT} (PID ${process.pid})`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`✅ Social/profile service running on ${HOST}:${PORT} (PID ${process.pid})`);
 });

@@ -231,6 +231,8 @@ VOIDAPP/
 - This repo was built around Linux infra first, but there is now a local Docker Compose setup for testing.
 - If you are on Windows or macOS without Docker, you are outside the setup path I actually used.
 - If you deploy this publicly, do your own security review.
+- Keep raw backend, gateway, and MinIO ports loopback-only. Let Nginx or your tunnel be the public door.
+- Chat attachment objects are encrypted before upload, but the current MinIO bucket is still public-read. That is a hobby-project compromise, not the final boss security design.
 - If you fork this, feel free to simplify things. I did not optimize it for textbook purity.
 
 Future notes live here:

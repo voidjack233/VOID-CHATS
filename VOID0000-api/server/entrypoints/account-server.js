@@ -20,6 +20,7 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const HOST = process.env.HOST || process.env.BIND_HOST || '0.0.0.0';
 const FRONT_URL = process.env.FRONT_URL ?? 'http://localhost:5173';
 
 const allowedOrigins = [
@@ -171,6 +172,6 @@ const httpServer = createServer(app);
 
 // ================== START ==================
 
-httpServer.listen(PORT, () => {
-  console.log(`✅ Account/control service running on port ${PORT} (PID ${process.pid})`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`✅ Account/control service running on ${HOST}:${PORT} (PID ${process.pid})`);
 });

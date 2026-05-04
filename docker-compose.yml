@@ -49,8 +49,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "${HOST_MINIO_API_PORT:-9000}:9000"
-      - "${HOST_MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${HOST_MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${HOST_MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
 
@@ -89,8 +89,8 @@ services:
     env_file:
       - ./docker/dev.env
     environment:
-      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
-      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      FRONT_URL: "${FRONT_URL:-http://localhost:8080}"
+      CDN_URL: "${CDN_URL:-http://localhost:8080}"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -99,7 +99,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      - "${HOST_API_PORT:-3001}:3001"
+      - "127.0.0.1:${HOST_API_PORT:-3001}:3001"
     volumes:
       - ./VOID0000-api:/app
       - api-node-modules:/app/node_modules
@@ -111,8 +111,8 @@ services:
     env_file:
       - ./docker/dev.env
     environment:
-      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
-      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      FRONT_URL: "${FRONT_URL:-http://localhost:8080}"
+      CDN_URL: "${CDN_URL:-http://localhost:8080}"
       MESSAGE_SERVICE_PORT: 3002
       PORT: 3002
     depends_on:
@@ -123,7 +123,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      - "${HOST_MESSAGE_API_PORT:-3002}:3002"
+      - "127.0.0.1:${HOST_MESSAGE_API_PORT:-3002}:3002"
     volumes:
       - ./VOID0000-api:/app
       - api-node-modules:/app/node_modules
@@ -135,8 +135,8 @@ services:
     env_file:
       - ./docker/dev.env
     environment:
-      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
-      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      FRONT_URL: "${FRONT_URL:-http://localhost:8080}"
+      CDN_URL: "${CDN_URL:-http://localhost:8080}"
       CONVERSATION_SERVICE_PORT: 3005
       PORT: 3005
     depends_on:
@@ -147,7 +147,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      - "${HOST_CONVERSATION_API_PORT:-3005}:3005"
+      - "127.0.0.1:${HOST_CONVERSATION_API_PORT:-3005}:3005"
     volumes:
       - ./VOID0000-api:/app
       - api-node-modules:/app/node_modules
@@ -159,8 +159,8 @@ services:
     env_file:
       - ./docker/dev.env
     environment:
-      FRONT_URL: "${FRONT_URL:-http://localhost:5173}"
-      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      FRONT_URL: "${FRONT_URL:-http://localhost:8080}"
+      CDN_URL: "${CDN_URL:-http://localhost:8080}"
       SOCIAL_SERVICE_PORT: 3004
       PORT: 3004
     depends_on:
@@ -171,7 +171,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     ports:
-      - "${HOST_SOCIAL_API_PORT:-3004}:3004"
+      - "127.0.0.1:${HOST_SOCIAL_API_PORT:-3004}:3004"
     volumes:
       - ./VOID0000-api:/app
       - api-node-modules:/app/node_modules
@@ -186,7 +186,7 @@ services:
       valkey:
         condition: service_healthy
     ports:
-      - "${HOST_GATEWAY_PORT:-4001}:4001"
+      - "127.0.0.1:${HOST_GATEWAY_PORT:-4001}:4001"
     volumes:
       - ./VOID0000-api/void_gateway:/app
       - gateway-deps:/app/deps
@@ -199,7 +199,7 @@ services:
     env_file:
       - ./docker/dev.env
     environment:
-      CDN_URL: "${CDN_URL:-http://localhost:9000}"
+      CDN_URL: "${CDN_URL:-http://localhost:8080}"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -225,11 +225,26 @@ services:
       - gateway
       - worker
     ports:
-      - "${HOST_FRONTEND_PORT:-5173}:5173"
+      - "127.0.0.1:${HOST_FRONTEND_PORT:-5173}:5173"
     volumes:
       - ./VOID0000-www:/app
       - frontend-node-modules:/app/node_modules
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
+  edge:
+    image: nginx:1.27-alpine
+    depends_on:
+      - frontend
+      - api
+      - message-api
+      - conversation-api
+      - social-api
+      - gateway
+      - minio
+    ports:
+      - "127.0.0.1:${HOST_EDGE_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro
 
 volumes:
   postgres-data:

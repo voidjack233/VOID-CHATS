@@ -3,12 +3,19 @@ import Config
 # HTTP port for the WebSocket gateway.
 # Must not conflict with Node's ports (default 3000/3002).
 gateway_port = System.get_env("GATEWAY_PORT", "4001") |> String.to_integer()
+gateway_host = System.get_env("GATEWAY_HOST") || System.get_env("BIND_HOST") || "0.0.0.0"
+
+gateway_ip =
+  case :inet.parse_address(String.to_charlist(gateway_host)) do
+    {:ok, ip} -> ip
+    {:error, _} -> raise "Invalid GATEWAY_HOST/BIND_HOST value: #{gateway_host}"
+  end
 
 valkey_host = System.get_env("VALKEY_HOST", "127.0.0.1")
 valkey_port = System.get_env("VALKEY_PORT", "6379") |> String.to_integer()
 
 config :void_gateway, VoidGatewayWeb.Endpoint,
-  http: [ip: {0, 0, 0, 0}, port: gateway_port],
+  http: [ip: gateway_ip, port: gateway_port],
   # Required by Phoenix. Unrelated to Node's JWT secret.
   # Generate with: mix phx.gen.secret
   # PHX_SECRET_KEY_BASE is preferred so the Phoenix gateway can keep its own
