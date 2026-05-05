@@ -38,6 +38,7 @@ interface UseMessageInputProps {
   keyVersion: number;
   conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
+  onSendError?: (message: string | null) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
@@ -89,6 +90,35 @@ function isDmPeerNotReadyError(error: unknown): boolean {
   );
 }
 
+function getSendErrorNotice(error: any): string {
+  if (typeof error?.retry_after_seconds === 'number' && error.retry_after_seconds > 0) {
+    return error.error || error.message || `Slowmode is active. Try again in ${error.retry_after_seconds}s.`;
+  }
+
+  const message = typeof error?.message === 'string' ? error.message : '';
+  if (
+    error?.code === 'REQUEST_TIMEOUT' ||
+    error?.name === 'AbortError' ||
+    message.toLowerCase().includes('timed out')
+  ) {
+    return message || 'Message send timed out. Check your connection and retry.';
+  }
+
+  if (
+    error?.code === 'STALE_KEY_VERSION' ||
+    message.includes('key_version') ||
+    message.includes('Not a member')
+  ) {
+    return 'Encryption keys changed. Reopen this conversation, then try again.';
+  }
+
+  if (message.toLowerCase().includes('failed to fetch') || message.toLowerCase().includes('network')) {
+    return 'Message was not sent. Check your connection and retry.';
+  }
+
+  return message || 'Message was not sent. Try again.';
+}
+
 const resolveAttachmentAccess = (conversation: Conversation) => {
   if (conversation.type === 'dm') {
     return {
@@ -123,6 +153,7 @@ export const useMessageInput = ({
   keyVersion,
   conversationSecurityState,
   onMessageSent,
+  onSendError,
   onEncryptionKeyResolved,
   editingMessage,
   onCancelEdit,
@@ -133,7 +164,6 @@ export const useMessageInput = ({
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
-  const [sendError, setSendError] = useState('');
   const [attachmentAlert, setAttachmentAlert] = useState<AttachmentAlertState | null>(null);
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
@@ -178,7 +208,6 @@ export const useMessageInput = ({
   useEffect(() => {
     inputRef.current?.focus();
     setAttachments([]);
-    setSendError('');
     setAttachmentAlert(null);
     setSlowmodeRemaining(0);
     lastTypingSentAtRef.current = 0;
@@ -209,9 +238,13 @@ export const useMessageInput = ({
       setAttachments((prev) =>
         prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false } : a))
       );
-    } catch {
+    } catch (error: any) {
+      const uploadErrorMessage = typeof error?.message === 'string' ? error.message : '';
+      const uploadErrorLabel = uploadErrorMessage.toLowerCase().includes('timed out')
+        ? 'Upload timed out'
+        : 'Upload failed';
       setAttachments((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, uploading: false, error: 'Upload failed' } : a))
+        prev.map((a) => (a.id === id ? { ...a, uploading: false, error: uploadErrorLabel } : a))
       );
     }
   }, [conversation.id]);
@@ -429,12 +462,6 @@ export const useMessageInput = ({
     return () => window.clearInterval(timer);
   }, [slowmodeRemaining]);
 
-  useEffect(() => {
-    if (slowmodeRemaining === 0 && sendError.toLowerCase().includes('slowmode')) {
-      setSendError('');
-    }
-  }, [sendError, slowmodeRemaining]);
-
   // Auto-retry queued secure sends when encryptionKey becomes available.
   // Loads from persistent IndexedDB store so queued messages survive
   // conversation switch, refresh, and crash.
@@ -586,10 +613,10 @@ export const useMessageInput = ({
         }
       : null;
 
-    setSendError('');
     setText('');
     setAttachments([]);
     setSending(true);
+    onSendError?.(null);
     if (optimisticMessage) {
       onMessageSent(optimisticMessage);
     }
@@ -685,11 +712,13 @@ export const useMessageInput = ({
           mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           created_at: optimisticMessage.created_at,
         }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));
-        setSendError('');
       } else {
-        // Normal failure path — restore input and show error.
-        setText(previousText);
-        setAttachments(previousAttachments);
+        // Normal failure path. If we already rendered an optimistic bubble,
+        // leave the failed bubble visible so the user can retry from there.
+        if (!optimisticMessage) {
+          setText(previousText);
+          setAttachments(previousAttachments);
+        }
         if (optimisticMessage && localClientId) {
           onMessageSent({
             ...optimisticMessage,
@@ -700,12 +729,8 @@ export const useMessageInput = ({
 
         if (typeof err?.retry_after_seconds === 'number' && err.retry_after_seconds > 0) {
           setSlowmodeRemaining(err.retry_after_seconds);
-          setSendError(err.error || err.message || `Slowmode active. Wait ${err.retry_after_seconds}s.`);
-        } else if (err?.code === 'STALE_KEY_VERSION' || err?.message?.includes('key_version') || err?.message?.includes('Not a member')) {
-          setSendError('Encryption keys changed. Please close and reopen this conversation, then try again.');
-        } else {
-          setSendError(err?.message || 'Failed to send message');
         }
+        onSendError?.(getSendErrorNotice(err));
       }
     } finally {
       setSending(false);
@@ -747,7 +772,6 @@ export const useMessageInput = ({
     setText,
     sending,
     canSend,
-    sendError,
     slowmodeRemaining,
     attachments,
     attachmentAlert,

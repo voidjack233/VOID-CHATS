@@ -1,10 +1,14 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, Loader2 } from 'lucide-react';
+import { AlertCircle, ArrowDown, Loader2 } from 'lucide-react';
 import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
-import { parseAttachments } from '../../Services/Chat/chatService';
+import {
+  parseAttachments,
+  sendImageOnlyMessage,
+  sendMessage,
+} from '../../Services/Chat/chatService';
 import { type Conversation, type ConversationMember, type Message } from '../../Services/Chat/chatService';
 import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { useUser } from '../../Services/Auth/UserContext';
@@ -36,6 +40,8 @@ interface MessageViewProps {
   keyVersion?: number;
   encryptionError?: string | null;
   conversationSecurityState?: ConversationSecurityState;
+  sendNotice?: string | null;
+  onSendNotice?: (message: string | null) => void;
   members: Record<string, ConversationMember>;
   typingParticipants?: TypingParticipant[];
   onReply?: (message: Message) => void;
@@ -82,6 +88,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   keyVersion,
   encryptionError,
   conversationSecurityState,
+  sendNotice,
+  onSendNotice,
   members,
   typingParticipants = [],
   onReply,
@@ -134,6 +142,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     setIsAtPresent,
     handleDelete,
     getReplyParent,
+    mergeVisibleMessages,
     jumpToPresent,
     loadOlder,
     loadNewer,
@@ -158,6 +167,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
   const layoutTraitsById = useMessageLayout(visualMessages, groupBreakBeforeIds, hasOlder);
+  const retryingFailedMessageIdsRef = useRef<Set<string>>(new Set());
 
   const {
     contextMenu,
@@ -188,6 +198,88 @@ const MessageViewV2 = memo(function MessageViewV2({
     members,
     onToggleReaction: handleToggleReaction,
   });
+
+  const handleRetryFailedMessage = useCallback(async (failedMessage: Message) => {
+    if (!encryptionKey || failedMessage.local_status !== 'failed') {
+      return;
+    }
+
+    const localClientId = failedMessage.local_client_id || failedMessage.message_id;
+    if (!localClientId || retryingFailedMessageIdsRef.current.has(localClientId)) {
+      return;
+    }
+
+    const content = typeof failedMessage.content === 'string' &&
+      failedMessage.content !== '[encrypted]' &&
+      failedMessage.content !== '[deleted]'
+      ? failedMessage.content
+      : '';
+    const attachments = failedMessage.attachments || [];
+
+    if (!content.trim() && attachments.length === 0) {
+      return;
+    }
+
+    retryingFailedMessageIdsRef.current.add(localClientId);
+    onSendNotice?.(null);
+    mergeVisibleMessages({
+      incoming: [{
+        ...failedMessage,
+        local_status: 'sending',
+        local_client_id: localClientId,
+        created_at: new Date().toISOString(),
+      }],
+      currentUserId: user?.id,
+      trimFrom: 'old',
+      isAtPresent: true,
+    });
+
+    try {
+      const retryOptions = {
+        key_version: failedMessage.key_version || keyVersion || 1,
+        message_type: failedMessage.message_type || 'mls_application',
+        reply_to: failedMessage.reply_to || undefined,
+        forwarded: failedMessage.forwarded || null,
+        mentions: failedMessage.mentions || undefined,
+      };
+      const sentMessage = content.trim()
+        ? await sendMessage(conversation.id, content, encryptionKey, {
+            ...retryOptions,
+            secure_attachments: attachments,
+          })
+        : await sendImageOnlyMessage(conversation.id, encryptionKey, attachments, retryOptions);
+
+      forceFollowOutputRef.current = true;
+      onSendNotice?.(null);
+      mergeVisibleMessages({
+        incoming: [{
+          ...sentMessage,
+          local_status: 'sent',
+          local_client_id: localClientId,
+        }],
+        currentUserId: user?.id,
+        trimFrom: 'old',
+        isAtPresent: true,
+      });
+    } catch (error) {
+      console.error('Retry failed message failed:', error);
+      const retryNotice = error instanceof Error && error.message
+        ? error.message
+        : 'Message retry failed. Check your connection and try again.';
+      mergeVisibleMessages({
+        incoming: [{
+          ...failedMessage,
+          local_status: 'failed',
+          local_client_id: localClientId,
+        }],
+        currentUserId: user?.id,
+        trimFrom: 'old',
+      });
+      onSendNotice?.(retryNotice);
+    } finally {
+      retryingFailedMessageIdsRef.current.delete(localClientId);
+    }
+  }, [conversation.id, encryptionKey, keyVersion, mergeVisibleMessages, onSendNotice, user?.id]);
 
   // ── Reset on conversation switch ──
   useEffect(() => {
@@ -820,6 +912,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onOpenContextMenuAtPosition={openContextMenuAtPosition}
         onReply={onReply}
         onEdit={onEdit}
+        onRetryFailed={encryptionKey ? handleRetryFailedMessage : undefined}
         onDelete={handleDelete}
         onToggleReaction={handleToggleReaction}
         onOpenImageViewer={openImageViewer}
@@ -828,7 +921,9 @@ const MessageViewV2 = memo(function MessageViewV2({
       />
     );
   }, [
+    conversation.type,
     density,
+    encryptionKey,
     encryptedFontSize,
     formatTime,
     getReplyParent,
@@ -840,6 +935,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     handleDelete,
     handleOpenMessageLink,
     handleProfileClick,
+    handleRetryFailedMessage,
     handleToggleReaction,
     layoutTraitsById,
     messageGroupSpacing,
@@ -862,6 +958,14 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
+      {sendNotice ? (
+        <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4">
+          <div className="inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full border border-orange-400/25 bg-void-bg-main/95 px-3 py-1.5 text-xs font-medium text-orange-200 shadow-lg shadow-black/20 supports-[backdrop-filter]:backdrop-blur">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-orange-300" />
+            <span className="truncate">{sendNotice}</span>
+          </div>
+        </div>
+      ) : null}
       <div
         ref={scrollerRef}
         onScroll={handleScroll}
@@ -959,6 +1063,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onReply={onReply}
         onForward={onForward}
         onEdit={onEdit}
+        onRetryFailed={encryptionKey ? handleRetryFailedMessage : undefined}
         onDelete={handleDelete}
         onCloseProfile={() => setSelectedProfileId(null)}
         onCloseFriend={() => setSelectedFriend(null)}

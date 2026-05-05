@@ -94,6 +94,8 @@ const ChatDashboard = () => {
   );
   const [convRefresh, setConvRefresh] = useState(0);
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
+  const sendNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
@@ -126,6 +128,32 @@ const ChatDashboard = () => {
     openConversationByIdentifier,
     openGroupByIdentifier,
   } = useChatManager(user);
+
+  const showSendNotice = useCallback((message: string | null) => {
+    if (sendNoticeTimerRef.current) {
+      clearTimeout(sendNoticeTimerRef.current);
+      sendNoticeTimerRef.current = null;
+    }
+
+    setSendNotice(message);
+
+    if (message) {
+      sendNoticeTimerRef.current = setTimeout(() => {
+        setSendNotice(null);
+        sendNoticeTimerRef.current = null;
+      }, 4500);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (sendNoticeTimerRef.current) {
+      clearTimeout(sendNoticeTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    showSendNotice(null);
+  }, [activeConversation?.id, showSendNotice]);
 
   const getRouteId = (conversation?: { public_id?: string | null }) => conversation?.public_id || null;
 
@@ -1056,6 +1084,8 @@ const ChatDashboard = () => {
                   keyVersion={keyVersion}
                   encryptionError={encryptionError}
                   conversationSecurityState={conversationSecurityState}
+                  sendNotice={sendNotice}
+                  onSendNotice={showSendNotice}
                   members={messageDisplayMembers}
                   typingParticipants={typingParticipants}
                   onReply={handleReply}
@@ -1078,6 +1108,7 @@ const ChatDashboard = () => {
                     handleMessageSent(msg);
                     if (activeConversation?.id) setLastSentConversationId(activeConversation.id);
                   }}
+                  onSendError={showSendNotice}
                   editingMessage={editingMessage}
                   onCancelEdit={() => setEditingMessage(null)}
                   replyTo={replyTo}

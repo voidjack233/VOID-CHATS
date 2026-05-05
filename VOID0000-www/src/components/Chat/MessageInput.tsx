@@ -17,6 +17,7 @@ interface MessageInputProps {
   keyVersion: number;
   conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
+  onSendError?: (message: string | null) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
   onCancelEdit?: () => void;
@@ -89,7 +90,6 @@ const MessageInput = (props: MessageInputProps) => {
     setText,
     sending,
     canSend,
-    sendError,
     slowmodeRemaining,
     attachments,
     attachmentAlert,
@@ -348,7 +348,7 @@ const MessageInput = (props: MessageInputProps) => {
         </div>
       )}
 
-      {!sendError && slowmodeRemaining > 0 && (
+      {slowmodeRemaining > 0 && (
         <div
           className={`flex items-center justify-center gap-1.5 px-3 py-2 text-xs text-void-text-muted ${
             hasBanner || hasAttachments ? 'bg-void-bg-hover/50' : ''
@@ -602,19 +602,9 @@ const MessageInput = (props: MessageInputProps) => {
       </div>
 
       <div className="mt-1.5 flex min-h-[16px] items-center justify-center">
-        {sendError ? (
-          <span className="text-[10px] text-orange-400">
-            {sendError}
-          </span>
-        ) : props.conversationSecurityState?.detail ? (
-          <span className="text-[10px] text-void-text-muted">
-            {props.conversationSecurityState.detail}
-          </span>
-        ) : (
-          <span className="text-[10px] text-void-text-muted">
-            Messages are end-to-end encrypted
-          </span>
-        )}
+        <span className="text-[10px] text-void-text-muted">
+          Messages are end-to-end encrypted
+        </span>
       </div>
       </div>
     </>

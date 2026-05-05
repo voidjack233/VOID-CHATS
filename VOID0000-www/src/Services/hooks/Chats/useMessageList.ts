@@ -558,6 +558,7 @@ export const useMessageList = (
     setIsAtPresent,
     handleDelete,
     getReplyParent,
+    mergeVisibleMessages,
     jumpToPresent,
     loadOlder,
     loadNewer,

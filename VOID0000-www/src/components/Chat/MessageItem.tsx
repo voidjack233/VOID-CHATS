@@ -5,6 +5,7 @@ import {
   FileText,
   Image,
   Pencil,
+  RefreshCcw,
   Reply,
   Smile,
   Trash2,
@@ -90,6 +91,7 @@ interface MessageItemProps {
   ) => void;
   onReply?: (message: Message) => void;
   onEdit?: (message: Message) => void;
+  onRetryFailed?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
   onToggleReaction: (messageId: string, emoji: string) => void;
   onOpenImageViewer: (urls: string[], index: number) => void;
@@ -237,6 +239,7 @@ const MessageItem = memo(function MessageItem({
   onOpenContextMenuAtPosition,
   onReply,
   onEdit,
+  onRetryFailed,
   onDelete,
   onToggleReaction,
   onOpenImageViewer,
@@ -283,12 +286,14 @@ const MessageItem = memo(function MessageItem({
   const isOwn = message.sender_id === currentUserId;
   const isSending = message.local_status === 'sending';
   const isQueued = message.local_status === 'queued';
+  const isFailed = message.local_status === 'failed';
   const isPending = isSending || isQueued;
   const pendingStatusLabel = isQueued ? 'queued' : 'sending...';
+  const failedStatusLabel = 'failed to send';
   const attachmentConversationId = message.conversation_public_id || message.conversation_id;
   const isRightAligned = isOwn && density === 'comfortable';
-  const canSwipeReply = Boolean(onReply);
-  const canSwipeEdit = Boolean(isOwn && onEdit);
+  const canSwipeReply = Boolean(onReply && !isFailed);
+  const canSwipeEdit = Boolean(isOwn && onEdit && !isFailed);
   const reachedReactionLimit = getUniqueReactionCount(messageReactions as Record<string, unknown>) >= MAX_UNIQUE_REACTIONS_PER_MESSAGE;
   const attachmentEntries = useMemo(() => (
     (message.attachments || []).map((raw, index) => ({
@@ -591,8 +596,35 @@ const MessageItem = memo(function MessageItem({
     onToggleReaction(message.message_id, emoji);
   }, [blurActiveComposer, message.message_id, onToggleReaction]);
 
+  const handleRetryFailedClick = useCallback((event?: React.MouseEvent<HTMLElement>) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    blurActiveComposer();
+    onRetryFailed?.(message);
+  }, [blurActiveComposer, message, onRetryFailed]);
+
+  const failedSendControls = isFailed ? (
+    <div className={`pt-1 ${isRightAligned ? 'self-end text-right' : 'self-start text-left'}`}>
+      <div className={`flex flex-wrap items-center gap-2 ${isRightAligned ? 'justify-end' : 'justify-start'}`}>
+        <span className="text-[10px] italic text-orange-300">
+          {failedStatusLabel}
+        </span>
+        {onRetryFailed && (
+          <button
+            type="button"
+            onClick={handleRetryFailedClick}
+            className="inline-flex items-center gap-1 rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-semibold text-orange-300 transition-colors hover:bg-orange-500/25"
+          >
+            <RefreshCcw className="h-3 w-3" />
+            Retry
+          </button>
+        )}
+      </div>
+    </div>
+  ) : null;
+
   const updateDesktopActionRailPosition = useCallback(() => {
-    if (!isHovered || isPending || message.is_deleted) {
+    if (!isHovered || isPending || isFailed || message.is_deleted) {
       setDesktopActionRailStyle(null);
       return;
     }
@@ -643,14 +675,14 @@ const MessageItem = memo(function MessageItem({
       left: `${Math.round(nextLeft)}px`,
       top: `${Math.round(nextTop)}px`,
     });
-  }, [attachmentEntries.length, isHovered, isPending, isRightAligned, message.is_deleted]);
+  }, [attachmentEntries.length, isFailed, isHovered, isPending, isRightAligned, message.is_deleted]);
 
   useLayoutEffect(() => {
     updateDesktopActionRailPosition();
   }, [updateDesktopActionRailPosition]);
 
   useEffect(() => {
-    if (!isHovered || isPending || message.is_deleted) return;
+    if (!isHovered || isPending || isFailed || message.is_deleted) return;
 
     const handleReposition = () => updateDesktopActionRailPosition();
 
@@ -661,9 +693,9 @@ const MessageItem = memo(function MessageItem({
       window.removeEventListener('resize', handleReposition);
       window.removeEventListener('scroll', handleReposition, true);
     };
-  }, [isHovered, isPending, message.is_deleted, updateDesktopActionRailPosition]);
+  }, [isFailed, isHovered, isPending, message.is_deleted, updateDesktopActionRailPosition]);
 
-  const desktopActionRail = !message.is_deleted && !isPending ? (
+  const desktopActionRail = !message.is_deleted && !isPending && !isFailed ? (
     <div
       ref={desktopActionRailRef}
       className={`fixed z-30 hidden md:flex items-center gap-0.5 rounded-md border border-void-bg-hover bg-void-bg-main p-0.5 shadow-lg transition-opacity ${
@@ -925,7 +957,7 @@ const MessageItem = memo(function MessageItem({
                     : isOwn
                       ? 'rounded-bl-sm bg-void-accent text-white'
                       : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                } ${isPending ? 'brightness-90' : ''}`}
+                } ${isPending ? 'brightness-90' : ''} ${isFailed ? 'ring-1 ring-orange-400/45' : ''}`}
                 style={{ fontSize: `${bubbleFontSize}px` }}
               >
                 {hasRealContent ? (
@@ -1098,6 +1130,7 @@ const MessageItem = memo(function MessageItem({
               </span>
             </div>
           )}
+          {failedSendControls}
         </div>
         {desktopActionRail}
       </div>

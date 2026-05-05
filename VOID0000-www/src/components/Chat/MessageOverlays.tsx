@@ -8,6 +8,7 @@ import {
   Forward,
   Plus,
   Pencil,
+  RefreshCcw,
   Reply,
   Smile,
   Trash2,
@@ -43,6 +44,7 @@ interface MessageOverlaysProps {
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
   onEdit?: (message: Message) => void;
+  onRetryFailed?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
   onCloseProfile: () => void;
   onCloseFriend: () => void;
@@ -109,6 +111,7 @@ export default function MessageOverlays({
   onReply,
   onForward,
   onEdit,
+  onRetryFailed,
   onDelete,
   onCloseProfile,
   onCloseFriend,
@@ -153,8 +156,10 @@ export default function MessageOverlays({
     contextMenu.msg.content !== '[encrypted]' &&
     contextMenu.msg.content !== '[deleted]',
   );
+  const isFailedLocalMessage = contextMenu?.msg.local_status === 'failed';
   const canForwardMessage = Boolean(
     contextMenu &&
+    !isFailedLocalMessage &&
     onForward &&
     contextMenu.msg.message_type !== 'system' &&
     (
@@ -166,10 +171,11 @@ export default function MessageOverlays({
       (contextMenu.msg.attachments?.length ?? 0) > 0
     ),
   );
-  const canOpenReactionPicker = contextMenu ? messageCanAddReaction(contextMenu.msg) : false;
-  const desktopReactionsOnly = !isMobileViewport && contextMenu?.mode === 'reactions';
+  const canOpenReactionPicker = contextMenu && !isFailedLocalMessage ? messageCanAddReaction(contextMenu.msg) : false;
+  const desktopReactionsOnly = !isFailedLocalMessage && !isMobileViewport && contextMenu?.mode === 'reactions';
   const handleQuickReaction = (emoji: string) => {
     if (!contextMenu) return;
+    if (contextMenu.msg.local_status === 'failed') return;
     if (!messageCanAddReaction(contextMenu.msg, emoji)) return;
     onToggleReaction(contextMenu.msg.message_id, emoji);
     onCloseContextMenu();
@@ -205,84 +211,101 @@ export default function MessageOverlays({
                     : 'translate-y-5 scale-[0.98] opacity-0'
                 }`}
               >
-                <div className="overflow-x-hidden rounded-[28px] bg-void-bg-main/95 px-3 py-3 shadow-[0_24px_60px_rgba(0,0,0,0.45)] supports-[backdrop-filter]:backdrop-blur">
-                  <div className="rounded-2xl bg-void-bg-hover/35 px-1.5 py-1.5">
-                    <div className="flex min-w-0 items-center justify-between gap-1 overflow-hidden">
-                      {QUICK_REACTIONS.map(({ emoji, label }) => {
-                        const isSelected = messageHasUserReaction(contextMenu.msg, emoji, currentUserId);
-                        const isDisabled = !messageCanAddReaction(contextMenu.msg, emoji);
+                {!isFailedLocalMessage && (
+                  <div className="overflow-x-hidden rounded-[28px] bg-void-bg-main/95 px-3 py-3 shadow-[0_24px_60px_rgba(0,0,0,0.45)] supports-[backdrop-filter]:backdrop-blur">
+                    <div className="rounded-2xl bg-void-bg-hover/35 px-1.5 py-1.5">
+                      <div className="flex min-w-0 items-center justify-between gap-1 overflow-hidden">
+                        {QUICK_REACTIONS.map(({ emoji, label }) => {
+                          const isSelected = messageHasUserReaction(contextMenu.msg, emoji, currentUserId);
+                          const isDisabled = !messageCanAddReaction(contextMenu.msg, emoji);
 
-                        return (
+                          return (
+                            <button
+                              key={emoji}
+                              type="button"
+                              disabled={isDisabled}
+                              onClick={() => handleQuickReaction(emoji)}
+                              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl transition-all sm:h-10 sm:w-10 ${
+                                isDisabled
+                                  ? 'cursor-not-allowed opacity-40'
+                                  : isSelected
+                                  ? 'bg-void-accent/18 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]'
+                                  : 'hover:bg-void-bg-hover/80'
+                              }`}
+                              aria-label={label}
+                              title={isDisabled ? 'Maximum of 10 reactions per message' : label}
+                              style={{ WebkitTapHighlightColor: 'transparent' }}
+                            >
+                              <EmojiGlyph
+                                emoji={emoji}
+                                className="text-[18px] sm:text-[20px]"
+                                fallbackClassName="text-[18px] sm:text-[20px]"
+                              />
+                            </button>
+                          );
+                        })}
+
+                        {canOpenReactionPicker && (
                           <button
-                            key={emoji}
                             type="button"
-                            disabled={isDisabled}
-                            onClick={() => handleQuickReaction(emoji)}
-                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl transition-all sm:h-10 sm:w-10 ${
-                              isDisabled
-                                ? 'cursor-not-allowed opacity-40'
-                                : isSelected
-                                ? 'bg-void-accent/18 shadow-[0_0_0_1px_rgba(59,130,246,0.18)]'
-                                : 'hover:bg-void-bg-hover/80'
-                            }`}
-                            aria-label={label}
-                            title={isDisabled ? 'Maximum of 10 reactions per message' : label}
+                            onClick={(event) => {
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
+                                x: rect.left + rect.width / 2,
+                                y: rect.top,
+                              });
+                              onCloseContextMenu();
+                            }}
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-void-text-muted transition-all hover:bg-void-bg-hover/80 sm:h-10 sm:w-10"
+                            aria-label="Add reaction"
+                            title="Add reaction"
                             style={{ WebkitTapHighlightColor: 'transparent' }}
                           >
-                            <EmojiGlyph
-                              emoji={emoji}
-                              className="text-[18px] sm:text-[20px]"
-                              fallbackClassName="text-[18px] sm:text-[20px]"
-                            />
+                            <Plus className="h-5 w-5" />
                           </button>
-                        );
-                      })}
-
-                      {canOpenReactionPicker && (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            const rect = event.currentTarget.getBoundingClientRect();
-                            onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
-                              x: rect.left + rect.width / 2,
-                              y: rect.top,
-                            });
-                            onCloseContextMenu();
-                          }}
-                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl text-void-text-muted transition-all hover:bg-void-bg-hover/80 sm:h-10 sm:w-10"
-                          aria-label="Add reaction"
-                          title="Add reaction"
-                          style={{ WebkitTapHighlightColor: 'transparent' }}
-                        >
-                          <Plus className="h-5 w-5" />
-                        </button>
-                      )}
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
                 <div className="overflow-x-hidden rounded-[28px] bg-void-bg-main/95 px-3 py-3 shadow-[0_24px_60px_rgba(0,0,0,0.45)] supports-[backdrop-filter]:backdrop-blur">
                   <div className="mt-0">
-                    <button
-                      disabled={!canOpenReactionPicker}
-                      onClick={() => {
-                        if (!canOpenReactionPicker) return;
-                        onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
-                          x: contextMenu.x,
-                          y: contextMenu.y,
-                        });
-                        onCloseContextMenu();
-                      }}
-                      className={`flex w-full touch-manipulation items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
-                        canOpenReactionPicker
-                          ? 'text-void-text hover:bg-void-bg-hover/90'
-                          : 'cursor-not-allowed text-void-text-muted/55'
-                      }`}
-                      style={{ WebkitTapHighlightColor: 'transparent' }}
-                    >
-                      <Smile className="h-4 w-4 text-void-accent" />
-                      Add Reaction
-                    </button>
+                    {isFailedLocalMessage && onRetryFailed && (
+                      <button
+                        onClick={() => {
+                          onRetryFailed(contextMenu.msg);
+                          onCloseContextMenu();
+                        }}
+                        className="flex w-full touch-manipulation items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium text-orange-300 transition-colors hover:bg-orange-500/15 hover:text-orange-200"
+                        style={{ WebkitTapHighlightColor: 'transparent' }}
+                      >
+                        <RefreshCcw className="h-4 w-4" />
+                        Retry Send
+                      </button>
+                    )}
+                    {!isFailedLocalMessage && (
+                      <button
+                        disabled={!canOpenReactionPicker}
+                        onClick={() => {
+                          if (!canOpenReactionPicker) return;
+                          onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
+                            x: contextMenu.x,
+                            y: contextMenu.y,
+                          });
+                          onCloseContextMenu();
+                        }}
+                        className={`flex w-full touch-manipulation items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
+                          canOpenReactionPicker
+                            ? 'text-void-text hover:bg-void-bg-hover/90'
+                            : 'cursor-not-allowed text-void-text-muted/55'
+                        }`}
+                        style={{ WebkitTapHighlightColor: 'transparent' }}
+                      >
+                        <Smile className="h-4 w-4 text-void-accent" />
+                        Add Reaction
+                      </button>
+                    )}
                     <button
                       onClick={async () => {
                         await onCopyMessageText(contextMenu.msg.content);
@@ -299,7 +322,7 @@ export default function MessageOverlays({
                       <Copy className="h-4 w-4" />
                       Copy Text
                     </button>
-                    {onReply && (
+                    {onReply && !isFailedLocalMessage && (
                       <button
                         onClick={() => {
                           onReply(contextMenu.msg);
@@ -312,24 +335,26 @@ export default function MessageOverlays({
                         Reply
                       </button>
                     )}
-                    <button
-                      disabled={!canForwardMessage}
-                      onClick={() => {
-                        if (!canForwardMessage || !contextMenu || !onForward) return;
-                        onForward(contextMenu.msg);
-                        onCloseContextMenu();
-                      }}
-                      className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
-                        canForwardMessage
-                          ? 'text-void-text hover:bg-void-bg-hover/90'
-                          : 'cursor-not-allowed text-void-text-muted/55'
-                      }`}
-                      style={{ WebkitTapHighlightColor: 'transparent' }}
-                    >
-                      <Forward className="h-4 w-4" />
-                      Forward Message
-                    </button>
-                    {contextMenu.msg.sender_id === currentUserId && (
+                    {!isFailedLocalMessage && (
+                      <button
+                        disabled={!canForwardMessage}
+                        onClick={() => {
+                          if (!canForwardMessage || !contextMenu || !onForward) return;
+                          onForward(contextMenu.msg);
+                          onCloseContextMenu();
+                        }}
+                        className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition-colors ${
+                          canForwardMessage
+                            ? 'text-void-text hover:bg-void-bg-hover/90'
+                            : 'cursor-not-allowed text-void-text-muted/55'
+                        }`}
+                        style={{ WebkitTapHighlightColor: 'transparent' }}
+                      >
+                        <Forward className="h-4 w-4" />
+                        Forward Message
+                      </button>
+                    )}
+                    {contextMenu.msg.sender_id === currentUserId && !isFailedLocalMessage && (
                       <>
                         <div className="mx-4 h-px bg-void-bg-hover/60" />
                         {onEdit && (
@@ -372,7 +397,7 @@ export default function MessageOverlays({
           >
             {QUICK_REACTIONS.map(({ emoji, label }) => {
               const isSelected = messageHasUserReaction(contextMenu.msg, emoji, currentUserId);
-              const isDisabled = !messageCanAddReaction(contextMenu.msg, emoji);
+              const isDisabled = isFailedLocalMessage || !messageCanAddReaction(contextMenu.msg, emoji);
 
               return (
                 <button
@@ -426,12 +451,13 @@ export default function MessageOverlays({
             }`}
             style={{ top: contextMenu.y, left: contextMenu.x }}
           >
+            {!isFailedLocalMessage && (
             <div className="w-max max-w-[calc(100vw-1rem)] rounded-2xl border border-void-bg-hover bg-void-bg-main/95 p-2 shadow-2xl supports-[backdrop-filter]:backdrop-blur">
               <div className="rounded-2xl bg-void-bg-hover/35 px-1.5 py-1.5">
                 <div className="flex w-max min-w-0 items-center gap-1">
                   {QUICK_REACTIONS.map(({ emoji, label }) => {
                     const isSelected = messageHasUserReaction(contextMenu.msg, emoji, currentUserId);
-                    const isDisabled = !messageCanAddReaction(contextMenu.msg, emoji);
+                    const isDisabled = isFailedLocalMessage || !messageCanAddReaction(contextMenu.msg, emoji);
 
                     return (
                       <button
@@ -480,28 +506,44 @@ export default function MessageOverlays({
                 </div>
               </div>
             </div>
+            )}
 
             <div className="w-[15.5rem] max-w-[calc(100vw-1rem)] overflow-hidden rounded-2xl border border-void-bg-hover bg-void-bg-main/95 p-2 shadow-2xl supports-[backdrop-filter]:backdrop-blur">
-              <button
-                disabled={!canOpenReactionPicker}
-                onClick={() => {
-                  if (!canOpenReactionPicker) return;
-                  onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
-                    x: contextMenu.x,
-                    y: contextMenu.y,
-                  });
-                  onCloseContextMenu();
-                }}
-                className={`flex w-full touch-manipulation items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                  canOpenReactionPicker
-                    ? 'text-void-text hover:bg-void-accent hover:text-white'
-                    : 'cursor-not-allowed text-void-text-muted/60'
-                }`}
-                style={{ WebkitTapHighlightColor: 'transparent' }}
-              >
-                <Smile className="w-4 h-4" />
-                Add Reaction
-              </button>
+              {isFailedLocalMessage && onRetryFailed && (
+                <button
+                  onClick={() => {
+                    onRetryFailed(contextMenu.msg);
+                    onCloseContextMenu();
+                  }}
+                  className="flex w-full touch-manipulation items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium text-orange-300 transition-colors hover:bg-orange-500/15 hover:text-orange-200"
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
+                >
+                  <RefreshCcw className="w-4 h-4" />
+                  Retry Send
+                </button>
+              )}
+              {!isFailedLocalMessage && (
+                <button
+                  disabled={!canOpenReactionPicker}
+                  onClick={() => {
+                    if (!canOpenReactionPicker) return;
+                    onOpenEmojiPickerAtPosition(contextMenu.msg.message_id, {
+                      x: contextMenu.x,
+                      y: contextMenu.y,
+                    });
+                    onCloseContextMenu();
+                  }}
+                  className={`flex w-full touch-manipulation items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    canOpenReactionPicker
+                      ? 'text-void-text hover:bg-void-accent hover:text-white'
+                      : 'cursor-not-allowed text-void-text-muted/60'
+                  }`}
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
+                >
+                  <Smile className="w-4 h-4" />
+                  Add Reaction
+                </button>
+              )}
               <button
                 onClick={async () => {
                   await onCopyMessageText(contextMenu.msg.content);
@@ -518,7 +560,7 @@ export default function MessageOverlays({
                 <Copy className="w-4 h-4" />
                 Copy Text
               </button>
-              {onReply && (
+              {onReply && !isFailedLocalMessage && (
                 <button
                   onClick={() => {
                     onReply(contextMenu.msg);
@@ -531,24 +573,26 @@ export default function MessageOverlays({
                   Reply
                 </button>
               )}
-              <button
-                disabled={!canForwardMessage}
-                onClick={() => {
-                  if (!canForwardMessage || !contextMenu || !onForward) return;
-                  onForward(contextMenu.msg);
-                  onCloseContextMenu();
-                }}
-                className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                  canForwardMessage
-                    ? 'text-void-text hover:bg-void-accent hover:text-white'
-                    : 'cursor-not-allowed text-void-text-muted/60'
-                }`}
-                style={{ WebkitTapHighlightColor: 'transparent' }}
-              >
-                <Forward className="w-4 h-4" />
-                Forward Message
-              </button>
-              {contextMenu.msg.sender_id === currentUserId && (
+              {!isFailedLocalMessage && (
+                <button
+                  disabled={!canForwardMessage}
+                  onClick={() => {
+                    if (!canForwardMessage || !contextMenu || !onForward) return;
+                    onForward(contextMenu.msg);
+                    onCloseContextMenu();
+                  }}
+                  className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                    canForwardMessage
+                      ? 'text-void-text hover:bg-void-accent hover:text-white'
+                      : 'cursor-not-allowed text-void-text-muted/60'
+                  }`}
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
+                >
+                  <Forward className="w-4 h-4" />
+                  Forward Message
+                </button>
+              )}
+              {contextMenu.msg.sender_id === currentUserId && !isFailedLocalMessage && (
                 <>
                   <div className="my-1 h-px w-full bg-void-bg-hover" />
                   {onEdit && (

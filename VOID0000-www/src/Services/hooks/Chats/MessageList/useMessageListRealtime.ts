@@ -125,13 +125,6 @@ const useMessageListRealtime = ({
       const localStatus = newMessage.local_status;
       const localClientId = getLocalClientId(newMessage);
 
-      if (localStatus === 'failed' && localClientId) {
-        setMessages((previous) => previous.filter((message) =>
-          message.message_id !== localClientId && message.local_client_id !== localClientId
-        ));
-        return;
-      }
-
       const cryptoMetadata = resolveMessageCryptoMetadata(newMessage);
       const normalizedMessage: Message = {
         ...newMessage,
@@ -153,12 +146,13 @@ const useMessageListRealtime = ({
         return;
       }
 
-      const isLocalPendingOnly = (
+      const isLocalOnlyStatus = (
         normalizedMessage.local_status === 'sending' ||
-        normalizedMessage.local_status === 'queued'
+        normalizedMessage.local_status === 'queued' ||
+        normalizedMessage.local_status === 'failed'
       ) && Boolean(localClientId);
 
-      if (!isLocalPendingOnly) {
+      if (!isLocalOnlyStatus) {
         const localMessage: LocalMessage = {
           conversation_id: normalizedMessage.conversation_id,
           message_id: normalizedMessage.message_id,
@@ -187,7 +181,8 @@ const useMessageListRealtime = ({
         isAtPresent ||
         normalizedMessage.sender_id === userId ||
         normalizedMessage.local_status === 'sending' ||
-        normalizedMessage.local_status === 'queued'
+        normalizedMessage.local_status === 'queued' ||
+        normalizedMessage.local_status === 'failed'
       );
 
       if (shouldApplyImmediately) {

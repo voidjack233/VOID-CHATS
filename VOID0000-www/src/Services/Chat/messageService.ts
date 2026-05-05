@@ -36,6 +36,50 @@ import { bootstrapDmKey } from './conversationService';
 
 export { parseAttachment, parseAttachments } from './messageAttachments';
 
+const MESSAGE_SEND_TIMEOUT_MS = 30_000;
+const ATTACHMENT_UPLOAD_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_CODE = 'REQUEST_TIMEOUT';
+
+function createRequestTimeoutError(label: string): Error {
+  const error = new Error(`${label} timed out. Check your connection and retry.`);
+  (error as Error & { code?: string }).code = REQUEST_TIMEOUT_CODE;
+  return error;
+}
+
+async function withRequestTimeout<T>(
+  timeoutMs: number,
+  label: string,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(createRequestTimeoutError(label));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([
+      operation(controller.signal),
+      timeoutPromise,
+    ]);
+  } catch (error) {
+    if (timedOut || (error as { name?: string } | null)?.name === 'AbortError') {
+      throw createRequestTimeoutError(label);
+    }
+    throw error;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
 export async function sendMessage(
   conversationId: string,
   plaintext: string,
@@ -64,23 +108,26 @@ export async function sendMessage(
   const protocol: MessageCryptoProtocol = 'mls';
   const protocolVersion = chatCryptoProtocolService.protocolVersion;
 
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({
-      encrypted_content,
-      iv,
-      key_version: keyVersion,
-      message_type: messageType,
-      protocol,
-      protocol_version: protocolVersion,
-      reply_to: options?.reply_to || null,
-      attachments: options?.attachments || [],
-      forwarded: options?.forwarded || null,
-      mentions: options?.mentions || [],
-    }),
-  });
+  const data = await withRequestTimeout(MESSAGE_SEND_TIMEOUT_MS, 'Message send', async (signal) => {
+    const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        encrypted_content,
+        iv,
+        key_version: keyVersion,
+        message_type: messageType,
+        protocol,
+        protocol_version: protocolVersion,
+        reply_to: options?.reply_to || null,
+        attachments: options?.attachments || [],
+        forwarded: options?.forwarded || null,
+        mentions: options?.mentions || [],
+      }),
+    });
 
-  const data = await response.json();
+    return response.json();
+  });
   if (!data.success) throw createApiError(data);
 
   const cryptoMetadata = resolveMessageCryptoMetadata({
@@ -146,22 +193,25 @@ export async function sendImageOnlyMessage(
   const protocol: MessageCryptoProtocol = 'mls';
   const protocolVersion = chatCryptoProtocolService.protocolVersion;
 
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({
-      encrypted_content,
-      iv,
-      key_version: options?.key_version || 1,
-      message_type: messageType,
-      protocol,
-      protocol_version: protocolVersion,
-      reply_to: options?.reply_to || null,
-      forwarded: options?.forwarded || null,
-      mentions: options?.mentions || [],
-    }),
-  });
+  const data = await withRequestTimeout(MESSAGE_SEND_TIMEOUT_MS, 'Message send', async (signal) => {
+    const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        encrypted_content,
+        iv,
+        key_version: options?.key_version || 1,
+        message_type: messageType,
+        protocol,
+        protocol_version: protocolVersion,
+        reply_to: options?.reply_to || null,
+        forwarded: options?.forwarded || null,
+        mentions: options?.mentions || [],
+      }),
+    });
 
-  const data = await response.json();
+    return response.json();
+  });
   if (!data.success) throw createApiError(data);
 
   const cryptoMetadata = resolveMessageCryptoMetadata({
@@ -195,17 +245,20 @@ export async function uploadEncryptedAttachments(
   files: File[],
 ): Promise<string[]> {
   const prepared = await Promise.all(files.map((file) => encryptAttachmentFile(file)));
-  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
-    method: 'POST',
-    body: JSON.stringify({
-      files: prepared.map(({ encryptedData }) => ({
-        data: encryptedData,
-        encrypted: true,
-      })),
-    }),
-  });
+  const data = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
+    const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
+      method: 'POST',
+      signal,
+      body: JSON.stringify({
+        files: prepared.map(({ encryptedData }) => ({
+          data: encryptedData,
+          encrypted: true,
+        })),
+      }),
+    });
 
-  const data = await response.json();
+    return response.json();
+  });
   if (!data.success) throw new Error(data.error || 'Upload failed');
 
   const urls = Array.isArray(data.urls) ? (data.urls as string[]) : [];
