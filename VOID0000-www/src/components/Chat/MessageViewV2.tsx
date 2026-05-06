@@ -14,9 +14,9 @@ import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../Service
 import { useUser } from '../../Services/Auth/UserContext';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
-import { useTheme } from '../../Services/hooks/Settings/useTheme';
+import { useTheme, type Density } from '../../Services/hooks/Settings/useTheme';
 import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
-import { MessageViewSkeleton } from '../common/Skeleton';
+import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
 import MessageItem from './MessageItem';
 import MessageOverlays from './MessageOverlays';
 import MessageViewHeader, { buildMessageViewHeaderIdentity } from './MessageViewHeader';
@@ -73,14 +73,104 @@ const emptyReactions: Record<string, unknown> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
 const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
-const OLDER_HISTORY_LOADER_SLOT_HEIGHT = 48;
-const OLDER_HISTORY_LOADER_SLOT_CLASS = 'h-12';
-const TOP_LOAD_THRESHOLD = OLDER_HISTORY_LOADER_SLOT_HEIGHT;
-const TOP_SCROLL_LOCK_THRESHOLD = OLDER_HISTORY_LOADER_SLOT_HEIGHT + 8;
+const OLDER_HISTORY_LOADER_SLOT_HEIGHT: Record<Density, number> = {
+  compact: 268,
+  comfortable: 216,
+};
 
 // Chat history should load at the top boundary, not while the user is only
 // browsing nearby. This avoids the list feeling like it pulls upward.
 const OLDER_SENTINEL_ROOT_MARGIN = '0px 0px 0px 0px';
+
+const OLDER_SKELETON_PATTERNS: Record<Density, number[][]> = {
+  compact: [
+    [1, 2, 1],
+    [2, 1, 2],
+    [1, 1, 3],
+    [3, 1, 1],
+  ],
+  comfortable: [
+    [1, 2],
+    [2, 1],
+    [1, 3],
+  ],
+};
+
+const OLDER_SKELETON_BUBBLE_WIDTHS = [
+  'w-[54%] sm:w-[42%]',
+  'w-[72%] sm:w-[56%]',
+  'w-[46%] sm:w-[36%]',
+  'w-[82%] sm:w-[64%]',
+  'w-[62%] sm:w-[48%]',
+  'w-[38%] sm:w-[30%]',
+];
+
+const OLDER_SKELETON_META_WIDTHS = [
+  'w-16',
+  'w-20',
+  'w-24',
+  'w-14',
+];
+
+function hashSkeletonSeed(seed: string): number {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = ((hash << 5) - hash + seed.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
+  density,
+  seed,
+}: {
+  density: Density;
+  seed: string;
+}) {
+  const hash = hashSkeletonSeed(seed);
+  const patterns = OLDER_SKELETON_PATTERNS[density];
+  const pattern = patterns[hash % patterns.length] || patterns[0]!;
+
+  return (
+    <div className={`pointer-events-none flex h-full w-full flex-col justify-center px-2 ${density === 'comfortable' ? 'gap-4 py-4' : 'gap-3 py-3'}`}>
+      {pattern.map((bubbleCount, groupIndex) => {
+        const isOutgoing = density === 'comfortable' && groupIndex === pattern.length - 1 && hash % 2 === 1;
+        const contentMaxWidth = density === 'comfortable'
+          ? 'max-w-[80%] md:max-w-[70%]'
+          : 'max-w-[88%] md:max-w-[85%]';
+        const bubbleHeight = density === 'comfortable' ? 'h-10' : 'h-8';
+        const avatarSize = 'h-8 w-8';
+
+        return (
+          <div
+            key={`${groupIndex}-${bubbleCount}`}
+            className={`flex w-full max-w-full ${isOutgoing ? 'justify-end' : 'justify-start'}`}
+          >
+            <div className={`flex w-full ${contentMaxWidth} items-start gap-2 ${isOutgoing ? 'flex-row-reverse' : 'flex-row'}`}>
+              {!isOutgoing && (
+                <Skeleton className={avatarSize} rounded="full" />
+              )}
+              <div className={`flex min-w-0 flex-1 flex-col gap-1.5 ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                {!isOutgoing && (
+                  <Skeleton
+                    className={`h-3 ${OLDER_SKELETON_META_WIDTHS[(hash + groupIndex) % OLDER_SKELETON_META_WIDTHS.length]}`}
+                  />
+                )}
+                {Array.from({ length: bubbleCount }).map((_, bubbleIndex) => (
+                  <Skeleton
+                    key={`${groupIndex}-${bubbleIndex}`}
+                    className={`${bubbleHeight} ${OLDER_SKELETON_BUBBLE_WIDTHS[(hash + groupIndex + bubbleIndex) % OLDER_SKELETON_BUBBLE_WIDTHS.length]} max-w-full`}
+                    rounded="2xl"
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
 
 const MessageViewV2 = memo(function MessageViewV2({
   conversation,
@@ -120,6 +210,9 @@ const MessageViewV2 = memo(function MessageViewV2({
 
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
+  const olderHistoryLoaderSlotHeight = OLDER_HISTORY_LOADER_SLOT_HEIGHT[density];
+  const olderTopLoadThreshold = olderHistoryLoaderSlotHeight;
+  const olderTopScrollLockThreshold = olderHistoryLoaderSlotHeight + 8;
   const { friends } = useFriends();
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const currentMember = user?.id ? members[user.id] || null : null;
@@ -168,6 +261,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const visualMessages = messages;
   const layoutTraitsById = useMessageLayout(visualMessages, groupBreakBeforeIds, hasOlder);
   const retryingFailedMessageIdsRef = useRef<Set<string>>(new Set());
+  const olderSkeletonSeed = `${conversation.id}:${visualMessages[0]?.message_id || 'empty'}`;
 
   const {
     contextMenu,
@@ -540,7 +634,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       !hasOlder ||
       loadingOlderRequestInFlightRef.current ||
       loadingOlderStateRef.current ||
-      scroller.scrollTop > TOP_LOAD_THRESHOLD
+      scroller.scrollTop > olderTopLoadThreshold
     ) {
       return false;
     }
@@ -550,7 +644,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       loadingOlderRequestInFlightRef.current = false;
     });
     return true;
-  }, [hasOlder, loadOlderPreservingViewport]);
+  }, [hasOlder, loadOlderPreservingViewport, olderTopLoadThreshold]);
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -561,7 +655,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       (loadingOlderRequestInFlightRef.current ||
         loadingOlderStateRef.current ||
         pendingOlderLoadScrollSnapshotRef.current !== null) &&
-      scroller.scrollTop <= TOP_SCROLL_LOCK_THRESHOLD
+      scroller.scrollTop <= olderTopScrollLockThreshold
     );
 
     const handleWheelBoundaryLock = (event: WheelEvent) => {
@@ -606,7 +700,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       scroller.removeEventListener('touchend', clearTouchBoundaryLock);
       scroller.removeEventListener('touchcancel', clearTouchBoundaryLock);
     };
-  }, [conversation.id]);
+  }, [conversation.id, olderTopScrollLockThreshold]);
 
   const keepPresentPinnedToBottom = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -976,13 +1070,11 @@ const MessageViewV2 = memo(function MessageViewV2({
         {hasOlder && (
           <div
             ref={olderSentinelRef}
-            className={`${OLDER_HISTORY_LOADER_SLOT_CLASS} flex w-full items-center justify-center`}
+            className="flex w-full items-center justify-center"
+            style={{ height: `${olderHistoryLoaderSlotHeight}px` }}
           >
             {loadingOlder ? (
-              <div className="inline-flex items-center gap-2 rounded-full border border-void-bg-hover bg-void-bg-main/70 px-3 py-1.5 text-xs font-medium text-void-text-muted">
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-void-accent" />
-                <span>Loading...</span>
-              </div>
+              <OlderHistorySkeleton density={density} seed={olderSkeletonSeed} />
             ) : null}
           </div>
         )}
