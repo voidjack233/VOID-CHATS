@@ -77,9 +77,18 @@ const OLDER_HISTORY_LOADER_SLOT_HEIGHT: Record<Density, number> = {
   compact: 268,
   comfortable: 216,
 };
+const OLDER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
+  compact: 720,
+  comfortable: 640,
+};
+const NEWER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
+  compact: 720,
+  comfortable: 640,
+};
 
-// Chat history should load at the top boundary, not while the user is only
-// browsing nearby. This avoids the list feeling like it pulls upward.
+// IntersectionObserver catches the exact boundary. The scroll handler below
+// starts history fetches earlier so fast scrolling is less likely to hit a
+// temporary loading wall at either edge of the active message window.
 const OLDER_SENTINEL_ROOT_MARGIN = '0px 0px 0px 0px';
 
 const OLDER_SKELETON_PATTERNS: Record<Density, number[][]> = {
@@ -201,6 +210,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const previousListCountRef = useRef(0);
   const lastFollowedMessageEventSequenceRef = useRef(0);
   const pendingOlderLoadScrollSnapshotRef = useRef<OlderLoadScrollSnapshot | null>(null);
+  const hasOlderRef = useRef(false);
   const loadingOlderStateRef = useRef(false);
   const loadingOlderRequestInFlightRef = useRef(false);
   const loadingNewerRequestInFlightRef = useRef(false);
@@ -211,8 +221,9 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
   const olderHistoryLoaderSlotHeight = OLDER_HISTORY_LOADER_SLOT_HEIGHT[density];
-  const olderTopLoadThreshold = olderHistoryLoaderSlotHeight;
+  const olderTopLoadThreshold = OLDER_HISTORY_PREFETCH_DISTANCE[density];
   const olderTopScrollLockThreshold = olderHistoryLoaderSlotHeight + 8;
+  const newerBottomLoadThreshold = NEWER_HISTORY_PREFETCH_DISTANCE[density];
   const { friends } = useFriends();
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const currentMember = user?.id ? members[user.id] || null : null;
@@ -251,6 +262,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     handleInitReactionsFromMessages,
     waitForEncryptionBootstrap,
   );
+  hasOlderRef.current = hasOlder;
   loadingOlderStateRef.current = loadingOlder;
 
   const { reactions, handleToggleReaction, initReactionsFromMessages } =
@@ -588,16 +600,8 @@ const MessageViewV2 = memo(function MessageViewV2({
       forceFollowOutputRef.current = false;
     }
 
-    if (atBottom && hasNewer && !loadingNewer && !loadingNewerRequestInFlightRef.current) {
-      loadingNewerRequestInFlightRef.current = true;
-      void loadNewer().finally(() => {
-        loadingNewerRequestInFlightRef.current = false;
-      });
-      setIsAtPresent(false);
-    } else {
-      setIsAtPresent(atBottom && !hasNewer);
-    }
-  }, [hasNewer, loadNewer, loadingNewer, setIsAtPresent]);
+    setIsAtPresent(atBottom && !hasNewer);
+  }, [hasNewer, setIsAtPresent]);
 
   const loadOlderPreservingViewport = useCallback(async () => {
     const snapshot = captureOlderLoadScrollSnapshot();
@@ -615,6 +619,13 @@ const MessageViewV2 = memo(function MessageViewV2({
           return;
         }
 
+        if (!hasOlderRef.current && snapshot.scrollTop <= olderTopScrollLockThreshold) {
+          scroller.scrollTop = 0;
+          pendingOlderLoadScrollSnapshotRef.current = null;
+          syncScrollState();
+          return;
+        }
+
         const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
         if (Math.abs(scrollHeightDelta) > 0.5) {
           scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
@@ -624,7 +635,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         pendingOlderLoadScrollSnapshotRef.current = null;
       });
     });
-  }, [captureOlderLoadScrollSnapshot, loadOlder, syncScrollState]);
+  }, [captureOlderLoadScrollSnapshot, loadOlder, olderTopScrollLockThreshold, syncScrollState]);
 
   const maybeStartOlderBoundaryLoad = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -646,6 +657,26 @@ const MessageViewV2 = memo(function MessageViewV2({
     return true;
   }, [hasOlder, loadOlderPreservingViewport, olderTopLoadThreshold]);
 
+  const maybeStartNewerBoundaryLoad = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (
+      !scroller ||
+      !initialLatestRestoreDoneRef.current ||
+      !hasNewer ||
+      loadingNewerRequestInFlightRef.current ||
+      loadingNewer ||
+      scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight) > newerBottomLoadThreshold
+    ) {
+      return false;
+    }
+
+    loadingNewerRequestInFlightRef.current = true;
+    void loadNewer().finally(() => {
+      loadingNewerRequestInFlightRef.current = false;
+    });
+    return true;
+  }, [hasNewer, loadNewer, loadingNewer, newerBottomLoadThreshold]);
+
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
@@ -655,7 +686,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       (loadingOlderRequestInFlightRef.current ||
         loadingOlderStateRef.current ||
         pendingOlderLoadScrollSnapshotRef.current !== null) &&
-      scroller.scrollTop <= olderTopScrollLockThreshold
+      scroller.scrollTop <= olderTopLoadThreshold
     );
 
     const handleWheelBoundaryLock = (event: WheelEvent) => {
@@ -700,7 +731,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       scroller.removeEventListener('touchend', clearTouchBoundaryLock);
       scroller.removeEventListener('touchcancel', clearTouchBoundaryLock);
     };
-  }, [conversation.id, olderTopScrollLockThreshold]);
+  }, [conversation.id, olderTopLoadThreshold]);
 
   const keepPresentPinnedToBottom = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -795,27 +826,25 @@ const MessageViewV2 = memo(function MessageViewV2({
           return;
         }
 
-        loadingNewerRequestInFlightRef.current = true;
-        void loadNewer().finally(() => {
-          loadingNewerRequestInFlightRef.current = false;
-        });
+        maybeStartNewerBoundaryLoad();
       },
       {
         root: scroller,
-        rootMargin: '0px 0px 600px 0px',
+        rootMargin: `0px 0px ${newerBottomLoadThreshold}px 0px`,
         threshold: 0,
       },
     );
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasNewer, loadNewer, loadingNewer, conversation.id]);
+  }, [hasNewer, loadingNewer, maybeStartNewerBoundaryLoad, newerBottomLoadThreshold, conversation.id]);
 
   // ── Scroll event: sync bottom state only ──
   const handleScroll = useCallback(() => {
     syncScrollState();
     maybeStartOlderBoundaryLoad();
-  }, [maybeStartOlderBoundaryLoad, syncScrollState]);
+    maybeStartNewerBoundaryLoad();
+  }, [maybeStartNewerBoundaryLoad, maybeStartOlderBoundaryLoad, syncScrollState]);
 
   const handleJumpToPresent = useCallback(async () => {
     forceFollowOutputRef.current = true;

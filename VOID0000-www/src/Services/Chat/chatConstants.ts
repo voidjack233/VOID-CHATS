@@ -1,9 +1,9 @@
 export const MESSAGE_INITIAL_PAGE_SIZE = 10;
-export const MESSAGE_PAGE_SIZE = 10;
+export const MESSAGE_PAGE_SIZE = 20;
 export const MESSAGE_CACHE_LIMIT = 500;
-export const MESSAGE_ACTIVE_WINDOW_SIZE = 150;
-export const MESSAGE_WINDOW_TRIM_TRIGGER = 200;
-export const MESSAGE_WINDOW_TRIM_TARGET = 150;
+export const MESSAGE_ACTIVE_WINDOW_SIZE = 70;
+export const MESSAGE_WINDOW_TRIM_TRIGGER = 110;
+export const MESSAGE_WINDOW_TRIM_TARGET = 70;
 // Larger page for silent background prefetch — fills the local cache ahead of user scroll
 export const MESSAGE_PREFETCH_SIZE = 30;
 

@@ -9,8 +9,6 @@ import {
 import {
   MESSAGE_PAGE_SIZE,
   MESSAGE_PREFETCH_SIZE,
-  MESSAGE_WINDOW_TRIM_TARGET,
-  MESSAGE_WINDOW_TRIM_TRIGGER,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
@@ -20,7 +18,6 @@ import { type HistoryAccessFence, filterMessagesByHistoryFence } from './message
 import { debugMessageList, rawDebugMessageList } from './messageListDebug';
 import {
   getNewestServerBackedMessage,
-  trimMessages,
 } from './messageListReconciliation';
 import {
   hasUndecryptableMessage,
@@ -274,13 +271,12 @@ const useMessageListPagination = ({
     const uniqueMessages = Array.from(
       new Map(mergedMessages.map((message) => [message.message_id, message])).values()
     );
-    const trimResult = trimMessages(uniqueMessages, 'new', {
-      trigger: MESSAGE_WINDOW_TRIM_TRIGGER,
-      target: MESSAGE_WINDOW_TRIM_TARGET,
-    });
-    const trimmedMessages = trimResult.messages;
 
-    messagesRef.current = trimmedMessages;
+    // Prepend must not trim the newer side in the same render. Removing rows
+    // below while adding rows above makes scroll-height preservation lie,
+    // especially around long messages/images, so pruning should be a separate
+    // idle/boundary step instead of part of older-page loading.
+    messagesRef.current = uniqueMessages;
     debugMessageList('prepend_apply', {
       conversationId,
       prependedCount,
@@ -289,9 +285,10 @@ const useMessageListPagination = ({
         ? prevFirstItemIndex - prependedCount
         : prevFirstItemIndex,
       prevCount,
-      nextCount: trimmedMessages.length,
+      nextCount: uniqueMessages.length,
       firstPrependedId: prependedMessages[0]?.message_id || null,
       lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
+      trimDeferredForViewportStability: true,
     });
     debugMessageList('prepend_derived_rows', {
       conversationId,
@@ -301,22 +298,17 @@ const useMessageListPagination = ({
       note: 'Date separators and grouping are rendered inside MessageItem, not as separate Virtuoso rows.',
     });
     applyPrependedWindow({
-      messages: trimmedMessages,
+      messages: uniqueMessages,
       prependedCount,
       seamBreakBeforeId,
     });
-
-    if (trimResult.trimmedFromNew > 0) {
-      setHasNewer(true);
-      setIsAtPresent(false);
-    }
 
     onMessagesLoaded?.(olderMessages);
     return {
       prependedCount,
       prevCount,
-      nextCount: trimmedMessages.length,
-      trimmedVisibleCount: uniqueMessages.length - trimmedMessages.length,
+      nextCount: uniqueMessages.length,
+      trimmedVisibleCount: 0,
       firstPrependedId: prependedMessages[0]?.message_id || null,
       lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
     };
@@ -325,8 +317,6 @@ const useMessageListPagination = ({
     conversationId,
     messagesRef,
     onMessagesLoaded,
-    setHasNewer,
-    setIsAtPresent,
   ]);
 
   const fetchOlderMessages = useCallback(async (oldestMessageId: string, options?: { forceServer?: boolean }) => {
@@ -559,13 +549,16 @@ const useMessageListPagination = ({
         const hasNewerAfterMerge = newerUI.length < FETCH_SIZE ? false : result.has_more;
         const isAtPresentAfterMerge = newerUI.length < FETCH_SIZE;
 
-        if (!initialHydrationSettled || !isAtPresentRef.current) {
+        if (!initialHydrationSettled) {
           queueNewerMessages({
             hasNewerAfterFlush: hasNewerAfterMerge,
             isAtPresentAfterFlush: isAtPresentAfterMerge,
             incoming: newerUI,
           });
         } else {
+          // Explicit downward pagination should extend the visible window.
+          // Passive live/reconnect messages still use the queue paths below so
+          // they do not create false gaps while the user is reading old history.
           mergeVisibleMessages({
             incoming: newerUI,
             currentUserId: userId,
