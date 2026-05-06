@@ -265,6 +265,53 @@ class MessageStore {
     });
   }
 
+  async pruneConversation(
+    conversationId: string,
+    options?: {
+      maxMessages?: number;
+      protectedMessageIds?: string[];
+    },
+  ): Promise<void> {
+    const db = await this.getDb();
+    const maxMessages = Math.max(0, options?.maxMessages ?? 500);
+    const protectedIds = new Set((options?.protectedMessageIds || []).map(String));
+
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('messages', 'readwrite');
+      const store = tx.objectStore('messages');
+      const index = store.index('by_conv_time');
+      const range = IDBKeyRange.bound(
+        [conversationId, '', ''],
+        [conversationId, '\uffff', '\uffff'],
+        false,
+        false,
+      );
+      const cursorReq = index.openCursor(range, 'prev');
+      let keptCount = 0;
+
+      cursorReq.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+        if (!cursor) {
+          return;
+        }
+
+        const message = cursor.value as LocalMessage;
+        const messageId = String(message.message_id);
+        const isProtected = protectedIds.has(messageId);
+        if (isProtected || keptCount < maxMessages) {
+          keptCount += 1;
+        } else {
+          cursor.delete();
+        }
+        cursor.continue();
+      };
+
+      cursorReq.onerror = () => reject(cursorReq.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   // ============== Sync Cursor Operations ==============
 
   async getSyncCursor(conversationId: string): Promise<SyncCursor | null> {

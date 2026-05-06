@@ -299,6 +299,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     hasOlder,
     hasNewer,
     isAtPresent,
+    runtimeStats,
     topSpacerHeight,
     bottomSpacerHeight,
     groupBreakBeforeIds,
@@ -697,6 +698,29 @@ const MessageViewV2 = memo(function MessageViewV2({
     visualMessages.length,
     visualMessages[0]?.message_id,
     visualMessages[visualMessages.length - 1]?.message_id,
+  ]);
+
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    const domRowCount = scroller?.querySelectorAll('[data-message-id]').length ?? 0;
+
+    console.debug('[MessageWindowRuntime]', {
+      conversationId: conversation.id,
+      renderedIdsLength: runtimeStats.renderedIdsLength,
+      domRowCount,
+      messageByIdSize: runtimeStats.messageByIdSize,
+      pagesLength: runtimeStats.pagesLength,
+      topSpacerHeight: runtimeStats.topSpacerHeight,
+      bottomSpacerHeight: runtimeStats.bottomSpacerHeight,
+    });
+  }, [
+    conversation.id,
+    runtimeStats.bottomSpacerHeight,
+    runtimeStats.messageByIdSize,
+    runtimeStats.pagesLength,
+    runtimeStats.renderedIdsLength,
+    runtimeStats.topSpacerHeight,
+    visualMessages.length,
   ]);
 
   // ── Scroll helpers ──

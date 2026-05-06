@@ -75,6 +75,7 @@ interface UseMessageListPaginationParams {
   }) => void;
   applyPrependedWindow: (params: {
     messages: Message[];
+    pageMessages: Message[];
     prependedCount: number;
     seamBreakBeforeId: string;
     topSpacerHeightConsume?: number;
@@ -328,6 +329,7 @@ const useMessageListPagination = ({
     });
     applyPrependedWindow({
       messages: nextMessages,
+      pageMessages: olderMessages,
       prependedCount,
       seamBreakBeforeId,
       topSpacerHeightConsume: sumMessageHeights(prependedMessages, getMessageHeight),

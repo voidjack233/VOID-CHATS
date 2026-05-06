@@ -4,20 +4,33 @@ import {
   type ConversationMember,
   type Message,
 } from '../../Chat/chatService';
-import { MESSAGE_CACHE_LIMIT, MESSAGE_INITIAL_PAGE_SIZE } from '../../Chat/chatConstants';
+import { MAX_CACHED_MESSAGES_PER_CONVERSATION, MESSAGE_INITIAL_PAGE_SIZE } from '../../Chat/chatConstants';
+import { messageStore } from '../../Chat/chatStore';
 import { createHistoryAccessFence, normalizeHistoryVersion, } from './MessageList/messageListHistory';
 import { mergeMessagesWithReconciliation } from './MessageList/messageListReconciliation';
-import { sortMessages } from './MessageList/messageListPersistence';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
+import {
+  applyPrependedPage,
+  applyRenderedUpdate,
+  createEmptyRuntime,
+  getRenderedMessages,
+  getRuntimeStats,
+  queueLiveMessages,
+  recordRuntimePage,
+  resetRuntime,
+  saveConversationRuntime,
+  setRenderedMessages,
+  sumMessageHeights,
+  type ConversationRuntime,
+  type RuntimeStats,
+} from './MessageList/messageListRuntime';
 import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
 import { useMessageListLoading } from './MessageList/useMessageListLoading';
 import { useMessageListPagination } from './MessageList/useMessageListPagination';
 import { useMessageListRealtime } from './MessageList/useMessageListRealtime';
 import { useMessageListReplies } from './MessageList/useMessageListReplies';
 
-const CACHE_LIMIT = MESSAGE_CACHE_LIMIT;
 const MESSAGE_LIST_BASE_INDEX = 100000;
-const ESTIMATED_MESSAGE_HEIGHT = 72;
 
 export { saveConversationScrollPosition } from './MessageList/messageListWindowCache';
 
@@ -26,12 +39,9 @@ interface MessageWindowMetrics {
 }
 
 interface MessageWindowState {
-  messages: Message[];
+  runtime: ConversationRuntime;
   firstItemIndex: number;
-  topSpacerHeight: number;
-  bottomSpacerHeight: number;
   groupBreakBeforeIds: Set<string>;
-  queuedNewerMessages: Message[];
   queuedNewerHasNewer: boolean;
   queuedNewerIsAtPresent: boolean;
   loading: boolean;
@@ -48,10 +58,25 @@ type MessageWindowAction =
   | { type: 'set_messages'; value: SetStateAction<Message[]> }
   | {
       type: 'replace_window';
+      conversationId: string;
       messages: Message[];
       firstItemIndex?: number;
       topSpacerHeight?: number;
       bottomSpacerHeight?: number;
+      groupBreakBeforeIds?: Set<string>;
+      loading?: boolean;
+      syncing?: boolean;
+      initialHydrationSettled?: boolean;
+      loadingOlder?: boolean;
+      loadingNewer?: boolean;
+      hasOlder?: boolean;
+      hasNewer?: boolean;
+      isAtPresent?: boolean;
+    }
+  | {
+      type: 'restore_runtime';
+      runtime: ConversationRuntime;
+      firstItemIndex?: number;
       groupBreakBeforeIds?: Set<string>;
       loading?: boolean;
       syncing?: boolean;
@@ -98,6 +123,7 @@ type MessageWindowAction =
   | {
       type: 'apply_prepended_window';
       messages: Message[];
+      pageMessages: Message[];
       prependedCount: number;
       seamBreakBeforeId: string;
       topSpacerHeightConsume?: number;
@@ -105,12 +131,9 @@ type MessageWindowAction =
     };
 
 const initialMessageWindowState: MessageWindowState = {
-  messages: [],
+  runtime: createEmptyRuntime('__initial__'),
   firstItemIndex: MESSAGE_LIST_BASE_INDEX,
-  topSpacerHeight: 0,
-  bottomSpacerHeight: 0,
   groupBreakBeforeIds: new Set(),
-  queuedNewerMessages: [],
   queuedNewerHasNewer: false,
   queuedNewerIsAtPresent: true,
   loading: true,
@@ -129,37 +152,33 @@ const resolveStateAction = <T,>(previous: T, value: SetStateAction<T>): T => (
     : value
 );
 
-const sumWindowMessageHeights = (
-  messages: Message[],
-  getMessageHeight?: (message: Message) => number,
-) => messages.reduce((total, message) => {
-  const height = getMessageHeight?.(message);
-  return total + (
-    typeof height === 'number' && Number.isFinite(height) && height > 0
-      ? height
-      : ESTIMATED_MESSAGE_HEIGHT
-  );
-}, 0);
-
 const messageWindowReducer = (
   state: MessageWindowState,
   action: MessageWindowAction,
 ): MessageWindowState => {
   switch (action.type) {
-    case 'set_messages':
+    case 'set_messages': {
+      const nextRuntime = applyRenderedUpdate(
+        state.runtime,
+        (messages) => resolveStateAction(messages, action.value),
+      );
       return {
         ...state,
-        messages: resolveStateAction(state.messages, action.value),
+        runtime: nextRuntime,
       };
-    case 'replace_window':
-      return {
-        ...state,
-        messages: action.messages,
-        firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
+    }
+    case 'replace_window': {
+      const nextRuntime = resetRuntime(action.conversationId, action.messages, {
+        hasOlder: action.hasOlder ?? state.runtime.hasOlder,
+        hasNewer: action.hasNewer ?? state.runtime.hasNewer,
         topSpacerHeight: action.topSpacerHeight ?? 0,
         bottomSpacerHeight: action.bottomSpacerHeight ?? 0,
+      });
+      return {
+        ...state,
+        runtime: nextRuntime,
+        firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
         groupBreakBeforeIds: action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
-        queuedNewerMessages: [],
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
         loading: action.loading ?? state.loading,
@@ -171,21 +190,36 @@ const messageWindowReducer = (
         hasNewer: action.hasNewer ?? state.hasNewer,
         isAtPresent: action.isAtPresent ?? state.isAtPresent,
       };
+    }
+    case 'restore_runtime': {
+      saveConversationRuntime(action.runtime);
+      return {
+        ...state,
+        runtime: action.runtime,
+        firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
+        groupBreakBeforeIds: action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
+        queuedNewerHasNewer: false,
+        queuedNewerIsAtPresent: true,
+        loading: action.loading ?? state.loading,
+        syncing: action.syncing ?? state.syncing,
+        initialHydrationSettled: action.initialHydrationSettled ?? state.initialHydrationSettled,
+        loadingOlder: action.loadingOlder ?? state.loadingOlder,
+        loadingNewer: action.loadingNewer ?? state.loadingNewer,
+        hasOlder: action.hasOlder ?? action.runtime.hasOlder,
+        hasNewer: action.hasNewer ?? action.runtime.hasNewer,
+        isAtPresent: action.isAtPresent ?? !action.runtime.hasNewer,
+      };
+    }
     case 'queue_newer_messages': {
-      const queuedNewerMessages = action.incoming.length > 0
-        ? sortMessages(
-            Array.from(
-              new Map(
-                [...state.queuedNewerMessages, ...action.incoming].map((message) => [message.message_id, message])
-              ).values()
-            )
-          )
-        : state.queuedNewerMessages;
-      const hasExistingQueuedNewer = state.queuedNewerMessages.length > 0;
+      const hasExistingQueuedNewer = state.runtime.pendingLiveIds.length > 0;
+      const nextRuntime = queueLiveMessages(state.runtime, action.incoming, {
+        hasNewer: true,
+        isAtPresent: false,
+      });
 
       return {
         ...state,
-        queuedNewerMessages,
+        runtime: nextRuntime,
         queuedNewerHasNewer: hasExistingQueuedNewer
           ? state.queuedNewerHasNewer || action.hasNewerAfterFlush
           : action.hasNewerAfterFlush,
@@ -197,45 +231,55 @@ const messageWindowReducer = (
       };
     }
     case 'flush_queued_newer': {
-      if (state.queuedNewerMessages.length === 0) {
+      if (state.runtime.pendingLiveIds.length === 0) {
         return state;
       }
+      const pendingMessages = state.runtime.pendingLiveIds
+        .map((id) => state.runtime.messageById.get(id))
+        .filter((message): message is Message => Boolean(message));
       const flushResult = mergeMessagesWithReconciliation({
-        existing: state.messages,
-        incoming: state.queuedNewerMessages,
+        existing: getRenderedMessages(state.runtime),
+        incoming: pendingMessages,
         currentUserId: action.currentUserId,
         trimFrom: action.trimFrom ?? 'old',
         allowOptimisticFallback: true,
       });
-      const trimmedOldHeight = sumWindowMessageHeights(
+      const trimmedOldHeight = sumMessageHeights(
+        state.runtime,
         flushResult.trimmedFromOldMessages,
         action.getMessageHeight,
       );
-      const consumedBottomSpacerHeight = sumWindowMessageHeights(
-        state.queuedNewerMessages,
+      const consumedBottomSpacerHeight = sumMessageHeights(
+        state.runtime,
+        pendingMessages,
         action.getMessageHeight,
       );
+      let nextRuntime = setRenderedMessages(state.runtime, flushResult.messages);
+      nextRuntime = recordRuntimePage(nextRuntime, pendingMessages, 'live');
+      nextRuntime.pendingLiveIds = [];
+      nextRuntime.topSpacerHeight += trimmedOldHeight;
+      nextRuntime.bottomSpacerHeight = state.queuedNewerHasNewer
+        ? Math.max(0, nextRuntime.bottomSpacerHeight - consumedBottomSpacerHeight)
+        : 0;
+      nextRuntime.hasOlder = flushResult.trimmedFromOld > 0 ? true : nextRuntime.hasOlder;
+      nextRuntime.hasNewer = state.queuedNewerHasNewer;
+      saveConversationRuntime(nextRuntime);
       return {
         ...state,
-        messages: flushResult.messages,
+        runtime: nextRuntime,
         firstItemIndex: flushResult.trimmedFromOld > 0
           ? state.firstItemIndex + flushResult.trimmedFromOld
           : state.firstItemIndex,
-        queuedNewerMessages: [],
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
         hasOlder: flushResult.trimmedFromOld > 0 ? true : state.hasOlder,
         hasNewer: state.queuedNewerHasNewer,
         isAtPresent: state.queuedNewerIsAtPresent,
-        topSpacerHeight: state.topSpacerHeight + trimmedOldHeight,
-        bottomSpacerHeight: state.queuedNewerHasNewer
-          ? Math.max(0, state.bottomSpacerHeight - consumedBottomSpacerHeight)
-          : 0,
       };
     }
     case 'merge_visible_messages': {
       const mergeResult = mergeMessagesWithReconciliation({
-        existing: state.messages,
+        existing: getRenderedMessages(state.runtime),
         incoming: action.incoming,
         currentUserId: action.currentUserId,
         trimFrom: action.trimFrom ?? 'old',
@@ -244,26 +288,33 @@ const messageWindowReducer = (
       const consumedBottomSpacerHeight = action.consumeBottomSpacerHeight ?? 0;
       const nextBottomSpacerHeight = action.hasNewer === false
         ? 0
-        : Math.max(0, state.bottomSpacerHeight - consumedBottomSpacerHeight);
-      const trimmedOldHeight = sumWindowMessageHeights(
+        : Math.max(0, state.runtime.bottomSpacerHeight - consumedBottomSpacerHeight);
+      const trimmedOldHeight = sumMessageHeights(
+        state.runtime,
         mergeResult.trimmedFromOldMessages,
         action.getMessageHeight,
       );
-      const trimmedNewHeight = sumWindowMessageHeights(
+      const trimmedNewHeight = sumMessageHeights(
+        state.runtime,
         mergeResult.trimmedFromNewMessages,
         action.getMessageHeight,
       );
+      let nextRuntime = setRenderedMessages(state.runtime, mergeResult.messages);
+      nextRuntime = recordRuntimePage(nextRuntime, action.incoming, action.trimFrom === 'new' ? 'older' : 'newer');
+      nextRuntime.topSpacerHeight += trimmedOldHeight;
+      nextRuntime.bottomSpacerHeight = nextBottomSpacerHeight + trimmedNewHeight;
+      nextRuntime.hasOlder = mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? nextRuntime.hasOlder);
+      nextRuntime.hasNewer = mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? nextRuntime.hasNewer);
+      saveConversationRuntime(nextRuntime);
       return {
         ...state,
-        messages: mergeResult.messages,
+        runtime: nextRuntime,
         firstItemIndex: mergeResult.trimmedFromOld > 0
           ? state.firstItemIndex + mergeResult.trimmedFromOld
           : state.firstItemIndex,
         hasOlder: mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? state.hasOlder),
         hasNewer: mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? state.hasNewer),
         isAtPresent: mergeResult.trimmedFromNew > 0 ? false : (action.isAtPresent ?? state.isAtPresent),
-        topSpacerHeight: state.topSpacerHeight + trimmedOldHeight,
-        bottomSpacerHeight: nextBottomSpacerHeight + trimmedNewHeight,
       };
     }
     case 'set_first_item_index':
@@ -319,14 +370,17 @@ const messageWindowReducer = (
     case 'apply_prepended_window': {
       const nextBreaks = new Set(state.groupBreakBeforeIds);
       nextBreaks.add(action.seamBreakBeforeId);
+      const nextRuntime = applyPrependedPage(state.runtime, action.messages, action.pageMessages, {
+        topSpacerHeightConsume: action.topSpacerHeightConsume,
+        bottomSpacerHeightDelta: action.bottomSpacerHeightDelta,
+        hasNewer: action.bottomSpacerHeightDelta && action.bottomSpacerHeightDelta > 0 ? true : state.runtime.hasNewer,
+      });
       return {
         ...state,
-        messages: action.messages,
+        runtime: nextRuntime,
         firstItemIndex: action.prependedCount > 0
           ? state.firstItemIndex - action.prependedCount
           : state.firstItemIndex,
-        topSpacerHeight: Math.max(0, state.topSpacerHeight - (action.topSpacerHeightConsume ?? 0)),
-        bottomSpacerHeight: state.bottomSpacerHeight + (action.bottomSpacerHeightDelta ?? 0),
         groupBreakBeforeIds: nextBreaks,
       };
     }
@@ -391,10 +445,11 @@ export const useMessageList = (
   encryptionKeyRef.current = encryptionKey;
   currentKeyVersionRef.current = currentKeyVersion;
 
-  const messages = windowState.messages;
+  const runtime = windowState.runtime;
+  const messages = useMemo(() => getRenderedMessages(runtime), [runtime]);
   const firstItemIndex = windowState.firstItemIndex;
-  const topSpacerHeight = windowState.topSpacerHeight;
-  const bottomSpacerHeight = windowState.bottomSpacerHeight;
+  const topSpacerHeight = runtime.topSpacerHeight;
+  const bottomSpacerHeight = runtime.bottomSpacerHeight;
   const groupBreakBeforeIds = windowState.groupBreakBeforeIds;
   const loading = windowState.loading;
   const syncing = windowState.syncing;
@@ -404,7 +459,8 @@ export const useMessageList = (
   const hasOlder = windowState.hasOlder;
   const hasNewer = windowState.hasNewer;
   const isAtPresent = windowState.isAtPresent;
-  const queuedNewerCount = windowState.queuedNewerMessages.length;
+  const queuedNewerCount = runtime.pendingLiveIds.length;
+  const runtimeStats: RuntimeStats = useMemo(() => getRuntimeStats(runtime), [runtime]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -429,7 +485,23 @@ export const useMessageList = (
     hasNewer?: boolean;
     isAtPresent?: boolean;
   }) => {
-    dispatchWindowState({ type: 'replace_window', ...params });
+    dispatchWindowState({ type: 'replace_window', conversationId, ...params });
+  }, [conversationId]);
+
+  const restoreRuntime = useCallback((params: {
+    runtime: ConversationRuntime;
+    firstItemIndex?: number;
+    groupBreakBeforeIds?: Set<string>;
+    loading?: boolean;
+    syncing?: boolean;
+    initialHydrationSettled?: boolean;
+    loadingOlder?: boolean;
+    loadingNewer?: boolean;
+    hasOlder?: boolean;
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
+  }) => {
+    dispatchWindowState({ type: 'restore_runtime', ...params });
   }, []);
 
   const mergeVisibleMessages = useCallback((params: {
@@ -501,6 +573,7 @@ export const useMessageList = (
 
   const applyPrependedWindow = useCallback((params: {
     messages: Message[];
+    pageMessages: Message[];
     prependedCount: number;
     seamBreakBeforeId: string;
     topSpacerHeightConsume?: number;
@@ -562,6 +635,7 @@ export const useMessageList = (
     onMessagesLoaded,
     messageListBaseIndex: MESSAGE_LIST_BASE_INDEX,
     replaceWindow,
+    restoreRuntime,
     mergeVisibleMessages,
     setLoading,
     setSyncing,
@@ -611,12 +685,29 @@ export const useMessageList = (
     const existingSnapshot = getConversationWindowSnapshot(conversationId);
     setConversationWindowSnapshot(conversationId, {
       loadedCount: Math.min(
-        CACHE_LIMIT,
+        MAX_CACHED_MESSAGES_PER_CONVERSATION,
         Math.max(existingSnapshot?.loadedCount ?? MESSAGE_INITIAL_PAGE_SIZE, messages.length)
       ),
       hasOlder,
     });
   }, [conversationId, hasOlder, messages]);
+
+  useEffect(() => {
+    if (messages.length === 0) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void messageStore.pruneConversation(conversationId, {
+        maxMessages: MAX_CACHED_MESSAGES_PER_CONVERSATION,
+        protectedMessageIds: runtime.renderedIds,
+      }).catch((error) => {
+        console.warn('[MessageWindowRuntime] failed to prune IndexedDB cache', error);
+      });
+    }, 750);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [conversationId, messages.length, runtime.renderedIds, runtimeStats.messageByIdSize, runtimeStats.pagesLength]);
 
   return {
     messages,
@@ -628,6 +719,7 @@ export const useMessageList = (
     hasOlder,
     hasNewer,
     isAtPresent,
+    runtimeStats,
     firstItemIndex,
     topSpacerHeight,
     bottomSpacerHeight,

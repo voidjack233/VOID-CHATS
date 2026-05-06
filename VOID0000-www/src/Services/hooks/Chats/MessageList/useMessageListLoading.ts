@@ -1,9 +1,6 @@
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import {
-  MAX_INITIAL_OPEN_COUNT,
-  MESSAGE_PAGE_SIZE,
-  MIN_MESSAGE_ROW_HEIGHT_PX,
-  VIEWPORT_FILL_BUFFER,
+  MESSAGE_INITIAL_PAGE_SIZE,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
@@ -17,6 +14,11 @@ import {
   getConversationWindowSnapshot,
   resolveInitialHasOlder,
 } from './messageListWindowCache';
+import {
+  getRenderedMessages,
+  getSavedConversationRuntime,
+  type ConversationRuntime,
+} from './messageListRuntime';
 
 interface UseMessageListLoadingParams {
   conversationId: string;
@@ -29,6 +31,19 @@ interface UseMessageListLoadingParams {
   messageListBaseIndex: number;
   replaceWindow: (params: {
     messages: Message[];
+    firstItemIndex?: number;
+    groupBreakBeforeIds?: Set<string>;
+    loading?: boolean;
+    syncing?: boolean;
+    initialHydrationSettled?: boolean;
+    loadingOlder?: boolean;
+    loadingNewer?: boolean;
+    hasOlder?: boolean;
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
+  }) => void;
+  restoreRuntime: (params: {
+    runtime: ConversationRuntime;
     firstItemIndex?: number;
     groupBreakBeforeIds?: Set<string>;
     loading?: boolean;
@@ -61,26 +76,9 @@ interface UseMessageListLoadingParams {
   keyVersionRefreshInFlightRef: MutableRefObject<number | null>;
 }
 
-const INITIAL_OPEN_LIMIT = MESSAGE_PAGE_SIZE;
+const INITIAL_OPEN_LIMIT = MESSAGE_INITIAL_PAGE_SIZE;
 
-const resolveInitialOpenLimit = () => {
-  if (typeof window === 'undefined') {
-    return INITIAL_OPEN_LIMIT;
-  }
-
-  const viewportHeight = Math.max(window.innerHeight || 0, 0);
-  if (viewportHeight <= 0) {
-    return INITIAL_OPEN_LIMIT;
-  }
-
-  const viewportDrivenLimit =
-    Math.ceil(viewportHeight / MIN_MESSAGE_ROW_HEIGHT_PX) + VIEWPORT_FILL_BUFFER;
-
-  return Math.min(
-    MAX_INITIAL_OPEN_COUNT,
-    Math.max(INITIAL_OPEN_LIMIT, viewportDrivenLimit),
-  );
-};
+const resolveInitialOpenLimit = () => INITIAL_OPEN_LIMIT;
 
 const useMessageListLoading = ({
   conversationId,
@@ -92,6 +90,7 @@ const useMessageListLoading = ({
   onMessagesLoaded,
   messageListBaseIndex,
   replaceWindow,
+  restoreRuntime,
   mergeVisibleMessages,
   setLoading,
   setSyncing,
@@ -156,6 +155,35 @@ const useMessageListLoading = ({
       });
     };
 
+    const restoreSavedRuntime = () => {
+      const savedRuntime = getSavedConversationRuntime(conversationId);
+      if (!savedRuntime) {
+        return false;
+      }
+
+      const savedMessages = getRenderedMessages(savedRuntime);
+      if (savedMessages.length === 0) {
+        return false;
+      }
+
+      restoreRuntime({
+        runtime: savedRuntime,
+        firstItemIndex: messageListBaseIndex,
+        groupBreakBeforeIds: new Set(),
+        loading: false,
+        syncing: false,
+        initialHydrationSettled: true,
+        loadingOlder: false,
+        loadingNewer: false,
+        hasOlder: savedRuntime.hasOlder,
+        hasNewer: savedRuntime.hasNewer,
+        isAtPresent: !savedRuntime.hasNewer,
+      });
+      onMessagesLoaded?.(savedMessages);
+      settleInitialHydration();
+      return true;
+    };
+
     const applyVisibleMessages = (
       nextMessages: Message[],
       shouldPreserveMessages: boolean,
@@ -217,6 +245,10 @@ const useMessageListLoading = ({
       const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
       lastLoadedConversationIdRef.current = conversationId;
 
+      if (!shouldPreserveMessages && restoreSavedRuntime()) {
+        return;
+      }
+
       if (!shouldPreserveMessages) {
         resetVisibleWindow();
       }
@@ -267,6 +299,10 @@ const useMessageListLoading = ({
     const load = async () => {
       const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
       lastLoadedConversationIdRef.current = conversationId;
+
+      if (!shouldPreserveMessages && restoreSavedRuntime()) {
+        return;
+      }
 
       if (!shouldPreserveMessages) {
         resetVisibleWindow();
