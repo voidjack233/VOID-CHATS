@@ -8,7 +8,7 @@ import { messageSync } from '../../../Chat/chatSync';
 import { type LocalMessage } from '../../../Chat/chatStore';
 import { queuedSendStore } from '../../../Chat/queuedSendStore';
 import { type HistoryAccessFence, isMessageVisibleForHistoryFence } from './messageListHistory';
-import { getLocalClientId, mergeMessagesWithReconciliation } from './messageListReconciliation';
+import { getLocalClientId } from './messageListReconciliation';
 import type { MessageDelete, MessageStreamEvent, MessageUpdate } from './messageListTypes';
 
 interface UseMessageListRealtimeParams {
@@ -86,22 +86,18 @@ const useMessageListRealtime = ({
           local_client_id: record.local_client_id,
         }));
 
-        setMessages((previous) =>
-          mergeMessagesWithReconciliation({
-            existing: previous,
-            incoming: queuedMessages,
-            currentUserId: userId,
-            trimFrom: 'old',
-            allowOptimisticFallback: false,
-          }).messages
-        );
+        mergeVisibleMessages({
+          incoming: queuedMessages,
+          currentUserId: userId,
+          trimFrom: 'old',
+        });
       } catch (error) {
         console.error('[QUEUED_SEND] failed to load persisted queued sends', error);
       }
     })();
 
     return () => { ignore = true; };
-  }, [conversationId, setMessages, userId]);
+  }, [conversationId, mergeVisibleMessages, userId]);
 
   useEffect(() => {
     const pendingEvents = messageEvents.filter(

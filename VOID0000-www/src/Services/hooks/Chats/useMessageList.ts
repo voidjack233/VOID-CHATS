@@ -17,12 +17,19 @@ import { useMessageListReplies } from './MessageList/useMessageListReplies';
 
 const CACHE_LIMIT = MESSAGE_CACHE_LIMIT;
 const MESSAGE_LIST_BASE_INDEX = 100000;
+const ESTIMATED_MESSAGE_HEIGHT = 72;
 
 export { saveConversationScrollPosition } from './MessageList/messageListWindowCache';
+
+interface MessageWindowMetrics {
+  getMessageHeight?: (message: Message) => number;
+}
 
 interface MessageWindowState {
   messages: Message[];
   firstItemIndex: number;
+  topSpacerHeight: number;
+  bottomSpacerHeight: number;
   groupBreakBeforeIds: Set<string>;
   queuedNewerMessages: Message[];
   queuedNewerHasNewer: boolean;
@@ -43,6 +50,8 @@ type MessageWindowAction =
       type: 'replace_window';
       messages: Message[];
       firstItemIndex?: number;
+      topSpacerHeight?: number;
+      bottomSpacerHeight?: number;
       groupBreakBeforeIds?: Set<string>;
       loading?: boolean;
       syncing?: boolean;
@@ -58,6 +67,8 @@ type MessageWindowAction =
       incoming: Message[];
       currentUserId?: string;
       trimFrom?: 'old' | 'new';
+      consumeBottomSpacerHeight?: number;
+      getMessageHeight?: (message: Message) => number;
       hasOlder?: boolean;
       hasNewer?: boolean;
       isAtPresent?: boolean;
@@ -72,6 +83,7 @@ type MessageWindowAction =
       type: 'flush_queued_newer';
       currentUserId?: string;
       trimFrom?: 'old' | 'new';
+      getMessageHeight?: (message: Message) => number;
     }
   | { type: 'set_first_item_index'; value: SetStateAction<number> }
   | { type: 'set_group_break_before_ids'; value: SetStateAction<Set<string>> }
@@ -88,11 +100,15 @@ type MessageWindowAction =
       messages: Message[];
       prependedCount: number;
       seamBreakBeforeId: string;
+      topSpacerHeightConsume?: number;
+      bottomSpacerHeightDelta?: number;
     };
 
 const initialMessageWindowState: MessageWindowState = {
   messages: [],
   firstItemIndex: MESSAGE_LIST_BASE_INDEX,
+  topSpacerHeight: 0,
+  bottomSpacerHeight: 0,
   groupBreakBeforeIds: new Set(),
   queuedNewerMessages: [],
   queuedNewerHasNewer: false,
@@ -113,6 +129,18 @@ const resolveStateAction = <T,>(previous: T, value: SetStateAction<T>): T => (
     : value
 );
 
+const sumWindowMessageHeights = (
+  messages: Message[],
+  getMessageHeight?: (message: Message) => number,
+) => messages.reduce((total, message) => {
+  const height = getMessageHeight?.(message);
+  return total + (
+    typeof height === 'number' && Number.isFinite(height) && height > 0
+      ? height
+      : ESTIMATED_MESSAGE_HEIGHT
+  );
+}, 0);
+
 const messageWindowReducer = (
   state: MessageWindowState,
   action: MessageWindowAction,
@@ -128,6 +156,8 @@ const messageWindowReducer = (
         ...state,
         messages: action.messages,
         firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
+        topSpacerHeight: action.topSpacerHeight ?? 0,
+        bottomSpacerHeight: action.bottomSpacerHeight ?? 0,
         groupBreakBeforeIds: action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
         queuedNewerMessages: [],
         queuedNewerHasNewer: false,
@@ -177,6 +207,14 @@ const messageWindowReducer = (
         trimFrom: action.trimFrom ?? 'old',
         allowOptimisticFallback: true,
       });
+      const trimmedOldHeight = sumWindowMessageHeights(
+        flushResult.trimmedFromOldMessages,
+        action.getMessageHeight,
+      );
+      const consumedBottomSpacerHeight = sumWindowMessageHeights(
+        state.queuedNewerMessages,
+        action.getMessageHeight,
+      );
       return {
         ...state,
         messages: flushResult.messages,
@@ -189,6 +227,10 @@ const messageWindowReducer = (
         hasOlder: flushResult.trimmedFromOld > 0 ? true : state.hasOlder,
         hasNewer: state.queuedNewerHasNewer,
         isAtPresent: state.queuedNewerIsAtPresent,
+        topSpacerHeight: state.topSpacerHeight + trimmedOldHeight,
+        bottomSpacerHeight: state.queuedNewerHasNewer
+          ? Math.max(0, state.bottomSpacerHeight - consumedBottomSpacerHeight)
+          : 0,
       };
     }
     case 'merge_visible_messages': {
@@ -199,6 +241,18 @@ const messageWindowReducer = (
         trimFrom: action.trimFrom ?? 'old',
         allowOptimisticFallback: true,
       });
+      const consumedBottomSpacerHeight = action.consumeBottomSpacerHeight ?? 0;
+      const nextBottomSpacerHeight = action.hasNewer === false
+        ? 0
+        : Math.max(0, state.bottomSpacerHeight - consumedBottomSpacerHeight);
+      const trimmedOldHeight = sumWindowMessageHeights(
+        mergeResult.trimmedFromOldMessages,
+        action.getMessageHeight,
+      );
+      const trimmedNewHeight = sumWindowMessageHeights(
+        mergeResult.trimmedFromNewMessages,
+        action.getMessageHeight,
+      );
       return {
         ...state,
         messages: mergeResult.messages,
@@ -208,6 +262,8 @@ const messageWindowReducer = (
         hasOlder: mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? state.hasOlder),
         hasNewer: mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? state.hasNewer),
         isAtPresent: mergeResult.trimmedFromNew > 0 ? false : (action.isAtPresent ?? state.isAtPresent),
+        topSpacerHeight: state.topSpacerHeight + trimmedOldHeight,
+        bottomSpacerHeight: nextBottomSpacerHeight + trimmedNewHeight,
       };
     }
     case 'set_first_item_index':
@@ -269,6 +325,8 @@ const messageWindowReducer = (
         firstItemIndex: action.prependedCount > 0
           ? state.firstItemIndex - action.prependedCount
           : state.firstItemIndex,
+        topSpacerHeight: Math.max(0, state.topSpacerHeight - (action.topSpacerHeightConsume ?? 0)),
+        bottomSpacerHeight: state.bottomSpacerHeight + (action.bottomSpacerHeightDelta ?? 0),
         groupBreakBeforeIds: nextBreaks,
       };
     }
@@ -288,6 +346,7 @@ export const useMessageList = (
   messageDelete?: MessageDelete | null,
   onMessagesLoaded?: (messages: Message[]) => void,
   waitForEncryptionBootstrap = false,
+  messageWindowMetrics: MessageWindowMetrics = {},
 ) => {
   const conversationId = conversation.id;
   const conversationKeyVersion = normalizeHistoryVersion(conversation.current_key_version) ?? 1;
@@ -334,6 +393,8 @@ export const useMessageList = (
 
   const messages = windowState.messages;
   const firstItemIndex = windowState.firstItemIndex;
+  const topSpacerHeight = windowState.topSpacerHeight;
+  const bottomSpacerHeight = windowState.bottomSpacerHeight;
   const groupBreakBeforeIds = windowState.groupBreakBeforeIds;
   const loading = windowState.loading;
   const syncing = windowState.syncing;
@@ -356,6 +417,8 @@ export const useMessageList = (
   const replaceWindow = useCallback((params: {
     messages: Message[];
     firstItemIndex?: number;
+    topSpacerHeight?: number;
+    bottomSpacerHeight?: number;
     groupBreakBeforeIds?: Set<string>;
     loading?: boolean;
     syncing?: boolean;
@@ -373,12 +436,17 @@ export const useMessageList = (
     incoming: Message[];
     currentUserId?: string;
     trimFrom?: 'old' | 'new';
+    consumeBottomSpacerHeight?: number;
     hasOlder?: boolean;
     hasNewer?: boolean;
     isAtPresent?: boolean;
   }) => {
-    dispatchWindowState({ type: 'merge_visible_messages', ...params });
-  }, []);
+    dispatchWindowState({
+      type: 'merge_visible_messages',
+      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      ...params,
+    });
+  }, [messageWindowMetrics.getMessageHeight]);
 
   const queueNewerMessages = useCallback((params: {
     incoming: Message[];
@@ -392,8 +460,12 @@ export const useMessageList = (
     currentUserId?: string;
     trimFrom?: 'old' | 'new';
   }) => {
-    dispatchWindowState({ type: 'flush_queued_newer', ...params });
-  }, []);
+    dispatchWindowState({
+      type: 'flush_queued_newer',
+      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      ...params,
+    });
+  }, [messageWindowMetrics.getMessageHeight]);
 
   const setLoading = useCallback((value: SetStateAction<boolean>) => {
     dispatchWindowState({ type: 'set_loading', value });
@@ -431,6 +503,8 @@ export const useMessageList = (
     messages: Message[];
     prependedCount: number;
     seamBreakBeforeId: string;
+    topSpacerHeightConsume?: number;
+    bottomSpacerHeightDelta?: number;
   }) => {
     dispatchWindowState({ type: 'apply_prepended_window', ...params });
   }, []);
@@ -451,6 +525,7 @@ export const useMessageList = (
     encryptionKey,
     encryptionKeyRef,
     currentKeyVersionRef,
+    getMessageHeight: messageWindowMetrics.getMessageHeight,
     messages,
     messagesRef,
     firstItemIndex,
@@ -554,6 +629,8 @@ export const useMessageList = (
     hasNewer,
     isAtPresent,
     firstItemIndex,
+    topSpacerHeight,
+    bottomSpacerHeight,
     groupBreakBeforeIds,
     setIsAtPresent,
     handleDelete,

@@ -94,12 +94,16 @@ interface TrimResult {
   messages: Message[];
   trimmedFromOld: number;
   trimmedFromNew: number;
+  trimmedFromOldMessages: Message[];
+  trimmedFromNewMessages: Message[];
 }
 
 interface MergeResult {
   messages: Message[];
   trimmedFromOld: number;
   trimmedFromNew: number;
+  trimmedFromOldMessages: Message[];
+  trimmedFromNewMessages: Message[];
 }
 
 const sortMessages = (messages: Message[]): Message[] =>
@@ -129,16 +133,34 @@ const trimMessages = (
   const sorted = sortMessages(messages);
 
   if (sorted.length <= trigger) {
-    return { messages: sorted, trimmedFromOld: 0, trimmedFromNew: 0 };
+    return {
+      messages: sorted,
+      trimmedFromOld: 0,
+      trimmedFromNew: 0,
+      trimmedFromOldMessages: [],
+      trimmedFromNewMessages: [],
+    };
   }
 
   const trimCount = sorted.length - target;
 
   if (trimFrom === 'old') {
-    return { messages: sorted.slice(trimCount), trimmedFromOld: trimCount, trimmedFromNew: 0 };
+    return {
+      messages: sorted.slice(trimCount),
+      trimmedFromOld: trimCount,
+      trimmedFromNew: 0,
+      trimmedFromOldMessages: sorted.slice(0, trimCount),
+      trimmedFromNewMessages: [],
+    };
   }
 
-  return { messages: sorted.slice(0, target), trimmedFromOld: 0, trimmedFromNew: trimCount };
+  return {
+    messages: sorted.slice(0, target),
+    trimmedFromOld: 0,
+    trimmedFromNew: trimCount,
+    trimmedFromOldMessages: [],
+    trimmedFromNewMessages: sorted.slice(target),
+  };
 };
 
 const mergeMessagesWithReconciliation = ({
@@ -198,7 +220,13 @@ const mergeMessagesWithReconciliation = ({
   });
 
   if (!didChange) {
-    return { messages: existing, trimmedFromOld: 0, trimmedFromNew: 0 };
+    return {
+      messages: existing,
+      trimmedFromOld: 0,
+      trimmedFromNew: 0,
+      trimmedFromOldMessages: [],
+      trimmedFromNewMessages: [],
+    };
   }
 
   return trimMessages(next, trimFrom);

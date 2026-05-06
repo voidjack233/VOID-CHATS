@@ -9,6 +9,8 @@ import {
 import {
   MESSAGE_PAGE_SIZE,
   MESSAGE_PREFETCH_SIZE,
+  MESSAGE_WINDOW_TRIM_TARGET,
+  MESSAGE_WINDOW_TRIM_TRIGGER,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
@@ -34,12 +36,15 @@ interface UseMessageListPaginationParams {
   encryptionKey: CryptoKey | null;
   encryptionKeyRef: MutableRefObject<CryptoKey | null>;
   currentKeyVersionRef: MutableRefObject<number>;
+  getMessageHeight?: (message: Message) => number;
   messages: Message[];
   messagesRef: MutableRefObject<Message[]>;
   firstItemIndex: number;
   replaceWindow: (params: {
     messages: Message[];
     firstItemIndex?: number;
+    topSpacerHeight?: number;
+    bottomSpacerHeight?: number;
     groupBreakBeforeIds?: Set<string>;
     loading?: boolean;
     syncing?: boolean;
@@ -54,6 +59,7 @@ interface UseMessageListPaginationParams {
     incoming: Message[];
     currentUserId?: string;
     trimFrom?: 'old' | 'new';
+    consumeBottomSpacerHeight?: number;
     hasOlder?: boolean;
     hasNewer?: boolean;
     isAtPresent?: boolean;
@@ -71,6 +77,8 @@ interface UseMessageListPaginationParams {
     messages: Message[];
     prependedCount: number;
     seamBreakBeforeId: string;
+    topSpacerHeightConsume?: number;
+    bottomSpacerHeightDelta?: number;
   }) => void;
   loadingOlder: boolean;
   loadingNewer: boolean;
@@ -91,6 +99,19 @@ interface UseMessageListPaginationParams {
 }
 
 const FETCH_SIZE = MESSAGE_PAGE_SIZE;
+const ESTIMATED_MESSAGE_HEIGHT = 72;
+
+const sumMessageHeights = (
+  messages: Message[],
+  getMessageHeight?: (message: Message) => number,
+) => messages.reduce((total, message) => {
+  const height = getMessageHeight?.(message);
+  return total + (
+    typeof height === 'number' && Number.isFinite(height) && height > 0
+      ? height
+      : ESTIMATED_MESSAGE_HEIGHT
+  );
+}, 0);
 
 const useMessageListPagination = ({
   conversationId,
@@ -100,6 +121,7 @@ const useMessageListPagination = ({
   encryptionKey,
   encryptionKeyRef,
   currentKeyVersionRef,
+  getMessageHeight,
   messages,
   messagesRef,
   firstItemIndex,
@@ -271,12 +293,18 @@ const useMessageListPagination = ({
     const uniqueMessages = Array.from(
       new Map(mergedMessages.map((message) => [message.message_id, message])).values()
     );
+    const sortedUniqueMessages = sortMessages(uniqueMessages);
+    let nextMessages = sortedUniqueMessages;
+    let trimmedFromNewMessages: Message[] = [];
+    let bottomSpacerHeightDelta = 0;
 
-    // Prepend must not trim the newer side in the same render. Removing rows
-    // below while adding rows above makes scroll-height preservation lie,
-    // especially around long messages/images, so pruning should be a separate
-    // idle/boundary step instead of part of older-page loading.
-    messagesRef.current = uniqueMessages;
+    if (sortedUniqueMessages.length > MESSAGE_WINDOW_TRIM_TRIGGER) {
+      nextMessages = sortedUniqueMessages.slice(0, MESSAGE_WINDOW_TRIM_TARGET);
+      trimmedFromNewMessages = sortedUniqueMessages.slice(MESSAGE_WINDOW_TRIM_TARGET);
+      bottomSpacerHeightDelta = sumMessageHeights(trimmedFromNewMessages, getMessageHeight);
+    }
+
+    messagesRef.current = nextMessages;
     debugMessageList('prepend_apply', {
       conversationId,
       prependedCount,
@@ -285,10 +313,11 @@ const useMessageListPagination = ({
         ? prevFirstItemIndex - prependedCount
         : prevFirstItemIndex,
       prevCount,
-      nextCount: uniqueMessages.length,
+      nextCount: nextMessages.length,
       firstPrependedId: prependedMessages[0]?.message_id || null,
       lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
-      trimDeferredForViewportStability: true,
+      trimmedFromNewCount: trimmedFromNewMessages.length,
+      bottomSpacerHeightDelta,
     });
     debugMessageList('prepend_derived_rows', {
       conversationId,
@@ -298,25 +327,35 @@ const useMessageListPagination = ({
       note: 'Date separators and grouping are rendered inside MessageItem, not as separate Virtuoso rows.',
     });
     applyPrependedWindow({
-      messages: uniqueMessages,
+      messages: nextMessages,
       prependedCount,
       seamBreakBeforeId,
+      topSpacerHeightConsume: sumMessageHeights(prependedMessages, getMessageHeight),
+      bottomSpacerHeightDelta,
     });
+
+    if (trimmedFromNewMessages.length > 0) {
+      setHasNewer(true);
+      setIsAtPresent(false);
+    }
 
     onMessagesLoaded?.(olderMessages);
     return {
       prependedCount,
       prevCount,
-      nextCount: uniqueMessages.length,
-      trimmedVisibleCount: 0,
+      nextCount: nextMessages.length,
+      trimmedVisibleCount: trimmedFromNewMessages.length,
       firstPrependedId: prependedMessages[0]?.message_id || null,
       lastPrependedId: prependedMessages[prependedMessages.length - 1]?.message_id || null,
     };
   }, [
     applyPrependedWindow,
     conversationId,
+    getMessageHeight,
     messagesRef,
     onMessagesLoaded,
+    setHasNewer,
+    setIsAtPresent,
   ]);
 
   const fetchOlderMessages = useCallback(async (oldestMessageId: string, options?: { forceServer?: boolean }) => {
@@ -413,7 +452,7 @@ const useMessageListPagination = ({
       !hasOlder ||
       messagesRef.current.length === 0
     ) {
-      return;
+      return false;
     }
 
     debugMessageList('older_fetch_start', {
@@ -429,7 +468,7 @@ const useMessageListPagination = ({
 
     try {
       const oldestMessage = messagesRef.current[0];
-      if (!oldestMessage) return;
+      if (!oldestMessage) return false;
 
       const seamBreakBeforeId = oldestMessage.message_id;
       const { olderUI, hasMore, debug } = await fetchOlderMessages(oldestMessage.message_id, { forceServer });
@@ -485,8 +524,10 @@ const useMessageListPagination = ({
         rawDebugMessageList('older_fetch_boundary', boundaryPayload);
         debugMessageList('older_fetch_boundary', boundaryPayload);
       }
+      return true;
     } catch (error) {
       console.error('Failed to load older messages:', error);
+      return false;
     } finally {
       setLoadingOlder(false);
     }
@@ -503,22 +544,22 @@ const useMessageListPagination = ({
   ]);
 
   const loadOlder = useCallback(async () => {
-    await loadOlderPage();
+    return loadOlderPage();
   }, [loadOlderPage]);
 
   const loadNewer = useCallback(async () => {
-    if (!encryptionKeyRef.current || loadingNewer || !hasNewer || messages.length === 0) return;
+    if (!encryptionKeyRef.current || loadingNewer || !hasNewer || messages.length === 0) return false;
 
     if (initialHydrationSettled && hasQueuedNewer) {
       flushQueuedNewerMessages({ currentUserId: userId, trimFrom: 'old' });
-      return;
+      return true;
     }
 
     setLoadingNewer(true);
 
     try {
       const newestMessage = getNewestServerBackedMessage(messages);
-      if (!newestMessage) return;
+      if (!newestMessage) return false;
 
       let result = await messageSync.readLocal(conversationId, {
         after: newestMessage.message_id,
@@ -563,6 +604,7 @@ const useMessageListPagination = ({
             incoming: newerUI,
             currentUserId: userId,
             trimFrom: 'old',
+            consumeBottomSpacerHeight: sumMessageHeights(newerUI, getMessageHeight),
             hasNewer: hasNewerAfterMerge,
             isAtPresent: isAtPresentAfterMerge,
           });
@@ -572,8 +614,10 @@ const useMessageListPagination = ({
         setHasNewer(false);
         setIsAtPresent(true);
       }
+      return true;
     } catch (error) {
       console.error('Failed to load newer messages:', error);
+      return false;
     } finally {
       setLoadingNewer(false);
     }
@@ -588,6 +632,7 @@ const useMessageListPagination = ({
     initialHydrationSettled,
     loadingNewer,
     mergeVisibleMessages,
+    getMessageHeight,
     messages,
     onMessagesLoaded,
     queueNewerMessages,
