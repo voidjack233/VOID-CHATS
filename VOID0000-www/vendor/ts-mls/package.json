@@ -1,0 +1,93 @@
+{
+  "name": "ts-mls",
+  "version": "1.6.2",
+  "description": "",
+  "homepage": "https://github.com/LukaJCB/ts-mls#readme",
+  "bugs": {
+    "url": "https://github.com/LukaJCB/ts-mls/issues"
+  },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    },
+    "./*.js": {
+      "types": "./dist/src/*.d.ts",
+      "import": "./dist/src/*.js",
+      "default": "./dist/src/*.js"
+    }
+  },
+  "files": [
+    "dist/src/"
+  ],
+  "dependencies": {
+    "@hpke/core": "1.8.0"
+  },
+  "peerDependencies": {
+    "@hpke/chacha20poly1305": "1.7.1",
+    "@hpke/hybridkem-x-wing": "0.6.1",
+    "@hpke/dhkem-x448": "1.7.0",
+    "@hpke/ml-kem": "0.2.1",
+    "@noble/ciphers": "2.1.1",
+    "@noble/curves": "2.0.1",
+    "@noble/post-quantum": "0.5.2"
+  },
+  "peerDependenciesMeta": {
+    "@hpke/chacha20poly1305": {
+      "optional": true
+    },
+    "@hpke/hybridkem-x-wing": {
+      "optional": true
+    },
+    "@hpke/ml-kem": {
+      "optional": true
+    },
+    "@hpke/dhkem-x448": {
+      "optional": true
+    },
+    "@noble/curves": {
+      "optional": true
+    },
+    "@noble/post-quantum": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LukaJCB/ts-mls.git"
+  },
+  "license": "MIT",
+  "author": "lukajcb",
+  "type": "module",
+  "keywords": [
+    "mls",
+    "messaging-layer-security",
+    "rfc9420",
+    "hpke",
+    "pqc",
+    "post-quantum",
+    "elliptic",
+    "curve",
+    "cryptography",
+    "ed25519",
+    "p256",
+    "p384",
+    "p521",
+    "ed448",
+    "x25519",
+    "ed25519",
+    "ml-kem",
+    "ml-dsa",
+    "slh-dsa",
+    "kyber",
+    "dilithium",
+    "sphincs",
+    "fips203",
+    "fips204",
+    "fips205",
+    "edwards"
+  ]
+}

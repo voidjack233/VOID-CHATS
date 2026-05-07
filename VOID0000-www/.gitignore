@@ -10,6 +10,10 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+!vendor/
+!vendor/ts-mls/
+!vendor/ts-mls/dist/
+!vendor/ts-mls/dist/**
 *.local
 
 # Editor directories and files

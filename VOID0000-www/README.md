@@ -14,9 +14,10 @@ Frontend-specific notes:
 
 Important note:
 
-- the current MLS / encrypted-chat path is built on `ts-mls`
+- the current MLS / encrypted-chat path is built on a vendored `ts-mls` `1.6.2` copy in `vendor/ts-mls`
 - that upstream library is maintained by [`LukaJCB`](https://github.com/LukaJCB)
 - upstream has already warned that it has not gone through a formal security audit yet
+- vendoring is intentional so npm or upstream changes do not silently alter the MLS layer
 - this frontend should not be described as part of a formally audited messenger
 
 Another security/recovery note:

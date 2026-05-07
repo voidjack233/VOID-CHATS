@@ -123,15 +123,16 @@ VOID does **not** currently have:
 
 The biggest explicit crypto caveat right now is `ts-mls`.
 
-This project currently uses:
+This project currently uses a vendored copy of:
 
-- [`ts-mls`](https://github.com/LukaJCB/ts-mls) `1.6.2`
+- [`ts-mls`](https://github.com/LukaJCB/ts-mls) `1.6.2`, stored in [`VOID0000-www/vendor/ts-mls`](VOID0000-www/vendor/ts-mls)
 
 Credit to:
 
 - [`LukaJCB`](https://github.com/LukaJCB), the upstream maintainer of `ts-mls`
 
 Upstream already warns that `ts-mls` has **not** undergone a formal security audit yet, so I do not want this repo to pretend otherwise.
+The package is vendored so future upstream or npm updates do not silently change the MLS code used by this project.
 
 What that means:
 
