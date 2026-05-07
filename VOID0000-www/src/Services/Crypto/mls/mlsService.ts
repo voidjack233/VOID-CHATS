@@ -575,6 +575,19 @@ export class MlsService {
       await this.groupService.importSyncedGroupState(groupState, impl, userId);
     }
 
+    // Historical group states may have just restored exact keys for commits
+    // that looked stale on the first pass. Re-run commit handling so those
+    // commits can be acknowledged only after their message key exists.
+    if (payload.groupStates.length > 0 && payload.commits.length > 0) {
+      for (const commit of payload.commits) {
+        try {
+          await this.groupService.processIncomingCommit(commit, impl, userId);
+        } catch (err) {
+          console.warn('[MLS] Commit processing after historical state import failed:', err);
+        }
+      }
+    }
+
     let ackCount = 0;
     if (capabilities.welcomeInbox && acknowledgedWelcomes.length > 0) {
       const ackResults = await Promise.all(

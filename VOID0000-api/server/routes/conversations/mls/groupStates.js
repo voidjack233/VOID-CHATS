@@ -93,6 +93,29 @@ router.post('/group-states', async (req, res) => {
 
       if (result.rows[0]) {
         upserted.push(result.rows[0]);
+        if (keyVersion) {
+          await client.query(
+            `INSERT INTO mls_group_state_history (
+               conversation_id,
+               user_id,
+               group_id,
+               epoch,
+               key_version,
+               state_blob,
+               created_at,
+               updated_at
+             )
+             VALUES ($1::UUID, $2::UUID, $3, $4, $5, $6, NOW(), NOW())
+             ON CONFLICT (conversation_id, user_id, key_version)
+             DO UPDATE SET
+               group_id = EXCLUDED.group_id,
+               epoch = EXCLUDED.epoch,
+               state_blob = EXCLUDED.state_blob,
+               updated_at = NOW()
+             WHERE EXCLUDED.epoch >= mls_group_state_history.epoch`,
+            [resolved.conversationId, requesterUserId, groupId, epoch, keyVersion, stateBlob]
+          );
+        }
         continue;
       }
 

@@ -49,33 +49,73 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
         : Promise.resolve({ rows: [] }),
       isEnabledFor(capabilities, 'group_state')
         ? pool.query(
-            `SELECT COALESCE(conversations.parent_conversation_id, conversations.id)::text AS conversation_id,
-                    gs.group_id,
-                    gs.epoch,
-                    gs.key_version,
-                    gs.state_blob,
-                    gs.updated_at
-             FROM mls_group_states gs
-             JOIN conversations
-               ON conversations.id = gs.conversation_id
-             JOIN conversation_members cm
-               ON cm.conversation_id = COALESCE(conversations.parent_conversation_id, conversations.id)
-             LEFT JOIN mls_group_states own_gs
-               ON own_gs.conversation_id = gs.conversation_id
-              AND own_gs.user_id = $1::UUID
-             WHERE cm.user_id = $1::UUID
-               AND (
-                 gs.user_id = $1::UUID
-                 OR (
-                   conversations.type != 'dm'
-                   AND (
-                     own_gs.conversation_id IS NULL
-                     OR COALESCE(gs.key_version, gs.epoch) > COALESCE(own_gs.key_version, own_gs.epoch)
-                   )
+            `WITH member_conversations AS (
+               SELECT cm.conversation_id,
+                      COALESCE(cm.joined_key_version, 1) AS joined_key_version
+               FROM conversation_members cm
+               WHERE cm.user_id = $1::UUID
+             ),
+             candidate_states AS (
+               SELECT COALESCE(conversations.parent_conversation_id, conversations.id)::text AS conversation_id,
+                      gs.user_id,
+                      gs.group_id,
+                      gs.epoch,
+                      gs.key_version,
+                      gs.state_blob,
+                      gs.updated_at
+               FROM mls_group_states gs
+               JOIN conversations
+                 ON conversations.id = gs.conversation_id
+               JOIN member_conversations mc
+                 ON mc.conversation_id = COALESCE(conversations.parent_conversation_id, conversations.id)
+               WHERE (
+                   gs.user_id = $1::UUID
+                   OR conversations.type != 'dm'
                  )
-               )
-               AND COALESCE(gs.key_version, gs.epoch) >= COALESCE(cm.joined_key_version, 1)
-             ORDER BY gs.updated_at DESC
+                 AND COALESCE(gs.key_version, gs.epoch) >= mc.joined_key_version
+
+               UNION ALL
+
+               SELECT COALESCE(conversations.parent_conversation_id, conversations.id)::text AS conversation_id,
+                      history.user_id,
+                      history.group_id,
+                      history.epoch,
+                      history.key_version,
+                      history.state_blob,
+                      history.updated_at
+               FROM mls_group_state_history history
+               JOIN conversations
+                 ON conversations.id = history.conversation_id
+               JOIN member_conversations mc
+                 ON mc.conversation_id = COALESCE(conversations.parent_conversation_id, conversations.id)
+               WHERE (
+                   history.user_id = $1::UUID
+                   OR conversations.type != 'dm'
+                 )
+                 AND history.key_version >= mc.joined_key_version
+             ),
+             deduped_states AS (
+               SELECT DISTINCT ON (conversation_id, COALESCE(key_version, epoch))
+                      conversation_id,
+                      group_id,
+                      epoch,
+                      key_version,
+                      state_blob,
+                      updated_at
+               FROM candidate_states
+               ORDER BY conversation_id,
+                        COALESCE(key_version, epoch),
+                        (user_id = $1::UUID) DESC,
+                        updated_at DESC
+             )
+             SELECT conversation_id,
+                    group_id,
+                    epoch,
+                    key_version,
+                    state_blob,
+                    updated_at
+             FROM deduped_states
+             ORDER BY COALESCE(key_version, epoch) ASC, updated_at ASC
              LIMIT $2`,
             [requesterUserId, limit]
           )

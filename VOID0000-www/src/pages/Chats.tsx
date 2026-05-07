@@ -23,6 +23,7 @@ import UserAvatar from '../components/common/UserAvatar';
 import { ConversationPaneSkeleton } from '../components/common/Skeleton';
 import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
 import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
+import PushNotificationPrompt from '../components/common/Notifications/PushNotificationPrompt';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -874,6 +875,10 @@ const ChatDashboard = () => {
         <div className="h-16 flex items-center px-4 font-bold text-base border-b border-void-bg-sec shrink-0">
           <span>Messages</span>
         </div>
+
+        {mobileSidebarMode === 'messages' && !isFriendsPaneVisible ? (
+          <PushNotificationPrompt />
+        ) : null}
 
         <div className="px-3 pt-3 pb-2 shrink-0 border-b border-void-bg-sec md:hidden">
           <div className="grid grid-cols-3 gap-1 rounded-2xl border border-void-bg-hover bg-void-bg-sec/80 p-1 shadow-[0_14px_32px_rgba(0,0,0,0.16)]">

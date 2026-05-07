@@ -472,7 +472,8 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
       `SELECT current_key_version,
               pending_approve_request_id,
               pending_approve_user_id,
-              pending_approve_key_version
+              pending_approve_key_version,
+              updated_at
        FROM conversations
        WHERE id = $1 FOR UPDATE`,
       [conversation.id]
@@ -488,6 +489,7 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
     const pendingKeyVersion = lockedResult.rows[0].pending_approve_key_version != null
       ? Number(lockedResult.rows[0].pending_approve_key_version)
       : null;
+    const pendingPreparedAt = lockedResult.rows[0].updated_at;
 
     if (!pendingRequestId || !pendingUserId || !pendingKeyVersion) {
       const existingMember = await client.query(
@@ -589,9 +591,12 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
        FROM mls_welcome_messages
        WHERE conversation_id = $1
          AND user_id = $2
+         AND key_version IS NOT NULL
+         AND key_version >= $3
+         AND received_at >= $4
          AND consumed_at IS NULL
        LIMIT 1`,
-      [conversation.id, joinRequest.requester_user_id]
+      [conversation.id, joinRequest.requester_user_id, pendingKeyVersion, pendingPreparedAt]
     );
 
     if (welcomeCheck.rows.length === 0) {
@@ -618,6 +623,39 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
         error: 'User is already a member',
         code: 'ALREADY_MEMBER',
       });
+    }
+
+    const currentMembersResult = await client.query(
+      `SELECT user_id::text AS user_id
+       FROM conversation_members
+       WHERE conversation_id = $1`,
+      [conversation.id]
+    );
+    const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
+    const existingPeerIds = currentMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
+
+    if (existingPeerIds.length > 0) {
+      const commitCheck = await client.query(
+        `SELECT 1
+         FROM mls_commit_messages
+         WHERE conversation_id = $1
+           AND epoch IS NOT NULL
+           AND epoch >= $2
+           AND received_at >= $3
+         LIMIT 1`,
+        [conversation.id, pendingKeyVersion - 1, pendingPreparedAt]
+      );
+
+      if (commitCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(428).json({
+          success: false,
+          error: 'MLS commit for existing members must be uploaded before finalizing approval',
+          code: 'COMMIT_REQUIRED',
+          required_key_version: pendingKeyVersion,
+          current_key_version: currentKeyVersion,
+        });
+      }
     }
 
     const childChannelIds = await getChildChannelIds(client, conversation.id);
@@ -686,6 +724,20 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
     );
 
     await client.query('COMMIT');
+
+    const updatedMemberIds = [...new Set([...currentMemberIds, String(joinRequest.requester_user_id)])];
+    if (updatedMemberIds.length > 0) {
+      try {
+        await emitConversationUpdate(
+          conversation,
+          updatedMemberIds,
+          pendingKeyVersion,
+          updatedMemberIds.length,
+        );
+      } catch (emitErr) {
+        console.warn('Finalize join approval member update emit failed:', emitErr);
+      }
+    }
 
     res.json({
       success: true,

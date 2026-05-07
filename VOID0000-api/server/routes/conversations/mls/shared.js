@@ -19,6 +19,7 @@ let schemaReadyPromise = null;
 const REQUIRED_MLS_TABLES = [
   'mls_key_packages',
   'mls_group_states',
+  'mls_group_state_history',
   'mls_welcome_messages',
   'mls_commit_messages',
   'mls_commit_receipts',
@@ -34,6 +35,8 @@ const REQUIRED_MLS_INDEXES = [
   'idx_mls_key_packages_user_id',
   'idx_mls_group_states_updated_at',
   'idx_mls_group_states_user_unique',
+  'idx_mls_group_state_history_conversation_version',
+  'idx_mls_group_state_history_user',
   'idx_mls_welcome_messages_user_id',
   'idx_mls_commit_messages_conversation_id',
   'idx_mls_commit_receipts_conversation_user',

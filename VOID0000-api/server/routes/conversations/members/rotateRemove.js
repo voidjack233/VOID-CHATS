@@ -252,7 +252,10 @@ export function registerMemberRotateRemoveRoutes(router) {
       }
 
       const lockedResult = await client.query(
-        `SELECT current_key_version, pending_remove_target, pending_remove_key_version
+        `SELECT current_key_version,
+                pending_remove_target,
+                pending_remove_key_version,
+                updated_at
          FROM conversations WHERE id = $1 FOR UPDATE`,
         [conversation.id]
       );
@@ -264,6 +267,7 @@ export function registerMemberRotateRemoveRoutes(router) {
         ? Number(lockedResult.rows[0].pending_remove_key_version)
         : null;
       const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
+      const pendingPreparedAt = lockedResult.rows[0].updated_at;
 
       if (!pendingTarget || !pendingKeyVersion) {
         await client.query('ROLLBACK');
@@ -412,12 +416,37 @@ export function registerMemberRotateRemoveRoutes(router) {
       );
 
       const survivorMembersResult = await client.query(
-        `SELECT user_id
+        `SELECT user_id::text AS user_id
          FROM conversation_members
          WHERE conversation_id = $1`,
         [conversation.id]
       );
       const survivorMemberIds = survivorMembersResult.rows.map((row) => row.user_id);
+      const survivorPeerIds = survivorMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
+
+      if (survivorPeerIds.length > 0) {
+        const commitCheck = await client.query(
+          `SELECT 1
+           FROM mls_commit_messages
+           WHERE conversation_id = $1
+             AND epoch IS NOT NULL
+             AND epoch >= $2
+             AND received_at >= $3
+           LIMIT 1`,
+          [conversation.id, newKeyVersion - 1, pendingPreparedAt]
+        );
+
+        if (commitCheck.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(428).json({
+            success: false,
+            error: 'MLS commit for survivor members must be uploaded before finalizing remove',
+            code: 'COMMIT_REQUIRED',
+            required_key_version: newKeyVersion,
+            current_key_version: currentKeyVersion,
+          });
+        }
+      }
 
       await client.query('COMMIT');
 

@@ -1,4 +1,5 @@
 import { sendLiveEventToUser } from '../../../gateway/client.js';
+import { dispatchMessagePushNotifications } from '../../../notifications/webPush.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
 import { emitConversationUpdate } from '../../../utils/groupMembership.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
@@ -309,6 +310,12 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
     });
     members.forEach((memberId) => {
       sendLiveEventToUser(memberId, 'MESSAGE_CREATE', message);
+    });
+    void dispatchMessagePushNotifications({
+      senderId: userId,
+      recipientIds: members,
+      conversation,
+      mentions: normalizedMentions,
     });
 
     return { message };

@@ -5,6 +5,7 @@ const CHECK_COOLDOWN_MS = 5 * 60 * 1000;
 const RELOAD_DEDUP_WINDOW_MS = 60 * 1000;
 const RELOAD_VERSION_KEY = 'void_last_version_reload_target';
 const RELOAD_TIME_KEY = 'void_last_version_reload_at';
+const EXPECTED_SERVICE_WORKER_PATHS = new Set(['/push-sw.js']);
 
 interface BuildVersionPayload {
   version?: string;
@@ -17,13 +18,30 @@ async function unregisterUnexpectedServiceWorkers(): Promise<void> {
   try {
     const registrations = await navigator.serviceWorker.getRegistrations();
     if (registrations.length === 0) return;
+    const unexpectedRegistrations = registrations.filter((registration) => {
+      const workers = [
+        registration.active,
+        registration.waiting,
+        registration.installing,
+      ].filter(Boolean);
 
-    console.warn('[APP_VERSION] unregistering unexpected service workers', {
-      count: registrations.length,
-      scopes: registrations.map((registration) => registration.scope),
+      return !workers.some((worker) => {
+        try {
+          return EXPECTED_SERVICE_WORKER_PATHS.has(new URL(worker!.scriptURL).pathname);
+        } catch {
+          return false;
+        }
+      });
     });
 
-    await Promise.all(registrations.map((registration) => registration.unregister()));
+    if (unexpectedRegistrations.length === 0) return;
+
+    console.warn('[APP_VERSION] unregistering unexpected service workers', {
+      count: unexpectedRegistrations.length,
+      scopes: unexpectedRegistrations.map((registration) => registration.scope),
+    });
+
+    await Promise.all(unexpectedRegistrations.map((registration) => registration.unregister()));
   } catch (error) {
     console.warn('[APP_VERSION] failed to inspect service worker registrations', {
       error: error instanceof Error ? error.message : String(error),

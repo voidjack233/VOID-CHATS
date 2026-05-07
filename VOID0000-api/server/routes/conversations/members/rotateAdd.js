@@ -1,5 +1,6 @@
 import { pool } from '../../../db.js';
 import {
+  emitConversationUpdate,
   getChildChannelIds,
   getGroupMembership,
   normalizeKeyVersion,
@@ -205,7 +206,8 @@ export function registerMemberRotateAddRoutes(router) {
       const lockedResult = await client.query(
         `SELECT current_key_version,
                 pending_add_user_ids,
-                pending_add_key_version
+                pending_add_key_version,
+                updated_at
          FROM conversations
          WHERE id = $1 FOR UPDATE`,
         [conversation.id]
@@ -218,6 +220,7 @@ export function registerMemberRotateAddRoutes(router) {
       const pendingKeyVersion = lockedResult.rows[0].pending_add_key_version != null
         ? Number(lockedResult.rows[0].pending_add_key_version)
         : null;
+      const pendingPreparedAt = lockedResult.rows[0].updated_at;
 
       if (pendingUserIds.length === 0 || !pendingKeyVersion) {
         const finalizedAdditions = await client.query(
@@ -293,8 +296,11 @@ export function registerMemberRotateAddRoutes(router) {
          FROM mls_welcome_messages
          WHERE conversation_id = $1
            AND user_id = ANY($2::UUID[])
+           AND key_version IS NOT NULL
+           AND key_version >= $3
+           AND received_at >= $4
            AND consumed_at IS NULL`,
-        [conversation.id, pendingUserIds]
+        [conversation.id, pendingUserIds, pendingKeyVersion, pendingPreparedAt]
       );
 
       const welcomedUserIds = new Set(welcomeCheck.rows.map((row) => row.user_id));
@@ -325,6 +331,39 @@ export function registerMemberRotateAddRoutes(router) {
           code: 'ALREADY_MEMBER',
           user_id: duplicateMembers.rows[0].user_id,
         });
+      }
+
+      const currentMembersResult = await client.query(
+        `SELECT user_id::text AS user_id
+         FROM conversation_members
+         WHERE conversation_id = $1`,
+        [conversation.id]
+      );
+      const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
+      const existingPeerIds = currentMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
+
+      if (existingPeerIds.length > 0) {
+        const commitCheck = await client.query(
+          `SELECT 1
+           FROM mls_commit_messages
+           WHERE conversation_id = $1
+             AND epoch IS NOT NULL
+             AND epoch >= $2
+             AND received_at >= $3
+           LIMIT 1`,
+          [conversation.id, pendingKeyVersion - 1, pendingPreparedAt]
+        );
+
+        if (commitCheck.rows.length === 0) {
+          await client.query('ROLLBACK');
+          return res.status(428).json({
+            success: false,
+            error: 'MLS commit for existing members must be uploaded before finalizing member add',
+            code: 'COMMIT_REQUIRED',
+            required_key_version: pendingKeyVersion,
+            current_key_version: currentKeyVersion,
+          });
+        }
       }
 
       const childChannelIds = await getChildChannelIds(client, conversation.id);
@@ -378,6 +417,20 @@ export function registerMemberRotateAddRoutes(router) {
       }
 
       await client.query('COMMIT');
+
+      const updatedMemberIds = [...new Set([...currentMemberIds, ...pendingUserIds])];
+      if (updatedMemberIds.length > 0) {
+        try {
+          await emitConversationUpdate(
+            conversation,
+            updatedMemberIds,
+            pendingKeyVersion,
+            updatedMemberIds.length,
+          );
+        } catch (emitErr) {
+          console.warn('Rotate-add finalize member update emit failed:', emitErr);
+        }
+      }
 
       res.json({
         success: true,

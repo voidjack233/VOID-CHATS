@@ -630,6 +630,7 @@ export const useMessageList = (
     conversationKeyVersion,
     decryptionConversation,
     historyAccessFence,
+    historyAccessFenceSignature,
     hasEncryptionKey,
     userId,
     onMessagesLoaded,

@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import {
   MESSAGE_INITIAL_PAGE_SIZE,
 } from '../../../Chat/chatConstants';
@@ -25,6 +25,7 @@ interface UseMessageListLoadingParams {
   conversationKeyVersion: number;
   decryptionConversation: Conversation;
   historyAccessFence: HistoryAccessFence | null;
+  historyAccessFenceSignature: string;
   hasEncryptionKey: boolean;
   userId?: string;
   onMessagesLoaded?: (messages: Message[]) => void;
@@ -85,6 +86,7 @@ const useMessageListLoading = ({
   conversationKeyVersion,
   decryptionConversation,
   historyAccessFence,
+  historyAccessFenceSignature,
   hasEncryptionKey,
   userId,
   onMessagesLoaded,
@@ -104,6 +106,8 @@ const useMessageListLoading = ({
   pendingConversationKeyRefreshRef,
   keyVersionRefreshInFlightRef,
 }: UseMessageListLoadingParams) => {
+  const lastLoadedHistoryFenceSignatureRef = useRef<string | null>(null);
+
   useEffect(() => {
     observedConversationKeyVersionRef.current = conversationKeyVersion;
     pendingConversationKeyRefreshRef.current = null;
@@ -242,10 +246,13 @@ const useMessageListLoading = ({
     };
 
     const loadLocalOnly = async () => {
-      const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
+      const shouldPreserveMessages =
+        lastLoadedConversationIdRef.current === conversationId &&
+        lastLoadedHistoryFenceSignatureRef.current === historyAccessFenceSignature;
       lastLoadedConversationIdRef.current = conversationId;
+      lastLoadedHistoryFenceSignatureRef.current = historyAccessFenceSignature;
 
-      if (!shouldPreserveMessages && restoreSavedRuntime()) {
+      if (!shouldPreserveMessages && historyAccessFenceSignature === 'none' && restoreSavedRuntime()) {
         return;
       }
 
@@ -297,10 +304,13 @@ const useMessageListLoading = ({
     };
 
     const load = async () => {
-      const shouldPreserveMessages = lastLoadedConversationIdRef.current === conversationId;
+      const shouldPreserveMessages =
+        lastLoadedConversationIdRef.current === conversationId &&
+        lastLoadedHistoryFenceSignatureRef.current === historyAccessFenceSignature;
       lastLoadedConversationIdRef.current = conversationId;
+      lastLoadedHistoryFenceSignatureRef.current = historyAccessFenceSignature;
 
-      if (!shouldPreserveMessages && restoreSavedRuntime()) {
+      if (!shouldPreserveMessages && historyAccessFenceSignature === 'none' && restoreSavedRuntime()) {
         return;
       }
 

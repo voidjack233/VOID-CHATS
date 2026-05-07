@@ -30,6 +30,7 @@ import {
   zeroOutPrivateKeyPackage,
 } from './mlsKeyService';
 import { mlsStorageService } from './mlsStorageService';
+import { keyManager } from '../keyManager';
 import type { Conversation } from '../../Chat/chatService';
 import type {
   MlsBootstrapResult,
@@ -546,6 +547,42 @@ export class MlsGroupService {
       const existingKv = Number(existing.keyVersion ?? existing.epoch ?? 0);
       const incomingKv = Number(update.keyVersion ?? update.epoch ?? 0);
       if (incomingKv <= existingKv) {
+        if (incomingKv > 0) {
+          const existingHistoricalKey = await keyManager.getGroupKey(update.conversationId, incomingKv);
+          if (!existingHistoricalKey) {
+            try {
+              const stateBytes = base64ToBytes(update.stateBlob);
+              const decoded = decodeGroupState(stateBytes, 0);
+              if (!decoded) {
+                throw new Error('Unable to decode historical synced group state');
+              }
+
+              const [decodedState] = decoded;
+              const state: ClientState = { ...decodedState, clientConfig: buildMlsClientConfig() };
+              const keyResult = await mlsStorageService.cacheDerivedGroupKey(update.conversationId, state, impl, {
+                aliasVersion: incomingKv,
+                userId,
+              });
+              console.log('[MLS_GROUP_STATE] cached historical synced group key', {
+                conversation_id: update.conversationId,
+                incoming_epoch: update.epoch,
+                local_epoch: existing.epoch,
+                key_version: keyResult.keyVersion,
+                alias_version: incomingKv,
+              });
+              return true;
+            } catch (historicalErr) {
+              console.warn('[MLS_GROUP_STATE] historical key cache failed', {
+                conversation_id: update.conversationId,
+                incoming_epoch: update.epoch,
+                local_epoch: existing.epoch,
+                incoming_key_version: incomingKv,
+                error: historicalErr instanceof Error ? historicalErr.message : String(historicalErr || ''),
+              });
+            }
+          }
+        }
+
         console.log('[MLS_GROUP_STATE] skipping stale or same-epoch synced group state', {
           conversation_id: update.conversationId,
           local_epoch: existing.epoch,
@@ -702,6 +739,19 @@ export class MlsGroupService {
 
     const localEpoch = Number(state.groupContext.epoch);
     if (commit.epoch != null && Number(commit.epoch) < localEpoch) {
+      const commitKeyVersion = Number(commit.epoch) + 1;
+      const hasCommitKey = await keyManager.getGroupKey(commit.conversationId, commitKeyVersion);
+      if (!hasCommitKey) {
+        console.warn('[MLS_COMMIT] stale commit is missing exact historical key; leaving unacknowledged', {
+          conversation_id: commit.conversationId,
+          commit_ref: commit.commitRef,
+          commit_epoch: commit.epoch,
+          local_epoch: localEpoch,
+          required_key_version: commitKeyVersion,
+        });
+        return false;
+      }
+
       console.log('[MLS_COMMIT] skipping stale commit (local epoch ahead)', {
         conversation_id: commit.conversationId,
         commit_ref: commit.commitRef,

@@ -104,9 +104,10 @@ export function createMessageKeyResolver(
     return null;
   }
 
+  const conversation = context.conversation;
   const versionCache = new Map<number, Promise<CryptoKey>>();
   const currentVersion = normalizeKeyVersion(context.currentKeyVersion, 1);
-  if (context.conversation.type !== 'dm') {
+  if (conversation.type !== 'dm') {
     versionCache.set(currentVersion, Promise.resolve(fallbackKey));
   }
 
@@ -118,8 +119,12 @@ export function createMessageKeyResolver(
         targetVersion,
         getEncryptionKey(
           context.userId as string,
-          context.conversation as Conversation,
+          conversation as Conversation,
           targetVersion,
+          // Decryption can safely probe a newer group key when old metadata is
+          // stale: AES-GCM rejects the wrong key, and we do not alias-cache it
+          // into IndexedDB under the older version.
+          { allowNewerGroupVersion: conversation.type !== 'dm' },
         ).then(({ key }) => key),
       );
     }

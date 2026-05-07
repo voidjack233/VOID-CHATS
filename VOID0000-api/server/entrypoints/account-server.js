@@ -68,6 +68,7 @@ import csrfRouter from '../routes/csrf/index.js';
 import accountReadRouter from '../routes/user/accountRead.js';
 import sessionsRouter from '../routes/user/sessions.js';
 import preferencesRouter from '../routes/user/preferences.js';
+import notificationsRouter from '../routes/notifications/index.js';
 import { noCache } from '../middleware/noCache.js';
 
 import {
@@ -165,6 +166,7 @@ app.use('/api/me', noCache, meRouter);
 app.use('/api/users/account', accountReadRouter);
 app.use('/api/users/sessions', sessionsRouter);
 app.use('/api/users', authenticateUser, preferencesRouter);
+app.use('/api/notifications', noCache, authenticateUser, notificationsRouter);
 
 // ================== HTTP SERVER ==================
 
