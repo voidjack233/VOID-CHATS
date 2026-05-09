@@ -40,7 +40,7 @@ export default function PasswordInput({
           value={value}
           onChange={onChange}
           placeholder={placeholder}
-          className="w-full pl-4 pr-12 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+          className="w-full pl-4 pr-12 py-3.5 text-base bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 sm:py-3"
           required
           disabled={disabled}
           autoComplete="current-password"

@@ -69,12 +69,12 @@ export default function Login() {
         />
       ) : (
         <>
-          <div className="text-center mb-8">
-            <h2 className="text-3xl font-bold text-white mb-2">Sign In</h2>
+          <div className="mb-7 text-center sm:mb-8">
+            <h2 className="mb-2 text-3xl font-bold text-white">Sign In</h2>
             <p className="text-gray-400">Sign in to your account</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6" noValidate>
+          <form onSubmit={handleSubmit} className="space-y-5 sm:space-y-6" noValidate>
             <div className="space-y-2">
               <label htmlFor="identifier" className="block text-sm font-medium text-gray-300">
                 Email or Username
@@ -88,7 +88,7 @@ export default function Login() {
                   value={formData.identifier}
                   onChange={handleInputChange}
                   placeholder="Email or Username"
-                  className="w-full pl-10 pr-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                  className="w-full pl-10 pr-4 py-3.5 text-base bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 sm:py-3"
                   required
                   disabled={isLoading}
                 />
@@ -157,7 +157,7 @@ export default function Login() {
               <button
                 onClick={() => navigate('/auth?view=forgot')}
                 type="button"
-                className="text-sm text-blue-400 hover:text-blue-300 transition-colors"
+                className="py-1 text-sm text-blue-400 hover:text-blue-300 transition-colors"
                 disabled={isLoading}
               >
                 Forgot password?
@@ -166,7 +166,7 @@ export default function Login() {
 
             <button
               type="submit"
-              className="w-full bg-gradient-to-r from-gray-800 to-gray-700 text-white py-3 rounded-xl font-semibold hover:from-gray-900 hover:to-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-gradient-to-r from-gray-800 to-gray-700 text-white py-3.5 rounded-xl font-semibold hover:from-gray-900 hover:to-gray-800 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed sm:py-3"
               disabled={isLoading || cooldown !== null}
             >
               {cooldown
@@ -179,8 +179,8 @@ export default function Login() {
             </button>
           </form>
 
-          <div className="mt-6 text-center">
-            <p className="text-gray-400">
+          <div className="mt-7 text-center sm:mt-6">
+            <p className="text-sm text-gray-400 sm:text-base">
               Don't have an account?{' '}
               <button
                 onClick={() => navigate('/auth?view=register')}

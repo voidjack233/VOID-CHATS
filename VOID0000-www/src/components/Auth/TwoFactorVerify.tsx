@@ -220,7 +220,7 @@ export default function TwoFactorVerify({
         <button
           onClick={sendEmailCode}
           disabled={emailSending}
-          className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors sm:py-3"
         >
           {emailSending ? 'Sending...' : 'Send Verification Code'}
         </button>
@@ -237,12 +237,12 @@ export default function TwoFactorVerify({
               maxLength={8}
               inputMode="numeric"
               pattern="[0-9]*"
-              className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white text-center text-2xl tracking-widest placeholder:text-base placeholder:tracking-normal placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+              className="w-full px-4 py-3.5 bg-gray-700/50 border border-gray-600 rounded-xl text-white text-center text-2xl tracking-widest placeholder:text-base placeholder:tracking-normal placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all sm:py-3"
               autoFocus
               disabled={isLoading}
             />
           ) : (
-            <div className="mx-auto mb-6 flex w-full max-w-[320px] justify-center gap-1.5 sm:gap-2">
+            <div className="mx-auto mb-6 grid w-full max-w-[22rem] grid-cols-6 gap-1.5 sm:gap-2">
               {code.map((digit, index) => (
                 <input
                   key={index}
@@ -261,7 +261,7 @@ export default function TwoFactorVerify({
                   inputMode="numeric"
                   pattern="[0-9]*"
                   autoComplete={index === 0 ? 'one-time-code' : 'off'}
-                  className="flex-1 min-w-0 max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                  className="h-12 min-w-0 rounded-xl border border-gray-600 bg-gray-700/70 text-center text-xl font-semibold text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all sm:h-12 sm:text-2xl"
                   disabled={isLoading}
                   autoFocus={index === 0}
                 />
@@ -295,7 +295,7 @@ export default function TwoFactorVerify({
           <button
             onClick={handleSubmit}
             disabled={isLoading || (activeMethod === 'backup' ? backupCode.length < 8 : code.join('').length < 6)}
-            className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors sm:py-3"
           >
             {isLoading ? 'Verifying...' : 'Verify'}
           </button>

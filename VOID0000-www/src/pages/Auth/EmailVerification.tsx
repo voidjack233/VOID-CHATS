@@ -48,7 +48,7 @@ export default function EmailVerification() {
           <p className="text-red-500 mb-6">{error}</p>
           <button
             onClick={goToRegister}
-            className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700"
+            className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-semibold hover:bg-blue-700 sm:py-3"
           >
             Go to Register
           </button>
@@ -88,7 +88,7 @@ export default function EmailVerification() {
           <button
             onClick={handleSendCode}
             disabled={sendingCode}
-            className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 mb-4"
+            className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 mb-4 sm:py-3"
           >
             {sendingCode ? 'Sending...' : 'Send Verification Code'}
           </button>
@@ -119,8 +119,7 @@ export default function EmailVerification() {
           {userEmail && <span className="text-blue-400 block mt-1 break-all">{userEmail}</span>}
         </p>
 
-        {/* RESPONSIVE FIX APPLIED HERE */}
-        <div className="mx-auto mb-6 flex w-full max-w-[320px] justify-center gap-1.5 sm:gap-2">
+        <div className="mx-auto mb-6 grid w-full max-w-[22rem] grid-cols-6 gap-1.5 sm:gap-2">
           {code.map((digit, index) => (
             <input
               key={index}
@@ -139,7 +138,7 @@ export default function EmailVerification() {
               inputMode="numeric"
               pattern="[0-9]*"
               autoComplete={index === 0 ? 'one-time-code' : 'off'}
-              className="flex-1 min-w-0 w-full max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-white bg-gray-700/70 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-12 min-w-0 rounded-xl border border-gray-600 bg-gray-700/70 text-center text-xl font-semibold text-white focus:outline-none focus:ring-2 focus:ring-blue-500 sm:h-12 sm:text-2xl"
               disabled={loading}
               aria-label={`Verification code digit ${index + 1}`}
             />
@@ -153,7 +152,7 @@ export default function EmailVerification() {
         <button
           onClick={handleSubmit}
           disabled={loading}
-          className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 mb-4"
+          className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-semibold hover:bg-blue-700 disabled:opacity-50 mb-4 sm:py-3"
         >
           {loading ? 'Verifying...' : 'Verify Email'}
         </button>

@@ -95,13 +95,13 @@ export default function Register() {
 
   return (
     <AuthContainer>
-      <div className="space-y-6">
+      <div className="space-y-5 sm:space-y-6">
         <div className="text-center">
-          <h2 className="text-3xl font-bold text-white mb-2">Create Account</h2>
+          <h2 className="mb-2 text-3xl font-bold text-white">Create Account</h2>
           <p className="text-gray-400">Join our community</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <div className="space-y-2">
             <label htmlFor="username" className="block text-sm font-medium text-gray-300">
               Username
@@ -112,7 +112,7 @@ export default function Register() {
               name="username"
               value={formData.username}
               onChange={handleChange}
-              className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              className="w-full px-4 py-3.5 text-base bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent sm:py-3"
               required
               disabled={loading}
             />
@@ -128,7 +128,7 @@ export default function Register() {
               name="email"
               value={formData.email}
               onChange={handleChange}
-              className="w-full px-4 py-3 bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              className="w-full px-4 py-3.5 text-base bg-gray-700/50 border border-gray-600 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent sm:py-3"
               required
               disabled={loading}
             />
@@ -150,7 +150,11 @@ export default function Register() {
             label="Confirm Password"
           />
 
-          {error && <p className="text-red-500 text-center">{error}</p>}
+          {error && (
+            <p className="rounded-lg border border-red-800/50 bg-red-900/20 p-3 text-center text-sm text-red-300">
+              {error}
+            </p>
+          )}
 
           <p className="text-center text-xs leading-6 text-gray-400">
             By signing up, you agree to the{' '}
@@ -167,14 +171,14 @@ export default function Register() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold hover:bg-emerald-700 disabled:opacity-50"
+            className="w-full bg-emerald-600 text-white py-3.5 rounded-xl font-semibold hover:bg-emerald-700 disabled:opacity-50 sm:py-3"
           >
             {loading ? 'Creating Account...' : 'Create Account'}
           </button>
         </form>
 
-        <div className="mt-6 text-center">
-          <p className="text-gray-400">
+        <div className="mt-7 text-center sm:mt-6">
+          <p className="text-sm text-gray-400 sm:text-base">
             Already have an account?{' '}
             <button
               onClick={() => navigate('/auth?view=login')}
