@@ -74,6 +74,8 @@ const normalizeText = (value?: string | null) => {
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
 const emptyReactions: Record<string, unknown> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
+const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
+const MOBILE_KEYBOARD_HEIGHT_THRESHOLD = 120;
 const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
 const OLDER_HISTORY_LOADER_SLOT_HEIGHT: Record<Density, number> = {
@@ -259,7 +261,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const autofillOlderRequestInFlightRef = useRef(false);
   const messageHeightCacheRef = useRef<Map<string, number>>(new Map());
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
-  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [showJumpToPresent, setShowJumpToPresent] = useState(false);
+  const [isMobileKeyboardOpen, setIsMobileKeyboardOpen] = useState(false);
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
 
@@ -491,7 +494,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     loadingNewerRequestInFlightRef.current = false;
     autofillOlderRequestInFlightRef.current = false;
     messageHeightCacheRef.current.clear();
-    setIsAtBottom(true);
+    setShowJumpToPresent(false);
     setOlderRangeError(false);
     setNewerRangeError(false);
     if (scrollerRef.current) scrollerRef.current.style.opacity = '0';
@@ -762,9 +765,14 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     const distanceFromBottom = scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
     const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD && !hasNewer && bottomLogicalRangeHeight <= 1;
+    const shouldShowJumpToPresent = !atBottom && (
+      hasNewer ||
+      bottomLogicalRangeHeight > 1 ||
+      distanceFromBottom >= JUMP_TO_PRESENT_REVEAL_DISTANCE
+    );
 
     atBottomRef.current = atBottom;
-    setIsAtBottom(atBottom);
+    setShowJumpToPresent(shouldShowJumpToPresent);
 
     if (atBottom) {
       forceFollowOutputRef.current = false;
@@ -772,6 +780,28 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     setIsAtPresent(atBottom && !hasNewer);
   }, [bottomLogicalRangeHeight, hasNewer, setIsAtPresent]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.visualViewport) {
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    const updateKeyboardState = () => {
+      const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
+      const hiddenViewportHeight = window.innerHeight - viewport.height - viewport.offsetTop;
+      setIsMobileKeyboardOpen(coarsePointer && hiddenViewportHeight > MOBILE_KEYBOARD_HEIGHT_THRESHOLD);
+    };
+
+    updateKeyboardState();
+    viewport.addEventListener('resize', updateKeyboardState);
+    viewport.addEventListener('scroll', updateKeyboardState);
+
+    return () => {
+      viewport.removeEventListener('resize', updateKeyboardState);
+      viewport.removeEventListener('scroll', updateKeyboardState);
+    };
+  }, []);
 
   const loadOlderPreservingViewport = useCallback(async () => {
     const snapshot = captureOlderLoadScrollSnapshot();
@@ -1419,8 +1449,8 @@ const MessageViewV2 = memo(function MessageViewV2({
         )}
       </div>
 
-      {!isAtBottom && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-10 flex justify-center px-4">
+      {showJumpToPresent && !isMobileKeyboardOpen && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-4 sm:bottom-4">
           <button
             onClick={handleJumpToPresent}
             className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-void-accent px-4 py-2 text-xs font-bold text-white shadow-lg transition-colors hover:bg-void-accent-hover"
