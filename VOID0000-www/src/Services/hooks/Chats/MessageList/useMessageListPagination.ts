@@ -80,6 +80,7 @@ interface UseMessageListPaginationParams {
     seamBreakBeforeId: string;
     topSpacerHeightConsume?: number;
     bottomSpacerHeightDelta?: number;
+    trimmedFromNewMessages?: Message[];
   }) => void;
   loadingOlder: boolean;
   loadingNewer: boolean;
@@ -334,6 +335,7 @@ const useMessageListPagination = ({
       seamBreakBeforeId,
       topSpacerHeightConsume: sumMessageHeights(prependedMessages, getMessageHeight),
       bottomSpacerHeightDelta,
+      trimmedFromNewMessages,
     });
 
     if (trimmedFromNewMessages.length > 0) {

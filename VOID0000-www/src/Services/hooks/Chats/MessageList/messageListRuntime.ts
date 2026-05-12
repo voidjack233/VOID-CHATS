@@ -1,7 +1,7 @@
 import {
   FALLBACK_MESSAGE_HEIGHT,
   MAX_ACTIVE_CONVERSATIONS,
-  MAX_CACHED_MESSAGES_PER_CONVERSATION,
+  MAX_RUNTIME_MESSAGES_PER_CONVERSATION,
   MESSAGE_WINDOW_TRIM_TARGET,
   MESSAGE_WINDOW_TRIM_TRIGGER,
 } from '../../../Chat/chatConstants';
@@ -112,6 +112,49 @@ const sumMessageHeights = (
   resolveHeight?: (message: Message) => number,
 ) => messages.reduce((total, message) => total + getMessageHeight(runtime, message, resolveHeight), 0);
 
+const removeDuplicateIds = (ids: string[]) => Array.from(new Set(ids));
+
+const getRuntimeMessagesByIds = (runtime: ConversationRuntime, ids: string[]): Message[] =>
+  ids
+    .map((id) => runtime.messageById.get(id))
+    .filter((message): message is Message => Boolean(message));
+
+const stripMessageIdsFromRuntime = (runtime: ConversationRuntime, ids: Set<string>) => {
+  if (ids.size === 0) {
+    return;
+  }
+
+  ids.forEach((id) => {
+    runtime.messageById.delete(id);
+    runtime.heightByMessageId.delete(id);
+  });
+
+  runtime.pendingLiveIds = runtime.pendingLiveIds.filter((id) => !ids.has(id));
+  runtime.pages = runtime.pages
+    .map((page) => ({ ...page, ids: page.ids.filter((id) => !ids.has(id)) }))
+    .filter((page) => page.ids.length > 0);
+};
+
+const evictTrimmedMessages = (
+  runtime: ConversationRuntime,
+  trimmedOldIds: string[],
+  trimmedNewIds: string[],
+  options: {
+    resolveHeight?: (message: Message) => number;
+  } = {},
+) => {
+  const renderedIds = new Set(runtime.renderedIds);
+  const oldIds = removeDuplicateIds(trimmedOldIds).filter((id) => !renderedIds.has(id));
+  const newIds = removeDuplicateIds(trimmedNewIds).filter((id) => !renderedIds.has(id));
+  const oldMessages = getRuntimeMessagesByIds(runtime, oldIds);
+  const newMessages = getRuntimeMessagesByIds(runtime, newIds);
+
+  runtime.topSpacerHeight += sumMessageHeights(runtime, oldMessages, options.resolveHeight);
+  runtime.bottomSpacerHeight += sumMessageHeights(runtime, newMessages, options.resolveHeight);
+
+  stripMessageIdsFromRuntime(runtime, new Set([...oldIds, ...newIds]));
+};
+
 const upsertMessages = (runtime: ConversationRuntime, messages: Message[]) => {
   messages.forEach((message) => {
     runtime.messageById.set(getMessageId(message), message);
@@ -135,10 +178,8 @@ const makePage = (
   loadedAt: Date.now(),
 });
 
-const removeDuplicateIds = (ids: string[]) => Array.from(new Set(ids));
-
 const pruneRuntimeCache = (runtime: ConversationRuntime) => {
-  if (runtime.messageById.size <= MAX_CACHED_MESSAGES_PER_CONVERSATION) {
+  if (runtime.messageById.size <= MAX_RUNTIME_MESSAGES_PER_CONVERSATION) {
     return;
   }
 
@@ -162,20 +203,9 @@ const pruneRuntimeCache = (runtime: ConversationRuntime) => {
     .filter(([id]) => !protectedIds.has(id) && !pendingIds.has(id))
     .sort(([, left], [, right]) => getDistanceFromRenderedWindow(right) - getDistanceFromRenderedWindow(left))
     .map(([id]) => id);
-  const excessCount = runtime.messageById.size - MAX_CACHED_MESSAGES_PER_CONVERSATION;
+  const excessCount = runtime.messageById.size - MAX_RUNTIME_MESSAGES_PER_CONVERSATION;
   const evictIds = candidateIds.slice(0, Math.max(0, excessCount));
-
-  evictIds.forEach((id) => {
-    runtime.messageById.delete(id);
-    runtime.heightByMessageId.delete(id);
-  });
-
-  if (evictIds.length > 0) {
-    const evicted = new Set(evictIds);
-    runtime.pages = runtime.pages
-      .map((page) => ({ ...page, ids: page.ids.filter((id) => !evicted.has(id)) }))
-      .filter((page) => page.ids.length > 0);
-  }
+  stripMessageIdsFromRuntime(runtime, new Set(evictIds));
 };
 
 const saveConversationRuntime = (runtime: ConversationRuntime) => {
@@ -296,11 +326,15 @@ const mergeIntoRenderedWindow = (
   runtime.renderedIds = sortedMessages.map(getMessageId);
   runtime.oldestCursor = runtime.renderedIds[0] || runtime.oldestCursor;
   runtime.newestCursor = runtime.renderedIds[runtime.renderedIds.length - 1] || runtime.newestCursor;
-  runtime.topSpacerHeight += sumMessageHeights(runtime, trimmedOldMessages, options.resolveHeight);
   runtime.bottomSpacerHeight = options.hasNewer === false
     ? 0
     : Math.max(0, runtime.bottomSpacerHeight - (options.consumeBottomSpacerHeight ?? 0));
-  runtime.bottomSpacerHeight += sumMessageHeights(runtime, trimmedNewMessages, options.resolveHeight);
+  evictTrimmedMessages(
+    runtime,
+    trimmedOldMessages.map(getMessageId),
+    trimmedNewMessages.map(getMessageId),
+    { resolveHeight: options.resolveHeight },
+  );
   runtime.hasOlder = trimmedOldMessages.length > 0 ? true : (options.hasOlder ?? runtime.hasOlder);
   runtime.hasNewer = trimmedNewMessages.length > 0 ? true : (options.hasNewer ?? runtime.hasNewer);
 
@@ -354,6 +388,8 @@ const applyPrependedPage = (
   options: {
     topSpacerHeightConsume?: number;
     bottomSpacerHeightDelta?: number;
+    trimmedFromNewMessages?: Message[];
+    resolveHeight?: (message: Message) => number;
     hasNewer?: boolean;
   },
 ) => {
@@ -363,7 +399,16 @@ const applyPrependedPage = (
     runtime.pages.push(makePage('older', pageIds));
   }
   runtime.topSpacerHeight = Math.max(0, runtime.topSpacerHeight - (options.topSpacerHeightConsume ?? 0));
-  runtime.bottomSpacerHeight += options.bottomSpacerHeightDelta ?? 0;
+  if (options.trimmedFromNewMessages && options.trimmedFromNewMessages.length > 0) {
+    evictTrimmedMessages(
+      runtime,
+      [],
+      options.trimmedFromNewMessages.map(getMessageId),
+      { resolveHeight: options.resolveHeight },
+    );
+  } else {
+    runtime.bottomSpacerHeight += options.bottomSpacerHeightDelta ?? 0;
+  }
   runtime.hasNewer = options.hasNewer ?? runtime.hasNewer;
   pruneRuntimeCache(runtime);
   saveConversationRuntime(runtime);
@@ -374,6 +419,7 @@ export {
   applyPrependedPage,
   applyRenderedUpdate,
   createEmptyRuntime,
+  evictTrimmedMessages,
   getRenderedMessages,
   getRuntimeStats,
   getSavedConversationRuntime,

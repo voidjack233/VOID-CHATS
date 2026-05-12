@@ -13,6 +13,7 @@ import {
   applyPrependedPage,
   applyRenderedUpdate,
   createEmptyRuntime,
+  evictTrimmedMessages,
   getRenderedMessages,
   getRuntimeStats,
   queueLiveMessages,
@@ -128,6 +129,8 @@ type MessageWindowAction =
       seamBreakBeforeId: string;
       topSpacerHeightConsume?: number;
       bottomSpacerHeightDelta?: number;
+      trimmedFromNewMessages?: Message[];
+      getMessageHeight?: (message: Message) => number;
     };
 
 const initialMessageWindowState: MessageWindowState = {
@@ -244,23 +247,24 @@ const messageWindowReducer = (
         trimFrom: action.trimFrom ?? 'old',
         allowOptimisticFallback: true,
       });
-      const trimmedOldHeight = sumMessageHeights(
-        state.runtime,
-        flushResult.trimmedFromOldMessages,
-        action.getMessageHeight,
-      );
       const consumedBottomSpacerHeight = sumMessageHeights(
         state.runtime,
         pendingMessages,
         action.getMessageHeight,
       );
       let nextRuntime = setRenderedMessages(state.runtime, flushResult.messages);
-      nextRuntime = recordRuntimePage(nextRuntime, pendingMessages, 'live');
       nextRuntime.pendingLiveIds = [];
-      nextRuntime.topSpacerHeight += trimmedOldHeight;
       nextRuntime.bottomSpacerHeight = state.queuedNewerHasNewer
         ? Math.max(0, nextRuntime.bottomSpacerHeight - consumedBottomSpacerHeight)
         : 0;
+      evictTrimmedMessages(
+        nextRuntime,
+        flushResult.trimmedFromOldMessages.map((message) => String(message.message_id)),
+        flushResult.trimmedFromNewMessages.map((message) => String(message.message_id)),
+        { resolveHeight: action.getMessageHeight },
+      );
+      nextRuntime = recordRuntimePage(nextRuntime, pendingMessages, 'live');
+      nextRuntime.pendingLiveIds = [];
       nextRuntime.hasOlder = flushResult.trimmedFromOld > 0 ? true : nextRuntime.hasOlder;
       nextRuntime.hasNewer = state.queuedNewerHasNewer;
       saveConversationRuntime(nextRuntime);
@@ -289,20 +293,15 @@ const messageWindowReducer = (
       const nextBottomSpacerHeight = action.hasNewer === false
         ? 0
         : Math.max(0, state.runtime.bottomSpacerHeight - consumedBottomSpacerHeight);
-      const trimmedOldHeight = sumMessageHeights(
-        state.runtime,
-        mergeResult.trimmedFromOldMessages,
-        action.getMessageHeight,
-      );
-      const trimmedNewHeight = sumMessageHeights(
-        state.runtime,
-        mergeResult.trimmedFromNewMessages,
-        action.getMessageHeight,
-      );
       let nextRuntime = setRenderedMessages(state.runtime, mergeResult.messages);
+      nextRuntime.bottomSpacerHeight = nextBottomSpacerHeight;
+      evictTrimmedMessages(
+        nextRuntime,
+        mergeResult.trimmedFromOldMessages.map((message) => String(message.message_id)),
+        mergeResult.trimmedFromNewMessages.map((message) => String(message.message_id)),
+        { resolveHeight: action.getMessageHeight },
+      );
       nextRuntime = recordRuntimePage(nextRuntime, action.incoming, action.trimFrom === 'new' ? 'older' : 'newer');
-      nextRuntime.topSpacerHeight += trimmedOldHeight;
-      nextRuntime.bottomSpacerHeight = nextBottomSpacerHeight + trimmedNewHeight;
       nextRuntime.hasOlder = mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? nextRuntime.hasOlder);
       nextRuntime.hasNewer = mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? nextRuntime.hasNewer);
       saveConversationRuntime(nextRuntime);
@@ -373,6 +372,8 @@ const messageWindowReducer = (
       const nextRuntime = applyPrependedPage(state.runtime, action.messages, action.pageMessages, {
         topSpacerHeightConsume: action.topSpacerHeightConsume,
         bottomSpacerHeightDelta: action.bottomSpacerHeightDelta,
+        trimmedFromNewMessages: action.trimmedFromNewMessages,
+        resolveHeight: action.getMessageHeight,
         hasNewer: action.bottomSpacerHeightDelta && action.bottomSpacerHeightDelta > 0 ? true : state.runtime.hasNewer,
       });
       return {
@@ -578,9 +579,14 @@ export const useMessageList = (
     seamBreakBeforeId: string;
     topSpacerHeightConsume?: number;
     bottomSpacerHeightDelta?: number;
+    trimmedFromNewMessages?: Message[];
   }) => {
-    dispatchWindowState({ type: 'apply_prepended_window', ...params });
-  }, []);
+    dispatchWindowState({
+      type: 'apply_prepended_window',
+      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      ...params,
+    });
+  }, [messageWindowMetrics.getMessageHeight]);
 
   useEffect(() => {
     setInitialHydrationSettled(false);
