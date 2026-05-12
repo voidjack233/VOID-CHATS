@@ -14,6 +14,7 @@ import type { Message } from '../../Services/Chat/chatService';
 import type { Density } from '../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
 import AttachmentImage from './AttachmentImage';
+import AttachmentAudioPlayer, { isAudioAttachment } from './AttachmentAudioPlayer';
 import AttachmentFileCard from './AttachmentFileCard';
 import FormattedMessageText from './FormattedMessageText';
 import InviteEmbed from './InviteEmbed';
@@ -306,8 +307,12 @@ const MessageItem = memo(function MessageItem({
     () => attachmentEntries.filter(({ attachment }) => looksLikeImageAttachment(attachment)),
     [attachmentEntries],
   );
+  const audioAttachmentEntries = useMemo(
+    () => attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment) && isAudioAttachment(attachment)),
+    [attachmentEntries],
+  );
   const fileAttachmentEntries = useMemo(
-    () => attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment)),
+    () => attachmentEntries.filter(({ attachment }) => !looksLikeImageAttachment(attachment) && !isAudioAttachment(attachment)),
     [attachmentEntries],
   );
   const singleImageEntry = imageAttachmentEntries.length === 1 ? imageAttachmentEntries[0] : null;
@@ -445,7 +450,7 @@ const MessageItem = memo(function MessageItem({
     const explicitGestureAllowance = target?.closest('[data-allow-message-gesture="true"]');
     const codeBlockScrollZone = target?.closest('[data-code-block-scroll-zone="true"]');
 
-    if (!allowsMessageGesture && !explicitGestureAllowance && target?.closest('button, a, input, textarea')) {
+    if (!allowsMessageGesture && !explicitGestureAllowance && target?.closest('button, a, input, textarea, audio')) {
       return;
     }
 
@@ -989,6 +994,7 @@ const MessageItem = memo(function MessageItem({
 
           {!message.is_deleted && message.attachments && message.attachments.length > 0 && (() => {
             const imageEntries = imageAttachmentEntries;
+            const audioEntries = audioAttachmentEntries;
             const fileEntries = fileAttachmentEntries;
 
             const imageSection = imageEntries.length > 0
@@ -1074,8 +1080,23 @@ const MessageItem = memo(function MessageItem({
                 })()
               : null;
 
-            const fileSection = fileEntries.length > 0 ? (
+            const audioSection = audioEntries.length > 0 ? (
               <div className={`flex w-full flex-col gap-2 ${imageSection ? 'pt-2' : 'pt-1'}`}>
+                {audioEntries.map(({ attachment, originalIndex }) => (
+                  <AttachmentAudioPlayer
+                    key={`${originalIndex}-${attachment.url}`}
+                    attachment={attachment}
+                    conversationId={attachmentConversationId}
+                    disabled={isPending}
+                    onLoad={onAttachmentLoad}
+                  />
+                ))}
+              </div>
+            ) : null;
+            const hasRichAttachmentSection = Boolean(imageSection || audioSection);
+
+            const fileSection = fileEntries.length > 0 ? (
+              <div className={`flex w-full flex-col gap-2 ${hasRichAttachmentSection ? 'pt-2' : 'pt-1'}`}>
                 {fileEntries.map(({ attachment, originalIndex }) => (
                   <AttachmentFileCard
                     key={`${originalIndex}-${attachment.url}`}
@@ -1087,7 +1108,7 @@ const MessageItem = memo(function MessageItem({
               </div>
             ) : null;
 
-            if (!imageSection && !fileSection) {
+            if (!imageSection && !audioSection && !fileSection) {
               return null;
             }
 
@@ -1097,6 +1118,7 @@ const MessageItem = memo(function MessageItem({
                 className={`relative w-fit max-w-full ${isRightAligned ? 'self-end' : 'self-start'}`}
               >
                 {imageSection ? <div className="pt-1">{imageSection}</div> : null}
+                {audioSection}
                 {fileSection}
               </div>
             );

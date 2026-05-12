@@ -291,11 +291,11 @@ function SpoilerText({
   if (!interactive) {
     return (
       <span
-        className={`inline rounded px-1 py-0.5 align-baseline ${
+        className={`inline rounded align-baseline ${
           authoringMode
             ? 'bg-black/25 text-inherit'
             : 'bg-black/35 text-transparent select-none'
-        }`}
+        } ${authoringMode ? '' : 'px-1 py-0.5'}`}
       >
         {children}
       </span>
