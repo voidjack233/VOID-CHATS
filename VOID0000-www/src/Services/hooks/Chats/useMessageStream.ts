@@ -13,6 +13,7 @@
 // lives in useConversationSync.
 
 import { useCallback, useState, useEffect, useRef } from 'react';
+import { debugLog } from '../../utils/debugLog';
 import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
 import { Conversation, Message, getEncryptionKey } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
@@ -303,7 +304,7 @@ export const useMessageStream = ({
         void Promise.all(
           staleVersions.map((version) => keyManager.deleteGroupKey(keyScopeId, version).catch(() => {}))
         ).catch(() => {});
-        console.log('[DECRYPT_HEALER] deleted stale DM group key from IndexedDB', {
+        debugLog('[DECRYPT_HEALER] deleted stale DM group key from IndexedDB', {
           keyScopeId,
           keyVersions: staleVersions,
         });
@@ -330,7 +331,7 @@ export const useMessageStream = ({
     if (!encryptionKey || !activeConversation?.id || pendingMessages.current.length === 0) return;
 
     const flush = async () => {
-      console.log('[DECRYPT_FLUSH] draining pending messages', {
+      debugLog('[DECRYPT_FLUSH] draining pending messages', {
         count: pendingMessages.current.length,
         conversation_id: activeConversation?.id,
       });

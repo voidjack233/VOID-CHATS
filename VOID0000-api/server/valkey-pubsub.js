@@ -1,6 +1,7 @@
 // server/valkey-pubsub.js
 // Bridges API workers ↔ Gateway via Valkey Pub/Sub
 import Redis from 'ioredis';
+import { debugLog } from './utils/debugLog.js';
 
 const CHANNEL = 'void:gateway';
 
@@ -20,7 +21,7 @@ export function initPublisher() {
     maxRetriesPerRequest: 3,
   });
 
-  publisher.on('connect', () => console.log('📡 Pub/Sub publisher connected'));
+  publisher.on('connect', () => debugLog('📡 Pub/Sub publisher connected'));
   publisher.on('error', (err) => console.error('📡 Publisher error:', err.message));
 
   return publisher;
@@ -40,12 +41,12 @@ export function initSubscriber(handler) {
     maxRetriesPerRequest: 3,
   });
 
-  subscriber.on('connect', () => console.log('📡 Pub/Sub subscriber connected'));
+  subscriber.on('connect', () => debugLog('📡 Pub/Sub subscriber connected'));
   subscriber.on('error', (err) => console.error('📡 Subscriber error:', err.message));
 
   subscriber.subscribe(CHANNEL, (err) => {
     if (err) console.error('📡 Subscribe error:', err);
-    else console.log(`📡 Subscribed to channel: ${CHANNEL}`);
+    else debugLog(`📡 Subscribed to channel: ${CHANNEL}`);
   });
 
   subscriber.on('message', (channel, message) => {

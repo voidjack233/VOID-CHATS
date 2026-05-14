@@ -1,6 +1,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { fetchAppBootstrap } from '../bootstrap';
 import { keyManager } from '../Crypto/keyManager';
+import { debugLog } from '../utils/debugLog';
 import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove, reuploadGroupState } from './chatCryptoService';
 import type {
   Conversation,
@@ -204,7 +205,7 @@ export async function bootstrapDmKey(
     Boolean(conversation.first_message_at) ||
     Boolean(conversation.last_message_id);
 
-  console.log('[DM_BOOTSTRAP] attempting secure DM bootstrap', {
+  debugLog('[DM_BOOTSTRAP] attempting secure DM bootstrap', {
     conversation_id: conversation.id,
     current_user_id: currentUserId,
     peer_user_id: peerUserId,

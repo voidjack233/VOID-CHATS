@@ -1,6 +1,7 @@
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { dispatchMessagePushNotifications } from '../../../notifications/webPush.js';
 import { messageEventId } from '../../../utils/eventIdentity.js';
+import { debugLog } from '../../../utils/debugLog.js';
 import { emitConversationUpdate } from '../../../utils/groupMembership.js';
 import { meetsWhoThreshold, resolvePermissions } from '../../../utils/groupPermissions.js';
 import {
@@ -302,7 +303,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
         members.length
       );
     }
-    console.log('[WS_FANOUT] MESSAGE_CREATE', {
+    debugLog('[WS_FANOUT] MESSAGE_CREATE', {
       conversation_id: conversationId,
       sender_id: userId,
       recipient_count: members.length,

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
+import { debugLog } from '../../../utils/debugLog.js';
 import {
   mlsKeyPackageCheckLimiter,
   mlsKeyPackagePublishLimiter,
@@ -44,7 +45,7 @@ router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
   try {
     await ensureSchema();
 
-    console.log('[MLS_KEY_PACKAGE] publish request ref', {
+    debugLog('[MLS_KEY_PACKAGE] publish request ref', {
       user_id: userId,
       package_ref: packageRef,
     });
@@ -74,7 +75,7 @@ router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
       });
     }
 
-    console.log('[MLS_KEY_PACKAGE] publish upsert result', {
+    debugLog('[MLS_KEY_PACKAGE] publish upsert result', {
       user_id: userId,
       package_ref: packageRef,
       action: row?.inserted ? 'inserted' : 'updated_on_conflict',
@@ -115,7 +116,7 @@ router.get('/key-packages/:userId/check', mlsKeyPackageCheckLimiter, async (req,
     await ensureSchema();
     const count = await getAvailableKeyPackageCount(targetUserId);
 
-    console.log('[MLS_KEY_PACKAGE] count endpoint raw count', {
+    debugLog('[MLS_KEY_PACKAGE] count endpoint raw count', {
       user_id: targetUserId,
       available_count: count,
     });
@@ -176,7 +177,7 @@ router.get('/key-packages/:userId', mlsKeyPackageCheckLimiter, async (req, res) 
       return res.status(404).json({ success: false, error: 'No key packages available for this user', code: 'NO_KEY_PACKAGE' });
     }
 
-    console.log('[MLS_KEY_PACKAGE] claim endpoint selected ref', {
+    debugLog('[MLS_KEY_PACKAGE] claim endpoint selected ref', {
       requester_user_id: requesterUserId,
       owner_user_id: targetUserId,
       package_ref: result.rows[0].package_ref,
@@ -186,7 +187,7 @@ router.get('/key-packages/:userId', mlsKeyPackageCheckLimiter, async (req, res) 
 
     try {
       const remainingCount = await getAvailableKeyPackageCount(targetUserId);
-      console.log('[MLS_KEY_PACKAGE] claim remaining available count', {
+      debugLog('[MLS_KEY_PACKAGE] claim remaining available count', {
         owner_user_id: targetUserId,
         available_count: remainingCount,
       });

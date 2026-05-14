@@ -6,6 +6,7 @@ import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncryption';
+import { debugLog } from '../utils/debugLog';
 import { upsertMlsGroupStates } from '../Crypto/mls/mlsApi';
 import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
 import { mlsStore } from '../Crypto/mls/mlsStore';
@@ -263,7 +264,7 @@ async function restoreMlsStateFromBackup(
 
     if (uploadedGroups.length > 0) {
       try {
-        console.log('[MLS_GROUP_STATE] uploading restored backup group states', {
+        debugLog('[MLS_GROUP_STATE] uploading restored backup group states', {
           user_id: userId,
           group_state_count: uploadedGroups.length,
         });
@@ -276,7 +277,7 @@ async function restoreMlsStateFromBackup(
             stateBlob: group.stateBlob,
           }))
         );
-        console.log('[MLS_GROUP_STATE] uploaded restored backup group states', {
+        debugLog('[MLS_GROUP_STATE] uploaded restored backup group states', {
           user_id: userId,
           group_state_count: uploadedGroups.length,
           uploaded_items: uploaded,
@@ -299,7 +300,7 @@ async function restoreMlsStateFromBackup(
     const backupGroupKeyCount = payload.groupKeys?.length || 0;
     const hasConversationArtifacts = backupGroupStateCount > 0 || backupGroupKeyCount > 0;
 
-    console.log('[MLS_RESTORE] reconciled MLS state from backup', {
+    debugLog('[MLS_RESTORE] reconciled MLS state from backup', {
       user_id: userId,
       restored_account: restoredAccount,
       restored_group_states: restoredGroups,
@@ -462,7 +463,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     reason: Extract<MlsRecoveryGateReason, 'sync_import_missing'>,
     metadata: Record<string, unknown>
   ) => {
-    console.log('[MLS_RECOVERY_GATE] pending', {
+    debugLog('[MLS_RECOVERY_GATE] pending', {
       reason,
       ...metadata,
     });
@@ -602,7 +603,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         syncResult.syncedWelcomes > 0 ||
         syncResult.syncedCommits > 0;
 
-      console.log('[MLS_RECOVERY_GATE] recovery key retry inspection', {
+      debugLog('[MLS_RECOVERY_GATE] recovery key retry inspection', {
         user_id: user.id,
         restore_outcome: restoreSummary.outcome,
         backup_group_state_count: restoreSummary.backupGroupStateCount,
@@ -674,7 +675,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         syncResult.syncedWelcomes > 0 ||
         syncResult.syncedCommits > 0;
 
-      console.log('[MLS_RECOVERY_GATE] password retry inspection', {
+      debugLog('[MLS_RECOVERY_GATE] password retry inspection', {
         user_id: user.id,
         restore_outcome: restoreSummary.outcome,
         backup_group_state_count: restoreSummary.backupGroupStateCount,
@@ -779,7 +780,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     keyManager.initializeKeys(userId, password, callbacks)
       .then(async () => {
         if (cancelled) return;
-        console.log('🔑 Encryption keys ready');
+        debugLog('🔑 Encryption keys ready');
         try {
           const backup = await callbacks.fetchBackup();
           const hasPasswordMlsBackup = hasMlsBackupPayload(backup);
@@ -809,7 +810,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
             syncResult.syncedWelcomes > 0 ||
             syncResult.syncedCommits > 0;
 
-          console.log('[MLS_RESTORE] recovery inspection complete', {
+          debugLog('[MLS_RESTORE] recovery inspection complete', {
             user_id: userId,
             has_password: Boolean(password),
             has_recovery_backup: hasRecoveryBackup,
@@ -947,7 +948,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         pendingLiveInboxSyncTimerRef.current = null;
         if (cancelled) return;
 
-        console.log('[MLS_LIVE_SYNC] syncing inbox after live conversation update', {
+        debugLog('[MLS_LIVE_SYNC] syncing inbox after live conversation update', {
           user_id: userId,
           reason,
           ...metadata,
@@ -1133,7 +1134,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         const hasLocalChatState =
           localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
 
-        console.log('[MLS_RECOVERY_GATE] pending recheck', {
+        debugLog('[MLS_RECOVERY_GATE] pending recheck', {
           user_id: user.id,
           source,
           synced_group_states: syncResult.syncedGroupStates,
@@ -1191,7 +1192,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         conversationId: conversationId || null,
         replaceExisting: true,
       });
-      console.log('[MLS_ARCHIVE_RESCUE] force-refreshed local group key archive', {
+      debugLog('[MLS_ARCHIVE_RESCUE] force-refreshed local group key archive', {
         user_id: userId,
         conversation_id: conversationId || null,
         archived,

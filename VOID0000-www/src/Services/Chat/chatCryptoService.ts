@@ -1,6 +1,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
+import { debugLog } from '../utils/debugLog';
 import type {
   Conversation,
   KeyBackupRecord,
@@ -254,7 +255,7 @@ export async function getEncryptionKey(
     }
   }
 
-  console.log('[KEY_RESOLVE] local miss - forcing syncInbox', {
+  debugLog('[KEY_RESOLVE] local miss - forcing syncInbox', {
     conversation_id: keyConversationId,
     targetVersion,
   });
@@ -262,7 +263,7 @@ export async function getEncryptionKey(
 
   const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (syncedGroupKey) {
-    console.log('[KEY_RESOLVE] syncInbox resolved key', {
+    debugLog('[KEY_RESOLVE] syncInbox resolved key', {
       conversation_id: keyConversationId,
       targetVersion,
     });
@@ -272,7 +273,7 @@ export async function getEncryptionKey(
   if (allowNewerGroupVersion || allowLatestDmVersion) {
     const newerGroupKey = await keyManager.findAnyGroupKey(keyConversationId);
     if (newerGroupKey && newerGroupKey.version > targetVersion) {
-      console.log('[KEY_RESOLVE] accepting newer synced group version', {
+      debugLog('[KEY_RESOLVE] accepting newer synced group version', {
         conversation_id: keyConversationId,
         conversation_type: conversation.type,
         target_version: targetVersion,

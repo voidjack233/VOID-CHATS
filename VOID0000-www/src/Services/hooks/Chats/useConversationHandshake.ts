@@ -16,6 +16,7 @@
 //     handshake effect's dependency array does not need to include them.
 
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { debugLog } from '../../utils/debugLog';
 import {
   Conversation,
   getEncryptionKey,
@@ -302,7 +303,7 @@ export const useConversationHandshake = ({
         setEncryptionError('Secure chat is taking longer than expected.');
       }, 12_000);
 
-      console.log('[HANDSHAKE] starting conversation handshake', {
+      debugLog('[HANDSHAKE] starting conversation handshake', {
         conversation_id: activeConversation.id,
         conversation_type: activeConversation.type,
         required_group_version: requiredGroupVersion,
@@ -316,7 +317,7 @@ export const useConversationHandshake = ({
           ? cached?.version === requiredGroupVersion
           : (cached?.version ?? 0) >= requiredGroupVersion);
       if (cached && cachedSatisfiesRequiredVersion) {
-        console.log('[HANDSHAKE] using cached handshake entry', {
+        debugLog('[HANDSHAKE] using cached handshake entry', {
           conversation_id: activeConversation.id,
           key_scope_id: keyScopeId,
           key_version: cached.version,
@@ -461,7 +462,7 @@ export const useConversationHandshake = ({
         let lastKeyError: Error | null = null;
         const acceptsNewerGroupVersion = activeConversation.type !== 'dm';
 
-        console.log('[HANDSHAKE] derived group version requirement', {
+        debugLog('[HANDSHAKE] derived group version requirement', {
           conversation_id: activeConversation.id,
           conversation_type: activeConversation.type,
           current_key_version: activeConversation.current_key_version ?? null,
@@ -488,7 +489,7 @@ export const useConversationHandshake = ({
             //   - Initiator (new DM): creates group, adds peer, sends welcome
             //   - Receiver (state exists on server but welcome failed): re-bootstraps
             try {
-              console.log('[DM_BOOTSTRAP] direct bootstrap from handshake', {
+              debugLog('[DM_BOOTSTRAP] direct bootstrap from handshake', {
                 conversation_id: activeConversation.id,
                 peer_user_id: peerId || null,
               });
@@ -529,7 +530,7 @@ export const useConversationHandshake = ({
           // Groups/channels: retry loop with transient-error tolerance.
           for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
-              console.log('[HANDSHAKE] resolving encryption key', {
+              debugLog('[HANDSHAKE] resolving encryption key', {
                 conversation_id: activeConversation.id,
                 conversation_type: activeConversation.type,
                 attempt: attempt + 1,
@@ -569,7 +570,7 @@ export const useConversationHandshake = ({
         if (ignore) return;
         clearKeySetupTimeout();
 
-        console.log('[HANDSHAKE] resolved encryption key', {
+        debugLog('[HANDSHAKE] resolved encryption key', {
           conversation_id: activeConversation.id,
           conversation_type: activeConversation.type,
           key_version: version,
@@ -581,7 +582,7 @@ export const useConversationHandshake = ({
           ? normalizeRequiredVersion(ownerConversation.current_key_version) ?? 0
           : 0;
         if (ownerConversation && version > ownerCurrentKeyVersion) {
-          console.log('[HANDSHAKE] accepted newer version than conversation metadata', {
+          debugLog('[HANDSHAKE] accepted newer version than conversation metadata', {
             conversation_id: ownerConversation.id,
             conversation_type: ownerConversation.type,
             metadata_key_version: ownerCurrentKeyVersion || null,
@@ -710,7 +711,7 @@ export const useConversationHandshake = ({
 
             const nextAttempt = (preparingRetryAttemptsRef.current[preparingRetryKey] || 0) + 1;
             preparingRetryAttemptsRef.current[preparingRetryKey] = nextAttempt;
-            console.log('[GROUP_RECOVERY] deferring to durable sync-retry path', {
+            debugLog('[GROUP_RECOVERY] deferring to durable sync-retry path', {
               conversation_id: ownerConversation.id,
               current_user_id: user.id,
               required_group_version: requiredGroupVersion ?? null,
@@ -721,7 +722,7 @@ export const useConversationHandshake = ({
               scheduledPrepareRetry = window.setTimeout(() => {
                 void chatCryptoProtocolService.syncInbox(user.id, true)
                   .then((syncResult) => {
-                    console.log('[GROUP_PREPARE] background retry after rejoin', {
+                    debugLog('[GROUP_PREPARE] background retry after rejoin', {
                       conversation_id: ownerConversation.id,
                       required_group_version: requiredGroupVersion ?? null,
                       attempt: nextAttempt,

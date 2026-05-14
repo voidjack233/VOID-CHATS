@@ -1,5 +1,6 @@
 import type { Conversation } from '../../Chat/chatService';
 import { keyManager } from '../keyManager';
+import { debugLog } from '../../utils/debugLog';
 import {
   consumeMlsWelcome,
   fetchKeyPackageReserveStatus,
@@ -285,7 +286,7 @@ export class MlsService {
         local_published_usable_count: localPublishedUsableCount,
       });
     } else {
-      console.log('[MLS_KEY_PACKAGE] server reserve topped up', {
+      debugLog('[MLS_KEY_PACKAGE] server reserve topped up', {
         user_id: userId,
         server_count: finalCount,
         target: effectiveTarget,
@@ -343,7 +344,7 @@ export class MlsService {
       }
     }
 
-    console.log('[MLS_BOOTSTRAP] account ready', {
+    debugLog('[MLS_BOOTSTRAP] account ready', {
       user_id: userId,
       forced: force,
       published_key_packages: publishedKeyPackages,
@@ -417,7 +418,7 @@ export class MlsService {
       result = await this._syncInboxWork(userId, shouldForce);
       shouldForce = this.pendingForcedSyncInboxUsers.has(userId);
       if (shouldForce) {
-        console.log('[MLS_SYNC] running queued forced inbox sync after inflight request', {
+        debugLog('[MLS_SYNC] running queued forced inbox sync after inflight request', {
           user_id: userId,
         });
       }
@@ -448,7 +449,7 @@ export class MlsService {
     }
 
     const payload = await syncMlsInbox(userId);
-    console.log('[MLS_SYNC] inbox payload received', {
+    debugLog('[MLS_SYNC] inbox payload received', {
       user_id: userId,
       forced: force,
       key_packages: payload.keyPackages.length,
@@ -558,7 +559,7 @@ export class MlsService {
       }
     }
     if (importedArchivedKeys > 0) {
-      console.log('[MLS_SYNC] imported archived group keys', {
+      debugLog('[MLS_SYNC] imported archived group keys', {
         user_id: userId,
         imported: importedArchivedKeys,
         total: payload.archivedKeys.length,

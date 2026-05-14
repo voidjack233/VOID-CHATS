@@ -7,6 +7,7 @@ import { accessCookieOptions, refreshCookieOptions, clearCookieOptions } from '.
 import { hashToken } from '../../utils/hashToken.js';
 import { sessionStore } from '../../middleware/sessionStore.js';
 import { syncLiveTokenExpiry } from '../../gateway/control.js';
+import { debugLog } from '../../utils/debugLog.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
@@ -118,7 +119,7 @@ router.post('/', async (req, res) => {
           await syncLiveTokenExpiry(decoded.id, decoded.device_id, newAccessDecoded.exp);
         }
 
-        console.log(`🔄 Refresh race handled for user ${decoded.id.substring(0, 8)}... — issued new access token only`);
+        debugLog(`🔄 Refresh race handled for user ${decoded.id.substring(0, 8)}... — issued new access token only`);
 
         return res.json({
           success: true,

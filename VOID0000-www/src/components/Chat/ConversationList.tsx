@@ -15,6 +15,7 @@ import {
   playIncomingMessageSound,
   primeIncomingMessageSound,
 } from '../../Services/Chat/messageNotificationSound';
+import { debugLog } from '../../Services/utils/debugLog';
 import { usePresence } from '../../Services/hooks/Friends/usePresence';
 import PresenceDot from '../common/PresenceDot';
 import { gateway } from '../../Services/Gateway/gateway';
@@ -292,7 +293,7 @@ const ConversationList = ({
     };
 
     const handleGatewayResync = () => {
-      console.log('[WS_RESYNC] refreshing conversation list after gateway resume/ready');
+      debugLog('[WS_RESYNC] refreshing conversation list after gateway resume/ready');
       void loadConversations();
     };
 

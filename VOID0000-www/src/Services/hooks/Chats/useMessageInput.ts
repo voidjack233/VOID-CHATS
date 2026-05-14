@@ -1,5 +1,6 @@
 // src/Services/hooks/Chats/useMessageInput.ts
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { debugLog } from '../../utils/debugLog';
 import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
 import {
   sendMessage,
@@ -479,7 +480,7 @@ export const useMessageInput = ({
       }
       if (cancelled || pending.length === 0) return;
 
-      console.log('[QUEUED_SEND] encryption key available, flushing queued sends', {
+      debugLog('[QUEUED_SEND] encryption key available, flushing queued sends', {
         conversation_id: conversation.id,
         count: pending.length,
       });
@@ -513,7 +514,7 @@ export const useMessageInput = ({
             continue;
           }
 
-          console.log('[QUEUED_SEND] queued message sent successfully', {
+          debugLog('[QUEUED_SEND] queued message sent successfully', {
             local_client_id: queued.local_client_id,
             message_id: msg.message_id,
           });
@@ -693,7 +694,7 @@ export const useMessageInput = ({
         // Queue the message locally — don't restore input, don't mark failed.
         // The message stays visible with 'queued' status and will be retried
         // automatically when encryptionKey becomes available (bootstrap succeeds).
-        console.log('[QUEUED_SEND] queuing message for deferred secure send', {
+        debugLog('[QUEUED_SEND] queuing message for deferred secure send', {
           conversation_id: conversation.id,
           local_client_id: localClientId,
         });

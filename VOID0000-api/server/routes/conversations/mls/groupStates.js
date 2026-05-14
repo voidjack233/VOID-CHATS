@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../../../db.js';
+import { debugLog } from '../../../utils/debugLog.js';
 import {
   ensureSchema,
   isEnabledFor,
@@ -129,7 +130,7 @@ router.post('/group-states', async (req, res) => {
       );
 
       if (existing.rows[0]) {
-        console.log('[MLS_GROUP_STATE] ignoring stale upload', {
+        debugLog('[MLS_GROUP_STATE] ignoring stale upload', {
           conversation_id: resolved.conversationId,
           requester_user_id: requesterUserId,
           incoming_epoch: epoch,

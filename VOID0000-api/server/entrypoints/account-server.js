@@ -140,7 +140,7 @@ app.post('/api/security/csp-report',
   express.json({ type: 'application/csp-report' }), 
   (req, res) => {
     if (process.env.NODE_ENV === 'development') {
-      console.log('🔍 CSP Violation Report:', req.body);
+      console.warn('🔍 CSP Violation Report:', req.body);
     }
     res.status(204).end();
   }

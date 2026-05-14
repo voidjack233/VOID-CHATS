@@ -13,6 +13,7 @@ import { MESSAGE_PAGE_SIZE } from '../../Services/Chat/chatConstants';
 import { type Conversation, type ConversationMember, type Message } from '../../Services/Chat/chatService';
 import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { useUser } from '../../Services/Auth/UserContext';
+import { debugLog } from '../../Services/utils/debugLog';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
 import { useTheme, type Density } from '../../Services/hooks/Settings/useTheme';
@@ -790,7 +791,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     const scroller = scrollerRef.current;
     const domRowCount = scroller?.querySelectorAll('[data-message-id]').length ?? 0;
 
-    console.debug('[MessageWindowRuntime]', {
+    debugLog('[MessageWindowRuntime]', {
       conversationId: conversation.id,
       renderedIdsLength: runtimeStats.renderedIdsLength,
       domRowCount,

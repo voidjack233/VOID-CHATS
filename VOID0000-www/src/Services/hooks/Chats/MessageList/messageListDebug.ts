@@ -1,3 +1,5 @@
+import { debugLog } from '../../../utils/debugLog';
+
 const MESSAGE_LIST_DEBUG_KEY = 'void:chat-debug';
 const MAX_DEBUG_BUFFER_ENTRIES = 50;
 
@@ -236,7 +238,7 @@ function ensureChatDebugHelpers() {
     window.copyChatDebugReport = async () => {
       const report = formatDebugReport(window.__chatDebugBuffer || []);
       await copyTextToClipboard(report);
-      console.log('[chat-debug] copied report', {
+      debugLog('[chat-debug] copied report', {
         entries: (window.__chatDebugBuffer || []).length,
       });
       return report;
@@ -247,7 +249,7 @@ function ensureChatDebugHelpers() {
     window.copyFinalBoundaryDebugReport = async () => {
       const report = formatDebugReport(extractFinalBoundaryEntries(window.__chatDebugBuffer || []));
       await copyTextToClipboard(report);
-      console.log('[chat-debug] copied final boundary report', {
+      debugLog('[chat-debug] copied final boundary report', {
         entries: extractFinalBoundaryEntries(window.__chatDebugBuffer || []).length,
       });
       return report;
@@ -257,7 +259,7 @@ function ensureChatDebugHelpers() {
   if (!window.clearChatDebugReport) {
     window.clearChatDebugReport = () => {
       window.__chatDebugBuffer = [];
-      console.log('[chat-debug] cleared report');
+      debugLog('[chat-debug] cleared report');
     };
   }
 }
@@ -290,6 +292,10 @@ export function isMessageListDebugEnabled() {
 }
 
 export function debugMessageList(event: string, payload?: unknown) {
+  if (!isMessageListDebugEnabled()) {
+    return;
+  }
+
   if (!ALLOWED_DEBUG_EVENTS.has(event)) {
     return;
   }
@@ -306,13 +312,17 @@ export function debugMessageList(event: string, payload?: unknown) {
   }
 
   captureDebugEvent(event, payload);
-  console.log(`[chat-debug] ${event}`, payload);
+  debugLog(`[chat-debug] ${event}`, payload);
 }
 
 export function rawDebugMessageList(event: string, payload?: unknown) {
+  if (!isMessageListDebugEnabled()) {
+    return;
+  }
+
   const label = `[chat-debug-raw] ${event}`;
   captureDebugEvent(label, payload);
-  console.log(label, payload);
+  debugLog(label, payload);
 }
 
 export { ensureChatDebugHelpers };

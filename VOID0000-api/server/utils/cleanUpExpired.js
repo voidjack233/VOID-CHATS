@@ -1,4 +1,5 @@
 import { pool } from '../db.js';
+import { debugLog } from './debugLog.js';
 
 export async function cleanupExpiredEmailVerifications() {
   const result = await pool.query(
@@ -27,7 +28,7 @@ export async function cleanupAllExpired() {
     const passwordResets = await cleanupExpiredPasswordResets();
     const refreshTokens = await cleanupExpiredRefreshTokens();
 
-    console.log(`🧹 Cleanup complete:
+    debugLog(`🧹 Cleanup complete:
       - Email verifications: ${emailVerifications} deleted
       - Password resets: ${passwordResets} deleted
       - Refresh tokens: ${refreshTokens} deleted

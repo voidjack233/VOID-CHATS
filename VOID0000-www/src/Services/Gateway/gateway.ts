@@ -1,5 +1,6 @@
 import { authService } from '../Auth/authServiceApi';
 import { SOCKET_URL } from '../config';
+import { debugLog } from '../utils/debugLog';
 
 const OP = {
   EVENT: 0,
@@ -72,7 +73,7 @@ class Gateway {
 
   connect(userId: string) {
     if (this.isConnecting) {
-      console.log('Connection attempt already in progress, skipping');
+      debugLog('Connection attempt already in progress, skipping');
       return;
     }
 
@@ -89,7 +90,7 @@ class Gateway {
     window.addEventListener('online', this.handleOnline);
 
     const wsUrl = this.resolveGatewayUrl();
-    console.log('[GATEWAY] connecting', {
+    debugLog('[GATEWAY] connecting', {
       user_id: userId,
       resumable: this.canResume && Boolean(this.sessionId),
       client_instance_id: this.clientInstanceId,
@@ -105,7 +106,7 @@ class Gateway {
     }
 
     this.ws.onopen = () => {
-      console.log('Gateway connected');
+      debugLog('Gateway connected');
       this.isConnecting = false;
       this.reconnectAttempts = 0;
       this.waitingForAck = false;
@@ -127,7 +128,7 @@ class Gateway {
 
       // Auth failed — try refresh
       if (event.code === 4001 || event.code === 4003) {
-        console.log('Gateway auth failed, attempting refresh...');
+        debugLog('Gateway auth failed, attempting refresh...');
         this.setConnectionState('reconnecting');
         this.cleanup();
         this.handleAuthFailure();
@@ -135,7 +136,7 @@ class Gateway {
       }
 
       if (event.code === 4009) {
-        console.log('Session replaced by newer connection, reconnecting...');
+        debugLog('Session replaced by newer connection, reconnecting...');
         this.setConnectionState('reconnecting');
         this.invalidateSession();
         this.cleanup();
@@ -144,7 +145,7 @@ class Gateway {
       }
 
       if (event.code === 4007) {
-        console.log('[GATEWAY] session resume rejected, reconnecting with fresh identify');
+        debugLog('[GATEWAY] session resume rejected, reconnecting with fresh identify');
         this.setConnectionState('reconnecting');
         this.invalidateSession();
         this.cleanup();
@@ -157,7 +158,7 @@ class Gateway {
         this.canResume = true;
       }
 
-      console.log('[GATEWAY] closed', {
+      debugLog('[GATEWAY] closed', {
         code: event.code,
         can_resume: this.canResume,
         last_sequence: this.lastSequence,
@@ -188,13 +189,13 @@ class Gateway {
 
         // Try resume if we have a valid session, otherwise identify fresh
         if (this.canResume && this.sessionId) {
-          console.log('[GATEWAY] hello received, attempting resume', {
+          debugLog('[GATEWAY] hello received, attempting resume', {
             session_id: this.sessionId,
             last_sequence: this.lastSequence,
           });
           this.resume();
         } else {
-          console.log('[GATEWAY] hello received, identifying fresh');
+          debugLog('[GATEWAY] hello received, identifying fresh');
           this.identify();
         }
         break;
@@ -205,7 +206,7 @@ class Gateway {
         break;
 
       case OP.RESUMED:
-        console.log(`Session resumed, ${d.replayed} events replayed`);
+        debugLog(`Session resumed, ${d.replayed} events replayed`);
         this.canResume = false;
         this.setConnectionState('connected');
         this.emit('RESUMED', d);
@@ -223,7 +224,7 @@ class Gateway {
         } else if (t === 'TOKEN_EXPIRING') {
           this.handleTokenExpiring(d);
         } else if (t === 'SHUTDOWN') {
-          console.log(`Server shutting down, reconnecting in ${d.in / 1000}s...`);
+          debugLog(`Server shutting down, reconnecting in ${d.in / 1000}s...`);
           // Mark resumable before cleanup
           if (this.sessionId && this.lastSequence > 0) {
             this.canResume = true;
@@ -251,24 +252,24 @@ class Gateway {
   private async handleTokenExpiring(data: { expires_in: number }) {
     const now = Date.now();
     if (now - this.lastRefreshTime < 60000) {
-      console.log('Skipping refresh - cooldown active');
+      debugLog('Skipping refresh - cooldown active');
       return;
     }
 
     if (this.isRefreshing) {
-      console.log('Skipping refresh - already in progress');
+      debugLog('Skipping refresh - already in progress');
       return;
     }
 
     this.isRefreshing = true;
     this.lastRefreshTime = now;
-    console.log(`Token expiring in ${data.expires_in}s, refreshing...`);
+    debugLog(`Token expiring in ${data.expires_in}s, refreshing...`);
 
     try {
       const success = await authService.refreshToken();
 
       if (success) {
-        console.log('Token refreshed successfully');
+        debugLog('Token refreshed successfully');
         this.reconnectWithNewToken();
       } else {
         console.error('Token refresh failed');
@@ -289,11 +290,11 @@ class Gateway {
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        console.log(`Auth recovery attempt ${attempt}/3...`);
+        debugLog(`Auth recovery attempt ${attempt}/3...`);
         const success = await authService.refreshToken();
 
         if (success) {
-          console.log('Token refreshed after WS auth failure, reconnecting...');
+          debugLog('Token refreshed after WS auth failure, reconnecting...');
           this.isRefreshing = false;
           this.reconnectAttempts = 0;
           this.reconnectWithNewToken();
@@ -304,7 +305,7 @@ class Gateway {
       }
     }
 
-    console.log('Auth recovery failed, falling back to reconnect loop...');
+    debugLog('Auth recovery failed, falling back to reconnect loop...');
     this.isRefreshing = false;
     this.scheduleReconnect();
   }
@@ -332,7 +333,7 @@ class Gateway {
     this.lastSequence = 0;
     this.sessionId = null;
     this.canResume = false;
-    console.log('[GATEWAY] identify', {
+    debugLog('[GATEWAY] identify', {
       user_id: this.userId,
       client_instance_id: this.clientInstanceId,
     });
@@ -346,7 +347,7 @@ class Gateway {
   }
 
   private resume() {
-    console.log('[GATEWAY] resume', {
+    debugLog('[GATEWAY] resume', {
       session_id: this.sessionId,
       last_sequence: this.lastSequence,
     });
@@ -376,12 +377,12 @@ class Gateway {
         this.missedHeartbeatAcks += 1;
 
         if (this.missedHeartbeatAcks >= 2) {
-          console.log('[GATEWAY] missed two heartbeat ACKs, reconnecting websocket');
+          debugLog('[GATEWAY] missed two heartbeat ACKs, reconnecting websocket');
           this.ws?.close();
           return;
         }
 
-        console.log('[GATEWAY] missed heartbeat ACK, tolerating one miss before reconnect');
+        debugLog('[GATEWAY] missed heartbeat ACK, tolerating one miss before reconnect');
       }
 
       this.waitingForAck = true;
@@ -419,7 +420,7 @@ class Gateway {
     const jitter = Math.random() * maxJitter;
     const delay = baseDelay + jitter;
 
-    console.log(`Reconnecting in ${Math.round(delay / 1000)}s... (attempt ${this.reconnectAttempts})`);
+    debugLog(`Reconnecting in ${Math.round(delay / 1000)}s... (attempt ${this.reconnectAttempts})`);
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -441,11 +442,11 @@ class Gateway {
     if (this.isDisconnecting) return;
 
     if (this.reconnectTimer) {
-      console.log('App focused, reconnect already scheduled');
+      debugLog('App focused, reconnect already scheduled');
       return;
     }
 
-    console.log('App focused, reconnecting immediately...');
+    debugLog('App focused, reconnecting immediately...');
     this.reconnectAttempts = 0;
     this.ws = null;
     this.connect(this.userId);
@@ -496,7 +497,7 @@ class Gateway {
     if (this.isDisconnecting) return;
     if (!this.userId) return;
 
-    console.log('Network back, reconnecting immediately...');
+    debugLog('Network back, reconnecting immediately...');
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

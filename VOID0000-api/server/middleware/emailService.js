@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { debugLog } from '../utils/debugLog.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,7 +48,7 @@ export async function sendVerificationEmail(email, code) {
     html
   });
   
-  console.log(`Verification code email sent to ${email}`);
+  debugLog(`Verification code email sent to ${email}`);
 }
 
 // Send Password Reset Email
@@ -67,7 +68,7 @@ export async function sendPasswordResetEmail(email, resetUrl) {
     html
   });
   
-  console.log(`Password reset email sent to ${email}`);
+  debugLog(`Password reset email sent to ${email}`);
 }
 
 // Generate Verification Code (6-digit)
@@ -103,7 +104,7 @@ export class VerificationService {
       [user_id, code, expires_at]
     );
 
-    console.log(`Verification code ${code} inserted for user_id ${user_id}`);
+    debugLog(`Verification code ${code} inserted for user_id ${user_id}`);
 
     try {
       await sendVerificationEmail(email, code);

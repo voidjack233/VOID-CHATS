@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
+import { debugLog } from '../../../utils/debugLog.js';
 import {
   canAccessMessageForHistory,
   cassandra,
@@ -177,7 +178,7 @@ router.put('/:messageId', async (req, res) => {
     };
 
     const members = await getConversationMembers(conversationId);
-    console.log('[WS_FANOUT] MESSAGE_UPDATE', {
+    debugLog('[WS_FANOUT] MESSAGE_UPDATE', {
       conversation_id: conversationId,
       sender_id: userId,
       recipient_count: members.length,
@@ -237,7 +238,7 @@ router.delete('/:messageId', async (req, res) => {
     };
 
     const members = await getConversationMembers(conversationId);
-    console.log('[WS_FANOUT] MESSAGE_DELETE', {
+    debugLog('[WS_FANOUT] MESSAGE_DELETE', {
       conversation_id: conversationId,
       sender_id: userId,
       recipient_count: members.length,

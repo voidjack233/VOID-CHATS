@@ -6,6 +6,7 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
+import { debugLog } from '../../../utils/debugLog';
 import {
   MESSAGE_PAGE_SIZE,
   MESSAGE_PREFETCH_SIZE,
@@ -696,7 +697,7 @@ const useMessageListPagination = ({
     const newestMessage = getNewestServerBackedMessage(messagesRef.current);
     if (!newestMessage) return;
 
-    console.log('[WS_RESYNC] reconciling active conversation after reconnect/visibility', {
+    debugLog('[WS_RESYNC] reconciling active conversation after reconnect/visibility', {
       conversation_id: conversationId,
       source,
       after_message_id: newestMessage.message_id,

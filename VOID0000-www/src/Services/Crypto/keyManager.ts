@@ -1,6 +1,7 @@
 // src/Services/Crypto/keyManager.ts
 import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
+import { debugLog } from '../utils/debugLog';
 
 const DB_NAME = 'void_crypto';
 const DB_VERSION = 1;
@@ -599,7 +600,7 @@ async function initializeKeys(
     }
 
     const privateKey = await importPrivateKey(storedPrivateKeyBase64);
-    console.log('🔑 Using existing local keys');
+    debugLog('🔑 Using existing local keys');
 
     // FIX: Ensure public key is on the server (handles truncate/reset scenarios)
     callbacks.uploadPublicKey(stored.publicKey, stored.keyId).catch((err) => {
@@ -625,7 +626,7 @@ async function initializeKeys(
   // === Path 2: Backup exists + password → restore ===
   if (backup && password) {
     try {
-      console.log('🔑 Restoring keys from server backup...');
+      debugLog('🔑 Restoring keys from server backup...');
       const privateKeyBase64 = await decryptPrivateKeyWithPassword(
         backup.encrypted_private_key,
         backup.iv,
@@ -653,7 +654,7 @@ async function initializeKeys(
 
   // === Path 4: No backup + has password → brand new user ===
   if (!backup && password) {
-    console.log('🔑 First time setup — generating fresh keypair...');
+    debugLog('🔑 First time setup — generating fresh keypair...');
     const keyPair = await generateKeyPair();
     const publicKeyBase64 = await exportKey(keyPair.publicKey, true);
     const privateKeyBase64 = await exportKey(keyPair.privateKey, false);
@@ -727,7 +728,7 @@ async function ensureBackup(
       await callbacks.backupToServer(
         await createPasswordWrappedBackup(privateKeyBase64, password, keyId)
       );
-      console.log(existing ? '🔑 Password backup refreshed' : '🔑 Backup created for existing keys');
+      debugLog(existing ? '🔑 Password backup refreshed' : '🔑 Backup created for existing keys');
     }
   } catch {
     // Non-critical

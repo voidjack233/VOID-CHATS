@@ -1,4 +1,5 @@
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { debugLog } from '../../../utils/debugLog';
 import {
   MESSAGE_INITIAL_PAGE_SIZE,
 } from '../../../Chat/chatConstants';
@@ -436,7 +437,7 @@ const useMessageListLoading = ({
         messagesRef.current.length,
       );
 
-      console.log('[KEY_VERSION_REFRESH] forcing current window refresh after conversation key bump', {
+      debugLog('[KEY_VERSION_REFRESH] forcing current window refresh after conversation key bump', {
         conversation_id: conversationId,
         conversation_key_version: pendingVersion,
         resolved_key_version: currentKeyVersionRef.current,

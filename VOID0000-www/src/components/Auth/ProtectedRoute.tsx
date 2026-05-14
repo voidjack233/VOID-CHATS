@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useUser } from '../../Services/Auth/UserContext';
 import { useCheckAuth } from '../../Services/hooks/Auth/useCheckAuth';
 import { useIdleDetector } from '../../Services/hooks/useIdleDetector';
+import { debugLog } from '../../Services/utils/debugLog';
 import AppBootScreen from '../common/AppBootScreen';
 
 export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -26,7 +27,7 @@ export const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
     if (!serverDown) return;
 
     const handleOnline = () => {
-      console.log('🌐 Network back');
+      debugLog('🌐 Network back');
       setServerDown(false);
     };
 

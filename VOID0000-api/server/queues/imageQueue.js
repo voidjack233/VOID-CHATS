@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import { pool } from '../db.js';
 import { minioClient, BUCKET } from '../minio.js';
 import { profileCache } from '../middleware/profileCache.js';
+import { debugLog } from '../utils/debugLog.js';
 
 const connection = {
   host: process.env.VALKEY_HOST || '127.0.0.1',
@@ -47,7 +48,7 @@ export function startImageWorker() {
     'image-processing',
     async (job) => {
       const { userId, profileId, imageData, oldFilename } = job.data;
-      console.log(`🖼️ Processing avatar for user ${userId.substring(0, 8)}...`);
+      debugLog(`🖼️ Processing avatar for user ${userId.substring(0, 8)}...`);
 
       // 1. Decode base64 to buffer
       const buffer = Buffer.from(imageData, 'base64');
@@ -85,13 +86,13 @@ export function startImageWorker() {
       if (oldFilename) {
         try {
           await minioClient.removeObject(BUCKET, oldFilename);
-          console.log(`🗑️ Deleted old avatar: ${oldFilename}`);
+          debugLog(`🗑️ Deleted old avatar: ${oldFilename}`);
         } catch (err) {
           console.warn(`⚠️ Could not delete old avatar: ${err.message}`);
         }
       }
 
-      console.log(`✅ Avatar processed: ${avatarFilename}`);
+      debugLog(`✅ Avatar processed: ${avatarFilename}`);
       return { success: true, filename: avatarFilename };
     },
     {
@@ -105,7 +106,7 @@ export function startImageWorker() {
   );
 
   worker.on('completed', (job, result) => {
-    console.log(`✅ Image job ${job.id} completed: ${result.filename}`);
+    debugLog(`✅ Image job ${job.id} completed: ${result.filename}`);
   });
 
   worker.on('failed', (job, err) => {
@@ -116,7 +117,7 @@ export function startImageWorker() {
     console.error('Image worker error:', err);
   });
 
-  console.log('🖼️ Image processing worker started');
+  debugLog('🖼️ Image processing worker started');
   return worker;
 }
 

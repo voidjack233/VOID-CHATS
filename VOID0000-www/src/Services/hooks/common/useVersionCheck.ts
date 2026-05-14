@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { debugLog } from '../../utils/debugLog';
 
 const VERSION_ENDPOINT = '/version.json';
 const CHECK_COOLDOWN_MS = 5 * 60 * 1000;
@@ -83,7 +84,7 @@ export const useVersionCheck = () => {
     };
 
     win.__VOID_BUILD_VERSION__ = __BUILD_VERSION__;
-    console.info('[APP_VERSION] running build', {
+    debugLog('[APP_VERSION] running build', {
       version: __BUILD_VERSION__,
     });
   }, []);

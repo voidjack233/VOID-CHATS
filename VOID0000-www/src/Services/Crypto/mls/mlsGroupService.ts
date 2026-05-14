@@ -46,6 +46,7 @@ import type {
 } from './mlsTypes';
 import { MlsProtocolVersions } from './mlsTypes';
 import { base64ToBytes, createMlsError, normalizeConversationKeyId, normalizePositiveVersion } from './mlsUtils';
+import { debugLog } from '../../utils/debugLog';
 
 interface MlsGroupServiceDependencies {
   getServerCapabilities: () => Promise<MlsServerCapabilities>;
@@ -65,7 +66,7 @@ export class MlsGroupService {
       return 0;
     }
 
-    console.log('[MLS_GROUP_STATE] uploading group state', {
+    debugLog('[MLS_GROUP_STATE] uploading group state', {
       conversation_id: record.conversationId,
       epoch: record.epoch,
       source,
@@ -73,7 +74,7 @@ export class MlsGroupService {
 
     try {
       const uploaded = await upsertMlsGroupStates([record]);
-      console.log('[MLS_GROUP_STATE] uploaded group state', {
+      debugLog('[MLS_GROUP_STATE] uploaded group state', {
         conversation_id: record.conversationId,
         epoch: record.epoch,
         source,
@@ -153,7 +154,7 @@ export class MlsGroupService {
     let missingMemberUserIds: string[] = [];
     let existingState = await mlsStorageService.loadGroupState(conversationId);
 
-    console.log('[MLS_DISTRIBUTE] start', {
+    debugLog('[MLS_DISTRIBUTE] start', {
       conversation_id: conversationId,
       conversation_type: input.conversation.type,
       requested_member_user_ids: desiredMembers,
@@ -477,7 +478,7 @@ export class MlsGroupService {
 
     if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
       const welcomeRef = crypto.randomUUID();
-      console.log('[MLS_WELCOME] ingesting welcome payload', {
+      debugLog('[MLS_WELCOME] ingesting welcome payload', {
         conversation_id: conversationId,
         welcome_ref: welcomeRef,
         recipient_user_ids: newMembersForWelcome,
@@ -511,7 +512,7 @@ export class MlsGroupService {
     }
 
     if (capabilities.commitFanout && commitPayload && existingPeers.length > 0) {
-      console.log('[MLS_COMMIT] fanout commit payload', {
+      debugLog('[MLS_COMMIT] fanout commit payload', {
         conversation_id: conversationId,
         peer_user_ids: existingPeers,
       });
@@ -563,7 +564,7 @@ export class MlsGroupService {
                 aliasVersion: incomingKv,
                 userId,
               });
-              console.log('[MLS_GROUP_STATE] cached historical synced group key', {
+              debugLog('[MLS_GROUP_STATE] cached historical synced group key', {
                 conversation_id: update.conversationId,
                 incoming_epoch: update.epoch,
                 local_epoch: existing.epoch,
@@ -583,7 +584,7 @@ export class MlsGroupService {
           }
         }
 
-        console.log('[MLS_GROUP_STATE] skipping stale or same-epoch synced group state', {
+        debugLog('[MLS_GROUP_STATE] skipping stale or same-epoch synced group state', {
           conversation_id: update.conversationId,
           local_epoch: existing.epoch,
           incoming_epoch: update.epoch,
@@ -612,7 +613,7 @@ export class MlsGroupService {
         aliasVersion: update.keyVersion,
         userId,
       });
-      console.log('[MLS_GROUP_STATE] imported synced group state', {
+      debugLog('[MLS_GROUP_STATE] imported synced group state', {
         conversation_id: update.conversationId,
         incoming_epoch: update.epoch,
         previous_local_epoch: existing?.epoch ?? null,
@@ -701,7 +702,7 @@ export class MlsGroupService {
         });
         await mlsStorageService.markKeyPackageConsumed(userId, kpRecord.packageRef);
         mlsStorageService.notifyKeyPackageChanged();
-        console.log('[MLS_WELCOME] processed welcome', {
+        debugLog('[MLS_WELCOME] processed welcome', {
           user_id: userId,
           conversation_id: conversationId,
           welcome_ref: welcome.welcomeRef,
@@ -729,7 +730,7 @@ export class MlsGroupService {
   ): Promise<boolean> {
     const state = await mlsStorageService.loadGroupState(commit.conversationId);
     if (!state) {
-      console.log('[MLS_COMMIT] skipping commit without local group state', {
+      debugLog('[MLS_COMMIT] skipping commit without local group state', {
         conversation_id: commit.conversationId,
         commit_ref: commit.commitRef,
         commit_epoch: commit.epoch ?? null,
@@ -752,7 +753,7 @@ export class MlsGroupService {
         return false;
       }
 
-      console.log('[MLS_COMMIT] skipping stale commit (local epoch ahead)', {
+      debugLog('[MLS_COMMIT] skipping stale commit (local epoch ahead)', {
         conversation_id: commit.conversationId,
         commit_ref: commit.commitRef,
         commit_epoch: commit.epoch,
@@ -796,7 +797,7 @@ export class MlsGroupService {
     } catch {
       // Best-effort server-side acknowledgement.
     }
-    console.log('[MLS_COMMIT] applied commit', {
+    debugLog('[MLS_COMMIT] applied commit', {
       conversation_id: commit.conversationId,
       commit_ref: commit.commitRef,
       key_version: keyResult.keyVersion,

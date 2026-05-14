@@ -11,6 +11,7 @@
 
 import Redis from 'ioredis';
 import { EVENTS } from './protocol.js';
+import { debugLog } from '../utils/debugLog.js';
 
 const CHANNEL = 'void:presence_change';
 
@@ -30,7 +31,7 @@ export function initPresenceFanout() {
   });
 
   subscriber.on('connect', () =>
-    console.log(`📡 Presence fanout subscriber connected`)
+    debugLog(`📡 Presence fanout subscriber connected`)
   );
   subscriber.on('error', (err) =>
     console.error('📡 Presence fanout subscriber error:', err.message)
@@ -38,7 +39,7 @@ export function initPresenceFanout() {
 
   subscriber.subscribe(CHANNEL, (err) => {
     if (err) console.error(`📡 Presence fanout subscribe error:`, err);
-    else console.log(`📡 Subscribed to ${CHANNEL}`);
+    else debugLog(`📡 Subscribed to ${CHANNEL}`);
   });
 
   subscriber.on('message', (channel, raw) => {

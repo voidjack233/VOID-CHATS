@@ -9,6 +9,7 @@
 // and calls back into coordinator handlers via explicit callbacks.
 
 import { useEffect, useRef } from 'react';
+import { debugLog } from '../../utils/debugLog';
 import { Conversation } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { messageStore } from '../../Chat/chatStore';
@@ -111,7 +112,7 @@ export const useConversationSync = ({
           deleteHandshakeEntry(identifier);
         });
 
-      console.log('[MLS_KEY_BUMP] proactive recovery after conversation update', {
+      debugLog('[MLS_KEY_BUMP] proactive recovery after conversation update', {
         conversation_id: recoveryConversationId,
         previous_key_version: previousKeyVersion,
         next_key_version: nextKeyVersion,
@@ -174,7 +175,7 @@ export const useConversationSync = ({
         deleteConversationDetails(id);
       });
 
-      console.log('[MLS_MEMBER_REMOVE] clearing local conversation caches after removal', {
+      debugLog('[MLS_MEMBER_REMOVE] clearing local conversation caches after removal', {
         conversation_id: conversationId,
         conversation_public_id: conversationPublicId,
         affected_user_id: affectedUserId || user.id,
@@ -189,7 +190,7 @@ export const useConversationSync = ({
         try {
           const deletedKeyVersions = await keyManager.deleteAllGroupKeys(conversationId);
           await mlsStore.deleteGroupState(conversationId);
-          console.log('[MLS_MEMBER_REMOVE] cleared local MLS state after removal', {
+          debugLog('[MLS_MEMBER_REMOVE] cleared local MLS state after removal', {
             conversation_id: conversationId,
             deleted_group_key_versions: deletedKeyVersions,
           });

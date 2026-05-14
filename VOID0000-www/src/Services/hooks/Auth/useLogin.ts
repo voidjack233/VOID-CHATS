@@ -110,7 +110,7 @@ export function useLogin() {
       navigate(getPostLoginDestination());
 
     } catch (err: any) {
-      console.log('Login error:', err);
+      console.error('Login error:', err);
       let errorMsg = 'Login failed';
 
       // If backend says captcha required but we skipped it, show captcha
