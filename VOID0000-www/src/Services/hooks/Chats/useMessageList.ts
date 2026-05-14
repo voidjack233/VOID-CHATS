@@ -37,6 +37,7 @@ export { saveConversationScrollPosition } from './MessageList/messageListWindowC
 
 interface MessageWindowMetrics {
   getMessageHeight?: (message: Message) => number;
+  onHistoryRateLimited?: (retryAfterMs?: number) => void;
 }
 
 interface MessageWindowState {
@@ -628,6 +629,7 @@ export const useMessageList = (
     syncing,
     initialHydrationSettled,
     onMessagesLoaded,
+    onHistoryRateLimited: messageWindowMetrics.onHistoryRateLimited,
     messageListBaseIndex: MESSAGE_LIST_BASE_INDEX,
   });
 

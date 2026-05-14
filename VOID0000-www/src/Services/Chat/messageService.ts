@@ -29,6 +29,7 @@ import {
   CHAT_DEFAULT_MLS_MESSAGE_TYPE,
   CHAT_FORWARDED_MLS_MESSAGE_TYPE,
   createApiError,
+  getRetryAfterMsFromResponse,
   getConversationKeyId,
   normalizeKeyVersion,
 } from './chatUtils';
@@ -344,7 +345,13 @@ export async function getMessages(
   const url = `${CHAT_API_PREFIX}/${conversationId}/messages${params.toString() ? `?${params.toString()}` : ''}`;
   const response = await fetchWithAuth(url, { cache: 'no-store' });
   const data = await response.json();
-  if (!data.success) throw new Error(data.error);
+  if (!response.ok || !data.success) {
+    throw createApiError(data, {
+      status: response.status,
+      statusCode: response.status,
+      retryAfterMs: getRetryAfterMsFromResponse(response),
+    });
+  }
 
   const keyResolver = createMessageKeyResolver(encryptionKey, options);
   const sourceMessages = ((data.messages || []) as Message[]).map((message) => {

@@ -14,6 +14,7 @@ import {
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
 import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
+import { getRetryAfterMsFromError, isRateLimitError } from '../../../Chat/chatUtils';
 import type { LocalMessage } from '../../../Chat/chatStore';
 import { gateway } from '../../../Gateway/gateway';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
@@ -97,6 +98,7 @@ interface UseMessageListPaginationParams {
   syncing: boolean;
   initialHydrationSettled: boolean;
   onMessagesLoaded?: (messages: Message[]) => void;
+  onHistoryRateLimited?: (retryAfterMs?: number) => void;
   messageListBaseIndex: number;
 }
 
@@ -147,6 +149,7 @@ const useMessageListPagination = ({
   syncing,
   initialHydrationSettled,
   onMessagesLoaded,
+  onHistoryRateLimited,
   messageListBaseIndex,
 }: UseMessageListPaginationParams) => {
   const isAtPresentRef = useRef(isAtPresent);
@@ -168,6 +171,15 @@ const useMessageListPagination = ({
       prefetched: olderServerPrefetchedAnchorsRef.current.has(anchorMessageId),
     };
   }, []);
+
+  const notifyHistoryRateLimit = useCallback((error: unknown) => {
+    if (!isRateLimitError(error)) {
+      return false;
+    }
+
+    onHistoryRateLimited?.(getRetryAfterMsFromError(error) ?? undefined);
+    return true;
+  }, [onHistoryRateLimited]);
 
   useEffect(() => {
     historyRequestGenerationRef.current += 1;
@@ -270,6 +282,7 @@ const useMessageListPagination = ({
       rawDebugMessageList('older_server_prefetch_state', successPayload);
       debugMessageList('older_server_prefetch_state', successPayload);
     } catch (error) {
+      notifyHistoryRateLimit(error);
       const errorPayload = {
         conversationId,
         anchorMessageId: nextOldestMessageId,
@@ -283,7 +296,7 @@ const useMessageListPagination = ({
     } finally {
       olderServerPrefetchInFlightRef.current.delete(nextOldestMessageId);
     }
-  }, [conversationId, currentKeyVersionRef, decryptionConversation, encryptionKeyRef, getOlderServerPrefetchState, userId]);
+  }, [conversationId, currentKeyVersionRef, decryptionConversation, encryptionKeyRef, getOlderServerPrefetchState, notifyHistoryRateLimit, userId]);
 
   const applyOlderMessages = useCallback((olderMessages: Message[], seamBreakBeforeId: string) => {
     if (olderMessages.length === 0) return null;
@@ -543,6 +556,7 @@ const useMessageListPagination = ({
       }
       return true;
     } catch (error) {
+      notifyHistoryRateLimit(error);
       console.error('Failed to load older messages:', error);
       return false;
     } finally {
@@ -558,6 +572,7 @@ const useMessageListPagination = ({
     messagesRef,
     setHasOlder,
     warmOlderServerHistory,
+    notifyHistoryRateLimit,
   ]);
 
   const loadOlder = useCallback(async () => {
@@ -644,6 +659,7 @@ const useMessageListPagination = ({
       }
       return true;
     } catch (error) {
+      notifyHistoryRateLimit(error);
       console.error('Failed to load newer messages:', error);
       return false;
     } finally {
@@ -662,6 +678,7 @@ const useMessageListPagination = ({
     mergeVisibleMessages,
     getMessageHeight,
     messages,
+    notifyHistoryRateLimit,
     onMessagesLoaded,
     queueNewerMessages,
     setHasNewer,
@@ -755,6 +772,7 @@ const useMessageListPagination = ({
         onMessagesLoaded?.(newerUI);
       }
     } catch (error) {
+      notifyHistoryRateLimit(error);
       console.error('Failed to reconcile missed messages after reconnect:', error);
     }
   }, [
@@ -766,6 +784,7 @@ const useMessageListPagination = ({
     initialHydrationSettled,
     mergeVisibleMessages,
     messagesRef,
+    notifyHistoryRateLimit,
     onMessagesLoaded,
     queueNewerMessages,
     setHasNewer,
@@ -855,6 +874,7 @@ const useMessageListPagination = ({
       });
       onMessagesLoaded?.(freshUI);
     } catch (error) {
+      notifyHistoryRateLimit(error);
       console.error('Failed to jump to present:', error);
     } finally {
       setLoadingNewer(false);
@@ -867,6 +887,7 @@ const useMessageListPagination = ({
     encryptionKeyRef,
     historyAccessFence,
     messageListBaseIndex,
+    notifyHistoryRateLimit,
     onMessagesLoaded,
     replaceWindow,
     setLoadingNewer,

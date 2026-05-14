@@ -30,6 +30,7 @@ import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
 import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
 import { useMessageScrollGeometry } from './useMessageScrollGeometry';
+import { useMessageTimelineVirtualizer } from './useMessageTimelineVirtualizer';
 import type {
   MessageDelete,
   MessageStreamEvent,
@@ -126,6 +127,8 @@ const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
 const MOBILE_KEYBOARD_HEIGHT_THRESHOLD = 120;
 const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
+const HISTORY_RATE_LIMIT_FALLBACK_MS = 6_000;
+const HISTORY_RATE_LIMIT_MAX_MS = 30_000;
 const ENABLE_SCROLL_GEOMETRY_COMPACTION = true;
 const MAX_PHYSICAL_HISTORY_SPACER_HEIGHT = 4_000;
 const OLDER_HISTORY_LOADER_SLOT_HEIGHT: Record<Density, number> = {
@@ -310,11 +313,13 @@ const MessageViewV2 = memo(function MessageViewV2({
   const loadingNewerRequestInFlightRef = useRef(false);
   const autofillOlderRequestInFlightRef = useRef(false);
   const messageHeightCacheRef = useRef<Map<string, number>>(new Map());
+  const historyLoadPausedUntilRef = useRef(0);
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [showJumpToPresent, setShowJumpToPresent] = useState(false);
   const [isMobileKeyboardOpen, setIsMobileKeyboardOpen] = useState(false);
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
+  const [historyLoadPausedUntil, setHistoryLoadPausedUntil] = useState(0);
 
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
@@ -338,6 +343,22 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
     return estimateMessageRowHeight(message, density);
   }, [density]);
+  const handleHistoryRateLimited = useCallback((retryAfterMs?: number) => {
+    const pauseMs = Math.min(
+      HISTORY_RATE_LIMIT_MAX_MS,
+      Math.max(1_000, retryAfterMs ?? HISTORY_RATE_LIMIT_FALLBACK_MS),
+    );
+    const pausedUntil = Date.now() + pauseMs;
+
+    if (pausedUntil <= historyLoadPausedUntilRef.current) {
+      return;
+    }
+
+    historyLoadPausedUntilRef.current = pausedUntil;
+    setHistoryLoadPausedUntil(pausedUntil);
+    setOlderRangeError(false);
+    setNewerRangeError(false);
+  }, []);
   const initReactionsFromMessagesRef = useRef<(messages: Array<{ message_id: string; reactions?: any }>) => void>(() => {});
   const handleInitReactionsFromMessages = useCallback((loadedMessages: Array<{ message_id: string; reactions?: any }>) => {
     initReactionsFromMessagesRef.current(loadedMessages);
@@ -374,7 +395,10 @@ const MessageViewV2 = memo(function MessageViewV2({
     messageDelete,
     handleInitReactionsFromMessages,
     waitForEncryptionBootstrap,
-    { getMessageHeight: getMessageHeightForWindowing },
+    {
+      getMessageHeight: getMessageHeightForWindowing,
+      onHistoryRateLimited: handleHistoryRateLimited,
+    },
   );
   hasOlderRef.current = hasOlder;
   loadingOlderStateRef.current = loadingOlder;
@@ -551,6 +575,8 @@ const MessageViewV2 = memo(function MessageViewV2({
     loadingNewerRequestInFlightRef.current = false;
     autofillOlderRequestInFlightRef.current = false;
     messageHeightCacheRef.current.clear();
+    historyLoadPausedUntilRef.current = 0;
+    setHistoryLoadPausedUntil(0);
     setShowJumpToPresent(false);
     setOlderRangeError(false);
     setNewerRangeError(false);
@@ -891,7 +917,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const loadOlderPreservingViewport = useCallback(async () => {
     const snapshot = captureHistoryLoadScrollSnapshot();
     const didLoad = await loadOlder();
-    setOlderRangeError(didLoad === false);
+    const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
+    setOlderRangeError(didLoad === false && !isHistoryPaused);
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -908,7 +935,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const loadNewerPreservingViewport = useCallback(async () => {
     const snapshot = captureHistoryLoadScrollSnapshot();
     const didLoad = await loadNewer();
-    setNewerRangeError(didLoad === false);
+    const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
+    setNewerRangeError(didLoad === false && !isHistoryPaused);
 
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -922,77 +950,32 @@ const MessageViewV2 = memo(function MessageViewV2({
     });
   }, [captureHistoryLoadScrollSnapshot, loadNewer, restoreHistoryLoadScrollSnapshot]);
 
-  const maybeStartOlderBoundaryLoad = useCallback(() => {
-    const scroller = scrollerRef.current;
-    const distanceToOlderBoundary = scroller ? getOlderBoundaryDistance(scroller) : Number.POSITIVE_INFINITY;
-    if (
-      !scroller ||
-      !initialLatestRestoreDoneRef.current ||
-      !hasOlder ||
-      loadingOlderRequestInFlightRef.current ||
-      loadingOlderStateRef.current ||
-      distanceToOlderBoundary > olderTopLoadThreshold
-    ) {
-      return false;
-    }
-
-    loadingOlderRequestInFlightRef.current = true;
-    void loadOlderPreservingViewport().finally(() => {
-      loadingOlderRequestInFlightRef.current = false;
-    });
-    return true;
-  }, [getOlderBoundaryDistance, hasOlder, loadOlderPreservingViewport, olderTopLoadThreshold]);
-
-  const maybeStartNewerBoundaryLoad = useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (
-      !scroller ||
-      !initialLatestRestoreDoneRef.current ||
-      !hasNewer ||
-      loadingNewerRequestInFlightRef.current ||
-      loadingNewer ||
-      getNewerBoundaryDistance(scroller) > newerBottomLoadThreshold
-    ) {
-      return false;
-    }
-
-    loadingNewerRequestInFlightRef.current = true;
-    void loadNewerPreservingViewport().finally(() => {
-      loadingNewerRequestInFlightRef.current = false;
-    });
-    return true;
-  }, [getNewerBoundaryDistance, hasNewer, loadNewerPreservingViewport, loadingNewer, newerBottomLoadThreshold]);
-
-  const isOlderLogicalRangeVisible = useCallback(() => {
-    const scroller = scrollerRef.current;
-    return scroller ? isOlderRangeVisible(scroller) : false;
-  }, [isOlderRangeVisible]);
-
-  const isNewerLogicalRangeVisible = useCallback(() => {
-    const scroller = scrollerRef.current;
-    return scroller ? isNewerRangeVisible(scroller) : false;
-  }, [isNewerRangeVisible]);
-
-  const startVisibleSkeletonLoads = useCallback(() => {
-    let didStart = false;
-
-    if (olderRangeStatus === 'idle' && isOlderLogicalRangeVisible()) {
-      didStart = maybeStartOlderBoundaryLoad() || didStart;
-    }
-
-    if (newerRangeStatus === 'idle' && isNewerLogicalRangeVisible()) {
-      didStart = maybeStartNewerBoundaryLoad() || didStart;
-    }
-
-    return didStart;
-  }, [
-    isNewerLogicalRangeVisible,
-    isOlderLogicalRangeVisible,
-    maybeStartNewerBoundaryLoad,
-    maybeStartOlderBoundaryLoad,
-    newerRangeStatus,
+  const {
+    handleScroll,
+    maybeStartBestHistoryLoad,
+  } = useMessageTimelineVirtualizer({
+    scrollerRef,
+    resetKey: conversation.id,
+    initialLatestRestoreDoneRef,
+    loadingOlderRequestInFlightRef,
+    loadingNewerRequestInFlightRef,
+    loadingOlderStateRef,
+    loadingNewer,
+    historyLoadPausedUntil,
+    hasOlder,
+    hasNewer,
     olderRangeStatus,
-  ]);
+    newerRangeStatus,
+    olderTopLoadThreshold,
+    newerBottomLoadThreshold,
+    getOlderBoundaryDistance,
+    getNewerBoundaryDistance,
+    isOlderRangeVisible,
+    isNewerRangeVisible,
+    loadOlderPreservingViewport,
+    loadNewerPreservingViewport,
+    syncScrollState,
+  });
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -1109,7 +1092,7 @@ const MessageViewV2 = memo(function MessageViewV2({
           return;
         }
 
-        maybeStartOlderBoundaryLoad();
+        maybeStartBestHistoryLoad('older');
       },
       {
         root: scroller,
@@ -1120,7 +1103,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [maybeStartOlderBoundaryLoad, conversation.id]);
+  }, [maybeStartBestHistoryLoad, conversation.id]);
 
   // ── IntersectionObserver: load newer messages ──
   useEffect(() => {
@@ -1143,7 +1126,7 @@ const MessageViewV2 = memo(function MessageViewV2({
           return;
         }
 
-        maybeStartNewerBoundaryLoad();
+        maybeStartBestHistoryLoad('newer');
       },
       {
         root: scroller,
@@ -1154,23 +1137,15 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasNewer, loadingNewer, maybeStartNewerBoundaryLoad, newerBottomLoadThreshold, conversation.id]);
-
-  // ── Scroll event: sync bottom state only ──
-  const handleScroll = useCallback(() => {
-    syncScrollState();
-    maybeStartOlderBoundaryLoad();
-    maybeStartNewerBoundaryLoad();
-    startVisibleSkeletonLoads();
-  }, [maybeStartNewerBoundaryLoad, maybeStartOlderBoundaryLoad, startVisibleSkeletonLoads, syncScrollState]);
+  }, [hasNewer, loadingNewer, maybeStartBestHistoryLoad, newerBottomLoadThreshold, conversation.id]);
 
   useEffect(() => {
     const frameId = requestAnimationFrame(() => {
-      startVisibleSkeletonLoads();
+      maybeStartBestHistoryLoad();
     });
 
     return () => cancelAnimationFrame(frameId);
-  }, [startVisibleSkeletonLoads]);
+  }, [maybeStartBestHistoryLoad]);
 
   const handleJumpToPresent = useCallback(async () => {
     forceFollowOutputRef.current = true;
