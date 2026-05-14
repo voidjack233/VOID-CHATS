@@ -29,6 +29,7 @@ import ExternalLinkModal from './MessageViewParts/ExternalLinkModal';
 import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
 import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
+import { useMessageScrollGeometry } from './useMessageScrollGeometry';
 import type {
   MessageDelete,
   MessageStreamEvent,
@@ -59,16 +60,63 @@ type MessageListItem =
   | { kind: 'message'; message: Message }
   | { kind: 'typing'; id: 'typing-indicator' };
 
-type HistoryRangeStatus = 'idle' | 'loading' | 'loaded' | 'error';
-
-interface OlderLoadScrollSnapshot {
+interface HistoryLoadScrollSnapshot {
   scrollHeight: number;
   scrollTop: number;
+  anchorMessageId: string | null;
+  anchorOffsetTop: number | null;
 }
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
+};
+
+const getFirstVisibleMessageAnchor = (scroller: HTMLElement) => {
+  const scrollerRect = scroller.getBoundingClientRect();
+  const elements = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'));
+
+  for (const element of elements) {
+    const messageId = element.dataset.messageId;
+    if (!messageId) continue;
+
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom <= scrollerRect.top || rect.top >= scrollerRect.bottom) {
+      continue;
+    }
+
+    return {
+      messageId,
+      offsetTop: rect.top - scrollerRect.top,
+    };
+  }
+
+  return null;
+};
+
+const restoreVisibleMessageAnchor = (
+  scroller: HTMLElement,
+  snapshot: HistoryLoadScrollSnapshot,
+) => {
+  if (!snapshot.anchorMessageId || snapshot.anchorOffsetTop === null) {
+    return false;
+  }
+
+  const anchorElement = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
+    .find((element) => element.dataset.messageId === snapshot.anchorMessageId);
+  if (!anchorElement) {
+    return false;
+  }
+
+  const scrollerRect = scroller.getBoundingClientRect();
+  const nextOffsetTop = anchorElement.getBoundingClientRect().top - scrollerRect.top;
+  const offsetDelta = nextOffsetTop - snapshot.anchorOffsetTop;
+  if (Math.abs(offsetDelta) <= 0.5) {
+    return true;
+  }
+
+  scroller.scrollTop = Math.max(0, scroller.scrollTop + offsetDelta);
+  return true;
 };
 
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
@@ -78,6 +126,8 @@ const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
 const MOBILE_KEYBOARD_HEIGHT_THRESHOLD = 120;
 const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
+const ENABLE_SCROLL_GEOMETRY_COMPACTION = true;
+const MAX_PHYSICAL_HISTORY_SPACER_HEIGHT = 4_000;
 const OLDER_HISTORY_LOADER_SLOT_HEIGHT: Record<Density, number> = {
   compact: 268,
   comfortable: 216,
@@ -253,7 +303,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const initialLatestRestoreDoneRef = useRef(false);
   const previousListCountRef = useRef(0);
   const lastFollowedMessageEventSequenceRef = useRef(0);
-  const pendingOlderLoadScrollSnapshotRef = useRef<OlderLoadScrollSnapshot | null>(null);
+  const pendingOlderLoadScrollSnapshotRef = useRef<HistoryLoadScrollSnapshot | null>(null);
   const hasOlderRef = useRef(false);
   const loadingOlderStateRef = useRef(false);
   const loadingOlderRequestInFlightRef = useRef(false);
@@ -339,31 +389,38 @@ const MessageViewV2 = memo(function MessageViewV2({
   const retryingFailedMessageIdsRef = useRef<Set<string>>(new Set());
   const olderSkeletonSeed = `${conversation.id}:${visualMessages[0]?.message_id || 'empty'}`;
   const newerSkeletonSeed = `${conversation.id}:${visualMessages[visualMessages.length - 1]?.message_id || 'empty'}:newer`;
-  const topTrimmedSpacerHeight = Math.max(0, topSpacerHeight);
-  const bottomTrimmedSpacerHeight = Math.max(0, bottomSpacerHeight);
-  const topEstimatedLoadingHeight = hasOlder && topTrimmedSpacerHeight <= 1 ? historyLogicalSlotHeight : 0;
-  const bottomEstimatedLoadingHeight = hasNewer && bottomTrimmedSpacerHeight <= 1 ? historyLogicalSlotHeight : 0;
-  const topLogicalRangeHeight = topTrimmedSpacerHeight + topEstimatedLoadingHeight;
-  const bottomLogicalRangeHeight = bottomTrimmedSpacerHeight + bottomEstimatedLoadingHeight;
-  const olderRangeStatus: HistoryRangeStatus = loadingOlder
-    ? 'loading'
-    : olderRangeError
-      ? 'error'
-    : topLogicalRangeHeight <= 1
-      ? 'loaded'
-      : hasOlder
-        ? 'idle'
-        : 'error';
-  const newerRangeStatus: HistoryRangeStatus = loadingNewer
-    ? 'loading'
-    : newerRangeError
-      ? 'error'
-    : bottomLogicalRangeHeight <= 1
-      ? 'loaded'
-      : hasNewer
-        ? 'idle'
-        : 'error';
-  const olderTopExhaustionThreshold = topLogicalRangeHeight + 8;
+  const {
+    topLogicalRangeHeight,
+    bottomLogicalRangeHeight,
+    renderedTopSpacerHeight,
+    renderedBottomSpacerHeight,
+    olderRangeStatus,
+    newerRangeStatus,
+    getScrollState,
+    getOlderBoundaryDistance,
+    getNewerBoundaryDistance,
+    isOlderRangeVisible,
+    isNewerRangeVisible,
+    getLoadedScrollHeight,
+  } = useMessageScrollGeometry({
+    scrollerRef,
+    topCompensationBlockerRef: pendingOlderLoadScrollSnapshotRef,
+    resetKey: conversation.id,
+    topSpacerHeight,
+    bottomSpacerHeight,
+    hasOlder,
+    hasNewer,
+    loadingOlder,
+    loadingNewer,
+    olderRangeError,
+    newerRangeError,
+    historyLogicalSlotHeight,
+    bottomThreshold: BOTTOM_THRESHOLD,
+    jumpToPresentRevealDistance: JUMP_TO_PRESENT_REVEAL_DISTANCE,
+    enablePhysicalSpacerWindowing: ENABLE_SCROLL_GEOMETRY_COMPACTION,
+    maxPhysicalSpacerHeight: MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
+  });
+  const olderTopExhaustionThreshold = renderedTopSpacerHeight + 8;
   const historySkeletonRowCount = Math.max(
     4,
     Math.min(MAX_VISIBLE_SKELETON_ROWS, Math.ceil(historyLogicalSlotHeight / historyLogicalRowEstimate)),
@@ -739,13 +796,16 @@ const MessageViewV2 = memo(function MessageViewV2({
     scroller.scrollTop = scroller.scrollHeight;
   }, []);
 
-  const captureOlderLoadScrollSnapshot = useCallback((): OlderLoadScrollSnapshot | null => {
+  const captureHistoryLoadScrollSnapshot = useCallback((): HistoryLoadScrollSnapshot | null => {
     const scroller = scrollerRef.current;
     if (!scroller) return null;
+    const anchor = getFirstVisibleMessageAnchor(scroller);
 
     const snapshot = {
       scrollHeight: scroller.scrollHeight,
       scrollTop: scroller.scrollTop,
+      anchorMessageId: anchor?.messageId ?? null,
+      anchorOffsetTop: anchor?.offsetTop ?? null,
     };
     pendingOlderLoadScrollSnapshotRef.current = snapshot;
     return snapshot;
@@ -761,25 +821,50 @@ const MessageViewV2 = memo(function MessageViewV2({
       Math.abs(scroller.scrollHeight - pendingOlderSnapshot.scrollHeight) <= OLDER_LOAD_SCROLL_UPDATE_THRESHOLD
     ) {
       pendingOlderSnapshot.scrollTop = scroller.scrollTop;
+      const anchor = getFirstVisibleMessageAnchor(scroller);
+      pendingOlderSnapshot.anchorMessageId = anchor?.messageId ?? null;
+      pendingOlderSnapshot.anchorOffsetTop = anchor?.offsetTop ?? null;
     }
 
-    const distanceFromBottom = scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
-    const atBottom = distanceFromBottom <= BOTTOM_THRESHOLD && !hasNewer && bottomLogicalRangeHeight <= 1;
-    const shouldShowJumpToPresent = !atBottom && (
-      hasNewer ||
-      bottomLogicalRangeHeight > 1 ||
-      distanceFromBottom >= JUMP_TO_PRESENT_REVEAL_DISTANCE
-    );
+    const scrollState = getScrollState(scroller);
 
-    atBottomRef.current = atBottom;
-    setShowJumpToPresent(shouldShowJumpToPresent);
+    atBottomRef.current = scrollState.atBottom;
+    setShowJumpToPresent(scrollState.shouldShowJumpToPresent);
 
-    if (atBottom) {
+    if (scrollState.atBottom) {
       forceFollowOutputRef.current = false;
     }
 
-    setIsAtPresent(atBottom && !hasNewer);
-  }, [bottomLogicalRangeHeight, hasNewer, setIsAtPresent]);
+    setIsAtPresent(scrollState.isAtPresent);
+  }, [getScrollState, setIsAtPresent]);
+
+  const restoreHistoryLoadScrollSnapshot = useCallback((snapshot: HistoryLoadScrollSnapshot) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      return false;
+    }
+
+    if (!hasOlderRef.current && snapshot.scrollTop <= olderTopExhaustionThreshold) {
+      scroller.scrollTop = 0;
+      syncScrollState();
+      return true;
+    }
+
+    if (restoreVisibleMessageAnchor(scroller, snapshot)) {
+      syncScrollState();
+      return true;
+    }
+
+    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
+    if (Math.abs(scrollHeightDelta) > 0.5) {
+      scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
+      syncScrollState();
+      return true;
+    }
+
+    syncScrollState();
+    return true;
+  }, [olderTopExhaustionThreshold, syncScrollState]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.visualViewport) {
@@ -804,7 +889,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, []);
 
   const loadOlderPreservingViewport = useCallback(async () => {
-    const snapshot = captureOlderLoadScrollSnapshot();
+    const snapshot = captureHistoryLoadScrollSnapshot();
     const didLoad = await loadOlder();
     setOlderRangeError(didLoad === false);
 
@@ -814,35 +899,32 @@ const MessageViewV2 = memo(function MessageViewV2({
           return;
         }
 
-        const scroller = scrollerRef.current;
-        if (!scroller) {
-          pendingOlderLoadScrollSnapshotRef.current = null;
-          return;
-        }
-
-        if (!hasOlderRef.current && snapshot.scrollTop <= olderTopExhaustionThreshold) {
-          scroller.scrollTop = 0;
-          pendingOlderLoadScrollSnapshotRef.current = null;
-          syncScrollState();
-          return;
-        }
-
-        const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
-        if (Math.abs(scrollHeightDelta) > 0.5) {
-          scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
-          syncScrollState();
-        }
-
+        restoreHistoryLoadScrollSnapshot(snapshot);
         pendingOlderLoadScrollSnapshotRef.current = null;
       });
     });
-  }, [captureOlderLoadScrollSnapshot, loadOlder, olderTopExhaustionThreshold, syncScrollState]);
+  }, [captureHistoryLoadScrollSnapshot, loadOlder, restoreHistoryLoadScrollSnapshot]);
+
+  const loadNewerPreservingViewport = useCallback(async () => {
+    const snapshot = captureHistoryLoadScrollSnapshot();
+    const didLoad = await loadNewer();
+    setNewerRangeError(didLoad === false);
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!snapshot || pendingOlderLoadScrollSnapshotRef.current !== snapshot) {
+          return;
+        }
+
+        restoreHistoryLoadScrollSnapshot(snapshot);
+        pendingOlderLoadScrollSnapshotRef.current = null;
+      });
+    });
+  }, [captureHistoryLoadScrollSnapshot, loadNewer, restoreHistoryLoadScrollSnapshot]);
 
   const maybeStartOlderBoundaryLoad = useCallback(() => {
     const scroller = scrollerRef.current;
-    const distanceToOlderBoundary = scroller
-      ? scroller.scrollTop - Math.max(0, topLogicalRangeHeight)
-      : Number.POSITIVE_INFINITY;
+    const distanceToOlderBoundary = scroller ? getOlderBoundaryDistance(scroller) : Number.POSITIVE_INFINITY;
     if (
       !scroller ||
       !initialLatestRestoreDoneRef.current ||
@@ -859,7 +941,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       loadingOlderRequestInFlightRef.current = false;
     });
     return true;
-  }, [hasOlder, loadOlderPreservingViewport, olderTopLoadThreshold, topLogicalRangeHeight]);
+  }, [getOlderBoundaryDistance, hasOlder, loadOlderPreservingViewport, olderTopLoadThreshold]);
 
   const maybeStartNewerBoundaryLoad = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -869,46 +951,27 @@ const MessageViewV2 = memo(function MessageViewV2({
       !hasNewer ||
       loadingNewerRequestInFlightRef.current ||
       loadingNewer ||
-      (
-        scroller.scrollHeight -
-        Math.max(0, bottomLogicalRangeHeight) -
-        (scroller.scrollTop + scroller.clientHeight)
-      ) > newerBottomLoadThreshold
+      getNewerBoundaryDistance(scroller) > newerBottomLoadThreshold
     ) {
       return false;
     }
 
     loadingNewerRequestInFlightRef.current = true;
-    void loadNewer()
-      .then((didLoad) => {
-        setNewerRangeError(didLoad === false);
-      })
-      .finally(() => {
-        loadingNewerRequestInFlightRef.current = false;
-      });
+    void loadNewerPreservingViewport().finally(() => {
+      loadingNewerRequestInFlightRef.current = false;
+    });
     return true;
-  }, [bottomLogicalRangeHeight, hasNewer, loadNewer, loadingNewer, newerBottomLoadThreshold]);
+  }, [getNewerBoundaryDistance, hasNewer, loadNewerPreservingViewport, loadingNewer, newerBottomLoadThreshold]);
 
   const isOlderLogicalRangeVisible = useCallback(() => {
     const scroller = scrollerRef.current;
-    if (!scroller || topLogicalRangeHeight <= 1) {
-      return false;
-    }
-
-    return scroller.scrollTop < topLogicalRangeHeight &&
-      scroller.scrollTop + scroller.clientHeight > 0;
-  }, [topLogicalRangeHeight]);
+    return scroller ? isOlderRangeVisible(scroller) : false;
+  }, [isOlderRangeVisible]);
 
   const isNewerLogicalRangeVisible = useCallback(() => {
     const scroller = scrollerRef.current;
-    if (!scroller || bottomLogicalRangeHeight <= 1) {
-      return false;
-    }
-
-    const bottomRangeStart = scroller.scrollHeight - bottomLogicalRangeHeight;
-    return scroller.scrollTop + scroller.clientHeight > bottomRangeStart &&
-      scroller.scrollTop < scroller.scrollHeight;
-  }, [bottomLogicalRangeHeight]);
+    return scroller ? isNewerRangeVisible(scroller) : false;
+  }, [isNewerRangeVisible]);
 
   const startVisibleSkeletonLoads = useCallback(() => {
     let didStart = false;
@@ -1111,6 +1174,9 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const handleJumpToPresent = useCallback(async () => {
     forceFollowOutputRef.current = true;
+    pendingOlderLoadScrollSnapshotRef.current = null;
+    setOlderRangeError(false);
+    setNewerRangeError(false);
     await jumpToPresent();
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1203,8 +1269,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       return false;
     }
 
-    const estimatedUnloadedHeight = topLogicalRangeHeight + bottomLogicalRangeHeight;
-    const loadedScrollHeight = Math.max(0, scroller.scrollHeight - estimatedUnloadedHeight);
+    const loadedScrollHeight = getLoadedScrollHeight(scroller);
     const shouldAutofill =
       loadedScrollHeight <= scroller.clientHeight + UNDERFILL_AUTOFILL_THRESHOLD;
     if (!shouldAutofill) {
@@ -1217,13 +1282,12 @@ const MessageViewV2 = memo(function MessageViewV2({
     });
     return true;
   }, [
+    getLoadedScrollHeight,
     hasOlder,
-    bottomLogicalRangeHeight,
     initialHydrationSettled,
     loadOlderPreservingViewport,
     loading,
     loadingOlder,
-    topLogicalRangeHeight,
   ]);
 
   useLayoutEffect(() => {
@@ -1233,16 +1297,11 @@ const MessageViewV2 = memo(function MessageViewV2({
       return;
     }
 
-    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
-    if (Math.abs(scrollHeightDelta) > 0.5) {
-      scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
-    }
-
+    restoreHistoryLoadScrollSnapshot(snapshot);
     pendingOlderLoadScrollSnapshotRef.current = null;
-    syncScrollState();
   }, [
     hasOlder,
-    syncScrollState,
+    restoreHistoryLoadScrollSnapshot,
     visualMessages.length,
     visualMessages[0]?.message_id,
   ]);
@@ -1372,11 +1431,11 @@ const MessageViewV2 = memo(function MessageViewV2({
         {topLogicalRangeHeight > 1 && (
           <div
             className="relative flex w-full items-start justify-center"
-            style={{ height: `${topLogicalRangeHeight}px` }}
+            style={{ height: `${renderedTopSpacerHeight}px` }}
           >
             <div
               className="sticky top-0 w-full"
-              style={{ height: `${Math.min(historyLogicalSlotHeight, topLogicalRangeHeight)}px` }}
+              style={{ height: `${Math.min(historyLogicalSlotHeight, renderedTopSpacerHeight)}px` }}
             >
               <OlderHistorySkeleton
                 density={density}
@@ -1431,12 +1490,12 @@ const MessageViewV2 = memo(function MessageViewV2({
         {bottomLogicalRangeHeight > 1 && (
           <div
             className="relative flex w-full items-start justify-center"
-            style={{ height: `${bottomLogicalRangeHeight}px` }}
+            style={{ height: `${renderedBottomSpacerHeight}px` }}
           >
             {hasNewer && <div ref={newerSentinelRef} className="absolute inset-x-0 top-0 h-px w-full" />}
             <div
               className="sticky top-0 w-full"
-              style={{ height: `${Math.min(historyLogicalSlotHeight, bottomLogicalRangeHeight)}px` }}
+              style={{ height: `${Math.min(historyLogicalSlotHeight, renderedBottomSpacerHeight)}px` }}
             >
               <OlderHistorySkeleton
                 density={density}

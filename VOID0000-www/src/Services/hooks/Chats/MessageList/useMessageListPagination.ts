@@ -155,6 +155,7 @@ const useMessageListPagination = ({
   firstItemIndexRef.current = firstItemIndex;
   const olderServerPrefetchInFlightRef = useRef<Set<string>>(new Set());
   const olderServerPrefetchedAnchorsRef = useRef<Set<string>>(new Set());
+  const historyRequestGenerationRef = useRef(0);
 
   const getOlderServerPrefetchState = useCallback((anchorMessageId: string | null) => {
     if (!anchorMessageId) {
@@ -169,6 +170,7 @@ const useMessageListPagination = ({
   }, []);
 
   useEffect(() => {
+    historyRequestGenerationRef.current += 1;
     olderServerPrefetchInFlightRef.current.clear();
     olderServerPrefetchedAnchorsRef.current.clear();
     replaceWindow({
@@ -469,6 +471,7 @@ const useMessageListPagination = ({
       loadingOlder,
     });
     setLoadingOlder(true);
+    const requestGeneration = historyRequestGenerationRef.current;
 
     try {
       const oldestMessage = messagesRef.current[0];
@@ -476,6 +479,16 @@ const useMessageListPagination = ({
 
       const seamBreakBeforeId = oldestMessage.message_id;
       const { olderUI, hasMore, debug } = await fetchOlderMessages(oldestMessage.message_id, { forceServer });
+      if (requestGeneration !== historyRequestGenerationRef.current) {
+        debugMessageList('older_fetch_stale_skip', {
+          conversationId,
+          oldestMessageId: oldestMessage.message_id,
+          requestGeneration,
+          currentGeneration: historyRequestGenerationRef.current,
+        });
+        return false;
+      }
+
       let applySummary: ReturnType<typeof applyOlderMessages> = null;
       const nextOldestLoadedMessageId = olderUI[0]?.message_id ?? null;
 
@@ -560,6 +573,7 @@ const useMessageListPagination = ({
     }
 
     setLoadingNewer(true);
+    const requestGeneration = historyRequestGenerationRef.current;
 
     try {
       const newestMessage = getNewestServerBackedMessage(messages);
@@ -590,6 +604,16 @@ const useMessageListPagination = ({
 
       const visibleNewerMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
       const newerUI = sortMessages(visibleNewerMessages.map(toUIMessage));
+      if (requestGeneration !== historyRequestGenerationRef.current) {
+        debugMessageList('newer_fetch_stale_skip', {
+          conversationId,
+          newestMessageId: newestMessage.message_id,
+          requestGeneration,
+          currentGeneration: historyRequestGenerationRef.current,
+        });
+        return false;
+      }
+
       if (newerUI.length > 0) {
         const hasNewerAfterMerge = newerUI.length < FETCH_SIZE ? false : result.has_more;
         const isAtPresentAfterMerge = newerUI.length < FETCH_SIZE;
@@ -800,6 +824,8 @@ const useMessageListPagination = ({
   const jumpToPresent = useCallback(async () => {
     if (!encryptionKey) return;
 
+    historyRequestGenerationRef.current += 1;
+    const requestGeneration = historyRequestGenerationRef.current;
     setLoadingNewer(true);
 
     try {
@@ -813,11 +839,16 @@ const useMessageListPagination = ({
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       const visibleFreshMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
       const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
+      if (requestGeneration !== historyRequestGenerationRef.current) {
+        return;
+      }
 
       replaceWindow({
         messages: freshUI,
         firstItemIndex: messageListBaseIndex,
         groupBreakBeforeIds: new Set(),
+        loadingOlder: false,
+        loadingNewer: false,
         hasOlder: serverResult.has_more || serverResult.messages.length >= presentLimit,
         hasNewer: false,
         isAtPresent: true,
