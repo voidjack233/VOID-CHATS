@@ -120,6 +120,17 @@
   visibility: visible;
 }
 
+.chat-scrollbar-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.chat-scrollbar-hidden::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
 /* Skeleton shimmer animation */
 @keyframes skeleton-shimmer {
   0% { background-position: 200% 0; }
