@@ -61,6 +61,11 @@ export const useMessageStream = ({
 
   const pendingMessages = useRef<any[]>([]);
   const messageEventSequenceRef = useRef(0);
+  const normalizeLiveMessageShape = useCallback((data: any): Message => ({
+    ...data,
+    local_client_id: data?.local_client_id ?? data?.client_message_id ?? undefined,
+    client_message_id: data?.client_message_id ?? data?.local_client_id ?? undefined,
+  }), []);
   const pushMessageEvent = useCallback((message: Message) => {
     const sequence = messageEventSequenceRef.current + 1;
     messageEventSequenceRef.current = sequence;
@@ -215,7 +220,7 @@ export const useMessageStream = ({
           mentions: resolvedPayload.mentions ?? undefined,
         });
       } else {
-        pushMessageEvent({ ...data, ...resolvedPayload });
+        pushMessageEvent(normalizeLiveMessageShape({ ...data, ...resolvedPayload }));
       }
       return;
     }
@@ -249,7 +254,7 @@ export const useMessageStream = ({
           mentions: resolvedPayload.mentions ?? undefined,
         });
       } else {
-        pushMessageEvent({ ...data, ...resolvedPayload });
+        pushMessageEvent(normalizeLiveMessageShape({ ...data, ...resolvedPayload }));
       }
     } catch (err) {
       if (!shouldAutoRecover) {
@@ -364,7 +369,7 @@ export const useMessageStream = ({
         // encryptionKey is briefly changing references.
         if (data.message_type === 'system' && !data.iv) {
           const content = data.content || data.encrypted_content || 'System event';
-          pushMessageEvent({ ...data, content });
+          pushMessageEvent(normalizeLiveMessageShape({ ...data, content }));
         } else if (encryptionKeyRef.current) {
           await attemptDecryption(data, encryptionKeyRef.current);
         } else if (shouldAutoRecoverRef.current) {
@@ -377,7 +382,7 @@ export const useMessageStream = ({
     // encryptionKey and conversationSecurityState are accessed via refs so
     // key rotation does not tear down and re-register this handler.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConversation?.id, user?.id]);
+  }, [activeConversation?.id, normalizeLiveMessageShape, user?.id]);
 
   // Message Edits
   useEffect(() => {

@@ -80,6 +80,7 @@ export interface Message {
   conversation_id: string;
   conversation_public_id?: string | null;
   message_id: string;
+  client_message_id?: string | null;
   sender_id: string;
   encrypted_content: string | null;
   iv: string | null;

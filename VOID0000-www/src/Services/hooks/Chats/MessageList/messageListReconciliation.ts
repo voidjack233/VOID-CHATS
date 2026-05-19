@@ -1,8 +1,11 @@
 import { MESSAGE_WINDOW_TRIM_TARGET, MESSAGE_WINDOW_TRIM_TRIGGER } from '../../../Chat/chatConstants';
 import type { Message } from '../../../Chat/chatService';
 
-const getLocalClientId = (message: Pick<Message, 'message_id' | 'local_client_id'>): string | undefined => {
+const getLocalClientId = (
+  message: Pick<Message, 'message_id' | 'local_client_id' | 'client_message_id'>,
+): string | undefined => {
   if (message.local_client_id) return message.local_client_id;
+  if (message.client_message_id) return message.client_message_id;
   return typeof message.message_id === 'string' && message.message_id.startsWith('local-')
     ? message.message_id
     : undefined;
