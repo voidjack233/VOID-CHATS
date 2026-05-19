@@ -14,9 +14,9 @@ router.post('/', async (req, res) => {
     const result = await pool.query(
       `SELECT user_id
        FROM password_resets
-       WHERE token = ANY($1::text[])
+       WHERE token = $1
          AND expires_at > NOW()`,
-      [[token, hashedToken]]
+      [hashedToken]
     );
 
     if (result.rows.length === 0) {

@@ -2,8 +2,25 @@ import { Router } from 'express';
 import { pool } from '../../../db.js';
 import argon2 from 'argon2';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
+import crypto from 'crypto';
 
 const router = Router();
+const EMAIL_SETUP_CODE_SECRET =
+  process.env.TWO_FACTOR_CODE_SECRET ||
+  process.env.REFRESH_SECRET ||
+  process.env.ACCESS_SECRET ||
+  'void-dev-email-setup-code-secret';
+
+function generateEmailCode() {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function hashSetupEmailCode(userId, code) {
+  return crypto
+    .createHmac('sha256', EMAIL_SETUP_CODE_SECRET)
+    .update(`${userId}:setup_email:${String(code).trim()}`)
+    .digest('hex');
+}
 
 router.post('/', async (req, res) => {
   try {
@@ -51,12 +68,12 @@ router.post('/', async (req, res) => {
       [userId]
     );
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = generateEmailCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await pool.query(
       `UPDATE user_2fa SET totp_secret = $1 WHERE user_id = $2 AND method = 'email'`,
-      [JSON.stringify({ code, expiresAt }), userId]
+      [JSON.stringify({ codeHash: hashSetupEmailCode(userId, code), expiresAt }), userId]
     );
 
     await sendVerificationEmail(user.email, code);

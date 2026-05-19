@@ -7,12 +7,32 @@ import { encryptedCSRFProtection } from '../../middleware/encryptedCSRF.js';
 import { totp } from '../../middleware/2fa/totp.js';
 import { decrypt } from './2fa/setup-totp.js';
 import valkey from '../../valkey.js';
+import crypto from 'crypto';
 
 const router = Router();
 const CHANGE_PASSWORD_EMAIL_ACTION = 'change_password';
+const ACTION_EMAIL_CODE_SECRET =
+  process.env.TWO_FACTOR_CODE_SECRET ||
+  process.env.REFRESH_SECRET ||
+  process.env.ACCESS_SECRET ||
+  'void-dev-action-email-code-secret';
 
 function getActionEmailKey(userId, action) {
   return `auth:2fa:action-email:${userId}:${action}`;
+}
+
+function hashActionEmailCode(userId, action, code) {
+  return crypto
+    .createHmac('sha256', ACTION_EMAIL_CODE_SECRET)
+    .update(`${userId}:${action}:${String(code).trim()}`)
+    .digest('hex');
+}
+
+function safeEqualHex(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left, 'hex');
+  const rightBuffer = Buffer.from(right, 'hex');
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => {
@@ -166,7 +186,12 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
         const raw = await valkey.get(getActionEmailKey(userId, CHANGE_PASSWORD_EMAIL_ACTION));
         const stored = raw ? JSON.parse(raw) : null;
 
-        if (!stored?.code || stored.code !== String(twoFactorCode).trim()) {
+        const submittedCodeHash = hashActionEmailCode(
+          userId,
+          CHANGE_PASSWORD_EMAIL_ACTION,
+          twoFactorCode,
+        );
+        if (!stored?.codeHash || !safeEqualHex(stored.codeHash, submittedCodeHash)) {
           await client.query('ROLLBACK');
           return res.status(401).json({
             success: false,

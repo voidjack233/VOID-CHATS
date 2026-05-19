@@ -11,6 +11,7 @@ export { dmSpamGuard } from './rateLimits/dmSpamGuard.js';
 export const authDeviceLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.authDevice);
 export const forgotPasswordLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.forgotPassword);
 export const resetDeviceLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.resetDevice);
+export const checkResetTokenLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.checkResetToken);
 export const registerDeviceLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.registerDevice);
 export const authCheckLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.authCheck);
 export const refreshTokenLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.refreshToken);

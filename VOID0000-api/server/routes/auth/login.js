@@ -78,7 +78,7 @@ router.post('/', async (req, res) => {
 
     if (twoFAResult.rows.length > 0) {
       const methods = twoFAResult.rows.map(r => r.method);
-      const twoFactorToken = create2FASession(user.id, req);
+      const twoFactorToken = await create2FASession(user.id, req);
 
       // Record successful password auth for trust scoring
       await updateTrustScore(trustDeviceId, 'LOGIN_SUCCESS', req);

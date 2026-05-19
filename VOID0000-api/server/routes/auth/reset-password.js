@@ -3,6 +3,8 @@ import { pool } from '../../db.js';
 import argon2 from 'argon2';
 import { IPSecurity } from '../../utils/securityUtils.js';
 import { hashToken } from '../../utils/hashToken.js';
+import { sessionStore } from '../../middleware/sessionStore.js';
+import { disconnectLiveSession } from '../../gateway/control.js';
 
 const router = Router();
 
@@ -22,10 +24,10 @@ router.post('/', async (req, res) => {
     const resetResult = await client.query(
       `SELECT user_id
        FROM password_resets
-       WHERE token = ANY($1::text[])
+       WHERE token = $1
          AND expires_at > NOW()
        FOR UPDATE`,
-      [[token, hashedToken]]
+      [hashedToken]
     );
 
     if (resetResult.rows.length === 0) {
@@ -34,6 +36,15 @@ router.post('/', async (req, res) => {
     }
 
     const user_id = resetResult.rows[0].user_id;
+
+    const sessionsResult = await client.query(
+      `SELECT DISTINCT device_id
+       FROM refresh_tokens
+       WHERE user_id = $1
+         AND device_id IS NOT NULL
+         AND is_revoked = FALSE`,
+      [user_id]
+    );
 
     const hashed = await argon2.hash(newPassword, {
       type: argon2.argon2id,
@@ -47,9 +58,26 @@ router.post('/', async (req, res) => {
       [hashed, user_id]
     );
 
+    await client.query(
+      `UPDATE refresh_tokens
+       SET is_revoked = TRUE,
+           revoked_at = NOW(),
+           revoked_by = $1
+       WHERE user_id = $1
+         AND is_revoked = FALSE`,
+      [user_id]
+    );
+
     await client.query('DELETE FROM password_resets WHERE user_id = $1', [user_id]);
 
     await client.query('COMMIT');
+
+    await sessionStore.revokeAll(user_id);
+    await Promise.all(
+      sessionsResult.rows.map((row) =>
+        disconnectLiveSession(user_id, row.device_id, 4001, 'Password reset')
+      )
+    );
 
     await IPSecurity.logIPActivity(req, 'PASSWORD_CHANGED', user_id);
 

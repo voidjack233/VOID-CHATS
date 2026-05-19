@@ -39,7 +39,7 @@ const allowedOrigins = [
   'http://localhost',
 ];
 
-app.set('trust proxy', true);
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 app.use(
   cors({
     origin: allowedOrigins,

@@ -109,6 +109,32 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
     logAction: 'RESET_RATE_LIMIT_HIT',
   }),
 
+  checkResetToken: authLockout({
+    keyPrefix: 'auth:check-reset',
+    subjectFields: ['token'],
+    dimensions: [
+      {
+        scope: RATE_LIMIT_SCOPES.IP,
+        refillWindowSec: 60 * 60,
+        bucketSize: 60,
+        blockSeconds: [300, 900, 3600],
+      },
+      {
+        scope: RATE_LIMIT_SCOPES.SUBJECT,
+        refillWindowSec: 60 * 60,
+        bucketSize: 10,
+        blockSeconds: [900, 3600],
+      },
+      {
+        scope: RATE_LIMIT_SCOPES.DEVICE,
+        refillWindowSec: 60 * 60,
+        bucketSize: 10,
+        blockSeconds: [300, 900, 3600],
+      },
+    ],
+    logAction: 'CHECK_RESET_RATE_LIMIT_HIT',
+  }),
+
   registerDevice: authLockout({
     keyPrefix: 'auth:register',
     subjectFields: ['email', 'username'],

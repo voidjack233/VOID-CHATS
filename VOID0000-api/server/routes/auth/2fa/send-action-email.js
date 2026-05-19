@@ -3,10 +3,16 @@ import { pool } from '../../../db.js';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
 import { encryptedCSRFProtection } from '../../../middleware/encryptedCSRF.js';
 import valkey from '../../../valkey.js';
+import crypto from 'crypto';
 
 const router = Router();
 const ACTION_WINDOW_SEC = 10 * 60;
 const ACTION_MAX_SENDS = 3;
+const ACTION_EMAIL_CODE_SECRET =
+  process.env.TWO_FACTOR_CODE_SECRET ||
+  process.env.REFRESH_SECRET ||
+  process.env.ACCESS_SECRET ||
+  'void-dev-action-email-code-secret';
 
 function getActionEmailKey(userId, action) {
   return `auth:2fa:action-email:${userId}:${action}`;
@@ -14,6 +20,17 @@ function getActionEmailKey(userId, action) {
 
 function getActionEmailRateKey(userId, action) {
   return `auth:2fa:action-email-rate:${userId}:${action}`;
+}
+
+function generateEmailCode() {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function hashActionEmailCode(userId, action, code) {
+  return crypto
+    .createHmac('sha256', ACTION_EMAIL_CODE_SECRET)
+    .update(`${userId}:${action}:${String(code).trim()}`)
+    .digest('hex');
 }
 
 router.post('/', encryptedCSRFProtection, async (req, res) => {
@@ -68,11 +85,11 @@ router.post('/', encryptedCSRFProtection, async (req, res) => {
       });
     }
 
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = generateEmailCode();
     await valkey.set(
       getActionEmailKey(userId, action),
       JSON.stringify({
-        code,
+        codeHash: hashActionEmailCode(userId, action, code),
         createdAt: Date.now(),
       }),
       'EX',

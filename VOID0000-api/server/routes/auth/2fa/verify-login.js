@@ -11,6 +11,8 @@ import argon2 from 'argon2';
 import { sendVerificationEmail } from '../../../middleware/emailService.js';
 import { sessionStore } from '../../../middleware/sessionStore.js';
 import valkey from '../../../valkey.js';
+import crypto from 'crypto';
+import { DeviceFingerprint } from '../../../utils/deviceFingerprint.js';
 
 const router = Router();
 const ACCESS_SECRET = process.env.ACCESS_SECRET;
@@ -19,17 +21,12 @@ const TWO_FACTOR_VERIFY_WINDOW_SEC = 5 * 60;
 const TWO_FACTOR_VERIFY_MAX_ATTEMPTS = 5;
 const TWO_FACTOR_EMAIL_WINDOW_SEC = 10 * 60;
 const TWO_FACTOR_EMAIL_MAX_SENDS = 3;
-
-// In-memory store for pending 2FA sessions
-const pending2FA = new Map();
-
-// Cleanup expired sessions every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, value] of pending2FA) {
-    if (now > value.expiresAt) pending2FA.delete(key);
-  }
-}, 5 * 60 * 1000);
+const TWO_FACTOR_SESSION_WINDOW_SEC = 5 * 60;
+const TWO_FACTOR_CODE_SECRET =
+  process.env.TWO_FACTOR_CODE_SECRET ||
+  process.env.REFRESH_SECRET ||
+  process.env.ACCESS_SECRET ||
+  'void-dev-two-factor-code-secret';
 
 const normalizeIP = (ip) => {
   if (!ip) return null;
@@ -38,13 +35,69 @@ const normalizeIP = (ip) => {
   return ip;
 };
 
+function getTwoFactorSessionKey(twoFactorToken) {
+  return `auth:2fa:session:${twoFactorToken}`;
+}
+
+function getRequestBinding(req) {
+  return {
+    deviceFingerprint: DeviceFingerprint.generateFingerprint(req),
+    userAgent: req.get('User-Agent') || 'unknown',
+  };
+}
+
+function isSameRequestBinding(session, req) {
+  const current = getRequestBinding(req);
+  return (
+    session?.deviceFingerprint === current.deviceFingerprint &&
+    session?.userAgent === current.userAgent
+  );
+}
+
+function generateEmailCode() {
+  return crypto.randomInt(100000, 1000000).toString();
+}
+
+function hashEmailCode(twoFactorToken, code) {
+  return crypto
+    .createHmac('sha256', TWO_FACTOR_CODE_SECRET)
+    .update(`${twoFactorToken}:${String(code).trim()}`)
+    .digest('hex');
+}
+
+function safeEqualHex(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left, 'hex');
+  const rightBuffer = Buffer.from(right, 'hex');
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+async function getPendingTwoFactorSession(twoFactorToken) {
+  const raw = await valkey.get(getTwoFactorSessionKey(twoFactorToken));
+  return raw ? JSON.parse(raw) : null;
+}
+
+async function savePendingTwoFactorSession(twoFactorToken, session) {
+  await valkey.set(
+    getTwoFactorSessionKey(twoFactorToken),
+    JSON.stringify(session),
+    'EX',
+    TWO_FACTOR_SESSION_WINDOW_SEC,
+  );
+}
+
+async function deletePendingTwoFactorSession(twoFactorToken) {
+  await valkey.del(getTwoFactorSessionKey(twoFactorToken));
+}
+
 // Store a pending 2FA session (called from login.js)
-export function create2FASession(userId, req) {
+export async function create2FASession(userId, req) {
   const token = uuidv4();
 
-  pending2FA.set(token, {
+  await savePendingTwoFactorSession(token, {
     userId,
     ip: getClientIP(req),
+    ...getRequestBinding(req),
     userAgent: req.get('User-Agent') || 'unknown',
     expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
   });
@@ -62,6 +115,7 @@ function getTwoFactorEmailKey(twoFactorToken) {
 
 async function clearTwoFactorAttemptState(twoFactorToken) {
   await valkey.del(
+    getTwoFactorSessionKey(twoFactorToken),
     getTwoFactorVerifyKey(twoFactorToken),
     getTwoFactorEmailKey(twoFactorToken),
   );
@@ -122,11 +176,19 @@ router.post('/send-email', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid session' });
     }
 
-    const session = pending2FA.get(twoFactorToken);
+    const session = await getPendingTwoFactorSession(twoFactorToken);
     if (!session || Date.now() > session.expiresAt) {
-      pending2FA.delete(twoFactorToken);
       await clearTwoFactorAttemptState(twoFactorToken);
       return res.status(401).json({ success: false, message: 'Session expired. Please login again.' });
+    }
+
+    if (!isSameRequestBinding(session, req)) {
+      await clearTwoFactorAttemptState(twoFactorToken);
+      return res.status(401).json({
+        success: false,
+        message: '2FA session changed devices. Please login again.',
+        code: 'TWO_FA_DEVICE_MISMATCH',
+      });
     }
 
     const emailSendCount = await recordTwoFactorEmailSend(twoFactorToken);
@@ -147,11 +209,12 @@ router.post('/send-email', async (req, res) => {
     }
 
     const email = userResult.rows[0].email;
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const code = generateEmailCode();
 
     // Store code in session
-    session.emailCode = code;
+    session.emailCodeHash = hashEmailCode(twoFactorToken, code);
     session.emailCodeExpiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+    await savePendingTwoFactorSession(twoFactorToken, session);
 
     await sendVerificationEmail(email, code);
 
@@ -175,9 +238,8 @@ router.post('/', async (req, res) => {
     }
 
     // Validate pending session
-    const session = pending2FA.get(twoFactorToken);
+    const session = await getPendingTwoFactorSession(twoFactorToken);
     if (!session || Date.now() > session.expiresAt) {
-      pending2FA.delete(twoFactorToken);
       await clearTwoFactorAttemptState(twoFactorToken);
       return res.status(401).json({
         success: false,
@@ -186,9 +248,18 @@ router.post('/', async (req, res) => {
       });
     }
 
+    if (!isSameRequestBinding(session, req)) {
+      await clearTwoFactorAttemptState(twoFactorToken);
+      return res.status(401).json({
+        success: false,
+        message: '2FA session changed devices. Please login again.',
+        code: 'TWO_FA_DEVICE_MISMATCH',
+      });
+    }
+
     const blockedState = await checkTwoFactorBlocked(twoFactorToken);
     if (blockedState.blocked) {
-      pending2FA.delete(twoFactorToken);
+      await deletePendingTwoFactorSession(twoFactorToken);
       return res.status(429).json({
         success: false,
         message: 'Too many invalid 2FA attempts. Please login again.',
@@ -221,7 +292,7 @@ router.post('/', async (req, res) => {
       if (!validBackup) {
         const failureState = await recordTwoFactorFailure(twoFactorToken);
         if (failureState.blockedUntil) {
-          pending2FA.delete(twoFactorToken);
+          await deletePendingTwoFactorSession(twoFactorToken);
         }
         return res.status(400).json({
           success: false,
@@ -254,7 +325,7 @@ router.post('/', async (req, res) => {
       if (!isValid) {
         const failureState = await recordTwoFactorFailure(twoFactorToken);
         if (failureState.blockedUntil) {
-          pending2FA.delete(twoFactorToken);
+          await deletePendingTwoFactorSession(twoFactorToken);
         }
         return res.status(400).json({
           success: false,
@@ -263,17 +334,18 @@ router.post('/', async (req, res) => {
       }
     } else if (method === 'email') {
       // Verify email code
-      if (!session.emailCode || Date.now() > session.emailCodeExpiresAt) {
+      if (!session.emailCodeHash || Date.now() > session.emailCodeExpiresAt) {
         return res.status(400).json({
           success: false,
           message: 'Email code expired. Please request a new one.',
         });
       }
 
-      if (session.emailCode !== code.trim()) {
+      const submittedCodeHash = hashEmailCode(twoFactorToken, code);
+      if (!safeEqualHex(session.emailCodeHash, submittedCodeHash)) {
         const failureState = await recordTwoFactorFailure(twoFactorToken);
         if (failureState.blockedUntil) {
-          pending2FA.delete(twoFactorToken);
+          await deletePendingTwoFactorSession(twoFactorToken);
         }
         return res.status(400).json({
           success: false,
@@ -288,7 +360,6 @@ router.post('/', async (req, res) => {
     }
 
     // 2FA passed — complete login (issue tokens)
-    pending2FA.delete(twoFactorToken);
     await clearTwoFactorAttemptState(twoFactorToken);
 
     const userResult = await pool.query(

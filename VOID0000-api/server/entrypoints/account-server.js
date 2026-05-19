@@ -32,7 +32,7 @@ const allowedOrigins = [
 
 // ================== MIDDLEWARE ==================
 
-app.set('trust proxy', true);
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 
 app.use(
   cors({
@@ -75,6 +75,7 @@ import {
   authDeviceLimiter,
   forgotPasswordLimiter,
   resetDeviceLimiter,
+  checkResetTokenLimiter,
   registerDeviceLimiter,
   authCheckLimiter,
   refreshTokenLimiter,
@@ -132,6 +133,7 @@ app.use('/api/auth/login', (req, res, next) => {
 app.use('/api/auth/login', authDeviceLimiter);
 app.use('/api/auth/forgot-password', forgotPasswordLimiter);
 app.use('/api/auth/reset-password', resetDeviceLimiter);
+app.use('/api/auth/check-reset-token', checkResetTokenLimiter);
 app.use('/api/auth/register', registerDeviceLimiter);
 app.use('/api/auth/me', authCheckLimiter);
 app.use('/api/auth/refresh', refreshTokenLimiter);

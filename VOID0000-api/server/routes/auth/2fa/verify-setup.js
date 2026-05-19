@@ -6,6 +6,25 @@ import crypto from 'crypto';
 import argon2 from 'argon2';
 
 const router = Router();
+const EMAIL_SETUP_CODE_SECRET =
+  process.env.TWO_FACTOR_CODE_SECRET ||
+  process.env.REFRESH_SECRET ||
+  process.env.ACCESS_SECRET ||
+  'void-dev-email-setup-code-secret';
+
+function hashSetupEmailCode(userId, code) {
+  return crypto
+    .createHmac('sha256', EMAIL_SETUP_CODE_SECRET)
+    .update(`${userId}:setup_email:${String(code).trim()}`)
+    .digest('hex');
+}
+
+function safeEqualHex(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const leftBuffer = Buffer.from(left, 'hex');
+  const rightBuffer = Buffer.from(right, 'hex');
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
 
 // POST /api/auth/2fa/verify-setup — Confirm 2FA setup with a test code
 router.post('/', async (req, res) => {
@@ -62,7 +81,11 @@ router.post('/', async (req, res) => {
         });
       }
 
-      if (stored.code !== code.trim()) {
+      const submittedCodeHash = hashSetupEmailCode(userId, code);
+      const matchesHashedCode =
+        stored.codeHash && safeEqualHex(stored.codeHash, submittedCodeHash);
+
+      if (!matchesHashedCode) {
         return res.status(400).json({
           success: false,
           message: 'Invalid code. Please try again.',
