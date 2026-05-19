@@ -8,7 +8,9 @@ import type {
 } from './mlsTypes';
 
 const DB_NAME = 'void_mls';
-const DB_VERSION = 3;
+// Keep this at 4 because the temporary OpenMLS build upgraded live browsers.
+// IndexedDB cannot be opened at a lower version once a user has seen v4.
+const DB_VERSION = 4;
 const ACCOUNT_STORE = 'accounts';
 const GROUP_STORE = 'groups';
 const KEY_PACKAGE_STORE = 'key_packages';
