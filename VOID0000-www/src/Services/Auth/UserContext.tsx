@@ -339,11 +339,13 @@ export interface User {
 }
 
 export type KeyStatus = 'SECURE' | 'LOCKED' | 'UNINITIALIZED';
+export type RecoveryBackupStatus = 'RECOVERY_KEY_READY' | 'PASSWORD_ONLY' | 'UNINITIALIZED';
 
 interface UserContextType {
   user: User | null;
   loading: boolean;
   keyStatus: KeyStatus;
+  recoveryBackupStatus: RecoveryBackupStatus;
   keyStatusLoading: boolean;
   mlsRecoveryGate: MlsRecoveryGateState;
   isLoggingOut: boolean;
@@ -369,6 +371,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   });
   const [loading, setLoading] = useState(!localStorage.getItem(USER_STORAGE_KEY));
   const [keyStatus, setKeyStatus] = useState<KeyStatus>('UNINITIALIZED');
+  const [recoveryBackupStatus, setRecoveryBackupStatus] = useState<RecoveryBackupStatus>('UNINITIALIZED');
   const [keyStatusLoading, setKeyStatusLoading] = useState(false);
   const [keyInitResolved, setKeyInitResolved] = useState(false);
   const [mlsRecoveryGate, setMlsRecoveryGate] = useState<MlsRecoveryGateState>({
@@ -397,6 +400,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const LOGIN_PASSWORD_LEASE_MS = 30_000;
+
   const setLoginPassword = (password: string) => {
     if (!password.trim()) {
       clearLoginPassword();
@@ -408,11 +413,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       window.clearTimeout(loginPasswordClearTimerRef.current);
     }
 
-    // Keep the raw password only long enough for immediate login/recovery
-    // bootstrap work. Longer-lived background tasks must not depend on it.
+    // Keep the raw password only long enough for the immediate key init /
+    // recovery bootstrap pass. Longer-lived maintenance must not depend on it.
     loginPasswordClearTimerRef.current = window.setTimeout(() => {
       clearLoginPassword();
-    }, 2 * 60_000);
+    }, LOGIN_PASSWORD_LEASE_MS);
   };
 
   const refreshSecureBackupsWithPassword = async (password: string) => {
@@ -426,6 +431,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     await uploadSecureBackupsNow(user.id, password);
     setKeyStatus('SECURE');
+    setRecoveryBackupStatus('PASSWORD_ONLY');
   };
 
   const generateRecoveryKey = () => keyManager.generateRecoveryPhrase();
@@ -442,6 +448,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     await uploadRecoverySecureBackupsNow(user.id, recoveryKey);
     await keyManager.storeRecoveryKeyForBackup(user.id, recoveryKey);
     setKeyStatus('SECURE');
+    setRecoveryBackupStatus('RECOVERY_KEY_READY');
   };
 
   const clearMlsRecoveryGate = () => {
@@ -472,6 +479,20 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const resolveKeyStatusFromBackup = (backup: KeyBackupRecord | null): KeyStatus => {
     return hasPasswordBackupPayload(backup) || hasRecoveryBackupPayload(backup) ? 'SECURE' : 'UNINITIALIZED';
+  };
+
+  const resolveRecoveryBackupStatusFromBackup = (
+    backup: KeyBackupRecord | null
+  ): RecoveryBackupStatus => {
+    if (hasRecoveryBackupPayload(backup)) {
+      return 'RECOVERY_KEY_READY';
+    }
+
+    if (hasPasswordBackupPayload(backup)) {
+      return 'PASSWORD_ONLY';
+    }
+
+    return 'UNINITIALIZED';
   };
 
   const createKeyCallbacks = () => ({
@@ -536,13 +557,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const refreshKeyStatus = async (): Promise<KeyStatus> => {
     if (!user?.id) {
       setKeyStatus('UNINITIALIZED');
+      setRecoveryBackupStatus('UNINITIALIZED');
       return 'UNINITIALIZED';
     }
 
     try {
       const backup = await fetchKeyBackup();
       const nextStatus = resolveKeyStatusFromBackup(backup);
+      const nextRecoveryBackupStatus = resolveRecoveryBackupStatusFromBackup(backup);
       setKeyStatus(nextStatus);
+      setRecoveryBackupStatus(nextRecoveryBackupStatus);
       return nextStatus;
     } catch (err) {
       console.error('Failed to refresh key status:', err);
@@ -557,6 +581,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     clearLoginPassword();
     clearAppBootstrap();
     setKeyStatus('UNINITIALIZED');
+    setRecoveryBackupStatus('UNINITIALIZED');
     setKeyStatusLoading(false);
     clearMlsRecoveryGate();
     try {
@@ -591,6 +616,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       await keyManager.restoreFromRecoveryPhrase(user.id, recoveryKey, null, createKeyCallbacks());
       await keyManager.storeRecoveryKeyForBackup(user.id, recoveryKey);
       setKeyStatus(resolveKeyStatusFromBackup(backup));
+      setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
 
       const restoreSummary = await restoreMlsStateFromBackup(user.id, backup, recoveryKey, 'recovery_key');
       const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
@@ -658,6 +684,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       const backup = await fetchKeyBackup();
       if (backup) {
         setKeyStatus(resolveKeyStatusFromBackup(backup));
+        setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
       }
 
       let restoreSummary = createEmptyRestoreSummary();
@@ -743,6 +770,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     if (!user?.id) {
       gateway.disconnect();
       setKeyStatus('UNINITIALIZED');
+      setRecoveryBackupStatus('UNINITIALIZED');
       setKeyStatusLoading(false);
       setKeyInitResolved(false);
       clearMlsRecoveryGate();
@@ -790,6 +818,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
           let restoreSummary: MlsRestoreSummary = createEmptyRestoreSummary();
           if (!cancelled) {
             setKeyStatus(resolveKeyStatusFromBackup(backup));
+            setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
           }
 
           // Restore MLS state on a new device if the backup contains it.
@@ -827,7 +856,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
             local_group_keys: localChatState.groupKeyCount,
           });
 
-          if (!cancelled && hasRecoverableServerState && !hasLocalChatState) {
+          const needsRecoveryAttention =
+            hasRecoverableServerState && !hasLocalChatState;
+
+          if (!cancelled && needsRecoveryAttention) {
             if (hasRecoveryMlsBackup || hasRecoveryBackup) {
               activateMlsRecoveryGate('recovery_key_required', {
                 user_id: userId,
@@ -867,17 +899,39 @@ export function UserProvider({ children }: { children: ReactNode }) {
                 synced_commits: syncResult.syncedCommits,
               });
             }
+          } else if (!cancelled) {
+            try {
+              await chatCryptoProtocolService.bootstrapAccount(userId, true);
+              await chatCryptoProtocolService.ensureServerKeyPackageReserve(userId);
+
+              if (password) {
+                await uploadSecureBackupsNow(userId, password);
+              }
+
+              const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
+              if (recoveryKey) {
+                await uploadRecoverySecureBackupsNow(userId, recoveryKey);
+              }
+
+              setKeyStatus('SECURE');
+              setRecoveryBackupStatus(recoveryKey ? 'RECOVERY_KEY_READY' : 'PASSWORD_ONLY');
+            } catch {
+              // Non-critical — periodic maintenance and explicit recovery
+              // flows can still repair the backup state later.
+            }
           }
         } catch (err) {
           console.error('Failed to inspect key backup status:', err);
           if (!cancelled) {
             setKeyStatus('UNINITIALIZED');
+            setRecoveryBackupStatus('UNINITIALIZED');
           }
         } finally {
           if (!cancelled) {
             setKeyStatusLoading(false);
             setKeyInitResolved(true);
           }
+          clearLoginPasswordIfMatches(password);
         }
       })
       .catch(async (err) => {
@@ -888,6 +942,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
           const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
           console.warn('🔑 Keys are locked on this device');
           setKeyStatus('LOCKED');
+          setRecoveryBackupStatus(hasRecoveryBackup ? 'RECOVERY_KEY_READY' : resolveRecoveryBackupStatusFromBackup(backup));
           activateMlsRecoveryGate(
             hasRecoveryBackup
               ? 'recovery_key_required'
@@ -903,6 +958,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         } else {
           console.warn('🔑 Key init failed:', err.message);
           setKeyStatus('UNINITIALIZED');
+          setRecoveryBackupStatus('UNINITIALIZED');
         }
         setKeyStatusLoading(false);
         setKeyInitResolved(true);
@@ -920,7 +976,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
     if (!keyInitResolved || keyStatusLoading || keyStatus === 'LOCKED' || mlsRecoveryGate.active) return;
 
     const userId = user.id;
-    const password = loginPasswordRef.current;
     let cancelled = false;
 
     liveConversationKeyVersionsRef.current = {};
@@ -972,37 +1027,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       void chatCryptoProtocolService.ensureServerKeyPackageReserve(userId).catch(() => {});
     };
-
-    // Login: initial bootstrap + backup, then immediate reserve top-up.
-    void (async () => {
-      try {
-        await chatCryptoProtocolService.bootstrapAccount(userId, true);
-        if (cancelled) return;
-
-        runKeyPackageTopUp();
-
-        try {
-          if (password) {
-            await uploadSecureBackupsNow(userId, password);
-          }
-
-          const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
-          if (recoveryKey) {
-            await uploadRecoverySecureBackupsNow(userId, recoveryKey);
-          }
-
-          if (!cancelled) {
-            setKeyStatus('SECURE');
-          }
-        } catch {
-          // Non-critical — we fall back to explicit password flows later.
-        }
-      } catch {
-        // Non-critical — follow-up triggers can still bootstrap the account.
-      } finally {
-        clearLoginPasswordIfMatches(password);
-      }
-    })();
 
     // Periodic maintenance fallback — run bootstrap + top-up every 60s.
     const maintenanceInterval = window.setInterval(() => {
@@ -1213,6 +1237,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       keyStatus,
+      recoveryBackupStatus,
       keyStatusLoading,
       mlsRecoveryGate,
       isLoggingOut,

@@ -108,6 +108,7 @@ const MessageInput = (props: MessageInputProps) => {
     openFilePicker,
     handleFileChange,
     removeAttachment,
+    retryAttachment,
     dismissAttachmentAlert,
   } = useMessageInput(props);
 
@@ -392,8 +393,15 @@ const MessageInput = (props: MessageInputProps) => {
                 </div>
               )}
               {a.error && (
-                <div className="absolute inset-0 bg-red-900/60 flex items-center justify-center">
-                  <span className="text-[9px] text-white text-center px-1">{a.error}</span>
+                <div className="absolute inset-0 bg-red-900/65 flex flex-col items-center justify-center gap-1 px-1">
+                  <span className="text-[9px] text-white text-center">{a.error}</span>
+                  <button
+                    type="button"
+                    onClick={() => retryAttachment(a.id)}
+                    className="rounded-full bg-white/15 px-2 py-0.5 text-[9px] font-semibold text-white hover:bg-white/25"
+                  >
+                    Retry
+                  </button>
                 </div>
               )}
               <button

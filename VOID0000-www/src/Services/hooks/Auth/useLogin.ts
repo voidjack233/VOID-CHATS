@@ -107,6 +107,7 @@ export function useLogin() {
       setLoginPassword(formData.password);
 
       await refreshUser();
+      setFormData(prev => ({ ...prev, password: '' }));
       navigate(getPostLoginDestination());
 
     } catch (err: any) {
@@ -179,6 +180,7 @@ export function useLogin() {
       // Success! Clear 2FA state and finish login
       setTwoFactorData(null);
       await refreshUser();
+      setFormData(prev => ({ ...prev, password: '' }));
       navigate(getPostLoginDestination());
 
     } catch (err: any) {

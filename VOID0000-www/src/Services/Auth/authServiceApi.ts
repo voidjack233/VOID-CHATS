@@ -404,11 +404,21 @@ export const authService = {
       mls_state_encrypted?: string;
       mls_state_iv?: string;
       mls_state_salt?: string;
-    } | null
+    } | null,
+    twoFactor?: {
+      method: string;
+      code: string;
+    } | null,
   ): Promise<ApiResponse> {
     const response = await fetchWithAuth('/api/auth/change-password', {
       method: 'POST',
-      body: JSON.stringify({ currentPassword, newPassword, keyBackup: keyBackup || null }),
+      body: JSON.stringify({
+        currentPassword,
+        newPassword,
+        keyBackup: keyBackup || null,
+        twoFactorMethod: twoFactor?.method || null,
+        twoFactorCode: twoFactor?.code || null,
+      }),
     });
     const result = await response.json();
 
@@ -469,6 +479,14 @@ export const authService = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ twoFactorToken }),
       credentials: 'include',
+    });
+    return res.json();
+  },
+
+  async sendAuthenticated2FAEmailCode(action: 'change_password'): Promise<any> {
+    const res = await fetchWithAuth('/api/auth/2fa/send-action-email', {
+      method: 'POST',
+      body: JSON.stringify({ action }),
     });
     return res.json();
   },

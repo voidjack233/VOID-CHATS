@@ -17,6 +17,8 @@ import { debugLog } from '../../Services/utils/debugLog';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
 import { useTheme, type Density } from '../../Services/hooks/Settings/useTheme';
+import { useConnectionStatus } from '../../Services/hooks/common/useConnectionStatus';
+import { useServiceHealth } from '../../Services/hooks/common/useServiceHealth';
 import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
 import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
 import MessageItem from './MessageItem';
@@ -334,6 +336,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const olderTopScrollLockThreshold = 2;
   const newerBottomLoadThreshold = NEWER_HISTORY_PREFETCH_DISTANCE[density];
   const { friends } = useFriends();
+  const { isOnline, gatewayState } = useConnectionStatus();
+  const serviceHealth = useServiceHealth();
   const { profile: myProfile } = useProfileRecord(user?.profile_id || '');
   const currentMember = user?.id ? members[user.id] || null : null;
   const waitForEncryptionBootstrap = !encryptionKey && conversationSecurityState?.status === 'recovering';
@@ -410,6 +414,54 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  const queuedMessageCount = useMemo(
+    () => visualMessages.filter((message) => message.local_status === 'queued').length,
+    [visualMessages],
+  );
+  const messageServiceIssue = useMemo(
+    () => serviceHealth.issues.find((issue) => issue.service === 'Message service') || null,
+    [serviceHealth.issues],
+  );
+  const serviceBanner = useMemo(() => {
+    if (!isOnline) {
+      return {
+        tone: 'orange' as const,
+        icon: AlertCircle,
+        message: queuedMessageCount > 0
+          ? `You're offline. ${queuedMessageCount} queued ${queuedMessageCount === 1 ? 'message will' : 'messages will'} retry automatically when connection returns.`
+          : 'You’re offline. New sends may fail until your connection returns.',
+      };
+    }
+
+    if (gatewayState === 'reconnecting') {
+      return {
+        tone: 'blue' as const,
+        icon: Loader2,
+        message: 'Live updates are reconnecting. Sent messages can still save, but incoming updates may appear after reconnect.',
+      };
+    }
+
+    if (messageServiceIssue) {
+      return {
+        tone: 'orange' as const,
+        icon: AlertCircle,
+        message: queuedMessageCount > 0
+          ? `${messageServiceIssue.message} ${queuedMessageCount} queued ${queuedMessageCount === 1 ? 'message is' : 'messages are'} waiting to retry.`
+          : messageServiceIssue.message,
+      };
+    }
+
+    if (queuedMessageCount > 0) {
+      return {
+        tone: 'blue' as const,
+        icon: Loader2,
+        message: `${queuedMessageCount} queued ${queuedMessageCount === 1 ? 'message is' : 'messages are'} waiting to retry automatically.`,
+      };
+    }
+
+    return null;
+  }, [gatewayState, isOnline, messageServiceIssue, queuedMessageCount]);
+  const ServiceBannerIcon = serviceBanner?.icon ?? null;
   const layoutTraitsById = useMessageLayout(visualMessages, groupBreakBeforeIds, hasOlder);
   const retryingFailedMessageIdsRef = useRef<Set<string>>(new Set());
   const olderSkeletonSeed = `${conversation.id}:${visualMessages[0]?.message_id || 'empty'}`;
@@ -526,10 +578,14 @@ const MessageViewV2 = memo(function MessageViewV2({
       };
       const sentMessage = content.trim()
         ? await sendMessage(conversation.id, content, encryptionKey, {
+            client_message_id: localClientId,
             ...retryOptions,
             secure_attachments: attachments,
           })
-        : await sendImageOnlyMessage(conversation.id, encryptionKey, attachments, retryOptions);
+        : await sendImageOnlyMessage(conversation.id, encryptionKey, attachments, {
+            client_message_id: localClientId,
+            ...retryOptions,
+          });
 
       forceFollowOutputRef.current = true;
       onSendNotice?.(null);
@@ -1394,6 +1450,30 @@ const MessageViewV2 = memo(function MessageViewV2({
           <div className="inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full border border-orange-400/25 bg-void-bg-main/95 px-3 py-1.5 text-xs font-medium text-orange-200 shadow-lg shadow-black/20 supports-[backdrop-filter]:backdrop-blur">
             <AlertCircle className="h-3.5 w-3.5 shrink-0 text-orange-300" />
             <span className="truncate">{sendNotice}</span>
+          </div>
+        </div>
+      ) : null}
+      {serviceBanner ? (
+        <div className={`pointer-events-none absolute inset-x-0 ${sendNotice ? 'top-14' : 'top-3'} z-20 flex justify-center px-4`}>
+          <div
+            className={`inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium shadow-lg shadow-black/20 supports-[backdrop-filter]:backdrop-blur ${
+              serviceBanner.tone === 'blue'
+                ? 'border border-blue-400/25 bg-void-bg-main/95 text-blue-100'
+                : 'border border-orange-400/25 bg-void-bg-main/95 text-orange-200'
+            }`}
+          >
+            {ServiceBannerIcon ? (
+              <ServiceBannerIcon
+                className={`h-3.5 w-3.5 shrink-0 ${
+                  serviceBanner.tone === 'blue'
+                    ? ServiceBannerIcon === Loader2
+                      ? 'animate-spin text-blue-300'
+                      : 'text-blue-300'
+                    : 'text-orange-300'
+                }`}
+              />
+            ) : null}
+            <span className="truncate">{serviceBanner.message}</span>
           </div>
         </div>
       ) : null}

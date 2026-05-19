@@ -2,6 +2,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { debugLog } from '../../utils/debugLog';
 import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
+import { useConnectionStatus } from '../common/useConnectionStatus';
+import { useServiceHealth } from '../common/useServiceHealth';
 import {
   sendMessage,
   sendImageOnlyMessage,
@@ -29,6 +31,7 @@ export interface PendingAttachment {
   blurhash?: string;
   uploading: boolean;
   error?: string;
+  file?: File;
 }
 
 interface UseMessageInputProps {
@@ -120,6 +123,53 @@ function getSendErrorNotice(error: any): string {
   return message || 'Message was not sent. Try again.';
 }
 
+function isTransientSendFailure(error: any): boolean {
+  const status = Number(error?.status ?? error?.statusCode);
+  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
+
+  return (
+    error?.code === 'REQUEST_TIMEOUT' ||
+    error?.name === 'AbortError' ||
+    status >= 500 ||
+    message.includes('timed out') ||
+    message.includes('failed to fetch') ||
+    message.includes('network')
+  );
+}
+
+function getQueuedSendNotice(error: any): string {
+  const status = Number(error?.status ?? error?.statusCode);
+
+  if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError') {
+    return 'Message timed out and was queued. It will retry automatically when the service responds.';
+  }
+
+  if (status >= 500) {
+    return 'Message service is having trouble. Your message was queued and will retry automatically.';
+  }
+
+  return 'Message was queued and will retry automatically when your connection recovers.';
+}
+
+function getAttachmentUploadErrorLabel(error: any): string {
+  const status = Number(error?.status ?? error?.statusCode);
+  const message = typeof error?.message === 'string' ? error.message.toLowerCase() : '';
+
+  if (error?.code === 'REQUEST_TIMEOUT' || error?.name === 'AbortError' || message.includes('timed out')) {
+    return 'Upload timed out';
+  }
+
+  if (status >= 500) {
+    return 'Service unavailable';
+  }
+
+  if (message.includes('failed to fetch') || message.includes('network')) {
+    return 'Waiting for network';
+  }
+
+  return 'Upload failed';
+}
+
 const resolveAttachmentAccess = (conversation: Conversation) => {
   if (conversation.type === 'dm') {
     return {
@@ -162,12 +212,15 @@ export const useMessageInput = ({
   onCancelReply,
   onEditComplete,
 }: UseMessageInputProps) => {
+  const { isOnline } = useConnectionStatus();
+  const serviceHealth = useServiceHealth();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [attachmentAlert, setAttachmentAlert] = useState<AttachmentAlertState | null>(null);
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
+  const flushingQueuedSendIdsRef = useRef<Set<string>>(new Set());
   const attachmentAccess = resolveAttachmentAccess(conversation);
   const attachmentsAllowed = attachmentAccess.allowed;
   const attachmentsRestrictionLabel =
@@ -176,6 +229,7 @@ export const useMessageInput = ({
       : attachmentAccess.required === 'admins'
         ? 'Admins'
         : 'Owner';
+  const messageServiceDegraded = serviceHealth.issues.some((issue) => issue.service === 'Message service');
 
   // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -237,13 +291,10 @@ export const useMessageInput = ({
     try {
       const [attachment] = await uploadEncryptedAttachments(conversation.id, [file]);
       setAttachments((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false } : a))
+        prev.map((a) => (a.id === id ? { ...a, url: attachment ?? null, uploading: false, error: undefined, file: undefined } : a))
       );
     } catch (error: any) {
-      const uploadErrorMessage = typeof error?.message === 'string' ? error.message : '';
-      const uploadErrorLabel = uploadErrorMessage.toLowerCase().includes('timed out')
-        ? 'Upload timed out'
-        : 'Upload failed';
+      const uploadErrorLabel = getAttachmentUploadErrorLabel(error);
       setAttachments((prev) =>
         prev.map((a) => (a.id === id ? { ...a, uploading: false, error: uploadErrorLabel } : a))
       );
@@ -288,7 +339,7 @@ export const useMessageInput = ({
       file: f,
     }));
 
-    setAttachments((prev) => [...prev, ...toAdd.map(({ file: _f, ...a }) => a)]);
+    setAttachments((prev) => [...prev, ...toAdd]);
     toAdd.forEach(({ id, file }) => uploadFile(file, id));
   }, [attachments.length, attachmentsAllowed, uploadFile]);
 
@@ -299,6 +350,22 @@ export const useMessageInput = ({
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
+
+  const retryAttachment = useCallback((id: string) => {
+    const target = attachments.find((attachment) => attachment.id === id);
+    if (!target?.file || target.uploading) {
+      return;
+    }
+
+    setAttachments((prev) =>
+      prev.map((attachment) =>
+        attachment.id === id
+          ? { ...attachment, uploading: true, error: undefined, url: null }
+          : attachment
+      )
+    );
+    void uploadFile(target.file, id);
+  }, [attachments, uploadFile]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     if (!attachmentsAllowed) return;
@@ -467,7 +534,7 @@ export const useMessageInput = ({
   // Loads from persistent IndexedDB store so queued messages survive
   // conversation switch, refresh, and crash.
   useEffect(() => {
-    if (!encryptionKey) return;
+    if (!encryptionKey || !isOnline || messageServiceDegraded) return;
 
     let cancelled = false;
 
@@ -487,15 +554,44 @@ export const useMessageInput = ({
 
       for (const queued of pending) {
         if (cancelled) break;
+        if (flushingQueuedSendIdsRef.current.has(queued.local_client_id)) {
+          continue;
+        }
+
+        flushingQueuedSendIdsRef.current.add(queued.local_client_id);
         try {
           const sendCrypto = await resolveSendCrypto();
           if (sendCrypto.bootstrapped) {
             onEncryptionKeyResolved?.(sendCrypto.key, sendCrypto.version);
           }
 
+          onMessageSent({
+            conversation_id: queued.conversation_id,
+            message_id: queued.local_client_id,
+            sender_id: queued.sender_id,
+            encrypted_content: null,
+            iv: null,
+            key_version: sendCrypto.version,
+            message_type: MLS_MESSAGE_TYPE,
+            protocol: 'mls',
+            protocol_version: 1,
+            reply_to: queued.reply_to_id,
+            attachments: queued.uploaded_urls,
+            is_edited: false,
+            edited_at: null,
+            is_deleted: false,
+            created_at: queued.created_at,
+            content: queued.text || undefined,
+            reactions: {},
+            mentions: queued.mentions ?? undefined,
+            local_status: 'sending',
+            local_client_id: queued.local_client_id,
+          });
+
           let msg: Message;
           if (queued.text) {
             msg = await sendMessage(conversation.id, queued.text, sendCrypto.key, {
+              client_message_id: queued.local_client_id,
               key_version: sendCrypto.version,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
@@ -504,6 +600,7 @@ export const useMessageInput = ({
             });
           } else if (queued.uploaded_urls.length > 0) {
             msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, queued.uploaded_urls, {
+              client_message_id: queued.local_client_id,
               key_version: sendCrypto.version,
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
@@ -525,17 +622,59 @@ export const useMessageInput = ({
             local_client_id: queued.local_client_id,
           });
         } catch (retryErr) {
-          // Leave in store for future retry — don't remove unless permanently failed.
-          console.error('[QUEUED_SEND] retry failed, will retry later', {
-            local_client_id: queued.local_client_id,
-            error: retryErr,
-          });
+          if (!isTransientSendFailure(retryErr) && !isDmPeerNotReadyError(retryErr)) {
+            console.error('[QUEUED_SEND] queued retry failed permanently, marking failed', {
+              local_client_id: queued.local_client_id,
+              error: retryErr,
+            });
+            await queuedSendStore.remove(conversation.id, queued.local_client_id).catch(() => {});
+            onMessageSent({
+              conversation_id: queued.conversation_id,
+              message_id: queued.local_client_id,
+              sender_id: queued.sender_id,
+              encrypted_content: null,
+              iv: null,
+              key_version: 1,
+              message_type: MLS_MESSAGE_TYPE,
+              protocol: 'mls',
+              protocol_version: 1,
+              reply_to: queued.reply_to_id,
+              attachments: queued.uploaded_urls,
+              is_edited: false,
+              edited_at: null,
+              is_deleted: false,
+              created_at: queued.created_at,
+              content: queued.text || undefined,
+              reactions: {},
+              mentions: queued.mentions ?? undefined,
+              local_status: 'failed',
+              local_client_id: queued.local_client_id,
+            });
+            onSendError?.(getSendErrorNotice(retryErr));
+          } else {
+            // Leave in store for future retry.
+            console.error('[QUEUED_SEND] retry failed, will retry later', {
+              local_client_id: queued.local_client_id,
+              error: retryErr,
+            });
+          }
+        } finally {
+          flushingQueuedSendIdsRef.current.delete(queued.local_client_id);
         }
       }
     })();
 
     return () => { cancelled = true; };
-  }, [encryptionKey, conversation.id, onEncryptionKeyResolved, onMessageSent, resolveSendCrypto]);
+  }, [
+    conversation.id,
+    encryptionKey,
+    isOnline,
+    messageServiceDegraded,
+    onEncryptionKeyResolved,
+    onMessageSent,
+    onSendError,
+    resolveSendCrypto,
+  ]);
 
   useEffect(() => {
     const isTypingEligible =
@@ -651,6 +790,7 @@ export const useMessageInput = ({
         onCancelEdit?.();
       } else if (trimmed) {
         const msg = await sendMessage(conversation.id, trimmed, sendCrypto.key, {
+          client_message_id: localClientId || undefined,
           key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
@@ -668,6 +808,7 @@ export const useMessageInput = ({
         }
       } else if (uploadedAttachments.length > 0) {
         const msg = await sendImageOnlyMessage(conversation.id, sendCrypto.key, uploadedAttachments, {
+          client_message_id: localClientId || undefined,
           key_version: sendCrypto.version,
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
@@ -690,10 +831,10 @@ export const useMessageInput = ({
         conversation.type === 'dm' &&
         isDmPeerNotReadyError(err);
 
-      if (isPeerNotReady && optimisticMessage && localClientId) {
+      if ((isPeerNotReady || isTransientSendFailure(err)) && optimisticMessage && localClientId) {
         // Queue the message locally — don't restore input, don't mark failed.
         // The message stays visible with 'queued' status and will be retried
-        // automatically when encryptionKey becomes available (bootstrap succeeds).
+        // automatically when encryption/service health becomes usable again.
         debugLog('[QUEUED_SEND] queuing message for deferred secure send', {
           conversation_id: conversation.id,
           local_client_id: localClientId,
@@ -713,6 +854,11 @@ export const useMessageInput = ({
           mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           created_at: optimisticMessage.created_at,
         }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));
+        onSendError?.(
+          isPeerNotReady
+            ? 'Message queued. It will retry automatically when secure delivery is ready.'
+            : getQueuedSendNotice(err),
+        );
       } else {
         // Normal failure path. If we already rendered an optimistic bubble,
         // leave the failed bubble visible so the user can retry from there.
@@ -791,6 +937,7 @@ export const useMessageInput = ({
     openFilePicker,
     handleFileChange,
     removeAttachment,
+    retryAttachment,
     dismissAttachmentAlert,
   };
 };

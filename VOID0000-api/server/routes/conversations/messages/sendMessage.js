@@ -8,6 +8,7 @@ import {
   cassandra,
   getConversationKeyState,
   getConversationMembers,
+  mapStoredMessageRow,
   normalizeKeyVersion,
   normalizeForwardedMetadata,
   normalizeMentionMetadata,
@@ -17,6 +18,7 @@ import {
   serializeStoredMessageMetadata,
   verifyMembership,
 } from './shared.js';
+import valkey from '../../../valkey.js';
 
 export class MessageSendError extends Error {
   constructor(status, body) {
@@ -32,6 +34,66 @@ export function isMessageSendError(error) {
 
 function fail(status, body) {
   throw new MessageSendError(status, body);
+}
+
+const MESSAGE_IDEMPOTENCY_TTL_SEC = 7 * 24 * 60 * 60;
+
+function getClientMessageIdempotencyKey(userId, conversationId, clientMessageId) {
+  return `message:idempotency:${userId}:${conversationId}:${clientMessageId}`;
+}
+
+async function restoreIdempotentMessage({
+  userId,
+  conversationId,
+  conversationPublic,
+  storageConversationId,
+  clientMessageId,
+}) {
+  if (!clientMessageId) {
+    return null;
+  }
+
+  try {
+    const raw = await valkey.get(
+      getClientMessageIdempotencyKey(userId, conversationId, clientMessageId)
+    );
+    if (!raw) {
+      return null;
+    }
+
+    const cached = JSON.parse(raw);
+    const storedConversationId = cached?.storageConversationId || storageConversationId;
+    const storedMessageId = cached?.messageId;
+    if (!storedMessageId || !storedConversationId) {
+      return null;
+    }
+
+    const result = await scylla.execute(
+      `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      [
+        cassandra.types.Uuid.fromString(String(storedConversationId)),
+        cassandra.types.TimeUuid.fromString(String(storedMessageId)),
+      ],
+      { prepare: true }
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      await valkey.del(
+        getClientMessageIdempotencyKey(userId, conversationId, clientMessageId)
+      ).catch(() => {});
+      return null;
+    }
+
+    return mapStoredMessageRow(row, conversationPublic);
+  } catch (error) {
+    console.warn('[MESSAGE_IDEMPOTENCY] failed to restore cached message', {
+      conversation_id: conversationId,
+      client_message_id: clientMessageId,
+      error: error instanceof Error ? error.message : String(error || ''),
+    });
+    return null;
+  }
 }
 
 async function findMissingDmDeliveryStateMembers(conversationId, recipientMemberIds, keyVersion) {
@@ -67,6 +129,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
     encrypted_content,
     iv,
     key_version,
+    client_message_id,
     message_type,
     reply_to,
     attachments,
@@ -106,6 +169,25 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
     const member = await verifyMembership(conversationId, userId);
     if (!member) fail(403, { error: 'Not a member of this conversation' });
     if (member.role === 'viewer') fail(403, { error: 'Viewers cannot send messages' });
+
+    const normalizedClientMessageId =
+      typeof client_message_id === 'string' && client_message_id.trim().length > 0
+        ? client_message_id.trim().slice(0, 128)
+        : null;
+
+    if (normalizedClientMessageId) {
+      const existingMessage = await restoreIdempotentMessage({
+        userId,
+        conversationId,
+        conversationPublic,
+        storageConversationId,
+        clientMessageId: normalizedClientMessageId,
+      });
+
+      if (existingMessage) {
+        return { message: existingMessage };
+      }
+    }
 
     if ((conversation.type === 'group' || conversation.type === 'channel') && Array.isArray(attachments) && attachments.length > 0) {
       let permissionsSource = conversation.permissions;
@@ -293,6 +375,24 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       created_at: now.toISOString(),
       ...(isPlaintextSystem ? { content: storedContent } : {}),
     };
+
+    if (normalizedClientMessageId) {
+      await valkey.set(
+        getClientMessageIdempotencyKey(userId, conversationId, normalizedClientMessageId),
+        JSON.stringify({
+          storageConversationId,
+          messageId: messageIdString,
+        }),
+        'EX',
+        MESSAGE_IDEMPOTENCY_TTL_SEC,
+      ).catch((error) => {
+        console.warn('[MESSAGE_IDEMPOTENCY] failed to cache sent message mapping', {
+          conversation_id: conversationId,
+          client_message_id: normalizedClientMessageId,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
+    }
 
     const members = await getConversationMembers(conversationId);
     if (dmKeyVersionBump) {

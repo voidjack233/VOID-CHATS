@@ -86,6 +86,7 @@ export async function sendMessage(
   plaintext: string,
   encryptionKey: CryptoKey,
   options?: {
+    client_message_id?: string;
     reply_to?: string;
     key_version?: number;
     attachments?: string[];
@@ -109,7 +110,7 @@ export async function sendMessage(
   const protocol: MessageCryptoProtocol = 'mls';
   const protocolVersion = chatCryptoProtocolService.protocolVersion;
 
-  const data = await withRequestTimeout(MESSAGE_SEND_TIMEOUT_MS, 'Message send', async (signal) => {
+  const { response, data } = await withRequestTimeout(MESSAGE_SEND_TIMEOUT_MS, 'Message send', async (signal) => {
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
       method: 'POST',
       signal,
@@ -120,6 +121,7 @@ export async function sendMessage(
         message_type: messageType,
         protocol,
         protocol_version: protocolVersion,
+        client_message_id: options?.client_message_id || null,
         reply_to: options?.reply_to || null,
         attachments: options?.attachments || [],
         forwarded: options?.forwarded || null,
@@ -127,9 +129,18 @@ export async function sendMessage(
       }),
     });
 
-    return response.json();
+    return {
+      response,
+      data: await response.json(),
+    };
   });
-  if (!data.success) throw createApiError(data);
+  if (!response.ok || !data.success) {
+    throw createApiError(data, {
+      status: response.status,
+      statusCode: response.status,
+      retryAfterMs: getRetryAfterMsFromResponse(response),
+    });
+  }
 
   const cryptoMetadata = resolveMessageCryptoMetadata({
     ...data.message,
@@ -178,6 +189,7 @@ export async function sendImageOnlyMessage(
   encryptionKey: CryptoKey,
   secureAttachments: string[],
   options?: {
+    client_message_id?: string;
     reply_to?: string;
     key_version?: number;
     message_type?: string;
@@ -194,7 +206,7 @@ export async function sendImageOnlyMessage(
   const protocol: MessageCryptoProtocol = 'mls';
   const protocolVersion = chatCryptoProtocolService.protocolVersion;
 
-  const data = await withRequestTimeout(MESSAGE_SEND_TIMEOUT_MS, 'Message send', async (signal) => {
+  const { response, data } = await withRequestTimeout(MESSAGE_SEND_TIMEOUT_MS, 'Message send', async (signal) => {
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages`, {
       method: 'POST',
       signal,
@@ -205,15 +217,25 @@ export async function sendImageOnlyMessage(
         message_type: messageType,
         protocol,
         protocol_version: protocolVersion,
+        client_message_id: options?.client_message_id || null,
         reply_to: options?.reply_to || null,
         forwarded: options?.forwarded || null,
         mentions: options?.mentions || [],
       }),
     });
 
-    return response.json();
+    return {
+      response,
+      data: await response.json(),
+    };
   });
-  if (!data.success) throw createApiError(data);
+  if (!response.ok || !data.success) {
+    throw createApiError(data, {
+      status: response.status,
+      statusCode: response.status,
+      retryAfterMs: getRetryAfterMsFromResponse(response),
+    });
+  }
 
   const cryptoMetadata = resolveMessageCryptoMetadata({
     ...data.message,
@@ -246,7 +268,7 @@ export async function uploadEncryptedAttachments(
   files: File[],
 ): Promise<string[]> {
   const prepared = await Promise.all(files.map((file) => encryptAttachmentFile(file)));
-  const data = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
+  const { response, data } = await withRequestTimeout(ATTACHMENT_UPLOAD_TIMEOUT_MS, 'Attachment upload', async (signal) => {
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/attachments`, {
       method: 'POST',
       signal,
@@ -258,9 +280,18 @@ export async function uploadEncryptedAttachments(
       }),
     });
 
-    return response.json();
+    return {
+      response,
+      data: await response.json(),
+    };
   });
-  if (!data.success) throw new Error(data.error || 'Upload failed');
+  if (!response.ok || !data.success) {
+    throw createApiError(data, {
+      status: response.status,
+      statusCode: response.status,
+      retryAfterMs: getRetryAfterMsFromResponse(response),
+    });
+  }
 
   const urls = Array.isArray(data.urls) ? (data.urls as string[]) : [];
   if (urls.length !== prepared.length) {

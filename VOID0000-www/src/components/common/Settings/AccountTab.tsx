@@ -14,6 +14,7 @@ const AccountTab = () => {
     generateRecoveryKey,
     logout,
     keyStatus,
+    recoveryBackupStatus,
     keyStatusLoading,
     setupRecoveryKey,
   } = useUser();
@@ -110,6 +111,23 @@ const AccountTab = () => {
     ? `Configured ${new Date(recoveryKeyConfiguredAt).toLocaleDateString()}`
     : 'Configured';
 
+  const secureBackupDescription = keyStatusLoading
+    ? 'Checking secure backup status...'
+    : keyStatus !== 'SECURE'
+      ? 'Your secure chat backup is being initialized automatically for this account.'
+      : recoveryBackupStatus === 'RECOVERY_KEY_READY'
+        ? 'Your chat identity is backed up and new devices can be restored with your recovery key.'
+        : 'Your chat identity is backed up, but new devices still fall back to your account password until you add a recovery key.';
+
+  const secureBackupBadge =
+    keyStatusLoading
+      ? 'Checking'
+      : keyStatus !== 'SECURE'
+        ? 'Initializing'
+        : recoveryBackupStatus === 'RECOVERY_KEY_READY'
+          ? 'Recovery Ready'
+          : 'Legacy Password';
+
   const handleCopyRecoveryKey = async () => {
     if (!recoveryKey) return;
     await navigator.clipboard.writeText(recoveryKey);
@@ -152,16 +170,18 @@ const AccountTab = () => {
                 <div className="text-left">
                   <p className="text-sm font-medium text-void-text">Secure Chat Backup</p>
                   <p className="text-xs text-void-text-muted mt-0.5 hidden sm:block">
-                    {keyStatusLoading
-                      ? 'Checking secure backup status...'
-                      : keyStatus === 'SECURE'
-                        ? 'Your chat identity is backed up. Add a recovery key so new devices do not need your old password.'
-                        : 'Your secure chat backup is being initialized automatically for this account.'}
+                    {secureBackupDescription}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className={`text-[11px] uppercase tracking-wide ${keyStatus === 'SECURE' && !keyStatusLoading ? 'text-emerald-400' : 'text-void-text-muted'}`}>
-                    {keyStatusLoading ? 'Checking' : keyStatus === 'SECURE' ? 'Automatic' : 'Initializing'}
+                  <span className={`text-[11px] uppercase tracking-wide ${
+                    keyStatus === 'SECURE' && !keyStatusLoading
+                      ? recoveryBackupStatus === 'RECOVERY_KEY_READY'
+                        ? 'text-emerald-400'
+                        : 'text-orange-300'
+                      : 'text-void-text-muted'
+                  }`}>
+                    {secureBackupBadge}
                   </span>
                   <Shield className="w-4 h-4 text-void-text-muted hidden sm:block" />
                 </div>
@@ -190,11 +210,21 @@ const AccountTab = () => {
                   <p className="mt-0.5 text-xs text-void-text-muted">
                     {recoveryKeyConfigured && !recoveryKey
                       ? 'A recovery key is already active. VOID cannot show it again. Rotate only if you lost it, because the old key will stop working.'
-                      : 'Use this key to restore encrypted chats on a new device. Keep it private; losing it can lock you out of old chat history.'}
+                      : recoveryBackupStatus === 'PASSWORD_ONLY'
+                        ? 'Right now this account can still recover secure chat with your account password. Create a recovery key so new devices do not depend on that legacy fallback.'
+                        : 'Use this key to restore encrypted chats on a new device. Keep it private; losing it can lock you out of old chat history.'}
                   </p>
                 </div>
                 <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-void-text-muted" />
               </div>
+
+              {recoveryBackupStatus === 'PASSWORD_ONLY' && !recoveryKey && !confirmRecoveryKeyRotation ? (
+                <div className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3">
+                  <p className="text-xs text-orange-100/90">
+                    This account is still using the older password-based recovery fallback for secure chat. A recovery key makes new-device restore safer and less dependent on your login password.
+                  </p>
+                </div>
+              ) : null}
 
               {confirmRecoveryKeyRotation && !recoveryKey ? (
                 <div className="mt-3 rounded-xl border border-orange-500/25 bg-orange-500/10 p-3">

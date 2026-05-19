@@ -9,7 +9,11 @@ export function useChangePassword() {
   const [success, setSuccess] = useState(false);
   const { user } = useUser();
 
-  const changePassword = async (currentPassword: string, newPassword: string) => {
+  const changePassword = async (
+    currentPassword: string,
+    newPassword: string,
+    twoFactor?: { method: string; code: string } | null,
+  ) => {
     setIsLoading(true);
     setError('');
     setSuccess(false);
@@ -26,7 +30,12 @@ export function useChangePassword() {
         }
       }
 
-      const result = await authService.changePassword(currentPassword, newPassword, keyBackup);
+      const result = await authService.changePassword(
+        currentPassword,
+        newPassword,
+        keyBackup,
+        twoFactor || null,
+      );
 
       if (!result.success) {
         setError(result.message || 'Failed to change password');
