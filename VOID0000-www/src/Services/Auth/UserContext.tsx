@@ -903,43 +903,37 @@ export function UserProvider({ children }: { children: ReactNode }) {
           }
 
           if (!cancelled && needsRecoveryAttention && !recoveryAttentionResolvedLocally) {
-            if (hasRecoveryMlsBackup || hasRecoveryBackup) {
-              activateMlsRecoveryGate('recovery_key_required', {
-                user_id: userId,
-                has_mls_backup: hasMlsBackup,
-                has_recovery_backup: hasRecoveryBackup,
-                has_recovery_mls_backup: hasRecoveryMlsBackup,
-                has_backup_conversation_artifacts: hasBackupConversationArtifacts,
-                synced_group_states: syncResult.syncedGroupStates,
-                synced_welcomes: syncResult.syncedWelcomes,
-                synced_commits: syncResult.syncedCommits,
-              });
-            } else if (!password && hasPasswordMlsBackup) {
-              activateMlsRecoveryGate('password_required', {
-                user_id: userId,
-                has_mls_backup: hasMlsBackup,
-                has_backup_conversation_artifacts: hasBackupConversationArtifacts,
-                synced_group_states: syncResult.syncedGroupStates,
-                synced_welcomes: syncResult.syncedWelcomes,
-                synced_commits: syncResult.syncedCommits,
+            const recoveryMetadata = {
+              user_id: userId,
+              has_mls_backup: hasMlsBackup,
+              has_recovery_backup: hasRecoveryBackup,
+              has_recovery_mls_backup: hasRecoveryMlsBackup,
+              has_backup_conversation_artifacts: hasBackupConversationArtifacts,
+              synced_group_states: syncResult.syncedGroupStates,
+              synced_welcomes: syncResult.syncedWelcomes,
+              synced_commits: syncResult.syncedCommits,
+            };
+
+            if (!password) {
+              markMlsRecoveryPending('sync_import_missing', {
+                ...recoveryMetadata,
+                source: 'local_identity_present_waiting_for_mls_state',
               });
             } else if (restoreSummary.outcome === 'failed') {
               activateMlsRecoveryGate('restore_failed', {
-                user_id: userId,
-                has_mls_backup: hasMlsBackup,
-                has_backup_conversation_artifacts: hasBackupConversationArtifacts,
-                synced_group_states: syncResult.syncedGroupStates,
-                synced_welcomes: syncResult.syncedWelcomes,
-                synced_commits: syncResult.syncedCommits,
+                ...recoveryMetadata,
+              });
+            } else if (hasRecoveryMlsBackup || hasRecoveryBackup) {
+              activateMlsRecoveryGate('recovery_key_required', {
+                ...recoveryMetadata,
+              });
+            } else if (hasPasswordMlsBackup) {
+              activateMlsRecoveryGate('password_required', {
+                ...recoveryMetadata,
               });
             } else {
               markMlsRecoveryPending('sync_import_missing', {
-                user_id: userId,
-                has_mls_backup: hasMlsBackup,
-                has_backup_conversation_artifacts: hasBackupConversationArtifacts,
-                synced_group_states: syncResult.syncedGroupStates,
-                synced_welcomes: syncResult.syncedWelcomes,
-                synced_commits: syncResult.syncedCommits,
+                ...recoveryMetadata,
               });
             }
           } else if (!cancelled) {
