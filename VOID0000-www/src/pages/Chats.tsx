@@ -12,6 +12,7 @@ import SettingsModal from '../components/common/Settings/SettingsModal';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
+import CallHeaderControls from '../components/Chat/CallHeaderControls';
 import ForwardMessageModal from '../components/Chat/ForwardMessageModal';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
@@ -24,6 +25,7 @@ import { ConversationPaneSkeleton } from '../components/common/Skeleton';
 import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
 import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
 import PushNotificationPrompt from '../components/common/Notifications/PushNotificationPrompt';
+import type { PendingIncomingCall } from '../components/Chat/CallHeaderControls';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -99,6 +101,7 @@ const ChatDashboard = () => {
   const sendNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [incomingCall, setIncomingCall] = useState<PendingIncomingCall | null>(null);
   const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
   const [mlsRecoveryError, setMlsRecoveryError] = useState('');
   const [isSubmittingMlsRecoveryKey, setIsSubmittingMlsRecoveryKey] = useState(false);
@@ -155,6 +158,34 @@ const ChatDashboard = () => {
   useEffect(() => {
     showSendNotice(null);
   }, [activeConversation?.id, showSendNotice]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const handleIncomingCall = (payload: PendingIncomingCall) => {
+      if (!payload?.call_id || !payload.from_user_id || payload.from_user_id === user.id) return;
+      setIncomingCall(payload);
+    };
+
+    const clearIncomingCall = (payload: { call_id?: string }) => {
+      if (!payload?.call_id) return;
+      setIncomingCall((current) => current?.call_id === payload.call_id ? null : current);
+    };
+
+    gateway.on('CALL_INVITE', handleIncomingCall);
+    gateway.on('CALL_CANCEL', clearIncomingCall);
+    gateway.on('CALL_END', clearIncomingCall);
+    gateway.on('CALL_REJECT', clearIncomingCall);
+    gateway.on('CALL_ACCEPT', clearIncomingCall);
+
+    return () => {
+      gateway.off('CALL_INVITE', handleIncomingCall);
+      gateway.off('CALL_CANCEL', clearIncomingCall);
+      gateway.off('CALL_END', clearIncomingCall);
+      gateway.off('CALL_REJECT', clearIncomingCall);
+      gateway.off('CALL_ACCEPT', clearIncomingCall);
+    };
+  }, [user?.id]);
 
   const getRouteId = (conversation?: { public_id?: string | null }) => conversation?.public_id || null;
 
@@ -1040,7 +1071,7 @@ const ChatDashboard = () => {
             <div className="flex min-w-0 flex-1 flex-col">
               <nav
                 data-chat-conversation-header="true"
-                className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:static md:bg-void-bg-sec"
+                className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:relative md:top-auto md:bg-void-bg-sec"
               >
                 <div className="flex items-center min-w-0 flex-1">
                   <button
@@ -1059,6 +1090,15 @@ const ChatDashboard = () => {
                     )}
                   </div>
                 </div>
+                <CallHeaderControls
+                  conversation={activeConversation}
+                  members={members}
+                  currentUserId={user?.id}
+                  pendingIncomingCall={incomingCall}
+                  onPendingIncomingHandled={(callId) => {
+                    setIncomingCall((current) => current?.call_id === callId ? null : current);
+                  }}
+                />
                 <button
                   onClick={() => setShowConvSettings(true)}
                   className="p-2 rounded-lg text-void-text-muted hover:text-void-text hover:bg-void-bg-hover transition-colors shrink-0 ml-2"

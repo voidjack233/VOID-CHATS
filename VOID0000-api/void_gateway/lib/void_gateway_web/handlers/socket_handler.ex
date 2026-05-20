@@ -72,7 +72,6 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   @identify_timeout_ms 10_000
   # Seconds before token expiry to send TOKEN_EXPIRING warning (matches Node's notifyBefore = 120)
   @notify_before_secs 120
-
   @type state :: %{
           status: :awaiting_identify | :identified,
           user_id: String.t(),
@@ -165,7 +164,11 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
   # The client should use this to trigger a silent token refresh.
   def handle_info({:token_expiring_warning, expires_in}, %{status: :identified} = state) do
     {payload, new_state} =
-      push_event("TOKEN_EXPIRING", %{expires_in: expires_in, timestamp: System.system_time(:millisecond)}, state)
+      push_event(
+        "TOKEN_EXPIRING",
+        %{expires_in: expires_in, timestamp: System.system_time(:millisecond)},
+        state
+      )
 
     {:push, {:text, payload}, new_state}
   end
@@ -300,7 +303,10 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
         # Mirrors: syncSharedPresence(userId, { status: 'online', lastActive: Date.now() })
         # Subtract displaced sockets — they're still in ETS but about to terminate.
         now_ms = System.system_time(:millisecond)
-        active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id)) - length(displaced)
+
+        active_count =
+          length(ConnectionRegistry.lookup_all_for_user(state.user_id)) - length(displaced)
+
         Presence.write(state.user_id, "online", now_ms, active_count)
         Presence.publish_change(state.user_id, "online", now_ms)
 
@@ -336,8 +342,12 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
         :telemetry.execute(
           [:void_gateway, :socket, :identify],
           %{},
-          %{user_id: state.user_id, device_id: state.device_id,
-            session_id: session_id, displaced: length(displaced)}
+          %{
+            user_id: state.user_id,
+            device_id: state.device_id,
+            session_id: session_id,
+            displaced: length(displaced)
+          }
         )
 
         {:push, {:text, ready_payload}, new_state}
@@ -492,7 +502,10 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       # Mirrors: status = currentPresence?.status === 'idle' ? 'idle' : 'online'
       # Subtract displaced sockets — they're still in ETS but about to terminate.
       now_ms = System.system_time(:millisecond)
-      active_count = length(ConnectionRegistry.lookup_all_for_user(state.user_id)) - length(displaced)
+
+      active_count =
+        length(ConnectionRegistry.lookup_all_for_user(state.user_id)) - length(displaced)
+
       {resume_status, should_fanout} = resolve_resume_status(state.user_id)
       Presence.write(state.user_id, resume_status, now_ms, active_count)
 
@@ -519,8 +532,12 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       :telemetry.execute(
         [:void_gateway, :socket, :resume],
         %{},
-        %{user_id: state.user_id, device_id: state.device_id,
-          session_id: session_id, replayed: length(replay.events)}
+        %{
+          user_id: state.user_id,
+          device_id: state.device_id,
+          session_id: session_id,
+          replayed: length(replay.events)
+        }
       )
 
       # Send buffered events the client missed, then RESUMED.
@@ -592,7 +609,10 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
       time_until_expiry > @notify_before_secs ->
         # Schedule warning, then close
         warn_ms = (time_until_expiry - @notify_before_secs) * 1_000
-        warning_ref = Process.send_after(self(), {:token_expiring_warning, @notify_before_secs}, warn_ms)
+
+        warning_ref =
+          Process.send_after(self(), {:token_expiring_warning, @notify_before_secs}, warn_ms)
+
         close_ref = Process.send_after(self(), :token_expired, time_until_expiry * 1_000)
         %{state | token_expiry_warning_ref: warning_ref, token_expiry_close_ref: close_ref}
 
@@ -678,8 +698,7 @@ defmodule VoidGatewayWeb.Handlers.SocketHandler do
     :telemetry.execute(
       [:void_gateway, :socket, :close],
       %{},
-      %{user_id: state.user_id, device_id: state.device_id,
-        code: code, reason: reason_str}
+      %{user_id: state.user_id, device_id: state.device_id, code: code, reason: reason_str}
     )
 
     {:stop, :normal, {code, reason_str}, state}

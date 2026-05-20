@@ -400,6 +400,14 @@ class Gateway {
     this.send(data);
   }
 
+  sendEvent(event: string, data: any) {
+    this.send({
+      op: OP.EVENT,
+      t: event,
+      d: data,
+    });
+  }
+
   private cleanup() {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
