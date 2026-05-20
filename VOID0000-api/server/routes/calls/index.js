@@ -147,6 +147,59 @@ async function getCallSession(callId) {
   return result.rows[0] || null;
 }
 
+function serializeCallSessionForUser(session, userId, deviceId = null) {
+  if (!session) return null;
+  const startedBy = String(session.started_by);
+  const targetUserId = String(session.target_user_id);
+  const peerUserId = startedBy === userId ? targetUserId : startedBy;
+
+  return {
+    call_id: session.call_id,
+    conversation_id: String(session.conversation_id),
+    conversation_public_id: session.conversation_public_id ? String(session.conversation_public_id) : null,
+    conversation_type: session.conversation_type,
+    from_user_id: startedBy,
+    target_user_id: targetUserId,
+    peer_user_id: peerUserId,
+    media: session.media,
+    status: session.status,
+    direction: startedBy === userId ? 'outgoing' : 'incoming',
+    started_at: session.started_at,
+    answered_at: session.answered_at,
+    answered_by_device_id: session.answered_by_device_id || null,
+    answered_here: Boolean(deviceId && session.answered_by_device_id && session.answered_by_device_id === deviceId),
+    duration_seconds: session.duration_seconds || 0,
+  };
+}
+
+async function emitMissedCallForSession(session, reason = 'missed') {
+  const actorName = await getUserDisplayName(session.started_by);
+  await postCallSystemMessage({
+    actorId: session.started_by,
+    conversationId: session.conversation_id,
+    content: `Missed audio call from ${actorName}`,
+  });
+
+  const payload = {
+    event_id: randomUUID(),
+    event: 'CALL_CANCEL',
+    call_id: session.call_id,
+    conversation_id: session.conversation_id,
+    conversation_public_id: session.conversation_public_id ? String(session.conversation_public_id) : null,
+    conversation_type: session.conversation_type,
+    from_user_id: session.started_by,
+    target_user_id: session.target_user_id,
+    media: session.media,
+    reason,
+    call_status: session.status,
+    call_duration_seconds: session.duration_seconds || 0,
+    server_timestamp: Date.now(),
+  };
+
+  sendLiveEventToUser(session.started_by, 'CALL_CANCEL', payload);
+  sendLiveEventToUser(session.target_user_id, 'CALL_CANCEL', payload);
+}
+
 export async function expireStaleRingingCalls({ olderThanMs = RINGING_CALL_TIMEOUT_MS } = {}) {
   const result = await pool.query(
     `UPDATE call_sessions
@@ -162,31 +215,7 @@ export async function expireStaleRingingCalls({ olderThanMs = RINGING_CALL_TIMEO
   );
 
   for (const session of result.rows) {
-    const actorName = await getUserDisplayName(session.started_by);
-    await postCallSystemMessage({
-      actorId: session.started_by,
-      conversationId: session.conversation_id,
-      content: `Missed audio call from ${actorName}`,
-    });
-
-    const payload = {
-      event_id: randomUUID(),
-      event: 'CALL_CANCEL',
-      call_id: session.call_id,
-      conversation_id: session.conversation_id,
-      conversation_public_id: session.conversation_public_id ? String(session.conversation_public_id) : null,
-      conversation_type: session.conversation_type,
-      from_user_id: session.started_by,
-      target_user_id: session.target_user_id,
-      media: session.media,
-      reason: 'timeout',
-      call_status: session.status,
-      call_duration_seconds: session.duration_seconds || 0,
-      server_timestamp: Date.now(),
-    };
-
-    sendLiveEventToUser(session.started_by, 'CALL_CANCEL', payload);
-    sendLiveEventToUser(session.target_user_id, 'CALL_CANCEL', payload);
+    await emitMissedCallForSession(session, 'timeout');
   }
 
   return result.rows.length;
@@ -222,6 +251,23 @@ async function createRingingCallSession({ callId, conversation, senderId, target
       await client.query('COMMIT');
       return { ...existingResult.rows[0], was_created: false };
     }
+
+    const replacedOutgoingResult = await client.query(
+      `UPDATE call_sessions
+       SET status = 'missed',
+           ended_at = NOW(),
+           ended_by = $2,
+           end_reason = 'replaced',
+           updated_at = NOW()
+       WHERE call_id <> $1
+         AND status = 'ringing'
+         AND started_by = $2
+         AND target_user_id = $3
+         AND conversation_id = $4
+       RETURNING *,
+         EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - started_at))::int AS duration_seconds`,
+      [callId, senderId, targetUserId, conversation.id]
+    );
 
     const busyResult = await client.query(
       `SELECT call_id,
@@ -275,7 +321,11 @@ async function createRingingCallSession({ callId, conversation, senderId, target
     );
 
     await client.query('COMMIT');
-    return { ...inserted.rows[0], was_created: true };
+    return {
+      ...inserted.rows[0],
+      was_created: true,
+      replaced_outgoing_sessions: replacedOutgoingResult.rows,
+    };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     throw error;
@@ -284,7 +334,7 @@ async function createRingingCallSession({ callId, conversation, senderId, target
   }
 }
 
-async function recordCallLifecycle({ event, callId, conversation, senderId, targetUserId, media, reason: rawReason }) {
+async function recordCallLifecycle({ event, callId, conversation, senderId, targetUserId, senderDeviceId, media, reason: rawReason }) {
   if (!callId || event === 'WEBRTC_OFFER' || event === 'WEBRTC_ANSWER' || event === 'ICE_CANDIDATE') {
     return null;
   }
@@ -299,6 +349,10 @@ async function recordCallLifecycle({ event, callId, conversation, senderId, targ
     });
 
     if (session.was_created) {
+      for (const replacedSession of session.replaced_outgoing_sessions || []) {
+        await emitMissedCallForSession(replacedSession, 'replaced');
+      }
+
       const actorName = await getUserDisplayName(senderId);
       await postCallSystemMessage({
         actorId: senderId,
@@ -331,16 +385,31 @@ async function recordCallLifecycle({ event, callId, conversation, senderId, targ
       );
     }
 
-    await pool.query(
+    const accepted = await pool.query(
       `UPDATE call_sessions
        SET status = 'active',
            answered_at = COALESCE(answered_at, NOW()),
+           answered_by_device_id = COALESCE(answered_by_device_id, $2),
            updated_at = NOW()
        WHERE call_id = $1
-         AND status NOT IN ('ended', 'declined', 'canceled', 'missed', 'failed')`,
-      [callId]
+         AND status = 'ringing'
+       RETURNING *,
+         EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - COALESCE(answered_at, started_at)))::int AS duration_seconds`,
+      [callId, senderDeviceId]
     );
-    return getCallSession(callId);
+    if (accepted.rows[0]) {
+      return accepted.rows[0];
+    }
+
+    const latest = await getCallSession(callId);
+    throw new CallSignalError(
+      409,
+      latest?.status === 'active' ? 'CALL_ALREADY_ANSWERED' : 'CALL_NOT_RINGING',
+      latest?.status === 'active' ? 'This call was already answered' : 'This call is no longer ringing',
+      {
+        answered_by_device_id: latest?.answered_by_device_id || null,
+      }
+    );
   }
 
   const actorName = await getUserDisplayName(senderId);
@@ -400,6 +469,38 @@ router.get('/', (_req, res) => {
     service: 'voidapp-call-service',
     signaling: 'enabled',
   });
+});
+
+router.get('/active', async (req, res) => {
+  const userId = req.user?.id;
+  const deviceId = req.user?.device_id || null;
+
+  try {
+    await expireStaleRingingCalls();
+
+    const result = await pool.query(
+      `SELECT *,
+              EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - COALESCE(answered_at, started_at)))::int AS duration_seconds
+       FROM call_sessions
+       WHERE status = ANY($1::text[])
+         AND (started_by = $2 OR target_user_id = $2)
+       ORDER BY started_at DESC
+       LIMIT 1`,
+      [LIVE_CALL_STATUSES, userId]
+    );
+
+    res.json({
+      success: true,
+      call: serializeCallSessionForUser(result.rows[0] || null, userId, deviceId),
+    });
+  } catch (err) {
+    console.error('Active call lookup error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to inspect active call',
+      code: 'CALL_ACTIVE_LOOKUP_FAILED',
+    });
+  }
 });
 
 router.post('/signal', callSignalLimiter, async (req, res) => {
@@ -480,12 +581,14 @@ router.post('/signal', callSignalLimiter, async (req, res) => {
       conversation,
       senderId,
       targetUserId,
+      senderDeviceId,
       media: payload.media,
       reason: payload.reason,
     });
     if (session) {
       payload.call_status = session.status;
       payload.call_duration_seconds = session.duration_seconds || 0;
+      payload.answered_by_device_id = session.answered_by_device_id || null;
     }
 
     sendLiveEventToUser(targetUserId, event, payload);

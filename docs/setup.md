@@ -416,7 +416,7 @@ server {
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=(self), fullscreen=(self)" always;
+    add_header Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=(), usb=(), autoplay=(self), fullscreen=(self)" always;
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -430,7 +430,7 @@ server {
         add_header X-Frame-Options "DENY" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), autoplay=(self), fullscreen=(self)" always;
+        add_header Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=(), usb=(), autoplay=(self), fullscreen=(self)" always;
     }
 }
 ```

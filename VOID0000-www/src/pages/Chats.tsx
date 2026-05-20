@@ -26,7 +26,7 @@ import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatu
 import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
 import PushNotificationPrompt from '../components/common/Notifications/PushNotificationPrompt';
 import type { PendingIncomingCall } from '../components/Chat/CallHeaderControls';
-import { sendCallSignal } from '../Services/Calls/callService';
+import { getActiveCall, sendCallSignal } from '../Services/Calls/callService';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -100,6 +100,7 @@ const ChatDashboard = () => {
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const sendNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const conversationPaneRef = useRef<HTMLDivElement | null>(null);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [incomingCall, setIncomingCall] = useState<PendingIncomingCall | null>(null);
@@ -190,6 +191,61 @@ const ChatDashboard = () => {
       gateway.off('CALL_CLEARED_ELSEWHERE', clearIncomingCall);
     };
   }, [user?.id]);
+
+  const refreshActiveCall = useCallback(async () => {
+    if (!user?.id) return;
+
+    try {
+      const activeCall = await getActiveCall();
+      if (!activeCall) {
+        setIncomingCall(null);
+        return;
+      }
+
+      if (activeCall.status === 'active') {
+        setIncomingCall(null);
+        return;
+      }
+
+      if (activeCall.status === 'ringing' && activeCall.direction === 'incoming' && activeCall.from_user_id !== user.id) {
+        setIncomingCall({
+          call_id: activeCall.call_id,
+          conversation_id: activeCall.conversation_id,
+          conversation_public_id: activeCall.conversation_public_id,
+          conversation_type: activeCall.conversation_type,
+          from_user_id: activeCall.from_user_id,
+          media: activeCall.media,
+        });
+      }
+    } catch {
+      // The normal reconnect/service banners cover API trouble here.
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    void refreshActiveCall();
+
+    const refreshOnReady = () => {
+      void refreshActiveCall();
+    };
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshActiveCall();
+      }
+    };
+
+    gateway.on('ready', refreshOnReady);
+    gateway.on('gateway_ready', refreshOnReady);
+    window.addEventListener('focus', refreshOnReady);
+    document.addEventListener('visibilitychange', refreshOnVisible);
+
+    return () => {
+      gateway.off('ready', refreshOnReady);
+      gateway.off('gateway_ready', refreshOnReady);
+      window.removeEventListener('focus', refreshOnReady);
+      document.removeEventListener('visibilitychange', refreshOnVisible);
+    };
+  }, [refreshActiveCall]);
 
   const getRouteId = (conversation?: { public_id?: string | null }) => conversation?.public_id || null;
 
@@ -1172,7 +1228,7 @@ const ChatDashboard = () => {
         {showConversationRoutePendingSkeleton ? (
           <ConversationPaneSkeleton showMobileBack density="compact" />
         ) : activeConversation ? (
-          <div className="relative flex flex-1 min-h-0">
+          <div ref={conversationPaneRef} className="relative flex flex-1 min-h-0">
             {showConversationRoutePendingOverlay ? (
               <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
                 <div className="inline-flex items-center gap-2 rounded-full border border-void-bg-hover bg-void-bg-sec/92 px-3 py-1.5 text-xs font-medium text-void-text shadow-sm backdrop-blur-sm">
@@ -1209,6 +1265,7 @@ const ChatDashboard = () => {
                   currentUserId={user?.id}
                   pendingIncomingCall={incomingCall}
                   autoAnswerIncomingCallId={autoAnswerIncomingCallId}
+                  mobileAnchorRef={conversationPaneRef}
                   onAutoAnswerIncomingHandled={(callId) => {
                     setAutoAnswerIncomingCallId((current) => current === callId ? null : current);
                   }}

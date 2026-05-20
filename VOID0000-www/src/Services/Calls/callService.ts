@@ -30,6 +30,24 @@ export interface CallSignalResponse {
   code?: string;
 }
 
+export interface ActiveCallSnapshot {
+  call_id: string;
+  conversation_id?: string;
+  conversation_public_id?: string | null;
+  conversation_type?: string | null;
+  from_user_id: string;
+  target_user_id: string;
+  peer_user_id: string;
+  media?: 'audio' | 'video';
+  status: 'ringing' | 'active';
+  direction: 'incoming' | 'outgoing';
+  started_at?: string;
+  answered_at?: string | null;
+  answered_by_device_id?: string | null;
+  answered_here?: boolean;
+  duration_seconds?: number;
+}
+
 function createCallError(payload: unknown, fallback: string): Error & Record<string, unknown> {
   const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const message =
@@ -65,4 +83,15 @@ export async function sendCallSignal(input: SendCallSignalInput): Promise<CallSi
   }
 
   return (payload || { success: true }) as CallSignalResponse;
+}
+
+export async function getActiveCall(): Promise<ActiveCallSnapshot | null> {
+  const response = await fetchWithAuth('/api/calls/active');
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw createCallError(payload, 'Failed to inspect active call');
+  }
+
+  return (payload?.call || null) as ActiveCallSnapshot | null;
 }

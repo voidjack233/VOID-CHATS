@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { Loader2, Mic, MicOff, MonitorUp, Phone, PhoneCall, PhoneOff, Video } from 'lucide-react';
+import type { CSSProperties, PointerEvent, ReactNode, RefObject } from 'react';
+import { createPortal } from 'react-dom';
+import { Loader2, Maximize2, Mic, MicOff, Minimize2, MonitorUp, Phone, PhoneCall, PhoneOff, Video } from 'lucide-react';
 import type { Conversation, ConversationMember } from '../../Services/Chat/chatService';
 import { sendCallSignal } from '../../Services/Calls/callService';
 import { gateway } from '../../Services/Gateway/gateway';
@@ -10,6 +11,8 @@ type CallPhase = 'idle' | 'outgoing' | 'incoming' | 'active' | 'ended' | 'failed
 const OUTGOING_CALL_TIMEOUT_MS = 45_000;
 const REMOTE_AUDIO_VOLUME = 0.82;
 const SPEAKING_THRESHOLD = 0.035;
+const CALL_SHELF_DRAG_MIN_Y = -96;
+const CALL_SHELF_DRAG_MAX_Y = 360;
 
 type VoiceMediaTrackConstraints = MediaTrackConstraints & {
   latency?: ConstrainDouble;
@@ -62,9 +65,17 @@ interface CallHeaderControlsProps {
   currentUserId?: string;
   pendingIncomingCall?: PendingIncomingCall | null;
   autoAnswerIncomingCallId?: string | null;
+  mobileAnchorRef?: RefObject<HTMLElement | null>;
   onAutoAnswerIncomingHandled?: (callId: string) => void;
   onPendingIncomingHandled?: (callId: string) => void;
 }
+
+type CallShelfFrame = {
+  left: number;
+  top: number;
+  width: number;
+  isMobile: boolean;
+};
 
 function createCallId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -143,6 +154,26 @@ function getCallAcceptErrorMessage(error: unknown) {
     return 'This call is no longer ringing';
   }
   return error instanceof Error ? error.message : 'Could not accept call';
+}
+
+function getMicrophoneErrorMessage(error: unknown) {
+  const name = error && typeof error === 'object' ? (error as { name?: string }).name : '';
+  const message = error instanceof Error ? error.message : '';
+
+  if (name === 'NotFoundError' || /device.*not.*found/i.test(message)) {
+    return 'No microphone found.';
+  }
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    return 'Microphone access is blocked. Allow microphone permission for this site and try again.';
+  }
+  if (name === 'NotReadableError') {
+    return 'Your microphone is busy or blocked by another app.';
+  }
+  if (name === 'OverconstrainedError') {
+    return 'This microphone does not support the requested voice settings.';
+  }
+
+  return message || 'Could not access your microphone.';
 }
 
 function getVoiceAudioConstraints(): VoiceMediaTrackConstraints {
@@ -254,17 +285,24 @@ export default function CallHeaderControls({
   currentUserId,
   pendingIncomingCall,
   autoAnswerIncomingCallId,
+  mobileAnchorRef,
   onAutoAnswerIncomingHandled,
   onPendingIncomingHandled,
 }: CallHeaderControlsProps) {
   const [phase, setPhase] = useState<CallPhase>('idle');
   const [callId, setCallId] = useState<string | null>(null);
+  const [callConversationId, setCallConversationId] = useState<string | null>(null);
   const [remoteUserId, setRemoteUserId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [mediaReady, setMediaReady] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [localSpeaking, setLocalSpeaking] = useState(false);
   const [remoteSpeaking, setRemoteSpeaking] = useState(false);
+  const [callCurrentMemberSnapshot, setCallCurrentMemberSnapshot] = useState<ConversationMember | null>(null);
+  const [callRemoteMemberSnapshot, setCallRemoteMemberSnapshot] = useState<ConversationMember | null>(null);
+  const [microphoneWarning, setMicrophoneWarning] = useState<string | null>(null);
+  const [callShelfOffsetY, setCallShelfOffsetY] = useState(0);
+  const [mobileShelfFrame, setMobileShelfFrame] = useState<CallShelfFrame | null>(null);
+  const [isCallShelfCollapsed, setIsCallShelfCollapsed] = useState(true);
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [debugState, setDebugState] = useState<CallDebugState>({
@@ -280,8 +318,11 @@ export default function CallHeaderControls({
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const callIdRef = useRef<string | null>(null);
+  const callConversationIdRef = useRef<string | null>(null);
   const remoteUserIdRef = useRef<string | null>(null);
   const outgoingTimeoutRef = useRef<number | null>(null);
+  const resetTimerRef = useRef<number | null>(null);
+  const dragStartRef = useRef<{ pointerId: number; startY: number; startOffsetY: number } | null>(null);
   const phaseRef = useRef<CallPhase>('idle');
   const stopLocalVoiceActivityRef = useRef<(() => void) | null>(null);
   const stopRemoteVoiceActivityRef = useRef<(() => void) | null>(null);
@@ -311,12 +352,58 @@ export default function CallHeaderControls({
   }, [callId]);
 
   useEffect(() => {
+    callConversationIdRef.current = callConversationId;
+  }, [callConversationId]);
+
+  useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
 
   useEffect(() => {
     remoteUserIdRef.current = remoteUserId;
   }, [remoteUserId]);
+
+  useEffect(() => {
+    if (!showCallShelf || !mobileAnchorRef?.current) {
+      setMobileShelfFrame(null);
+      return;
+    }
+
+    const syncFrame = () => {
+      const rect = mobileAnchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const isMobile = window.matchMedia('(max-width: 767px)').matches;
+      if (isMobile && rect.width <= 0) {
+        const viewport = window.visualViewport;
+        setMobileShelfFrame({
+          left: viewport?.offsetLeft ?? 0,
+          top: viewport?.offsetTop ?? 0,
+          width: viewport?.width ?? window.innerWidth,
+          isMobile,
+        });
+        return;
+      }
+      setMobileShelfFrame({
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        isMobile,
+      });
+    };
+
+    syncFrame();
+    window.addEventListener('resize', syncFrame);
+    window.addEventListener('scroll', syncFrame, true);
+    window.visualViewport?.addEventListener('resize', syncFrame);
+    window.visualViewport?.addEventListener('scroll', syncFrame);
+
+    return () => {
+      window.removeEventListener('resize', syncFrame);
+      window.removeEventListener('scroll', syncFrame, true);
+      window.visualViewport?.removeEventListener('resize', syncFrame);
+      window.visualViewport?.removeEventListener('scroll', syncFrame);
+    };
+  }, [mobileAnchorRef, showCallShelf]);
 
   const clearOutgoingTimeout = useCallback(() => {
     if (outgoingTimeoutRef.current !== null) {
@@ -325,12 +412,18 @@ export default function CallHeaderControls({
     }
   }, []);
 
+  const clearResetTimer = useCallback(() => {
+    if (resetTimerRef.current !== null) {
+      window.clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
+  }, []);
+
   const stopLocalMedia = useCallback(() => {
     stopLocalVoiceActivityRef.current?.();
     stopLocalVoiceActivityRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
-    setMediaReady(false);
     setIsMuted(false);
     setLocalSpeaking(false);
     updateDebug({ localStream: false });
@@ -360,6 +453,7 @@ export default function CallHeaderControls({
   }, [closePeerConnection, stopLocalMedia]);
 
   const resetCall = useCallback((message?: string) => {
+    clearResetTimer();
     cleanupMedia();
     clearOutgoingTimeout();
     setConnectedAt(null);
@@ -367,17 +461,57 @@ export default function CallHeaderControls({
     setPhase(message ? 'ended' : 'idle');
     setNotice(message || null);
     if (message) {
-      window.setTimeout(() => {
+      resetTimerRef.current = window.setTimeout(() => {
         setPhase('idle');
         setNotice(null);
         setCallId(null);
+        setCallConversationId(null);
         setRemoteUserId(null);
+        setCallCurrentMemberSnapshot(null);
+        setCallRemoteMemberSnapshot(null);
+        setCallShelfOffsetY(0);
+        setIsCallShelfCollapsed(true);
+        resetTimerRef.current = null;
       }, 2500);
     } else {
       setCallId(null);
+      setCallConversationId(null);
       setRemoteUserId(null);
+      setCallCurrentMemberSnapshot(null);
+      setCallRemoteMemberSnapshot(null);
+      setCallShelfOffsetY(0);
+      setIsCallShelfCollapsed(true);
     }
-  }, [cleanupMedia, clearOutgoingTimeout]);
+  }, [cleanupMedia, clearOutgoingTimeout, clearResetTimer]);
+
+  const beginCallShelfDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    dragStartRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startOffsetY: callShelfOffsetY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, [callShelfOffsetY]);
+
+  const moveCallShelfDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragStartRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const nextOffset = Math.max(
+      CALL_SHELF_DRAG_MIN_Y,
+      Math.min(CALL_SHELF_DRAG_MAX_Y, drag.startOffsetY + event.clientY - drag.startY),
+    );
+    setCallShelfOffsetY(nextOffset);
+  }, []);
+
+  const endCallShelfDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragStartRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    dragStartRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
 
   useEffect(() => {
     if (!connectedAt || phase !== 'active') return;
@@ -403,7 +537,7 @@ export default function CallHeaderControls({
   ) => {
     await sendCallSignal({
       event,
-      conversationId: conversation.id,
+      conversationId: callConversationIdRef.current || conversation.id,
       targetUserId: target,
       callId: activeCallId,
       media: 'audio',
@@ -442,10 +576,23 @@ export default function CallHeaderControls({
     }
 
     const voiceConstraints = getVoiceAudioConstraints();
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: voiceConstraints,
-      video: false,
-    });
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: voiceConstraints,
+        video: false,
+      });
+    } catch (error) {
+      const errorName = error && typeof error === 'object' ? (error as { name?: string }).name : '';
+      if (errorName !== 'OverconstrainedError') {
+        throw error;
+      }
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+    }
     localStreamRef.current = stream;
     stream.getAudioTracks().forEach((track) => {
       track.contentHint = 'speech';
@@ -457,12 +604,48 @@ export default function CallHeaderControls({
     });
     stopLocalVoiceActivityRef.current?.();
     stopLocalVoiceActivityRef.current = createVoiceActivityWatcher(stream, setLocalSpeaking);
-    setMediaReady(true);
     updateDebug({ localStream: true, last: 'microphone ready' });
     return stream;
   }, [isMuted, updateDebug]);
 
-  const toggleMute = useCallback(() => {
+  const tryEnsureLocalStream = useCallback(async () => {
+    try {
+      const stream = await ensureLocalStream();
+      setMicrophoneWarning(null);
+      return stream;
+    } catch (error) {
+      const message = getMicrophoneErrorMessage(error);
+      setMicrophoneWarning(message);
+      setIsMuted(true);
+      setLocalSpeaking(false);
+      updateDebug({ localStream: false, last: message });
+      return null;
+    }
+  }, [ensureLocalStream, updateDebug]);
+
+  const toggleMute = useCallback(async () => {
+    if (!localStreamRef.current) {
+      const stream = await tryEnsureLocalStream();
+      if (!stream) return;
+
+      const pc = peerConnectionRef.current;
+      if (pc) {
+        const existingTrackIds = new Set(pc.getSenders().map((sender) => sender.track?.id).filter(Boolean));
+        stream.getTracks().forEach((track) => {
+          if (!existingTrackIds.has(track.id)) {
+            pc.addTrack(track, stream);
+          }
+        });
+      }
+
+      setIsMuted(false);
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = true;
+      });
+      updateDebug({ last: 'microphone enabled' });
+      return;
+    }
+
     setIsMuted((current) => {
       const next = !current;
       localStreamRef.current?.getAudioTracks().forEach((track) => {
@@ -471,7 +654,7 @@ export default function CallHeaderControls({
       updateDebug({ last: next ? 'microphone muted' : 'microphone unmuted' });
       return next;
     });
-  }, [updateDebug]);
+  }, [tryEnsureLocalStream, updateDebug]);
 
   const createPeerConnection = useCallback((target: string, activeCallId: string) => {
     if (peerConnectionRef.current) return peerConnectionRef.current;
@@ -530,14 +713,16 @@ export default function CallHeaderControls({
   }, [resetCall, sendSignal, updateDebug]);
 
   const attachLocalTracks = useCallback(async (pc: RTCPeerConnection) => {
-    const stream = await ensureLocalStream();
+    const stream = await tryEnsureLocalStream();
+    if (!stream) return false;
     const existingTrackIds = new Set(pc.getSenders().map((sender) => sender.track?.id).filter(Boolean));
     stream.getTracks().forEach((track) => {
       if (!existingTrackIds.has(track.id)) {
         pc.addTrack(track, stream);
       }
     });
-  }, [ensureLocalStream]);
+    return true;
+  }, [tryEnsureLocalStream]);
 
   const flushPendingIceCandidates = useCallback(async (pc: RTCPeerConnection) => {
     if (!pc.remoteDescription) return;
@@ -551,6 +736,10 @@ export default function CallHeaderControls({
 
   const sendOffer = useCallback(async (target: string, activeCallId: string) => {
     const pc = createPeerConnection(target, activeCallId);
+    if (pc.localDescription?.type === 'offer' || pc.signalingState !== 'stable') {
+      updateDebug({ last: `skipped duplicate offer in ${pc.signalingState}` });
+      return;
+    }
     await attachLocalTracks(pc);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -560,6 +749,14 @@ export default function CallHeaderControls({
 
   const answerOffer = useCallback(async (target: string, activeCallId: string, sdp: string) => {
     const pc = createPeerConnection(target, activeCallId);
+    if (pc.remoteDescription?.type === 'offer' && pc.localDescription?.type === 'answer') {
+      updateDebug({ last: 'skipped duplicate offer' });
+      return;
+    }
+    if (pc.signalingState !== 'stable') {
+      updateDebug({ last: `skipped offer in ${pc.signalingState}` });
+      return;
+    }
     await attachLocalTracks(pc);
     await pc.setRemoteDescription({ type: 'offer', sdp });
     updateDebug({ last: 'offer received' });
@@ -575,6 +772,10 @@ export default function CallHeaderControls({
   const applyAnswer = useCallback(async (sdp: string) => {
     const pc = peerConnectionRef.current;
     if (!pc) return;
+    if (pc.signalingState !== 'have-local-offer') {
+      updateDebug({ last: `skipped answer in ${pc.signalingState}` });
+      return;
+    }
     await pc.setRemoteDescription({ type: 'answer', sdp });
     updateDebug({ last: 'answer received' });
     await flushPendingIceCandidates(pc);
@@ -600,8 +801,14 @@ export default function CallHeaderControls({
     if (!supportsDirectCall || !targetUserId || busy) return;
     const nextCallId = createCallId();
 
+    clearResetTimer();
+    setIsCallShelfCollapsed(true);
     setPhase('outgoing');
     setCallId(nextCallId);
+    callConversationIdRef.current = conversation.id;
+    setCallConversationId(conversation.id);
+    setCallCurrentMemberSnapshot(currentMember);
+    setCallRemoteMemberSnapshot(remoteMember);
     setRemoteUserId(targetUserId);
     setNotice(null);
 
@@ -612,20 +819,29 @@ export default function CallHeaderControls({
       setPhase('failed');
       setNotice(getCallStartErrorMessage(err));
     }
-  }, [busy, sendSignal, supportsDirectCall, targetUserId]);
+  }, [busy, clearResetTimer, conversation.id, currentMember, remoteMember, sendSignal, supportsDirectCall, targetUserId]);
 
   const acceptCall = useCallback(async () => {
     if (!callId || !remoteUserId) return;
     try {
-      await ensureLocalStream();
+      await tryEnsureLocalStream();
       await sendSignal('CALL_ACCEPT', remoteUserId, callId);
+      clearResetTimer();
       setPhase('active');
       setNotice('Waiting for audio...');
     } catch (err) {
+      const code = err && typeof err === 'object' ? (err as Record<string, unknown>).code : null;
+      if (code === 'CALL_ALREADY_ANSWERED') {
+        resetCall('Answered on another device');
+        return;
+      }
+
       setPhase('failed');
-      setNotice(getCallAcceptErrorMessage(err));
+      const isBrowserMediaError =
+        err && typeof err === 'object' && 'name' in err && !('code' in err);
+      setNotice(isBrowserMediaError ? getMicrophoneErrorMessage(err) : getCallAcceptErrorMessage(err));
     }
-  }, [callId, ensureLocalStream, remoteUserId, sendSignal]);
+  }, [callId, clearResetTimer, remoteUserId, resetCall, sendSignal, tryEnsureLocalStream]);
 
   useEffect(() => {
     if (
@@ -649,7 +865,11 @@ export default function CallHeaderControls({
     const event = phase === 'outgoing' ? 'CALL_CANCEL' : phase === 'incoming' ? 'CALL_REJECT' : 'CALL_END';
     try {
       await sendSignal(event, remoteUserId, callId, {
-        reason: event === 'CALL_REJECT' ? 'declined' : undefined,
+        reason: event === 'CALL_REJECT'
+          ? 'declined'
+          : event === 'CALL_CANCEL'
+            ? 'missed'
+            : undefined,
       });
     } catch {
       // Local cleanup should still happen even if the peer is already gone.
@@ -662,11 +882,10 @@ export default function CallHeaderControls({
     resetCall(localMessage);
   }, [callId, elapsedSeconds, phase, remoteUserId, resetCall, sendSignal]);
 
-  useEffect(() => {
-    resetCall();
-  }, [conversation.id, resetCall]);
-
-  useEffect(() => () => cleanupMedia(), [cleanupMedia]);
+  useEffect(() => () => {
+    clearResetTimer();
+    cleanupMedia();
+  }, [cleanupMedia, clearResetTimer]);
 
   useEffect(() => {
     if (
@@ -679,34 +898,55 @@ export default function CallHeaderControls({
 
     setPhase('incoming');
     setCallId(pendingIncomingCall.call_id);
+    callConversationIdRef.current = pendingIncomingCall.conversation_id || conversation.id;
+    setCallConversationId(pendingIncomingCall.conversation_id || conversation.id);
+    setCallCurrentMemberSnapshot(currentMember);
+    setCallRemoteMemberSnapshot(remoteMember);
     setRemoteUserId(pendingIncomingCall.from_user_id);
     setNotice('Incoming audio call');
+    setIsCallShelfCollapsed(true);
+    clearResetTimer();
     onPendingIncomingHandled?.(pendingIncomingCall.call_id);
-  }, [conversation, onPendingIncomingHandled, pendingIncomingCall]);
+  }, [clearResetTimer, conversation, currentMember, onPendingIncomingHandled, pendingIncomingCall, remoteMember]);
 
   useEffect(() => {
+    const isActiveCallEvent = (payload: CallEventPayload) => (
+      Boolean(payload.call_id && callIdRef.current && payload.call_id === callIdRef.current)
+    );
+
     const handleInvite = (payload: CallEventPayload) => {
       if (!isConversationEvent(conversation, payload) || !payload.call_id || !payload.from_user_id) return;
+      clearResetTimer();
+      setIsCallShelfCollapsed(true);
       setPhase('incoming');
       setCallId(payload.call_id);
+      callConversationIdRef.current = payload.conversation_id || conversation.id;
+      setCallConversationId(payload.conversation_id || conversation.id);
+      setCallCurrentMemberSnapshot(currentMember);
+      setCallRemoteMemberSnapshot(remoteMember);
       setRemoteUserId(payload.from_user_id);
       setNotice('Incoming audio call');
     };
 
     const handleAccepted = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload) || payload.call_id !== callId) return;
+      if (!isActiveCallEvent(payload)) return;
+      clearResetTimer();
       setPhase('active');
       setNotice('Starting audio...');
       if (payload.from_user_id && payload.call_id) {
         void sendOffer(payload.from_user_id, payload.call_id).catch((err) => {
           setPhase('failed');
-          setNotice(err instanceof Error ? err.message : 'Could not start audio');
+          setNotice(getMicrophoneErrorMessage(err));
         });
       }
     };
 
     const handleEnded = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload) || (callId && payload.call_id !== callId)) return;
+      if (callIdRef.current) {
+        if (payload.call_id !== callIdRef.current) return;
+      } else if (!isConversationEvent(conversation, payload)) {
+        return;
+      }
       const duration = Number.isFinite(payload.call_duration_seconds)
         ? ` · ${formatCallDuration(payload.call_duration_seconds || 0)}`
         : '';
@@ -719,7 +959,7 @@ export default function CallHeaderControls({
     };
 
     const handleClearedElsewhere = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload) || payload.call_id !== callIdRef.current) return;
+      if (!isActiveCallEvent(payload)) return;
       if (phaseRef.current !== 'incoming') return;
       resetCall(payload.clear_reason === 'answered'
         ? 'Answered on another device'
@@ -727,21 +967,28 @@ export default function CallHeaderControls({
     };
 
     const handleOffer = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload) || !payload.call_id || !payload.from_user_id || (!payload.sdp && !payload.sdp_base64)) return;
+      if (!payload.call_id || !payload.from_user_id || (!payload.sdp && !payload.sdp_base64)) return;
+      if (!isActiveCallEvent(payload) && !isConversationEvent(conversation, payload)) return;
       if (callIdRef.current && payload.call_id !== callIdRef.current) return;
+      clearResetTimer();
       setPhase('active');
+      if (payload.conversation_id) {
+        callConversationIdRef.current = payload.conversation_id;
+        setCallConversationId(payload.conversation_id);
+      }
       setCallId(payload.call_id);
+      setCallCurrentMemberSnapshot(currentMember);
+      setCallRemoteMemberSnapshot(remoteMember);
       setRemoteUserId(payload.from_user_id);
       setNotice('Answering audio...');
       void answerOffer(payload.from_user_id, payload.call_id, resolveSignalSdp(payload)).catch((err) => {
         setPhase('failed');
-        setNotice(err instanceof Error ? err.message : 'Could not answer audio');
+        setNotice(getMicrophoneErrorMessage(err));
       });
     };
 
     const handleAnswer = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload) || (!payload.sdp && !payload.sdp_base64)) return;
-      if (payload.call_id !== callIdRef.current) return;
+      if (!isActiveCallEvent(payload) || (!payload.sdp && !payload.sdp_base64)) return;
       void applyAnswer(resolveSignalSdp(payload)).catch((err) => {
         setPhase('failed');
         setNotice(err instanceof Error ? err.message : 'Could not connect audio');
@@ -749,8 +996,7 @@ export default function CallHeaderControls({
     };
 
     const handleIceCandidate = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload)) return;
-      if (payload.call_id !== callIdRef.current) return;
+      if (!isActiveCallEvent(payload)) return;
       void applyIceCandidate(payload.candidate_init);
     };
 
@@ -775,7 +1021,7 @@ export default function CallHeaderControls({
       gateway.off('WEBRTC_ANSWER', handleAnswer);
       gateway.off('ICE_CANDIDATE', handleIceCandidate);
     };
-  }, [answerOffer, applyAnswer, applyIceCandidate, callId, conversation, resetCall, sendOffer]);
+  }, [answerOffer, applyAnswer, applyIceCandidate, clearResetTimer, conversation, currentMember, remoteMember, resetCall, sendOffer]);
 
   if (conversation.type !== 'dm') {
     return (
@@ -793,159 +1039,303 @@ export default function CallHeaderControls({
   const getMemberDisplayName = (member: ConversationMember | null, fallback: string) =>
     member?.display_name || member?.username || fallback;
 
-  return (
-    <div className="ml-2 flex shrink-0 items-center gap-2">
-      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
-      {showCallShelf && (
-        <div className="absolute left-1/2 top-[calc(100%+0.75rem)] z-50 w-[min(680px,calc(100vw-1rem))] -translate-x-1/2 px-2">
-          <div className={`relative overflow-hidden border border-white/10 bg-[#111827]/80 text-white shadow-2xl shadow-black/35 backdrop-blur-xl ${
-            phase === 'incoming'
-              ? 'rounded-[1.75rem] px-5 py-5 sm:px-8'
-              : 'rounded-[2rem] px-4 py-4 sm:px-8'
-          }`}>
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-white/5 via-transparent to-white/5" />
+  const shelfCurrentMember = phase === 'idle'
+    ? currentMember
+    : callCurrentMemberSnapshot || currentMember;
+  const shelfRemoteMember = phase === 'idle'
+    ? remoteMember
+    : callRemoteMemberSnapshot || remoteMember;
+
+  const callShelfStyle: CSSProperties = mobileShelfFrame
+    ? {
+        left: `${mobileShelfFrame.left}px`,
+        top: `${mobileShelfFrame.top + 76 + (mobileShelfFrame.isMobile ? callShelfOffsetY : 0)}px`,
+        width: `${mobileShelfFrame.width}px`,
+      }
+    : {
+        left: '50%',
+        top: `calc(5rem + ${callShelfOffsetY}px)`,
+        width: 'min(680px, calc(100vw - 1rem))',
+        transform: 'translateX(-50%)',
+      };
+  const callShelfNotice = notice || (phase === 'outgoing' ? 'Calling...' : phase === 'active' ? 'Audio call' : 'Call');
+
+  const callShelf = showCallShelf ? (
+    <div
+      className="fixed z-50 px-2"
+      style={callShelfStyle}
+    >
+      <div className={`relative mx-auto max-w-[680px] overflow-hidden border border-white/10 bg-[#111827]/80 text-white shadow-2xl shadow-black/35 backdrop-blur-xl ${
+        isCallShelfCollapsed ? 'max-w-[420px] rounded-full px-3 py-2' :
+        phase === 'incoming'
+          ? 'rounded-[1.75rem] px-5 py-5 sm:px-8'
+          : 'rounded-[2rem] px-4 py-4 sm:px-8'
+      }`}>
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-white/5 via-transparent to-white/5" />
+        <div
+          className={`relative mx-auto flex h-5 w-24 touch-none cursor-grab items-center justify-center active:cursor-grabbing md:hidden ${isCallShelfCollapsed ? 'mb-1' : 'mb-3'}`}
+          onPointerDown={beginCallShelfDrag}
+          onPointerMove={moveCallShelfDrag}
+          onPointerUp={endCallShelfDrag}
+          onPointerCancel={endCallShelfDrag}
+          title="Drag call controls"
+          aria-label="Drag call controls"
+        >
+          <div className="h-1.5 w-12 rounded-full bg-white/25" />
+        </div>
+        {microphoneWarning && (
+          <div className="relative mb-3 rounded-2xl border border-amber-200/15 bg-amber-300/10 px-3 py-2 text-center text-xs font-medium text-amber-50/85">
+            {microphoneWarning}
+          </div>
+        )}
+        {isCallShelfCollapsed ? (
+          <div className="relative flex items-center gap-3">
+            <SpeakingAvatarFrame speaking={phase === 'active' && remoteSpeaking}>
+              <UserAvatar
+                src={shelfRemoteMember?.avatar_url}
+                displayName={getMemberDisplayName(shelfRemoteMember, 'Caller')}
+                username={shelfRemoteMember?.username}
+                className="h-9 w-9 rounded-full border border-white/10 bg-blue-500/25 text-sm shadow-lg"
+                fallbackClassName="bg-blue-500/25 text-blue-50"
+                fallbackTone="plain"
+              />
+            </SpeakingAvatarFrame>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs font-bold text-white">
+                {getMemberDisplayName(shelfRemoteMember, phase === 'incoming' ? 'Incoming call' : 'Call')}
+              </div>
+              <div className="truncate text-[11px] font-medium text-white/60">
+                {callShelfNotice}
+                {phase === 'active' ? ` · ${formatCallDuration(elapsedSeconds)}` : ''}
+              </div>
+            </div>
             {phase === 'incoming' ? (
-              <div className="relative flex flex-col items-center justify-center gap-4">
-                <SpeakingAvatarFrame speaking={false}>
+              <>
+                <button
+                  type="button"
+                  onClick={acceptCall}
+                  disabled={!supportsDirectCall}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Answer call"
+                  aria-label="Answer call"
+                >
+                  <PhoneCall className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={declineOrEndCall}
+                  disabled={!supportsDirectCall}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Decline call"
+                  aria-label="Decline call"
+                >
+                  <PhoneOff className="h-4 w-4" />
+                </button>
+              </>
+            ) : (
+              <>
+                {phase === 'ended' ? null : (
+                  <button
+                    type="button"
+                    onClick={toggleMute}
+                    className={`flex h-9 w-9 items-center justify-center rounded-full shadow-lg transition ${
+                      isMuted || microphoneWarning
+                        ? 'bg-amber-400 text-neutral-950 shadow-amber-950/20 hover:bg-amber-300'
+                        : 'bg-white/12 text-white shadow-black/20 hover:bg-white/18'
+                    }`}
+                    title={microphoneWarning ? 'Try microphone again' : (isMuted ? 'Unmute microphone' : 'Mute microphone')}
+                    aria-label={microphoneWarning ? 'Try microphone again' : (isMuted ? 'Unmute microphone' : 'Mute microphone')}
+                  >
+                    {isMuted || microphoneWarning ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={declineOrEndCall}
+                  disabled={phase === 'ended'}
+                  className="flex h-9 w-9 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="End call"
+                  aria-label="End call"
+                >
+                  <PhoneOff className="h-4 w-4" />
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => setIsCallShelfCollapsed(false)}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/10 text-white/80 shadow-inner shadow-white/5 transition hover:bg-white/15"
+              title="Expand call"
+              aria-label="Expand call controls"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </button>
+          </div>
+        ) : phase === 'incoming' ? (
+          <div className="relative flex flex-col items-center justify-center gap-4">
+            <button
+              type="button"
+              onClick={() => setIsCallShelfCollapsed(true)}
+              className="absolute right-0 top-0 inline-flex h-8 items-center gap-1 rounded-full border border-white/10 bg-white/10 px-2 text-[11px] font-semibold text-white/75 shadow-inner shadow-white/5 transition hover:bg-white/15"
+              title="Collapse call"
+              aria-label="Collapse call controls"
+            >
+              <Minimize2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Compact</span>
+            </button>
+            <SpeakingAvatarFrame speaking={false}>
+              <UserAvatar
+                src={shelfRemoteMember?.avatar_url}
+                displayName={getMemberDisplayName(shelfRemoteMember, 'Caller')}
+                username={shelfRemoteMember?.username}
+                className="h-20 w-20 rounded-full border border-white/10 bg-blue-500/25 text-2xl shadow-lg sm:h-28 sm:w-28 sm:text-3xl"
+                fallbackClassName="bg-blue-500/25 text-blue-50"
+                fallbackTone="plain"
+              />
+            </SpeakingAvatarFrame>
+            <div className="min-w-0 text-center">
+              <div className="max-w-[260px] truncate text-base font-bold text-white">
+                {getMemberDisplayName(shelfRemoteMember, 'Someone')}
+              </div>
+              <div className="mt-1 text-xs font-medium text-white/60">
+                Incoming audio call
+              </div>
+            </div>
+            <div className="flex items-center justify-center gap-4">
+              <button
+                type="button"
+                onClick={acceptCall}
+                disabled={!supportsDirectCall}
+                className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14"
+                title="Answer call"
+                aria-label="Answer call"
+              >
+                <PhoneCall className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={declineOrEndCall}
+                disabled={!supportsDirectCall}
+                className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14"
+                title="Decline call"
+                aria-label="Decline call"
+              >
+                <PhoneOff className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="relative flex flex-col items-center gap-4">
+            <button
+              type="button"
+              onClick={() => setIsCallShelfCollapsed(true)}
+              className="absolute right-0 top-0 z-10 inline-flex h-8 items-center gap-1 rounded-full border border-white/10 bg-white/10 px-2 text-[11px] font-semibold text-white/75 shadow-inner shadow-white/5 transition hover:bg-white/15"
+              title="Collapse call"
+              aria-label="Collapse call controls"
+            >
+              <Minimize2 className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Compact</span>
+            </button>
+
+            <div className="grid w-full grid-cols-2 gap-4 px-2 pt-2 sm:gap-10 sm:px-12">
+              <div className="flex flex-col items-center gap-2">
+                <SpeakingAvatarFrame speaking={phase === 'active' && localSpeaking && !isMuted}>
                   <UserAvatar
-                    src={remoteMember?.avatar_url}
-                    displayName={getMemberDisplayName(remoteMember, 'Caller')}
-                    username={remoteMember?.username}
-                    className="h-20 w-20 rounded-full border border-white/10 bg-blue-500/25 text-2xl shadow-lg sm:h-28 sm:w-28 sm:text-3xl"
+                    src={shelfCurrentMember?.avatar_url}
+                    displayName={getMemberDisplayName(shelfCurrentMember, 'You')}
+                    username={shelfCurrentMember?.username}
+                    className="h-16 w-16 rounded-full border border-white/10 bg-blue-500/25 text-lg shadow-lg sm:h-24 sm:w-24 sm:text-2xl"
                     fallbackClassName="bg-blue-500/25 text-blue-50"
                     fallbackTone="plain"
                   />
                 </SpeakingAvatarFrame>
-                <div className="min-w-0 text-center">
-                  <div className="max-w-[260px] truncate text-base font-bold text-white">
-                    {getMemberDisplayName(remoteMember, 'Someone')}
-                  </div>
-                  <div className="mt-1 text-xs font-medium text-white/60">
-                    Incoming audio call
-                  </div>
-                </div>
-                <div className="flex items-center justify-center gap-4">
+                <span className="max-w-[96px] truncate text-xs font-semibold text-white/75 sm:max-w-[140px]">
+                  You
+                </span>
+              </div>
+
+              <div className="flex flex-col items-center gap-2">
+                <SpeakingAvatarFrame speaking={phase === 'active' && remoteSpeaking}>
+                  <UserAvatar
+                    src={shelfRemoteMember?.avatar_url}
+                    displayName={getMemberDisplayName(shelfRemoteMember, 'Caller')}
+                    username={shelfRemoteMember?.username}
+                    className="h-16 w-16 rounded-full border border-white/10 bg-blue-500/25 text-lg shadow-lg sm:h-24 sm:w-24 sm:text-2xl"
+                    fallbackClassName="bg-blue-500/25 text-blue-50"
+                    fallbackTone="plain"
+                  />
+                </SpeakingAvatarFrame>
+                <span className="max-w-[96px] truncate text-xs font-semibold text-white/75 sm:max-w-[140px]">
+                  {getMemberDisplayName(shelfRemoteMember, 'Calling')}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex items-center justify-center gap-2 sm:gap-3">
+                <button
+                  type="button"
+                  disabled
+                  className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full bg-white/10 text-white/35 sm:h-14 sm:w-14"
+                  title="Video is not enabled yet"
+                  aria-label="Video is not enabled yet"
+                >
+                  <Video className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  disabled
+                  className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full bg-white/10 text-white/35 sm:h-14 sm:w-14"
+                  title="Screen share is not enabled yet"
+                  aria-label="Screen share is not enabled yet"
+                >
+                  <MonitorUp className="h-5 w-5" />
+                </button>
+                {phase === 'ended' ? null : (
                   <button
                     type="button"
-                    onClick={acceptCall}
-                    disabled={!supportsDirectCall}
-                    className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14"
-                    title="Answer call"
-                    aria-label="Answer call"
+                    onClick={toggleMute}
+                    className={`flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition sm:h-14 sm:w-14 ${
+                      isMuted || microphoneWarning
+                        ? 'bg-amber-400 text-neutral-950 shadow-amber-950/20 hover:bg-amber-300'
+                        : 'bg-white/12 text-white shadow-black/20 hover:bg-white/18'
+                    }`}
+                    title={microphoneWarning ? 'Try microphone again' : (isMuted ? 'Unmute microphone' : 'Mute microphone')}
+                    aria-label={microphoneWarning ? 'Try microphone again' : (isMuted ? 'Unmute microphone' : 'Mute microphone')}
                   >
-                    <PhoneCall className="h-5 w-5" />
+                    {isMuted || microphoneWarning ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
                   </button>
-                  <button
-                    type="button"
-                    onClick={declineOrEndCall}
-                    disabled={!supportsDirectCall}
-                    className="flex h-12 w-12 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14"
-                    title="Decline call"
-                    aria-label="Decline call"
-                  >
-                    <PhoneOff className="h-5 w-5" />
-                  </button>
-                </div>
+                )}
+                <button
+                  type="button"
+                  onClick={declineOrEndCall}
+                  disabled={phase === 'ended'}
+                  className="flex h-11 w-11 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14"
+                  title="End call"
+                  aria-label="End call"
+                >
+                  <PhoneOff className="h-5 w-5" />
+                </button>
               </div>
-            ) : (
-              <div className="relative flex items-center justify-between gap-4">
-                <div className="flex min-w-0 flex-1 items-center justify-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <SpeakingAvatarFrame speaking={phase === 'active' && localSpeaking && !isMuted}>
-                      <UserAvatar
-                        src={currentMember?.avatar_url}
-                        displayName={getMemberDisplayName(currentMember, 'You')}
-                        username={currentMember?.username}
-                        className="h-16 w-16 rounded-full border border-white/10 bg-blue-500/25 text-lg shadow-lg sm:h-24 sm:w-24 sm:text-2xl"
-                        fallbackClassName="bg-blue-500/25 text-blue-50"
-                        fallbackTone="plain"
-                      />
-                    </SpeakingAvatarFrame>
-                    <span className="max-w-[96px] truncate text-xs font-semibold text-white/75 sm:max-w-[140px]">
-                      You
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex shrink-0 flex-col items-center gap-2">
-                  <div className="flex items-center gap-2 sm:gap-3">
-                    <button
-                      type="button"
-                      disabled
-                      className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full bg-white/10 text-white/35 sm:h-14 sm:w-14"
-                      title="Video is not enabled yet"
-                      aria-label="Video is not enabled yet"
-                    >
-                      <Video className="h-5 w-5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled
-                      className="flex h-11 w-11 cursor-not-allowed items-center justify-center rounded-full bg-white/10 text-white/35 sm:h-14 sm:w-14"
-                      title="Screen share is not enabled yet"
-                      aria-label="Screen share is not enabled yet"
-                    >
-                      <MonitorUp className="h-5 w-5" />
-                    </button>
-                    {phase === 'ended' ? null : (
-                      <button
-                        type="button"
-                        onClick={toggleMute}
-                        disabled={!mediaReady}
-                        className={`flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14 ${
-                          isMuted
-                            ? 'bg-amber-400 text-neutral-950 shadow-amber-950/20 hover:bg-amber-300'
-                            : 'bg-white/12 text-white shadow-black/20 hover:bg-white/18'
-                        }`}
-                        title={isMuted ? 'Unmute microphone' : 'Mute microphone'}
-                        aria-label={isMuted ? 'Unmute microphone' : 'Mute microphone'}
-                      >
-                        {isMuted ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={declineOrEndCall}
-                      disabled={phase === 'ended'}
-                      className="flex h-11 w-11 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-50 sm:h-14 sm:w-14"
-                      title="End call"
-                      aria-label="End call"
-                    >
-                      <PhoneOff className="h-5 w-5" />
-                    </button>
-                  </div>
-                  <div className="max-w-[260px] truncate text-center text-xs font-medium text-white/65">
-                    {notice || (phase === 'outgoing' ? 'Calling...' : 'Audio call')}
-                    {phase === 'active' && (
-                      <span className="hidden sm:inline">
-                        {' '}· {formatCallDuration(elapsedSeconds)} · {debugState.remoteStream ? 'remote audio ready' : 'waiting for remote audio'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex min-w-0 flex-1 items-center justify-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <SpeakingAvatarFrame speaking={phase === 'active' && remoteSpeaking}>
-                      <UserAvatar
-                        src={remoteMember?.avatar_url}
-                        displayName={getMemberDisplayName(remoteMember, 'Caller')}
-                        username={remoteMember?.username}
-                        className="h-16 w-16 rounded-full border border-white/10 bg-blue-500/25 text-lg shadow-lg sm:h-24 sm:w-24 sm:text-2xl"
-                        fallbackClassName="bg-blue-500/25 text-blue-50"
-                        fallbackTone="plain"
-                      />
-                    </SpeakingAvatarFrame>
-                    <span className="max-w-[96px] truncate text-xs font-semibold text-white/75 sm:max-w-[140px]">
-                      {getMemberDisplayName(remoteMember, 'Calling')}
-                    </span>
-                  </div>
-                </div>
+              <div className="max-w-[360px] truncate text-center text-xs font-medium text-white/65">
+                {notice || (phase === 'outgoing' ? 'Calling...' : 'Audio call')}
+                {phase === 'active' && (
+                  <span className="hidden sm:inline">
+                    {' '}· {formatCallDuration(elapsedSeconds)} · {debugState.remoteStream ? 'remote audio ready' : 'waiting for remote audio'}
+                  </span>
+                )}
               </div>
-            )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <div className="ml-2 flex shrink-0 items-center gap-2">
+      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+      {callShelf && typeof document !== 'undefined' ? createPortal(callShelf, document.body) : callShelf}
 
       <button
         type="button"
