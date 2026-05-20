@@ -859,7 +859,50 @@ export function UserProvider({ children }: { children: ReactNode }) {
           const needsRecoveryAttention =
             hasRecoverableServerState && !hasLocalChatState;
 
-          if (!cancelled && needsRecoveryAttention) {
+          let recoveryAttentionResolvedLocally = false;
+          if (
+            !cancelled &&
+            needsRecoveryAttention &&
+            backup &&
+            (hasRecoveryMlsBackup || hasRecoveryBackup)
+          ) {
+            const storedRecoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
+            if (storedRecoveryKey) {
+              try {
+                const recoveryRestoreSummary = await restoreMlsStateFromBackup(
+                  userId,
+                  backup,
+                  storedRecoveryKey,
+                  'recovery_key',
+                );
+                const recoverySyncResult = await chatCryptoProtocolService.syncInbox(userId, true);
+                const recoveredLocalChatState = await inspectLocalMlsChatState();
+                recoveryAttentionResolvedLocally =
+                  recoveredLocalChatState.groupStateCount > 0 ||
+                  recoveredLocalChatState.groupKeyCount > 0;
+
+                debugLog('[MLS_RECOVERY_GATE] stored recovery key auto-restore inspection', {
+                  user_id: userId,
+                  restore_outcome: recoveryRestoreSummary.outcome,
+                  backup_group_state_count: recoveryRestoreSummary.backupGroupStateCount,
+                  backup_group_key_count: recoveryRestoreSummary.backupGroupKeyCount,
+                  has_backup_conversation_artifacts: recoveryRestoreSummary.hasConversationArtifacts,
+                  synced_group_states: recoverySyncResult.syncedGroupStates,
+                  synced_welcomes: recoverySyncResult.syncedWelcomes,
+                  synced_commits: recoverySyncResult.syncedCommits,
+                  local_group_states: recoveredLocalChatState.groupStateCount,
+                  local_group_keys: recoveredLocalChatState.groupKeyCount,
+                });
+              } catch (restoreError) {
+                console.warn('[MLS_RECOVERY_GATE] stored recovery key auto-restore failed', {
+                  user_id: userId,
+                  error: restoreError instanceof Error ? restoreError.message : String(restoreError || ''),
+                });
+              }
+            }
+          }
+
+          if (!cancelled && needsRecoveryAttention && !recoveryAttentionResolvedLocally) {
             if (hasRecoveryMlsBackup || hasRecoveryBackup) {
               activateMlsRecoveryGate('recovery_key_required', {
                 user_id: userId,

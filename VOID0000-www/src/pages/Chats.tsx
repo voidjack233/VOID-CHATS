@@ -1,6 +1,6 @@
 // src/pages/Chats.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, Users, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal, KeyRound } from 'lucide-react';
+import { Settings, Users, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal, KeyRound, PhoneCall, PhoneOff } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import ConversationSettings from '../components/Chat/ConversationSettings';
 import { useAuth } from '../Services/hooks/Auth/useAuth';
@@ -26,6 +26,7 @@ import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatu
 import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
 import PushNotificationPrompt from '../components/common/Notifications/PushNotificationPrompt';
 import type { PendingIncomingCall } from '../components/Chat/CallHeaderControls';
+import { sendCallSignal } from '../Services/Calls/callService';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -102,6 +103,7 @@ const ChatDashboard = () => {
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [incomingCall, setIncomingCall] = useState<PendingIncomingCall | null>(null);
+  const [autoAnswerIncomingCallId, setAutoAnswerIncomingCallId] = useState<string | null>(null);
   const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
   const [mlsRecoveryError, setMlsRecoveryError] = useState('');
   const [isSubmittingMlsRecoveryKey, setIsSubmittingMlsRecoveryKey] = useState(false);
@@ -177,6 +179,7 @@ const ChatDashboard = () => {
     gateway.on('CALL_END', clearIncomingCall);
     gateway.on('CALL_REJECT', clearIncomingCall);
     gateway.on('CALL_ACCEPT', clearIncomingCall);
+    gateway.on('CALL_CLEARED_ELSEWHERE', clearIncomingCall);
 
     return () => {
       gateway.off('CALL_INVITE', handleIncomingCall);
@@ -184,6 +187,7 @@ const ChatDashboard = () => {
       gateway.off('CALL_END', clearIncomingCall);
       gateway.off('CALL_REJECT', clearIncomingCall);
       gateway.off('CALL_ACCEPT', clearIncomingCall);
+      gateway.off('CALL_CLEARED_ELSEWHERE', clearIncomingCall);
     };
   }, [user?.id]);
 
@@ -199,6 +203,21 @@ const ChatDashboard = () => {
     if (!groupRouteId) return '/chats';
     return `/chats/${groupRouteId}`;
   };
+
+  const getIncomingCallConversationIdentifier = useCallback((call: PendingIncomingCall | null) => (
+    call?.conversation_public_id || call?.conversation_id || null
+  ), []);
+
+  const openIncomingCallConversation = useCallback((call: PendingIncomingCall) => {
+    const identifier = getIncomingCallConversationIdentifier(call);
+    if (!identifier) return;
+    const route = call.conversation_type === 'group'
+      ? `/chats/${identifier}`
+      : `/chats/@me/${identifier}`;
+    navigate(route);
+    setIsMobileSidebarOpen(false);
+    setMobileSidebarMode('messages');
+  }, [getIncomingCallConversationIdentifier, navigate]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -835,6 +854,51 @@ const ChatDashboard = () => {
     setForwardingMessage(null);
   };
 
+  const incomingCallIdentifier = getIncomingCallConversationIdentifier(incomingCall);
+  const showGlobalIncomingCall =
+    Boolean(incomingCall) &&
+    !(
+      incomingCallIdentifier &&
+      activeConversation &&
+      matchesConversationIdentifier(activeConversation, incomingCallIdentifier)
+    );
+  const incomingCaller =
+    incomingCall
+      ? friends.find((friend) => friend.id === incomingCall.from_user_id) ||
+        members[incomingCall.from_user_id] ||
+        null
+      : null;
+  const incomingCallerName =
+    incomingCaller?.display_name ||
+    incomingCaller?.username ||
+    'Someone';
+  const incomingCallerAvatarUrl = incomingCaller?.avatar_url || null;
+
+  const handleAnswerGlobalIncomingCall = () => {
+    if (!incomingCall) return;
+    setAutoAnswerIncomingCallId(incomingCall.call_id);
+    openIncomingCallConversation(incomingCall);
+  };
+
+  const handleDeclineGlobalIncomingCall = async () => {
+    if (!incomingCall) return;
+    const activeIncomingCall = incomingCall;
+    setIncomingCall(null);
+
+    try {
+      await sendCallSignal({
+        event: 'CALL_REJECT',
+        conversationId: activeIncomingCall.conversation_public_id || activeIncomingCall.conversation_id || '',
+        targetUserId: activeIncomingCall.from_user_id,
+        callId: activeIncomingCall.call_id,
+        media: 'audio',
+        reason: 'declined',
+      });
+    } catch {
+      showSendNotice('Could not decline the call. It may already be gone.');
+    }
+  };
+
   return (
     <div
       className="flex flex-col overflow-hidden bg-void-bg-main font-sans text-void-text"
@@ -900,6 +964,55 @@ const ChatDashboard = () => {
         onClose={() => setForwardingMessage(null)}
         onForward={handleForwardToConversation}
       />
+
+      {showGlobalIncomingCall && incomingCall ? (
+        <div className="pointer-events-none absolute inset-x-3 top-3 z-[70] flex justify-center md:inset-x-auto md:right-5 md:justify-end">
+          <div className="pointer-events-auto relative w-full max-w-sm overflow-hidden rounded-[1.75rem] border border-white/10 bg-[#111827]/88 px-4 py-4 text-white shadow-2xl shadow-black/35 backdrop-blur-xl">
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-white/6 via-transparent to-white/6" />
+            <div className="relative flex items-center gap-3">
+              <UserAvatar
+                src={incomingCallerAvatarUrl}
+                displayName={incomingCallerName}
+                username={incomingCaller?.username}
+                className="h-14 w-14 shrink-0 rounded-full border border-white/10 bg-blue-500/25 text-lg shadow-lg"
+                fallbackClassName="bg-blue-500/25 text-blue-50"
+                fallbackTone="plain"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-bold text-white">{incomingCallerName}</div>
+                <div className="mt-0.5 text-xs font-medium text-white/60">Incoming audio call</div>
+                <button
+                  type="button"
+                  onClick={() => openIncomingCallConversation(incomingCall)}
+                  className="mt-1 text-[11px] font-semibold text-white/45 transition hover:text-white/70"
+                >
+                  Open conversation
+                </button>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleAnswerGlobalIncomingCall}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500 text-white shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-400"
+                  title="Answer call"
+                  aria-label="Answer call"
+                >
+                  <PhoneCall className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeclineGlobalIncomingCall}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500 text-white shadow-lg shadow-red-950/35 transition hover:bg-red-400"
+                  title="Decline call"
+                  aria-label="Decline call"
+                >
+                  <PhoneOff className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Conversation Sidebar */}
       <div className={`bg-void-bg-main flex-col shrink-0 border-r border-void-bg-sec transition-all ${isMobileSidebarOpen ? 'flex' : 'hidden md:flex'} w-full md:w-72`}>
@@ -1095,6 +1208,10 @@ const ChatDashboard = () => {
                   members={members}
                   currentUserId={user?.id}
                   pendingIncomingCall={incomingCall}
+                  autoAnswerIncomingCallId={autoAnswerIncomingCallId}
+                  onAutoAnswerIncomingHandled={(callId) => {
+                    setAutoAnswerIncomingCallId((current) => current === callId ? null : current);
+                  }}
                   onPendingIncomingHandled={(callId) => {
                     setIncomingCall((current) => current?.call_id === callId ? null : current);
                   }}

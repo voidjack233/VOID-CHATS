@@ -14,12 +14,13 @@ dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
 
 const { pool } = await import('../db.js');
 const { default: valkey } = await import('../valkey.js');
+const { default: scylla } = await import('../scylla.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
 const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js');
 const { authenticateUser } = await import('../middleware/jwt.js');
 const { noCache } = await import('../middleware/noCache.js');
 const { initPublisher } = await import('../valkey-pubsub.js');
-const { default: callsRouter } = await import('../routes/calls/index.js');
+const { default: callsRouter, expireStaleRingingCalls } = await import('../routes/calls/index.js');
 
 const app = express();
 const PORT = process.env.CALL_SERVICE_PORT || 3006;
@@ -59,6 +60,7 @@ app.get('/ready', createReadinessHandler({
   checks: {
     postgres: () => pool.query('SELECT 1'),
     valkey: () => valkey.ping(),
+    scylla: () => scylla.execute('SELECT key FROM system.local'),
   },
 }));
 
@@ -66,6 +68,13 @@ app.use(encryptedCSRFProtection);
 app.use('/api/calls', noCache, authenticateUser, callsRouter);
 
 const httpServer = createServer(app);
+const ringingCleanupInterval = setInterval(() => {
+  expireStaleRingingCalls().catch((error) => {
+    console.error('Failed to expire stale ringing calls:', error);
+  });
+}, 15_000);
+
+ringingCleanupInterval.unref?.();
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`✅ Call service running on ${HOST}:${PORT} (PID ${process.pid})`);
