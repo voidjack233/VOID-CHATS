@@ -5,6 +5,7 @@ import { sessionStore } from '../../middleware/sessionStore.js';
 import { disconnectLiveSession } from '../../gateway/control.js';
 
 const router = express.Router();
+const RECENT_DEVICE_ACTIVITY_MS = 5 * 60 * 1000;
 
 // GET /api/users/sessions - List all active sessions
 router.get('/', authenticateUser, async (req, res) => {
@@ -12,6 +13,13 @@ router.get('/', authenticateUser, async (req, res) => {
   const currentDeviceId = req.user.device_id;
 
   try {
+    const liveSessions = await sessionStore.getAll(userId);
+    const liveSessionByDeviceId = new Map(
+      liveSessions
+        .filter(session => session?.deviceId)
+        .map(session => [session.deviceId, session])
+    );
+
     const result = await db.query(
       `WITH ranked_sessions AS (
          SELECT
@@ -50,18 +58,30 @@ router.get('/', authenticateUser, async (req, res) => {
       [userId]
     );
 
-    const sessions = result.rows.map(session => ({
-      id: session.device_id,
-      device_id: session.device_id,
-      device_name: session.device_name,
-      device_type: session.device_type,
-      ip_address: session.ip_address,
-      user_agent: session.user_agent,
-      created_at: session.created_at,
-      updated_at: session.updated_at,
-      expires_at: session.expires_at,
-      is_current: session.device_id === currentDeviceId
-    }));
+    const sessions = result.rows.map(session => {
+      const liveSession = liveSessionByDeviceId.get(session.device_id) || null;
+      const liveLastSeenAt = Number(liveSession?.lastSeenAt || 0);
+      const dbUpdatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
+      const latestSeenAt = Math.max(dbUpdatedAt, liveLastSeenAt);
+      const isRecentlyActive =
+        liveLastSeenAt > 0 && Date.now() - liveLastSeenAt <= RECENT_DEVICE_ACTIVITY_MS;
+
+      return {
+        id: session.device_id,
+        device_id: session.device_id,
+        device_name: session.device_name || liveSession?.deviceName || null,
+        device_type: session.device_type || liveSession?.deviceType || null,
+        ip_address: session.ip_address || liveSession?.ip || null,
+        user_agent: session.user_agent || liveSession?.userAgent || null,
+        created_at: session.created_at,
+        updated_at: latestSeenAt ? new Date(latestSeenAt).toISOString() : session.updated_at,
+        last_live_at: liveLastSeenAt ? new Date(liveLastSeenAt).toISOString() : null,
+        expires_at: session.expires_at,
+        is_current: session.device_id === currentDeviceId,
+        has_live_session: Boolean(liveSession),
+        is_recently_active: isRecentlyActive,
+      };
+    });
 
     res.json({
       success: true,

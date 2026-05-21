@@ -229,6 +229,9 @@ interface SessionCardProps {
     user_agent: string | null;
     created_at: string;
     updated_at: string;
+    last_live_at?: string | null;
+    has_live_session?: boolean;
+    is_recently_active?: boolean;
   };
   isCurrent: boolean;
   isMobile: boolean;
@@ -261,6 +264,11 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
             {isCurrent && (
               <span className="px-2 py-0.5 bg-green-500/20 text-green-400 text-xs rounded-full">
                 Current
+              </span>
+            )}
+            {!isCurrent && session.is_recently_active && (
+              <span className="px-2 py-0.5 bg-blue-500/15 text-blue-300 text-xs rounded-full">
+                Recent
               </span>
             )}
           </div>

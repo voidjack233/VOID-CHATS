@@ -12,8 +12,11 @@ interface Session {
   user_agent: string | null;
   created_at: string;
   updated_at: string;
+  last_live_at?: string | null;
   expires_at: string;
   is_current: boolean;
+  has_live_session?: boolean;
+  is_recently_active?: boolean;
 }
 
 export const useActiveSessions = () => {
