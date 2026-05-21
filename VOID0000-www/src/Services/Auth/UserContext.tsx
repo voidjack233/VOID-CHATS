@@ -35,7 +35,12 @@ interface MlsRestoreSummary {
   backupGroupKeyCount: number;
   hasConversationArtifacts: boolean;
 }
-type MlsRecoveryGateReason = 'recovery_key_required' | 'password_required' | 'restore_failed' | 'sync_import_missing';
+type MlsRecoveryGateReason =
+  | 'recovery_key_required'
+  | 'password_required'
+  | 'restore_failed'
+  | 'sync_import_missing'
+  | 'local_state_lost';
 
 interface MlsRecoveryGateState {
   active: boolean;
@@ -356,6 +361,7 @@ interface UserContextType {
   setLoginPassword: (password: string) => void;
   refreshSecureBackupsWithPassword: (password: string) => Promise<void>;
   generateRecoveryKey: () => string;
+  continueWithoutLocalSecureHistory: () => void;
   setupRecoveryKey: (recoveryKey: string) => Promise<void>;
   retryMlsRecoveryWithRecoveryKey: (recoveryKey: string) => Promise<void>;
   retryMlsRecoveryWithPassword: (password: string) => Promise<void>;
@@ -436,6 +442,13 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
   const generateRecoveryKey = () => keyManager.generateRecoveryPhrase();
 
+  const continueWithoutLocalSecureHistory = () => {
+    console.warn('[MLS_RECOVERY_GATE] user continued without local secure history');
+    setKeyStatus('SECURE');
+    clearMlsRecoveryGate();
+    setKeyInitResolved(true);
+  };
+
   const setupRecoveryKey = async (recoveryKey: string) => {
     if (!user?.id) {
       throw new Error('AUTH_REQUIRED');
@@ -493,6 +506,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
     }
 
     return 'UNINITIALIZED';
+  };
+
+  const resolveInitialKeyRecoveryGate = (
+    errorMessage: string,
+    backup: KeyBackupRecord | null
+  ): MlsRecoveryGateReason => {
+    const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
+
+    if (errorMessage === 'KEY_RESTORE_FAILED') {
+      return hasRecoveryBackup ? 'recovery_key_required' : 'restore_failed';
+    }
+
+    return 'local_state_lost';
   };
 
   const createKeyCallbacks = () => ({
@@ -977,21 +1003,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
           clearLoginPasswordIfMatches(password);
           const backup = await callbacks.fetchBackup().catch(() => null);
           const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
+          const gateReason = resolveInitialKeyRecoveryGate(err.message, backup);
           console.warn('🔑 Keys are locked on this device');
           setKeyStatus('LOCKED');
-          setRecoveryBackupStatus(hasRecoveryBackup ? 'RECOVERY_KEY_READY' : resolveRecoveryBackupStatusFromBackup(backup));
-          activateMlsRecoveryGate(
-            hasRecoveryBackup
-              ? 'recovery_key_required'
-              : err.message === 'KEY_RESTORE_FAILED'
-                ? 'restore_failed'
-                : 'password_required',
-            {
-              user_id: userId,
-              source: 'key_init',
-              has_recovery_backup: hasRecoveryBackup,
-            }
-          );
+          setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
+          activateMlsRecoveryGate(gateReason, {
+            user_id: userId,
+            source: 'key_init',
+            has_password_backup: hasPasswordBackupPayload(backup),
+            has_recovery_backup: hasRecoveryBackup,
+          });
         } else {
           console.warn('🔑 Key init failed:', err.message);
           setKeyStatus('UNINITIALIZED');
@@ -1285,6 +1306,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       setLoginPassword,
       refreshSecureBackupsWithPassword,
       generateRecoveryKey,
+      continueWithoutLocalSecureHistory,
       setupRecoveryKey,
       retryMlsRecoveryWithRecoveryKey,
       retryMlsRecoveryWithPassword,

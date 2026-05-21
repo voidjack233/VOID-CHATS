@@ -50,6 +50,7 @@ const ChatDashboard = () => {
     isLoggingOut,
     retryMlsRecoveryWithPassword,
     retryMlsRecoveryWithRecoveryKey,
+    continueWithoutLocalSecureHistory,
     logout,
   } = useUser();
 
@@ -655,6 +656,12 @@ const ChatDashboard = () => {
           body:
             'The previous MLS restore attempt did not unlock the secure backup cleanly. Try your current account password again below. If that still fails, use a device that can still read your chats before continuing here.',
         };
+      case 'local_state_lost':
+        return {
+          title: 'Secure chat state was lost',
+          body:
+            'Re-signing in may recover your conversations. If you continue anyway, some conversations and message history may stay unreadable on this browser.',
+        };
       default:
         return {
           title: 'Secure chat recovery is incomplete',
@@ -727,6 +734,7 @@ const ChatDashboard = () => {
     const canRetryWithRecoveryKey = mlsRecoveryGate.reason === 'recovery_key_required';
     const canRetryWithPassword =
       mlsRecoveryGate.reason === 'password_required' || mlsRecoveryGate.reason === 'restore_failed';
+    const shouldSignInAgain = mlsRecoveryGate.reason === 'local_state_lost';
     return (
       <div className="min-h-screen bg-void-bg-main text-void-text flex items-center justify-center p-6">
         <div className="w-full max-w-xl bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl p-8 space-y-6">
@@ -847,8 +855,20 @@ const ChatDashboard = () => {
               disabled={isSubmittingMlsRecoveryKey}
               className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-border bg-gray-900 text-void-text px-4 py-3 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Sign Out
+              {shouldSignInAgain ? 'Sign In Again' : 'Sign Out'}
             </button>
+            {shouldSignInAgain && (
+              <button
+                type="button"
+                onClick={() => {
+                  continueWithoutLocalSecureHistory();
+                }}
+                disabled={isSubmittingMlsRecoveryKey}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-amber-400/25 bg-amber-500/10 text-amber-100 px-4 py-3 font-medium hover:bg-amber-500/15 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Continue Anyway
+              </button>
+            )}
           </div>
         </div>
       </div>
