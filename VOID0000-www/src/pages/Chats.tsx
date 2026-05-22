@@ -12,7 +12,7 @@ import SettingsModal from '../components/common/Settings/SettingsModal';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
-import CallHeaderControls from '../components/Chat/CallHeaderControls';
+import CallHeaderControls from '../components/Calls/CallHeaderControls';
 import ForwardMessageModal from '../components/Chat/ForwardMessageModal';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
@@ -25,7 +25,7 @@ import { ConversationPaneSkeleton } from '../components/common/Skeleton';
 import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
 import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
 import PushNotificationPrompt from '../components/common/Notifications/PushNotificationPrompt';
-import type { PendingIncomingCall } from '../components/Chat/CallHeaderControls';
+import type { PendingIncomingCall } from '../components/Calls/CallHeaderControls';
 import { getActiveCall, sendCallSignal } from '../Services/Calls/callService';
 
 const normalizeText = (value?: string | null) => {
