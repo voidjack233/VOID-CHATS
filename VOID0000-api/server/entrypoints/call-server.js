@@ -20,7 +20,7 @@ const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js
 const { authenticateUser } = await import('../middleware/jwt.js');
 const { noCache } = await import('../middleware/noCache.js');
 const { initPublisher } = await import('../valkey-pubsub.js');
-const { default: callsRouter, expireStaleRingingCalls } = await import('../routes/calls/index.js');
+const { default: callsRouter, expireStaleCallSessions } = await import('../routes/calls/index.js');
 
 const app = express();
 const PORT = process.env.CALL_SERVICE_PORT || 3006;
@@ -69,8 +69,8 @@ app.use('/api/calls', noCache, authenticateUser, callsRouter);
 
 const httpServer = createServer(app);
 const ringingCleanupInterval = setInterval(() => {
-  expireStaleRingingCalls().catch((error) => {
-    console.error('Failed to expire stale ringing calls:', error);
+  expireStaleCallSessions().catch((error) => {
+    console.error('Failed to expire stale call sessions:', error);
   });
 }, 15_000);
 

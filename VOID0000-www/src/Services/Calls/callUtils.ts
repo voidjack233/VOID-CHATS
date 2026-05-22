@@ -2,6 +2,8 @@ import type { Conversation, ConversationMember } from '../Chat/chatService';
 import type { CallEventPayload, VoiceMediaTrackConstraints } from './callTypes';
 
 export const OUTGOING_CALL_TIMEOUT_MS = 45_000;
+export const CALL_HEARTBEAT_INTERVAL_MS = 10_000;
+export const CALL_DISCONNECT_NOTICE_MS = 8_000;
 export const REMOTE_AUDIO_VOLUME = 0.82;
 export const CALL_SHELF_DRAG_MIN_Y = -96;
 export const CALL_SHELF_DRAG_MAX_Y = 360;

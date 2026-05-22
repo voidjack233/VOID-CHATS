@@ -23,6 +23,7 @@ import {
 interface SyncResult {
   newMessages: LocalMessage[];
   hasMore: boolean;
+  didSync: boolean;
 }
 
 interface LoadConversationOptions extends MessageDecryptionContext {
@@ -87,7 +88,7 @@ class MessageSync {
           return result;
         });
     } else {
-      syncPromise = Promise.resolve({ newMessages: [], hasMore: cached.has_more });
+      syncPromise = Promise.resolve({ newMessages: [], hasMore: cached.has_more, didSync: false });
     }
 
     return { cached, syncPromise };
@@ -118,7 +119,7 @@ class MessageSync {
       await messageStore.setSyncCursor(conversationId, newestId);
 
       if (serverMsgs.length === 0) {
-        return { newMessages: [], hasMore };
+        return { newMessages: [], hasMore, didSync: true };
       }
 
       const localMsgs: LocalMessage[] = serverMsgs.map((msg) => {
@@ -189,10 +190,10 @@ class MessageSync {
       const cachedIds = new Set(cached.messages.map((m) => m.message_id));
       const newMessages = localMsgs.filter((m) => !cachedIds.has(m.message_id));
 
-      return { newMessages, hasMore };
+      return { newMessages, hasMore, didSync: true };
     } catch (err) {
       console.error('Background sync failed:', err);
-      return { newMessages: [], hasMore: false };
+      return { newMessages: [], hasMore: false, didSync: true };
     }
   }
 

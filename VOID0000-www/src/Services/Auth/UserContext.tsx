@@ -54,6 +54,7 @@ declare global {
 
 const UserContext = createContext<UserContextType | null>(null);
 const USER_STORAGE_KEY = 'void_user';
+const FOREGROUND_MLS_MAINTENANCE_MIN_GAP_MS = 30_000;
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<User | null>(() => {
@@ -76,6 +77,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const loginPasswordClearTimerRef = useRef<number | null>(null);
   const liveConversationKeyVersionsRef = useRef<Record<string, number>>({});
   const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
+  const lastForegroundMlsMaintenanceAtRef = useRef(0);
 
   const clearLoginPassword = () => {
     loginPasswordRef.current = null;
@@ -771,6 +773,18 @@ export function UserProvider({ children }: { children: ReactNode }) {
       void chatCryptoProtocolService.ensureServerKeyPackageReserve(userId).catch(() => {});
     };
 
+    const runForegroundMaintenance = () => {
+      if (cancelled) return;
+
+      const now = Date.now();
+      if (now - lastForegroundMlsMaintenanceAtRef.current < FOREGROUND_MLS_MAINTENANCE_MIN_GAP_MS) {
+        return;
+      }
+
+      lastForegroundMlsMaintenanceAtRef.current = now;
+      runBootstrapMaintenance(false);
+    };
+
     // Periodic maintenance fallback — run bootstrap + top-up every 60s.
     const maintenanceInterval = window.setInterval(() => {
       runBootstrapMaintenance(true);
@@ -779,14 +793,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        runBootstrapMaintenance(true);
-        runKeyPackageTopUp();
+        runForegroundMaintenance();
       }
     };
 
     const onFocus = () => {
-      runBootstrapMaintenance(true);
-      runKeyPackageTopUp();
+      runForegroundMaintenance();
     };
 
     const onOnline = () => {

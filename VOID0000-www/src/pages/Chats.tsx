@@ -197,7 +197,7 @@ const ChatDashboard = () => {
     if (!user?.id) return;
 
     try {
-      const activeCall = await getActiveCall();
+      const activeCall = await getActiveCall({ cacheKey: user.id });
       if (!activeCall) {
         setIncomingCall(null);
         return;
@@ -235,14 +235,14 @@ const ChatDashboard = () => {
       }
     };
 
-    gateway.on('ready', refreshOnReady);
-    gateway.on('gateway_ready', refreshOnReady);
+    gateway.on('READY', refreshOnReady);
+    gateway.on('RESUMED', refreshOnReady);
     window.addEventListener('focus', refreshOnReady);
     document.addEventListener('visibilitychange', refreshOnVisible);
 
     return () => {
-      gateway.off('ready', refreshOnReady);
-      gateway.off('gateway_ready', refreshOnReady);
+      gateway.off('READY', refreshOnReady);
+      gateway.off('RESUMED', refreshOnReady);
       window.removeEventListener('focus', refreshOnReady);
       document.removeEventListener('visibilitychange', refreshOnVisible);
     };

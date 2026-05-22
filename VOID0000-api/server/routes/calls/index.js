@@ -26,8 +26,10 @@ const MAX_SDP_BASE64_LENGTH = 96 * 1024;
 const MAX_CANDIDATE_LENGTH = 8 * 1024;
 const MAX_REASON_LENGTH = 512;
 const RINGING_CALL_TIMEOUT_MS = 60_000;
+const ACTIVE_CALL_HEARTBEAT_TIMEOUT_MS = 45_000;
 const TERMINAL_CALL_STATUSES = new Set(['ended', 'declined', 'canceled', 'missed', 'failed']);
 const LIVE_CALL_STATUSES = ['ringing', 'active'];
+const WEBRTC_SIGNAL_EVENTS = new Set(['WEBRTC_OFFER', 'WEBRTC_ANSWER', 'ICE_CANDIDATE']);
 
 class CallSignalError extends Error {
   constructor(status, code, message, extra = {}) {
@@ -200,6 +202,38 @@ async function emitMissedCallForSession(session, reason = 'missed') {
   sendLiveEventToUser(session.target_user_id, 'CALL_CANCEL', payload);
 }
 
+async function emitCallEndedForSession(session, reason = 'ended') {
+  const durationSeconds = session.duration_seconds || 0;
+  const content = reason === 'disconnected'
+    ? `Call ended · ${formatDuration(durationSeconds)}`
+    : `Call ended · ${formatDuration(durationSeconds)}`;
+
+  await postCallSystemMessage({
+    actorId: session.ended_by || session.started_by,
+    conversationId: session.conversation_id,
+    content,
+  });
+
+  const payload = {
+    event_id: randomUUID(),
+    event: 'CALL_END',
+    call_id: session.call_id,
+    conversation_id: session.conversation_id,
+    conversation_public_id: session.conversation_public_id ? String(session.conversation_public_id) : null,
+    conversation_type: session.conversation_type,
+    from_user_id: session.ended_by || session.started_by,
+    target_user_id: session.ended_by === session.started_by ? session.target_user_id : session.started_by,
+    media: session.media,
+    reason,
+    call_status: session.status,
+    call_duration_seconds: durationSeconds,
+    server_timestamp: Date.now(),
+  };
+
+  sendLiveEventToUser(session.started_by, 'CALL_END', payload);
+  sendLiveEventToUser(session.target_user_id, 'CALL_END', payload);
+}
+
 export async function expireStaleRingingCalls({ olderThanMs = RINGING_CALL_TIMEOUT_MS } = {}) {
   const result = await pool.query(
     `UPDATE call_sessions
@@ -219,6 +253,57 @@ export async function expireStaleRingingCalls({ olderThanMs = RINGING_CALL_TIMEO
   }
 
   return result.rows.length;
+}
+
+export async function expireStaleActiveCalls({ olderThanMs = ACTIVE_CALL_HEARTBEAT_TIMEOUT_MS } = {}) {
+  const result = await pool.query(
+    `UPDATE call_sessions
+     SET status = 'failed',
+         ended_at = NOW(),
+         end_reason = 'disconnected',
+         updated_at = NOW()
+     WHERE status = 'active'
+       AND (
+         COALESCE(started_by_last_seen_at, answered_at, started_at) < NOW() - ($1::int * INTERVAL '1 millisecond')
+         OR COALESCE(target_last_seen_at, answered_at, started_at) < NOW() - ($1::int * INTERVAL '1 millisecond')
+       )
+     RETURNING *,
+       EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - COALESCE(answered_at, started_at)))::int AS duration_seconds`,
+    [olderThanMs]
+  );
+
+  for (const session of result.rows) {
+    await emitCallEndedForSession(session, 'disconnected');
+  }
+
+  return result.rows.length;
+}
+
+export async function expireStaleCallSessions() {
+  const [ringing, active] = await Promise.all([
+    expireStaleRingingCalls(),
+    expireStaleActiveCalls(),
+  ]);
+  return { ringing, active };
+}
+
+async function touchCallParticipant(callId, userId) {
+  if (!callId || !userId) return null;
+  const result = await pool.query(
+    `UPDATE call_sessions
+     SET started_by_last_seen_at = CASE WHEN started_by = $2 THEN NOW() ELSE started_by_last_seen_at END,
+         target_last_seen_at = CASE WHEN target_user_id = $2 THEN NOW() ELSE target_last_seen_at END,
+         last_signal_at = NOW(),
+         updated_at = NOW()
+     WHERE call_id = $1
+       AND status = ANY($3::text[])
+       AND (started_by = $2 OR target_user_id = $2)
+     RETURNING *,
+       EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - COALESCE(answered_at, started_at)))::int AS duration_seconds`,
+    [callId, userId, LIVE_CALL_STATUSES]
+  );
+
+  return result.rows[0] || null;
 }
 
 async function createRingingCallSession({ callId, conversation, senderId, targetUserId, media }) {
@@ -305,8 +390,8 @@ async function createRingingCallSession({ callId, conversation, senderId, target
     const inserted = await client.query(
       `INSERT INTO call_sessions (
         call_id, conversation_id, conversation_public_id, conversation_type,
-        started_by, target_user_id, media, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ringing')
+        started_by, target_user_id, media, status, started_by_last_seen_at, last_signal_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'ringing', NOW(), NOW())
       RETURNING *,
         EXTRACT(EPOCH FROM (COALESCE(ended_at, NOW()) - COALESCE(answered_at, started_at)))::int AS duration_seconds`,
       [
@@ -334,8 +419,48 @@ async function createRingingCallSession({ callId, conversation, senderId, target
   }
 }
 
+function assertCallSessionMatchesSignal({ session, event, conversation, senderId, targetUserId }) {
+  if (!session) {
+    throw new CallSignalError(404, 'CALL_NOT_FOUND', 'Call session not found');
+  }
+  if (TERMINAL_CALL_STATUSES.has(session.status)) {
+    throw new CallSignalError(409, 'CALL_NOT_LIVE', 'This call is no longer active', {
+      call_status: session.status,
+    });
+  }
+  if (String(session.conversation_id) !== String(conversation.id)) {
+    throw new CallSignalError(409, 'CALL_CONVERSATION_MISMATCH', 'Call does not belong to this conversation');
+  }
+  if (
+    !(
+      session.started_by === senderId && session.target_user_id === targetUserId
+    ) &&
+    !(
+      session.started_by === targetUserId && session.target_user_id === senderId
+    )
+  ) {
+    throw new CallSignalError(403, 'CALL_PARTICIPANT_MISMATCH', 'Call participants do not match this signal');
+  }
+
+  if (event === 'CALL_ACCEPT' && senderId !== session.target_user_id) {
+    throw new CallSignalError(403, 'CALL_ACCEPT_FORBIDDEN', 'Only the called user can answer this call');
+  }
+  if (event === 'CALL_REJECT' && senderId !== session.target_user_id) {
+    throw new CallSignalError(403, 'CALL_REJECT_FORBIDDEN', 'Only the called user can decline this call');
+  }
+  if (event === 'CALL_CANCEL' && senderId !== session.started_by) {
+    throw new CallSignalError(403, 'CALL_CANCEL_FORBIDDEN', 'Only the caller can cancel this call');
+  }
+  if (event === 'WEBRTC_OFFER' && senderId !== session.started_by) {
+    throw new CallSignalError(403, 'CALL_OFFER_FORBIDDEN', 'Only the caller can create the call offer');
+  }
+  if (event === 'WEBRTC_ANSWER' && senderId !== session.target_user_id) {
+    throw new CallSignalError(403, 'CALL_ANSWER_FORBIDDEN', 'Only the receiver can answer the call offer');
+  }
+}
+
 async function recordCallLifecycle({ event, callId, conversation, senderId, targetUserId, senderDeviceId, media, reason: rawReason }) {
-  if (!callId || event === 'WEBRTC_OFFER' || event === 'WEBRTC_ANSWER' || event === 'ICE_CANDIDATE') {
+  if (!callId) {
     return null;
   }
 
@@ -365,6 +490,23 @@ async function recordCallLifecycle({ event, callId, conversation, senderId, targ
   }
 
   const existing = await getCallSession(callId);
+  assertCallSessionMatchesSignal({
+    session: existing,
+    event,
+    conversation,
+    senderId,
+    targetUserId,
+  });
+
+  if (WEBRTC_SIGNAL_EVENTS.has(event)) {
+    if (existing.status !== 'active') {
+      throw new CallSignalError(409, 'CALL_NOT_ACTIVE', 'This call is not ready for audio signaling', {
+        call_status: existing.status,
+      });
+    }
+    return touchCallParticipant(callId, senderId);
+  }
+
   if (!existing || TERMINAL_CALL_STATUSES.has(existing.status)) {
     return existing;
   }
@@ -390,6 +532,9 @@ async function recordCallLifecycle({ event, callId, conversation, senderId, targ
        SET status = 'active',
            answered_at = COALESCE(answered_at, NOW()),
            answered_by_device_id = COALESCE(answered_by_device_id, $2),
+           started_by_last_seen_at = NOW(),
+           target_last_seen_at = NOW(),
+           last_signal_at = NOW(),
            updated_at = NOW()
        WHERE call_id = $1
          AND status = 'ringing'
@@ -441,6 +586,7 @@ async function recordCallLifecycle({ event, callId, conversation, senderId, targ
          ended_at = COALESCE(ended_at, NOW()),
          ended_by = $3,
          end_reason = $4,
+         last_signal_at = NOW(),
          updated_at = NOW()
      WHERE call_id = $1
        AND status NOT IN ('ended', 'declined', 'canceled', 'missed', 'failed')
@@ -476,7 +622,7 @@ router.get('/active', async (req, res) => {
   const deviceId = req.user?.device_id || null;
 
   try {
-    await expireStaleRingingCalls();
+    await expireStaleCallSessions();
 
     const result = await pool.query(
       `SELECT *,
@@ -499,6 +645,45 @@ router.get('/active', async (req, res) => {
       success: false,
       message: 'Failed to inspect active call',
       code: 'CALL_ACTIVE_LOOKUP_FAILED',
+    });
+  }
+});
+
+router.post('/heartbeat', callSignalLimiter, async (req, res) => {
+  const userId = req.user?.id;
+  const deviceId = req.user?.device_id || null;
+  const callId = boundedString(req.body?.call_id, MAX_CALL_ID_LENGTH);
+
+  if (!callId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Call id is required',
+      code: 'CALL_ID_REQUIRED',
+    });
+  }
+
+  try {
+    const session = await touchCallParticipant(callId, userId);
+    if (!session) {
+      const existing = await getCallSession(callId);
+      return res.status(existing ? 409 : 404).json({
+        success: false,
+        message: existing ? 'This call is no longer active' : 'Call session not found',
+        code: existing ? 'CALL_NOT_LIVE' : 'CALL_NOT_FOUND',
+        call_status: existing?.status || null,
+      });
+    }
+
+    res.json({
+      success: true,
+      call: serializeCallSessionForUser(session, userId, deviceId),
+    });
+  } catch (err) {
+    console.error('Call heartbeat error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update call heartbeat',
+      code: 'CALL_HEARTBEAT_FAILED',
     });
   }
 });
@@ -574,6 +759,8 @@ router.post('/signal', callSignalLimiter, async (req, res) => {
       target_user_id: targetUserId,
       server_timestamp: Date.now(),
     };
+
+    await expireStaleCallSessions();
 
     const session = await recordCallLifecycle({
       event,

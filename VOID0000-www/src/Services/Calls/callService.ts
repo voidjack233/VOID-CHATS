@@ -48,6 +48,23 @@ export interface ActiveCallSnapshot {
   duration_seconds?: number;
 }
 
+interface ActiveCallRequestOptions {
+  force?: boolean;
+  maxAgeMs?: number;
+  cacheKey?: string | null;
+}
+
+const ACTIVE_CALL_CACHE_MS = 5_000;
+let activeCallCache: {
+  cacheKey: string | null;
+  value: ActiveCallSnapshot | null;
+  fetchedAt: number;
+} | null = null;
+let activeCallInFlight: {
+  cacheKey: string | null;
+  promise: Promise<ActiveCallSnapshot | null>;
+} | null = null;
+
 function createCallError(payload: unknown, fallback: string): Error & Record<string, unknown> {
   const data = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const message =
@@ -82,16 +99,81 @@ export async function sendCallSignal(input: SendCallSignalInput): Promise<CallSi
     throw createCallError(payload, 'Failed to send call signal');
   }
 
+  invalidateActiveCallCache();
   return (payload || { success: true }) as CallSignalResponse;
 }
 
-export async function getActiveCall(): Promise<ActiveCallSnapshot | null> {
-  const response = await fetchWithAuth('/api/calls/active');
+export async function sendCallHeartbeat(callId: string): Promise<ActiveCallSnapshot | null> {
+  const response = await fetchWithAuth('/api/calls/heartbeat', {
+    method: 'POST',
+    body: JSON.stringify({
+      call_id: callId,
+    }),
+  });
+
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw createCallError(payload, 'Failed to inspect active call');
+    throw createCallError(payload, 'Failed to refresh call session');
   }
 
-  return (payload?.call || null) as ActiveCallSnapshot | null;
+  const value = (payload?.call || null) as ActiveCallSnapshot | null;
+  activeCallCache = {
+    cacheKey: null,
+    value,
+    fetchedAt: Date.now(),
+  };
+  return value;
+}
+
+export function invalidateActiveCallCache() {
+  activeCallCache = null;
+  activeCallInFlight = null;
+}
+
+export async function getActiveCall(options: ActiveCallRequestOptions = {}): Promise<ActiveCallSnapshot | null> {
+  const maxAgeMs = options.maxAgeMs ?? ACTIVE_CALL_CACHE_MS;
+  const cacheKey = options.cacheKey ?? null;
+  const now = Date.now();
+
+  if (
+    !options.force &&
+    activeCallCache &&
+    activeCallCache.cacheKey === cacheKey &&
+    now - activeCallCache.fetchedAt < maxAgeMs
+  ) {
+    return activeCallCache.value;
+  }
+
+  if (activeCallInFlight && activeCallInFlight.cacheKey === cacheKey) {
+    return activeCallInFlight.promise;
+  }
+
+  const request = (async () => {
+    const response = await fetchWithAuth('/api/calls/active');
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw createCallError(payload, 'Failed to inspect active call');
+    }
+
+    const value = (payload?.call || null) as ActiveCallSnapshot | null;
+    activeCallCache = {
+      cacheKey,
+      value,
+      fetchedAt: Date.now(),
+    };
+    return value;
+  })().finally(() => {
+    if (activeCallInFlight?.promise === request) {
+      activeCallInFlight = null;
+    }
+  });
+
+  activeCallInFlight = {
+    cacheKey,
+    promise: request,
+  };
+
+  return request;
 }

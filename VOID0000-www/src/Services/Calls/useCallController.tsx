@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent } from 'react';
 import type { ConversationMember } from '../Chat/chatService';
-import { sendCallSignal } from './callService';
+import { getActiveCall, sendCallHeartbeat, sendCallSignal, type ActiveCallSnapshot } from './callService';
 import { gateway } from '../Gateway/gateway';
 import type { CallDebugState, CallEventPayload, CallHeaderControlsProps, CallPhase, CallShelfFrame } from './callTypes';
 import {
+  CALL_DISCONNECT_NOTICE_MS,
+  CALL_HEARTBEAT_INTERVAL_MS,
   CALL_SHELF_DRAG_MAX_Y,
   CALL_SHELF_DRAG_MIN_Y,
   OUTGOING_CALL_TIMEOUT_MS,
@@ -21,6 +23,13 @@ import {
   resolveSignalSdp,
 } from './callUtils';
 import { createVoiceActivityWatcher } from './voiceActivity';
+
+type GatewayConnectionState = 'connected' | 'reconnecting' | 'disconnected';
+type PresenceStatus = 'online' | 'idle' | 'offline';
+
+function getMemberDisplayName(member: ConversationMember | null, fallback: string) {
+  return member?.display_name || member?.username || fallback;
+}
 
 export function useCallController({
   conversation,
@@ -40,6 +49,8 @@ export function useCallController({
   const [isMuted, setIsMuted] = useState(false);
   const [localSpeaking, setLocalSpeaking] = useState(false);
   const [remoteSpeaking, setRemoteSpeaking] = useState(false);
+  const [gatewayConnectionState, setGatewayConnectionState] = useState<GatewayConnectionState>(() => gateway.getConnectionState());
+  const [remotePresenceStatus, setRemotePresenceStatus] = useState<PresenceStatus | null>(null);
   const [callCurrentMemberSnapshot, setCallCurrentMemberSnapshot] = useState<ConversationMember | null>(null);
   const [callRemoteMemberSnapshot, setCallRemoteMemberSnapshot] = useState<ConversationMember | null>(null);
   const [microphoneWarning, setMicrophoneWarning] = useState<string | null>(null);
@@ -65,8 +76,15 @@ export function useCallController({
   const remoteUserIdRef = useRef<string | null>(null);
   const outgoingTimeoutRef = useRef<number | null>(null);
   const resetTimerRef = useRef<number | null>(null);
+  const heartbeatIntervalRef = useRef<number | null>(null);
+  const heartbeatInFlightRef = useRef(false);
+  const peerDisconnectTimerRef = useRef<number | null>(null);
   const dragStartRef = useRef<{ pointerId: number; startY: number; startOffsetY: number } | null>(null);
   const phaseRef = useRef<CallPhase>('idle');
+  const localCallParticipationRef = useRef(false);
+  const locallyAcceptingCallIdRef = useRef<string | null>(null);
+  const activeCallRefreshInFlightRef = useRef(false);
+  const lastActiveCallRefreshAtRef = useRef(0);
   const stopLocalVoiceActivityRef = useRef<(() => void) | null>(null);
   const stopRemoteVoiceActivityRef = useRef<(() => void) | null>(null);
 
@@ -85,6 +103,11 @@ export function useCallController({
   const supportsDirectCall = Boolean(targetUserId);
   const busy = phase === 'outgoing';
   const showCallShelf = phase !== 'idle';
+
+  const findMemberByUserId = useCallback((userId?: string | null) => {
+    if (!userId) return null;
+    return Object.values(members).find((member) => member.user_id === userId) || null;
+  }, [members]);
 
   const updateDebug = useCallback((patch: Partial<CallDebugState>) => {
     setDebugState((current) => ({ ...current, ...patch }));
@@ -162,6 +185,20 @@ export function useCallController({
     }
   }, []);
 
+  const clearHeartbeatTimer = useCallback(() => {
+    if (heartbeatIntervalRef.current !== null) {
+      window.clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
+  }, []);
+
+  const clearPeerDisconnectTimer = useCallback(() => {
+    if (peerDisconnectTimerRef.current !== null) {
+      window.clearTimeout(peerDisconnectTimerRef.current);
+      peerDisconnectTimerRef.current = null;
+    }
+  }, []);
+
   const stopLocalMedia = useCallback(() => {
     stopLocalVoiceActivityRef.current?.();
     stopLocalVoiceActivityRef.current = null;
@@ -173,6 +210,7 @@ export function useCallController({
   }, [updateDebug]);
 
   const closePeerConnection = useCallback(() => {
+    clearPeerDisconnectTimer();
     stopRemoteVoiceActivityRef.current?.();
     stopRemoteVoiceActivityRef.current = null;
     peerConnectionRef.current?.close();
@@ -188,7 +226,7 @@ export function useCallController({
       signaling: 'stable',
     });
     setRemoteSpeaking(false);
-  }, [updateDebug]);
+  }, [clearPeerDisconnectTimer, updateDebug]);
 
   const cleanupMedia = useCallback(() => {
     closePeerConnection();
@@ -197,8 +235,12 @@ export function useCallController({
 
   const resetCall = useCallback((message?: string) => {
     clearResetTimer();
+    clearHeartbeatTimer();
+    clearPeerDisconnectTimer();
     cleanupMedia();
     clearOutgoingTimeout();
+    localCallParticipationRef.current = false;
+    locallyAcceptingCallIdRef.current = null;
     setConnectedAt(null);
     setElapsedSeconds(0);
     setPhase(message ? 'ended' : 'idle');
@@ -210,6 +252,7 @@ export function useCallController({
         setCallId(null);
         setCallConversationId(null);
         setRemoteUserId(null);
+        setRemotePresenceStatus(null);
         setCallCurrentMemberSnapshot(null);
         setCallRemoteMemberSnapshot(null);
         setCallShelfOffsetY(0);
@@ -220,12 +263,104 @@ export function useCallController({
       setCallId(null);
       setCallConversationId(null);
       setRemoteUserId(null);
+      setRemotePresenceStatus(null);
       setCallCurrentMemberSnapshot(null);
       setCallRemoteMemberSnapshot(null);
       setCallShelfOffsetY(0);
       setIsCallShelfCollapsed(true);
     }
-  }, [cleanupMedia, clearOutgoingTimeout, clearResetTimer]);
+  }, [cleanupMedia, clearHeartbeatTimer, clearOutgoingTimeout, clearPeerDisconnectTimer, clearResetTimer]);
+
+  const applyActiveCallSnapshot = useCallback((snapshot: ActiveCallSnapshot | null) => {
+    if (!snapshot || !isConversationEvent(conversation, snapshot)) {
+      return false;
+    }
+
+    const peerUserId = snapshot.peer_user_id || (
+      snapshot.from_user_id === currentUserId ? snapshot.target_user_id : snapshot.from_user_id
+    );
+
+    if (!peerUserId || snapshot.call_id === callIdRef.current) {
+      return false;
+    }
+
+    clearResetTimer();
+    setCallId(snapshot.call_id);
+    callConversationIdRef.current = snapshot.conversation_id || conversation.id;
+    setCallConversationId(snapshot.conversation_id || conversation.id);
+    setRemoteUserId(peerUserId);
+    setCallCurrentMemberSnapshot(findMemberByUserId(currentUserId));
+    setCallRemoteMemberSnapshot(findMemberByUserId(peerUserId));
+    setRemotePresenceStatus(null);
+    setIsCallShelfCollapsed(true);
+    localCallParticipationRef.current = snapshot.status === 'ringing';
+
+    if (snapshot.status === 'ringing') {
+      setPhase(snapshot.direction === 'incoming' ? 'incoming' : 'outgoing');
+      setNotice(snapshot.direction === 'incoming' ? 'Incoming audio call' : 'Calling...');
+      updateDebug({ last: `restored ${snapshot.direction} ringing call` });
+      return true;
+    }
+
+    setPhase('active');
+    localCallParticipationRef.current = Boolean(
+      snapshot.direction === 'outgoing' || snapshot.answered_here,
+    );
+    setConnectedAt((current) => current || (
+      snapshot.answered_at ? Date.parse(snapshot.answered_at) || Date.now() : Date.now()
+    ));
+    setElapsedSeconds(snapshot.duration_seconds || 0);
+    setNotice(snapshot.answered_here
+      ? 'Call restored. End and call again if audio is missing.'
+      : 'Call active on another device');
+    updateDebug({ last: 'restored active call session' });
+    return true;
+  }, [clearResetTimer, conversation, currentUserId, findMemberByUserId, updateDebug]);
+
+  const reconcileActiveCall = useCallback(async (force = false) => {
+    if (!currentUserId || activeCallRefreshInFlightRef.current) return;
+    const now = Date.now();
+    if (!force && now - lastActiveCallRefreshAtRef.current < 3_000) return;
+
+    activeCallRefreshInFlightRef.current = true;
+    lastActiveCallRefreshAtRef.current = now;
+    try {
+      const snapshot = await getActiveCall({ force, cacheKey: currentUserId });
+      applyActiveCallSnapshot(snapshot);
+    } catch {
+      // Service-failure banners handle API trouble; call UI should not flap.
+    } finally {
+      activeCallRefreshInFlightRef.current = false;
+    }
+  }, [applyActiveCallSnapshot, currentUserId]);
+
+  useEffect(() => {
+    void reconcileActiveCall(true);
+
+    const refreshNow = () => {
+      void reconcileActiveCall(true);
+    };
+    const refreshForeground = () => {
+      void reconcileActiveCall(false);
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void reconcileActiveCall(false);
+      }
+    };
+
+    gateway.on('READY', refreshNow);
+    gateway.on('RESUMED', refreshNow);
+    window.addEventListener('focus', refreshForeground);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+
+    return () => {
+      gateway.off('READY', refreshNow);
+      gateway.off('RESUMED', refreshNow);
+      window.removeEventListener('focus', refreshForeground);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, [reconcileActiveCall]);
 
   const beginCallShelfDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -289,6 +424,51 @@ export function useCallController({
       candidateInit: options?.candidateInit,
     });
   }, [conversation.id]);
+
+  useEffect(() => {
+    const activeCallId = callId;
+    const shouldHeartbeat =
+      Boolean(activeCallId) &&
+      (phase === 'incoming' || (phase === 'active' && localCallParticipationRef.current));
+
+    if (!activeCallId || !shouldHeartbeat) {
+      clearHeartbeatTimer();
+      return;
+    }
+
+    const sendHeartbeat = async () => {
+      if (heartbeatInFlightRef.current) return;
+      heartbeatInFlightRef.current = true;
+      try {
+        const snapshot = await sendCallHeartbeat(activeCallId);
+        if (!snapshot || snapshot.call_id !== callIdRef.current) return;
+        if (snapshot.status === 'active' && phaseRef.current !== 'active') {
+          setPhase('active');
+          setConnectedAt((current) => current || (
+            snapshot.answered_at ? Date.parse(snapshot.answered_at) || Date.now() : Date.now()
+          ));
+        }
+      } catch (error) {
+        const code = error && typeof error === 'object' ? (error as Record<string, unknown>).code : null;
+        if (code === 'CALL_NOT_LIVE' || code === 'CALL_NOT_FOUND') {
+          resetCall('Call ended');
+          return;
+        }
+        setNotice('Reconnecting to call server...');
+        updateDebug({ last: error instanceof Error ? error.message : 'heartbeat failed' });
+      } finally {
+        heartbeatInFlightRef.current = false;
+      }
+    };
+
+    void sendHeartbeat();
+    clearHeartbeatTimer();
+    heartbeatIntervalRef.current = window.setInterval(() => {
+      void sendHeartbeat();
+    }, CALL_HEARTBEAT_INTERVAL_MS);
+
+    return clearHeartbeatTimer;
+  }, [callId, clearHeartbeatTimer, phase, resetCall, updateDebug]);
 
   useEffect(() => {
     if (phase !== 'outgoing' || !callId || !remoteUserId) {
@@ -443,17 +623,26 @@ export function useCallController({
     pc.onconnectionstatechange = () => {
       updateDebug({ peer: pc.connectionState, last: `peer ${pc.connectionState}` });
       if (pc.connectionState === 'connected') {
+        clearPeerDisconnectTimer();
         setPhase('active');
         setConnectedAt((current) => current || Date.now());
         setNotice('Audio connected');
       } else if (['failed', 'disconnected'].includes(pc.connectionState)) {
-        setNotice('Call connection is unstable');
+        setNotice('Reconnecting audio...');
+        if (peerDisconnectTimerRef.current === null) {
+          peerDisconnectTimerRef.current = window.setTimeout(() => {
+            peerDisconnectTimerRef.current = null;
+            if (phaseRef.current === 'active') {
+              setNotice('User disconnected. Waiting for reconnect...');
+            }
+          }, CALL_DISCONNECT_NOTICE_MS);
+        }
       }
     };
 
     peerConnectionRef.current = pc;
     return pc;
-  }, [resetCall, sendSignal, updateDebug]);
+  }, [clearPeerDisconnectTimer, sendSignal, updateDebug]);
 
   const attachLocalTracks = useCallback(async (pc: RTCPeerConnection) => {
     const stream = await tryEnsureLocalStream();
@@ -466,6 +655,18 @@ export function useCallController({
     });
     return true;
   }, [tryEnsureLocalStream]);
+
+  const ensureAudioReceivePath = useCallback((pc: RTCPeerConnection) => {
+    const hasAudioSender = pc.getSenders().some((sender) => sender.track?.kind === 'audio');
+    const hasAudioTransceiver = pc.getTransceivers().some((transceiver) => (
+      transceiver.receiver.track.kind === 'audio'
+    ));
+
+    if (!hasAudioSender && !hasAudioTransceiver) {
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+      updateDebug({ last: 'audio receive path ready' });
+    }
+  }, [updateDebug]);
 
   const flushPendingIceCandidates = useCallback(async (pc: RTCPeerConnection) => {
     if (!pc.remoteDescription) return;
@@ -483,12 +684,15 @@ export function useCallController({
       updateDebug({ last: `skipped duplicate offer in ${pc.signalingState}` });
       return;
     }
-    await attachLocalTracks(pc);
+    const attached = await attachLocalTracks(pc);
+    if (!attached) {
+      ensureAudioReceivePath(pc);
+    }
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     updateDebug({ last: 'offer sent' });
     await sendSignal('WEBRTC_OFFER', target, activeCallId, { sdp: offer.sdp || '' });
-  }, [attachLocalTracks, createPeerConnection, sendSignal, updateDebug]);
+  }, [attachLocalTracks, createPeerConnection, ensureAudioReceivePath, sendSignal, updateDebug]);
 
   const answerOffer = useCallback(async (target: string, activeCallId: string, sdp: string) => {
     const pc = createPeerConnection(target, activeCallId);
@@ -500,7 +704,10 @@ export function useCallController({
       updateDebug({ last: `skipped offer in ${pc.signalingState}` });
       return;
     }
-    await attachLocalTracks(pc);
+    const attached = await attachLocalTracks(pc);
+    if (!attached) {
+      ensureAudioReceivePath(pc);
+    }
     await pc.setRemoteDescription({ type: 'offer', sdp });
     updateDebug({ last: 'offer received' });
     await flushPendingIceCandidates(pc);
@@ -510,7 +717,7 @@ export function useCallController({
     updateDebug({ last: 'answer sent' });
     setPhase('active');
     setNotice('Connecting audio...');
-  }, [attachLocalTracks, createPeerConnection, flushPendingIceCandidates, sendSignal, updateDebug]);
+  }, [attachLocalTracks, createPeerConnection, ensureAudioReceivePath, flushPendingIceCandidates, sendSignal, updateDebug]);
 
   const applyAnswer = useCallback(async (sdp: string) => {
     const pc = peerConnectionRef.current;
@@ -553,12 +760,15 @@ export function useCallController({
     setCallCurrentMemberSnapshot(currentMember);
     setCallRemoteMemberSnapshot(remoteMember);
     setRemoteUserId(targetUserId);
+    setRemotePresenceStatus(null);
     setNotice(null);
+    localCallParticipationRef.current = true;
 
     try {
       await sendSignal('CALL_INVITE', targetUserId, nextCallId);
       setNotice('Calling...');
     } catch (err) {
+      localCallParticipationRef.current = false;
       setPhase('failed');
       setNotice(getCallStartErrorMessage(err));
     }
@@ -567,12 +777,16 @@ export function useCallController({
   const acceptCall = useCallback(async () => {
     if (!callId || !remoteUserId) return;
     try {
+      locallyAcceptingCallIdRef.current = callId;
       await tryEnsureLocalStream();
       await sendSignal('CALL_ACCEPT', remoteUserId, callId);
+      localCallParticipationRef.current = true;
       clearResetTimer();
       setPhase('active');
       setNotice('Waiting for audio...');
     } catch (err) {
+      locallyAcceptingCallIdRef.current = null;
+      localCallParticipationRef.current = false;
       const code = err && typeof err === 'object' ? (err as Record<string, unknown>).code : null;
       if (code === 'CALL_ALREADY_ANSWERED') {
         resetCall('Answered on another device');
@@ -627,8 +841,10 @@ export function useCallController({
 
   useEffect(() => () => {
     clearResetTimer();
+    clearHeartbeatTimer();
+    clearPeerDisconnectTimer();
     cleanupMedia();
-  }, [cleanupMedia, clearResetTimer]);
+  }, [cleanupMedia, clearHeartbeatTimer, clearPeerDisconnectTimer, clearResetTimer]);
 
   useEffect(() => {
     if (
@@ -646,6 +862,7 @@ export function useCallController({
     setCallCurrentMemberSnapshot(currentMember);
     setCallRemoteMemberSnapshot(remoteMember);
     setRemoteUserId(pendingIncomingCall.from_user_id);
+    setRemotePresenceStatus(null);
     setNotice('Incoming audio call');
     setIsCallShelfCollapsed(true);
     clearResetTimer();
@@ -653,8 +870,41 @@ export function useCallController({
   }, [clearResetTimer, conversation, currentMember, onPendingIncomingHandled, pendingIncomingCall, remoteMember]);
 
   useEffect(() => {
+    const handleConnectionState = (payload: { state?: GatewayConnectionState }) => {
+      if (payload.state) {
+        setGatewayConnectionState(payload.state);
+      }
+    };
+
+    const handlePresenceUpdate = (payload: {
+      user_id?: string;
+      status?: PresenceStatus;
+    }) => {
+      const activeRemoteUserId = remoteUserIdRef.current;
+      if (!activeRemoteUserId || payload.user_id !== activeRemoteUserId || !payload.status) {
+        return;
+      }
+
+      setRemotePresenceStatus(payload.status);
+    };
+
+    setGatewayConnectionState(gateway.getConnectionState());
+    gateway.on('CONNECTION_STATE', handleConnectionState);
+    gateway.on('PRESENCE_UPDATE', handlePresenceUpdate);
+
+    return () => {
+      gateway.off('CONNECTION_STATE', handleConnectionState);
+      gateway.off('PRESENCE_UPDATE', handlePresenceUpdate);
+    };
+  }, []);
+
+  useEffect(() => {
     const isActiveCallEvent = (payload: CallEventPayload) => (
       Boolean(payload.call_id && callIdRef.current && payload.call_id === callIdRef.current)
+    );
+    const isExpectedPeerSignal = (payload: CallEventPayload) => (
+      isActiveCallEvent(payload) &&
+      Boolean(payload.from_user_id && remoteUserIdRef.current && payload.from_user_id === remoteUserIdRef.current)
     );
 
     const handleInvite = (payload: CallEventPayload) => {
@@ -668,12 +918,14 @@ export function useCallController({
       setCallCurrentMemberSnapshot(currentMember);
       setCallRemoteMemberSnapshot(remoteMember);
       setRemoteUserId(payload.from_user_id);
+      setRemotePresenceStatus(null);
       setNotice('Incoming audio call');
     };
 
     const handleAccepted = (payload: CallEventPayload) => {
-      if (!isActiveCallEvent(payload)) return;
+      if (!isExpectedPeerSignal(payload)) return;
       clearResetTimer();
+      localCallParticipationRef.current = true;
       setPhase('active');
       setNotice('Starting audio...');
       if (payload.from_user_id && payload.call_id) {
@@ -697,12 +949,15 @@ export function useCallController({
         ? 'Call declined'
         : payload.event === 'CALL_CANCEL'
           ? 'Call canceled'
-          : `Call ended${duration}`;
+          : payload.reason === 'disconnected'
+            ? `User disconnected${duration}`
+            : `Call ended${duration}`;
       resetCall(message);
     };
 
     const handleClearedElsewhere = (payload: CallEventPayload) => {
       if (!isActiveCallEvent(payload)) return;
+      if (payload.call_id && locallyAcceptingCallIdRef.current === payload.call_id) return;
       if (phaseRef.current !== 'incoming') return;
       resetCall(payload.clear_reason === 'answered'
         ? 'Answered on another device'
@@ -711,9 +966,9 @@ export function useCallController({
 
     const handleOffer = (payload: CallEventPayload) => {
       if (!payload.call_id || !payload.from_user_id || (!payload.sdp && !payload.sdp_base64)) return;
-      if (!isActiveCallEvent(payload) && !isConversationEvent(conversation, payload)) return;
-      if (callIdRef.current && payload.call_id !== callIdRef.current) return;
+      if (!isExpectedPeerSignal(payload) || phaseRef.current === 'idle') return;
       clearResetTimer();
+      localCallParticipationRef.current = true;
       setPhase('active');
       if (payload.conversation_id) {
         callConversationIdRef.current = payload.conversation_id;
@@ -723,6 +978,7 @@ export function useCallController({
       setCallCurrentMemberSnapshot(currentMember);
       setCallRemoteMemberSnapshot(remoteMember);
       setRemoteUserId(payload.from_user_id);
+      setRemotePresenceStatus(null);
       setNotice('Answering audio...');
       void answerOffer(payload.from_user_id, payload.call_id, resolveSignalSdp(payload)).catch((err) => {
         setPhase('failed');
@@ -731,7 +987,7 @@ export function useCallController({
     };
 
     const handleAnswer = (payload: CallEventPayload) => {
-      if (!isActiveCallEvent(payload) || (!payload.sdp && !payload.sdp_base64)) return;
+      if (!isExpectedPeerSignal(payload) || (!payload.sdp && !payload.sdp_base64)) return;
       void applyAnswer(resolveSignalSdp(payload)).catch((err) => {
         setPhase('failed');
         setNotice(err instanceof Error ? err.message : 'Could not connect audio');
@@ -739,7 +995,7 @@ export function useCallController({
     };
 
     const handleIceCandidate = (payload: CallEventPayload) => {
-      if (!isActiveCallEvent(payload)) return;
+      if (!isExpectedPeerSignal(payload)) return;
       void applyIceCandidate(payload.candidate_init);
     };
 
@@ -785,7 +1041,12 @@ export function useCallController({
         width: 'min(680px, calc(100vw - 1rem))',
         transform: 'translateX(-50%)',
       };
-  const callShelfNotice = notice || (phase === 'outgoing' ? 'Calling...' : phase === 'active' ? 'Audio call' : 'Call');
+  const connectionNotice = showCallShelf && gatewayConnectionState !== 'connected'
+    ? 'Reconnecting to call server...'
+    : showCallShelf && remotePresenceStatus === 'offline'
+      ? `${getMemberDisplayName(shelfRemoteMember, 'User')} disconnected`
+      : null;
+  const callShelfNotice = connectionNotice || notice || (phase === 'outgoing' ? 'Calling...' : phase === 'active' ? 'Audio call' : 'Call');
 
   return {
     phase,
@@ -796,7 +1057,7 @@ export function useCallController({
     startCall,
     shelfProps: {
       phase,
-      notice,
+      notice: connectionNotice || notice,
       microphoneWarning,
       isCallShelfCollapsed,
       callShelfStyle,

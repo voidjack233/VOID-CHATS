@@ -4,10 +4,9 @@ import {
   MESSAGE_INITIAL_PAGE_SIZE,
 } from '../../../Chat/chatConstants';
 import { messageSync } from '../../../Chat/chatSync';
-import { getMessages, type Conversation, type Message } from '../../../Chat/chatService';
+import { type Conversation, type Message } from '../../../Chat/chatService';
 import { type HistoryAccessFence, filterMessagesByHistoryFence } from './messageListHistory';
 import {
-  persistFetchedMessagesSafely,
   sortMessages,
   toUIMessage,
 } from './messageListPersistence';
@@ -229,23 +228,6 @@ const useMessageListLoading = ({
       });
     };
 
-    const fetchAuthoritativeLatestWindow = async (limit: number) => {
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
-        limit,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
-      });
-      const localServerMessages = await persistFetchedMessagesSafely(serverResult.messages);
-      const visibleServerMessages = filterMessagesByHistoryFence(localServerMessages, historyAccessFence);
-      const serverUI = sortMessages(visibleServerMessages.map(toUIMessage));
-
-      return {
-        messages: serverUI,
-        hasOlder: serverResult.has_more || serverResult.messages.length >= limit,
-      };
-    };
-
     const loadLocalOnly = async () => {
       const shouldPreserveMessages =
         lastLoadedConversationIdRef.current === conversationId &&
@@ -311,16 +293,12 @@ const useMessageListLoading = ({
       lastLoadedConversationIdRef.current = conversationId;
       lastLoadedHistoryFenceSignatureRef.current = historyAccessFenceSignature;
 
-      if (!shouldPreserveMessages && historyAccessFenceSignature === 'none' && restoreSavedRuntime()) {
+      if (!shouldPreserveMessages && restoreSavedRuntime()) {
         return;
       }
 
       if (!shouldPreserveMessages) {
         resetVisibleWindow();
-        // Force one fresh validation sync when a conversation is opened again in the UI.
-        // Cached messages still render immediately, but we should not trust the previous
-        // session-validation result to answer "does older history exist?" for this open.
-        messageSync.invalidateConversation(conversationId);
       }
 
       try {
@@ -328,7 +306,7 @@ const useMessageListLoading = ({
           conversationId,
           encryptionKeyRef.current!,
           {
-            forceSync: true,
+            forceSync: false,
             preferSessionCache: true,
             initialLimit,
             syncLimit: INITIAL_OPEN_LIMIT,
@@ -365,17 +343,31 @@ const useMessageListLoading = ({
           setSyncing(false);
           setHasOlder((previous) => previous || syncResult.hasMore);
 
-          const authoritative = await fetchAuthoritativeLatestWindow(initialLimit);
+          if (!syncResult.didSync) {
+            settleInitialHydration();
+            return;
+          }
+
+          const fresh = await messageSync.readLocal(conversationId, { limit: initialLimit });
           if (ignore) return;
 
-          applyVisibleMessages(authoritative.messages, false, 'old', {
-            hasOlder: authoritative.hasOlder || syncResult.hasMore,
+          const visibleFreshMessages = filterMessagesByHistoryFence(fresh.messages, historyAccessFence);
+          const freshUI = sortMessages(visibleFreshMessages.map(toUIMessage));
+
+          applyVisibleMessages(freshUI, false, 'old', {
+            hasOlder: resolveInitialHasOlder({
+              localHasMore: fresh.has_more,
+              localCount: freshUI.length,
+              requestedLimit: initialLimit,
+              sessionSnapshot,
+              syncHasMore: syncResult.hasMore,
+            }),
             hasNewer: false,
             isAtPresent: true,
             loading: false,
             syncing: false,
           });
-          onMessagesLoaded?.(authoritative.messages);
+          onMessagesLoaded?.(freshUI);
           settleInitialHydration();
           return;
         }
@@ -385,17 +377,26 @@ const useMessageListLoading = ({
         if (ignore) return;
         setSyncing(false);
 
-        const authoritative = await fetchAuthoritativeLatestWindow(initialLimit);
+        const authoritative = await messageSync.readLocal(conversationId, { limit: initialLimit });
         if (ignore) return;
 
-        applyVisibleMessages(authoritative.messages, false, 'old', {
-          hasOlder: authoritative.hasOlder || syncResult.hasMore,
+        const visibleAuthoritativeMessages = filterMessagesByHistoryFence(authoritative.messages, historyAccessFence);
+        const authoritativeUI = sortMessages(visibleAuthoritativeMessages.map(toUIMessage));
+
+        applyVisibleMessages(authoritativeUI, false, 'old', {
+          hasOlder: resolveInitialHasOlder({
+            localHasMore: authoritative.has_more,
+            localCount: authoritativeUI.length,
+            requestedLimit: initialLimit,
+            sessionSnapshot,
+            syncHasMore: syncResult.hasMore,
+          }),
           hasNewer: false,
           isAtPresent: true,
           loading: false,
           syncing: false,
         });
-        onMessagesLoaded?.(authoritative.messages);
+        onMessagesLoaded?.(authoritativeUI);
         settleInitialHydration();
       } catch (error) {
         if (ignore) return;
