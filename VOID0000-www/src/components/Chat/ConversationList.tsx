@@ -1,5 +1,5 @@
 // src/components/Chat/ConversationList.tsx
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type SetStateAction } from 'react';
 import { MessageCircle, Users, Plus, Search } from 'lucide-react';
 import { Virtuoso } from 'react-virtuoso';
 import { Conversation, getConversations, markAsRead, closeDM, muteDM } from '../../Services/Chat/chatService';
@@ -34,6 +34,76 @@ interface ConversationListProps {
   currentUserId?: string | null;
 }
 
+const CONVERSATION_LIST_CACHE_TTL_MS = 60_000;
+const GATEWAY_CONVERSATION_RESYNC_GAP_MS = 15_000;
+
+const conversationListCache = new Map<string, {
+  conversations: Conversation[];
+  updatedAt: number;
+}>();
+
+const conversationListRequests = new Map<string, Promise<Conversation[]>>();
+
+function getConversationListCacheKey(userId: string | null | undefined): string | null {
+  return userId || null;
+}
+
+function readCachedConversationList(userId: string | null | undefined): Conversation[] | null {
+  const cacheKey = getConversationListCacheKey(userId);
+  if (!cacheKey) return null;
+
+  const cached = conversationListCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.updatedAt > CONVERSATION_LIST_CACHE_TTL_MS) return null;
+  return cached.conversations;
+}
+
+function writeCachedConversationList(
+  userId: string | null | undefined,
+  conversations: Conversation[],
+): void {
+  const cacheKey = getConversationListCacheKey(userId);
+  if (!cacheKey) return;
+
+  conversationListCache.set(cacheKey, {
+    conversations,
+    updatedAt: Date.now(),
+  });
+}
+
+async function fetchConversationList(
+  userId: string | null | undefined,
+  force = false,
+): Promise<Conversation[]> {
+  const cacheKey = getConversationListCacheKey(userId);
+
+  if (!force) {
+    const cached = readCachedConversationList(userId);
+    if (cached) return cached;
+  }
+
+  if (!cacheKey) {
+    return getConversations();
+  }
+
+  const existingRequest = conversationListRequests.get(cacheKey);
+  if (!force && existingRequest) {
+    return existingRequest;
+  }
+
+  const request = getConversations()
+    .then((conversations) => {
+      writeCachedConversationList(userId, conversations);
+      return conversations;
+    })
+    .finally(() => {
+      conversationListRequests.delete(cacheKey);
+    });
+
+  conversationListRequests.set(cacheKey, request);
+  return request;
+}
+
 const ConversationList = ({
   activeId,
   onSelect,
@@ -44,8 +114,9 @@ const ConversationList = ({
   bumpConversationId,
   currentUserId,
 }: ConversationListProps) => {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [loading, setLoading] = useState(true);
+  const cachedInitialConversations = readCachedConversationList(currentUserId);
+  const [conversations, setConversations] = useState<Conversation[]>(() => cachedInitialConversations || []);
+  const [loading, setLoading] = useState(!cachedInitialConversations);
   const [search, setSearch] = useState('');
   const [, setPreviewVersion] = useState(0);
   const [contextMenu, setContextMenu] = useState<{ conv: Conversation; x: number; y: number } | null>(null);
@@ -55,12 +126,23 @@ const ConversationList = ({
   const currentUserIdRef = useRef<string | null>(currentUserId || null);
   const friendsRef = useRef(friends);
   const readReceiptInFlightRef = useRef<Set<string>>(new Set());
+  const lastGatewayResyncAtRef = useRef(0);
   // Tracks muted_until per conversation ID. Survives the conversation being
   // removed from the list (e.g. after Close Chat or DM_HIDDEN), so the sound
   // gate still works for hidden-but-muted DMs.
   const mutedUntilMapRef = useRef<Map<string, string | null>>(new Map());
 
   const { getPresence } = usePresence();
+
+  const commitConversations = (value: SetStateAction<Conversation[]>) => {
+    setConversations((prev) => {
+      const next = typeof value === 'function'
+        ? (value as (previous: Conversation[]) => Conversation[])(prev)
+        : value;
+      writeCachedConversationList(currentUserIdRef.current, next);
+      return next;
+    });
+  };
 
   useEffect(() => {
     conversationsRef.current = conversations;
@@ -108,10 +190,10 @@ const ConversationList = ({
     );
   }, [conversations, currentUserId]);
 
-  const loadConversations = async () => {
+  const loadConversations = async (options?: { force?: boolean }) => {
     try {
-      const convos = await getConversations();
-      setConversations(convos);
+      const convos = await fetchConversationList(currentUserIdRef.current, options?.force === true);
+      commitConversations(convos);
     } catch (err) {
       console.error('Failed to load conversations:', err);
     } finally {
@@ -128,7 +210,7 @@ const ConversationList = ({
     if (readReceiptInFlightRef.current.has(requestKey)) return;
 
     readReceiptInFlightRef.current.add(requestKey);
-    setConversations((prev) =>
+    commitConversations((prev) =>
       prev.map((conversation) =>
         conversation.id === conversationId
           ? {
@@ -144,7 +226,7 @@ const ConversationList = ({
       await markAsRead(routeId, messageId);
     } catch (err) {
       console.error('Failed to mark conversation as read:', err);
-      void loadConversations();
+      void loadConversations({ force: true });
     } finally {
       readReceiptInFlightRef.current.delete(requestKey);
     }
@@ -152,17 +234,17 @@ const ConversationList = ({
 
   useEffect(() => {
     void loadConversations();
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
     if (refreshTrigger) {
-      void loadConversations();
+      void loadConversations({ force: true });
     }
   }, [refreshTrigger]);
 
   useEffect(() => {
     if (!bumpConversationId) return;
-    setConversations((prev) => {
+    commitConversations((prev) => {
       const idx = prev.findIndex((c) => c.id === bumpConversationId);
       if (idx <= 0) return prev;
       const next = [...prev];
@@ -202,14 +284,14 @@ const ConversationList = ({
       }
 
       if (!knownIdsRef.current.has(conversationId)) {
-        void loadConversations();
+        void loadConversations({ force: true });
         return;
       }
 
       const knownConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
       const nextMessageId = typeof data?.message_id === 'string' ? data.message_id : null;
 
-      setConversations((prev) => {
+      commitConversations((prev) => {
         const idx = prev.findIndex((conversation) => conversation.id === conversationId);
         if (idx === -1) return prev;
 
@@ -249,11 +331,11 @@ const ConversationList = ({
       if (!updated?.id) return;
 
       if (!knownIdsRef.current.has(updated.id)) {
-        void loadConversations();
+        void loadConversations({ force: true });
         return;
       }
 
-      setConversations((prev) =>
+      commitConversations((prev) =>
         prev.map((conversation) => (conversation.id === updated.id ? { ...conversation, ...updated } : conversation))
       );
     };
@@ -281,7 +363,7 @@ const ConversationList = ({
       const userId = data?.user_id || data?.member_user_id || data?.target_user_id || null;
       if (!conversationId) return;
 
-      setConversations((prev) =>
+      commitConversations((prev) =>
         prev
           .filter((conversation) => !(conversation.id === conversationId && userId == null))
           .map((conversation) =>
@@ -293,6 +375,11 @@ const ConversationList = ({
     };
 
     const handleGatewayResync = () => {
+      const now = Date.now();
+      if (now - lastGatewayResyncAtRef.current < GATEWAY_CONVERSATION_RESYNC_GAP_MS) {
+        return;
+      }
+      lastGatewayResyncAtRef.current = now;
       debugLog('[WS_RESYNC] refreshing conversation list after gateway resume/ready');
       void loadConversations();
     };
@@ -300,7 +387,7 @@ const ConversationList = ({
     const handleDmHidden = (data: any) => {
       const conversationId = data?.conversation_id;
       if (!conversationId) return;
-      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+      commitConversations((prev) => prev.filter((c) => c.id !== conversationId));
     };
 
     const handleMemberNicknameUpdate = (data: any) => {
@@ -317,7 +404,7 @@ const ConversationList = ({
         return;
       }
 
-      setConversations((prev) =>
+      commitConversations((prev) =>
         prev.map((conversation) => {
           if (conversation.type !== 'dm') {
             return conversation;
@@ -423,12 +510,12 @@ const ConversationList = ({
 
   const handleCloseChat = async (conv: Conversation) => {
     setContextMenu(null);
-    setConversations((prev) => prev.filter((c) => c.id !== conv.id));
+    commitConversations((prev) => prev.filter((c) => c.id !== conv.id));
     try {
       await closeDM(conv.id);
     } catch (err) {
       console.error('Failed to close DM:', err);
-      void loadConversations();
+      void loadConversations({ force: true });
     }
   };
 
@@ -439,14 +526,14 @@ const ConversationList = ({
     // Write to the ref first so the sound gate picks it up immediately,
     // even before the state update propagates.
     mutedUntilMapRef.current.set(conv.id, nextMutedUntil);
-    setConversations((prev) =>
+    commitConversations((prev) =>
       prev.map((c) => c.id === conv.id ? { ...c, muted_until: nextMutedUntil } : c)
     );
     try {
       await muteDM(conv.id, !isMuted);
     } catch (err) {
       console.error('Failed to update DM mute:', err);
-      void loadConversations();
+      void loadConversations({ force: true });
     }
   };
 
