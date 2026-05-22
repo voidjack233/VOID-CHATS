@@ -1,4 +1,4 @@
-import type { Conversation, ConversationMember } from '../../Services/Chat/chatService';
+import type { Conversation, ConversationMember } from '../Chat/chatService';
 import type { CallEventPayload, VoiceMediaTrackConstraints } from './callTypes';
 
 export const OUTGOING_CALL_TIMEOUT_MS = 45_000;

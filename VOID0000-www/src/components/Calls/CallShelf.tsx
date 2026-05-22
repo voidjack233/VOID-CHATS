@@ -1,9 +1,9 @@
 import type { CSSProperties, PointerEvent, ReactNode } from 'react';
 import { Maximize2, Mic, MicOff, Minimize2, MonitorUp, PhoneCall, PhoneOff, Video } from 'lucide-react';
 import type { ConversationMember } from '../../Services/Chat/chatService';
+import type { CallDebugState, CallPhase } from '../../Services/Calls/callTypes';
+import { formatCallDuration } from '../../Services/Calls/callUtils';
 import UserAvatar from '../common/UserAvatar';
-import type { CallDebugState, CallPhase } from './callTypes';
-import { formatCallDuration } from './callUtils';
 
 interface CallShelfProps {
   phase: CallPhase;

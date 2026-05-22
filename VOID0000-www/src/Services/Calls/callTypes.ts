@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import type { Conversation, ConversationMember } from '../../Services/Chat/chatService';
+import type { Conversation, ConversationMember } from '../Chat/chatService';
 
 export type CallPhase = 'idle' | 'outgoing' | 'incoming' | 'active' | 'ended' | 'failed';
 
