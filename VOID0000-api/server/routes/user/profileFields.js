@@ -3,6 +3,7 @@ import { pool as db } from '../../db.js';
 import { EVENTS } from '../../gateway/protocol.js';
 import { broadcastLiveEventToFriends } from '../../gateway/client.js';
 import { profileUpdateLimiter } from '../../middleware/rate_limit.js';
+import { profileCache } from '../../middleware/profileCache.js';
 
 const router = express.Router();
 
@@ -41,6 +42,8 @@ router.put('/profile', profileUpdateLimiter, async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Profile not found' });
     }
+
+    await profileCache.invalidate(profile_id);
 
     // Broadcast profile update to all friends
     broadcastLiveEventToFriends(req.userId, EVENTS.PROFILE_UPDATE, {

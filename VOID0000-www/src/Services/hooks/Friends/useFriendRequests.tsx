@@ -1,29 +1,22 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode, useMemo, useRef } from 'react';
-import { API_URL } from '../../config'; 
-import { ensureCSRFToken } from '../../Auth/authServiceApi'; 
 import { useUser } from '../../Auth/UserContext'; 
 import { gateway } from '../../Gateway/gateway';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { fetchAppBootstrap } from '../../bootstrap';
+import {
+  acceptFriendRequest as acceptFriendRequestApi,
+  cancelFriendRequest as cancelFriendRequestApi,
+  getIncomingFriendRequests,
+  getOutgoingFriendRequests,
+  rejectFriendRequest as rejectFriendRequestApi,
+  sendFriendRequest as sendFriendRequestApi,
+} from '../../api/friendsApi';
+import type { FriendRequest, OutgoingRequest } from '../../api/friendsApi';
 
-export interface FriendRequest {
-  friendship_id: number;
-  created_at: string;
-  id: string;
-  username: string;
-  profile_id: string;
-  display_name: string | null;
-  avatar_url: string | null;
-}
+export type { FriendRequest, OutgoingRequest } from '../../api/friendsApi';
 
-export interface OutgoingRequest {
-  friendship_id: number;
-  created_at: string;
-  id: string;
-  username: string;
-  profile_id: string;
-  display_name: string | null;
-  avatar_url: string | null;
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 interface FriendContextType {
@@ -82,13 +75,12 @@ export function FriendProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const [inRes, outRes] = await Promise.all([
-        fetch(`${API_URL}/api/friends/requests/incoming`, { credentials: 'include' }),
-        fetch(`${API_URL}/api/friends/requests/outgoing`, { credentials: 'include' }),
+      const [incomingRequests, outgoingRequests] = await Promise.all([
+        getIncomingFriendRequests(),
+        getOutgoingFriendRequests(),
       ]);
-      const [inData, outData] = await Promise.all([inRes.json(), outRes.json()]);
-      if (inData.success) setIncoming(inData.requests || []);
-      if (outData.success) setOutgoing(outData.requests || []);
+      setIncoming(incomingRequests);
+      setOutgoing(outgoingRequests);
       hasFetched.current = true;
     } catch (err) {
       console.error(err);
@@ -100,76 +92,43 @@ export function FriendProvider({ children }: { children: ReactNode }) {
   // --- Actions ---
   const acceptRequest = async (friendshipId: number) => {
     try {
-      const csrf = await ensureCSRFToken();
-      const res = await fetch(`${API_URL}/api/friends/accept/${friendshipId}`, {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': csrf || '' },
-        credentials: 'include'
-      });
-      const data = await res.json().catch(() => null);
-      if (res.ok) {
-        // Update cache directly
-        setIncoming(prev => prev.filter(r => r.friendship_id !== friendshipId));
+      const data = await acceptFriendRequestApi(friendshipId);
+      // Update cache directly
+      setIncoming(prev => prev.filter(r => r.friendship_id !== friendshipId));
 
-        const requesterId = data?.friendship?.requester_id;
-        if (user?.id && typeof requesterId === 'string' && requesterId.length > 0) {
-          // Best-effort warmup for DM crypto bootstrap.
-          void chatCryptoProtocolService.preWarmForDm(user.id, requesterId);
-        }
-        return { success: true };
+      const requesterId = data?.friendship?.requester_id;
+      if (user?.id && typeof requesterId === 'string' && requesterId.length > 0) {
+        // Best-effort warmup for DM crypto bootstrap.
+        void chatCryptoProtocolService.preWarmForDm(user.id, requesterId);
       }
-      return { success: false };
-    } catch (err) { return { success: false }; }
+      return { success: true };
+    } catch { return { success: false }; }
   };
 
   const rejectRequest = async (friendshipId: number) => {
     try {
-      const csrf = await ensureCSRFToken();
-      const res = await fetch(`${API_URL}/api/friends/reject/${friendshipId}`, {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': csrf || '' },
-        credentials: 'include'
-      });
-      if (res.ok) {
-        setIncoming(prev => prev.filter(r => r.friendship_id !== friendshipId));
-        return { success: true };
-      }
-      return { success: false };
-    } catch (err) { return { success: false }; }
+      await rejectFriendRequestApi(friendshipId);
+      setIncoming(prev => prev.filter(r => r.friendship_id !== friendshipId));
+      return { success: true };
+    } catch { return { success: false }; }
   };
 
   const sendRequest = async (profileId: string) => {
     try {
-      const csrf = await ensureCSRFToken();
-      const res = await fetch(`${API_URL}/api/friends/request/${profileId}`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': csrf || '' 
-        },
-        credentials: 'include'
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to send request');
+      await sendFriendRequestApi(profileId);
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err: unknown) {
+      return { success: false, error: getErrorMessage(err, 'Failed to send request') };
     }
   };
 
   const cancelRequest = async (friendshipId: number) => {
     try {
-      const csrf = await ensureCSRFToken();
-      const res = await fetch(`${API_URL}/api/friends/cancel/${friendshipId}`, {
-        method: 'POST',
-        headers: { 'X-CSRF-Token': csrf || '' },
-        credentials: 'include'
-      });
-      if (!res.ok) throw new Error('Failed to cancel request');
+      await cancelFriendRequestApi(friendshipId);
       setOutgoing(prev => prev.filter(r => r.friendship_id !== friendshipId));
       return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message };
+    } catch (err: unknown) {
+      return { success: false, error: getErrorMessage(err, 'Failed to cancel request') };
     }
   };
 

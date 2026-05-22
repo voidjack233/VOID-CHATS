@@ -1,20 +1,16 @@
 import { useState, useEffect } from 'react';
-import { ensureCSRFToken } from '../../Auth/authServiceApi';
 import { isGeneratedFallbackAvatarUrl } from '../../Chat/avatarFallback';
-import { API_URL } from '../../config';
+import { getUserProfile, updateProfile } from '../../api/usersApi';
+import type { ProfileRecord } from '../../api/usersApi';
 
-export interface ProfileRecord {
-  id: string;
-  profile_id?: string;
-  avatar_url?: string;
-  username: string;
-  display_name: string;
-  bio: string;
-  created_at: string;
-}
+export type { ProfileRecord } from '../../api/usersApi';
 
 const PROFILE_CACHE_KEY = 'void_profile';
 const PROFILE_CACHE_EVENT = 'void:profile-cache-update';
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
+}
 
 type ProfileCacheEventDetail = {
   profileId: string;
@@ -61,28 +57,6 @@ export const useProfileRecord = (profileId: string) => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const getAuthHeaders = async (): Promise<HeadersInit> => {
-    const headers: HeadersInit = { 'Content-Type': 'application/json' };
-    const csrfToken = await ensureCSRFToken();
-    if (csrfToken) {
-      headers['X-CSRF-Token'] = csrfToken;
-    }
-    return headers;
-  };
-
-  const handleFetchError = async (response: Response, operation: string) => {
-    switch (response.status) {
-      case 401:
-        throw new Error('Please log in to continue.');
-      case 403:
-        throw new Error(`You don't have permission to ${operation} this profile.`);
-      case 404:
-        throw new Error('Profile not found.');
-      default:
-        throw new Error(`Failed to ${operation} profile: ${response.statusText}`);
-    }
-  };
-
   useEffect(() => {
     if (!profileId || !/^\d+$/.test(profileId)) {
       setProfile(null);
@@ -108,29 +82,20 @@ export const useProfileRecord = (profileId: string) => {
       setError(null);
 
       try {
-        const headers = await getAuthHeaders();
-
-        const res = await fetch(`${API_URL}/api/users/${profileId}`, {
-          method: 'GET',
-          headers,
-          credentials: 'include',
-        });
-
-        if (!res.ok) await handleFetchError(res, 'fetch');
-
-        const data = await res.json();
+        const data = await getUserProfile(profileId);
 
         if (cancelled) return;
 
         writeProfileCache(profileId, data);
         setProfile(data);
         setDraftProfile(data);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelled) return;
-        setError(err.message || 'Failed to load profile');
+        setError(getErrorMessage(err, 'Failed to load profile'));
       } finally {
-        if (cancelled) return;
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
 
@@ -165,27 +130,16 @@ export const useProfileRecord = (profileId: string) => {
       setError(null);
       const normalizedDisplayName = (draftProfile.display_name || '').trim();
 
-      const headers = await getAuthHeaders();
-
-      const res = await fetch(`${API_URL}/api/users/profile`, {
-        method: 'PUT',
-        headers,
-        credentials: 'include',
-        body: JSON.stringify({
-          display_name: normalizedDisplayName,
-          bio: draftProfile.bio,
-        }),
+      const updatedProfile = await updateProfile({
+        display_name: normalizedDisplayName,
+        bio: draftProfile.bio,
       });
-
-      if (!res.ok) await handleFetchError(res, 'update');
-
-      const updatedProfile = await res.json();
 
       const baseProfile = profile || draftProfile;
       const newProfileData = {
         ...baseProfile,
         display_name: updatedProfile.display_name ?? normalizedDisplayName,
-        bio: updatedProfile.bio
+        bio: updatedProfile.bio ?? draftProfile.bio ?? '',
       };
 
       writeProfileCache(profileId, newProfileData);
@@ -193,8 +147,8 @@ export const useProfileRecord = (profileId: string) => {
       setDraftProfile(newProfileData);
       setIsEditing(false);
       return newProfileData;
-    } catch (err: any) {
-      setError(err.message || 'Failed to save profile changes');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to save profile changes'));
       throw err;
     } finally {
       setSaving(false);

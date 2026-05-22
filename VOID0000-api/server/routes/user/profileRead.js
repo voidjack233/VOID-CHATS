@@ -54,9 +54,6 @@ router.get('/:profile_id', async (req, res) => {
     // Cache it
     await profileCache.set(profile_id, user);
 
-    // If stale cache was served, this just updates the cache silently
-    if (cached && cached.stale) return;
-
     res.json(user);
   } catch (err) {
     console.error('ProfileRead GET error:', err);
