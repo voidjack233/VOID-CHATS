@@ -54,7 +54,7 @@ interface ActiveCallRequestOptions {
   cacheKey?: string | null;
 }
 
-const ACTIVE_CALL_CACHE_MS = 5_000;
+const ACTIVE_CALL_CACHE_MS = 10_000;
 let activeCallCache: {
   cacheKey: string | null;
   value: ActiveCallSnapshot | null;

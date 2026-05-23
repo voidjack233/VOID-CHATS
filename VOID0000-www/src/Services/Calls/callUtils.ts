@@ -4,9 +4,11 @@ import type { CallEventPayload, VoiceMediaTrackConstraints } from './callTypes';
 export const OUTGOING_CALL_TIMEOUT_MS = 45_000;
 export const CALL_HEARTBEAT_INTERVAL_MS = 10_000;
 export const CALL_DISCONNECT_NOTICE_MS = 8_000;
+export const CALL_ACTIVE_REFRESH_THROTTLE_MS = 10_000;
 export const REMOTE_AUDIO_VOLUME = 0.82;
 export const CALL_SHELF_DRAG_MIN_Y = -96;
 export const CALL_SHELF_DRAG_MAX_Y = 360;
+const DEFAULT_CALL_ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 export function createCallId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -136,4 +138,27 @@ export function getVoiceAudioConstraints(): VoiceMediaTrackConstraints {
   }
 
   return constraints;
+}
+
+function isValidIceServer(server: unknown): server is RTCIceServer {
+  if (!server || typeof server !== 'object') return false;
+  const urls = (server as { urls?: unknown }).urls;
+  return typeof urls === 'string' || (
+    Array.isArray(urls) && urls.every((url) => typeof url === 'string')
+  );
+}
+
+export function getCallIceServers(): RTCIceServer[] {
+  const rawIceServers = import.meta.env.VITE_CALL_ICE_SERVERS;
+  if (!rawIceServers) return DEFAULT_CALL_ICE_SERVERS;
+
+  try {
+    const parsed = JSON.parse(rawIceServers) as unknown;
+    if (!Array.isArray(parsed)) return DEFAULT_CALL_ICE_SERVERS;
+
+    const iceServers = parsed.filter(isValidIceServer);
+    return iceServers.length > 0 ? iceServers : DEFAULT_CALL_ICE_SERVERS;
+  } catch {
+    return DEFAULT_CALL_ICE_SERVERS;
+  }
 }

@@ -48,8 +48,8 @@ export interface PendingIncomingCall {
   media?: 'audio' | 'video';
 }
 
-export interface CallHeaderControlsProps {
-  conversation: Conversation;
+export interface CallControllerProps {
+  conversation: Conversation | null;
   members: Record<string, ConversationMember>;
   currentUserId?: string;
   pendingIncomingCall?: PendingIncomingCall | null;

@@ -3,10 +3,11 @@ import type { CSSProperties, PointerEvent } from 'react';
 import type { ConversationMember } from '../Chat/chatService';
 import { getActiveCall, sendCallHeartbeat, sendCallSignal, type ActiveCallSnapshot } from './callService';
 import { gateway } from '../Gateway/gateway';
-import type { CallDebugState, CallEventPayload, CallHeaderControlsProps, CallPhase, CallShelfFrame } from './callTypes';
+import type { CallControllerProps, CallDebugState, CallEventPayload, CallPhase, CallShelfFrame } from './callTypes';
 import {
   CALL_DISCONNECT_NOTICE_MS,
   CALL_HEARTBEAT_INTERVAL_MS,
+  CALL_ACTIVE_REFRESH_THROTTLE_MS,
   CALL_SHELF_DRAG_MAX_Y,
   CALL_SHELF_DRAG_MIN_Y,
   OUTGOING_CALL_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import {
   formatCallDuration,
   getCallAcceptErrorMessage,
   getCallStartErrorMessage,
+  getCallIceServers,
   getDirectTargetUserId,
   getMicrophoneErrorMessage,
   getVoiceAudioConstraints,
@@ -40,7 +42,7 @@ export function useCallController({
   mobileAnchorRef,
   onAutoAnswerIncomingHandled,
   onPendingIncomingHandled,
-}: CallHeaderControlsProps) {
+}: CallControllerProps) {
   const [phase, setPhase] = useState<CallPhase>('idle');
   const [callId, setCallId] = useState<string | null>(null);
   const [callConversationId, setCallConversationId] = useState<string | null>(null);
@@ -89,7 +91,7 @@ export function useCallController({
   const stopRemoteVoiceActivityRef = useRef<(() => void) | null>(null);
 
   const targetUserId = useMemo(
-    () => getDirectTargetUserId(conversation, members, currentUserId),
+    () => conversation ? getDirectTargetUserId(conversation, members, currentUserId) : null,
     [conversation, currentUserId, members],
   );
   const currentMember = useMemo(
@@ -100,7 +102,8 @@ export function useCallController({
     () => Object.values(members).find((member) => member.user_id === remoteUserId) || null,
     [members, remoteUserId],
   );
-  const supportsDirectCall = Boolean(targetUserId);
+  const supportsDirectCall = Boolean(conversation?.type === 'dm' && targetUserId);
+  const canControlCurrentCall = Boolean(remoteUserId && (callConversationId || conversation?.id));
   const busy = phase === 'outgoing';
   const showCallShelf = phase !== 'idle';
 
@@ -272,9 +275,17 @@ export function useCallController({
   }, [cleanupMedia, clearHeartbeatTimer, clearOutgoingTimeout, clearPeerDisconnectTimer, clearResetTimer]);
 
   const applyActiveCallSnapshot = useCallback((snapshot: ActiveCallSnapshot | null) => {
-    if (!snapshot || !isConversationEvent(conversation, snapshot)) {
+    if (!snapshot) {
       return false;
     }
+    const matchesCurrentConversation = Boolean(conversation && isConversationEvent(conversation, snapshot));
+
+    if (snapshot.status === 'ringing' && snapshot.direction === 'incoming' && !matchesCurrentConversation) {
+      return false;
+    }
+
+    const snapshotConversationId = snapshot.conversation_id || (matchesCurrentConversation ? conversation?.id : null);
+    if (!snapshotConversationId) return false;
 
     const peerUserId = snapshot.peer_user_id || (
       snapshot.from_user_id === currentUserId ? snapshot.target_user_id : snapshot.from_user_id
@@ -286,8 +297,8 @@ export function useCallController({
 
     clearResetTimer();
     setCallId(snapshot.call_id);
-    callConversationIdRef.current = snapshot.conversation_id || conversation.id;
-    setCallConversationId(snapshot.conversation_id || conversation.id);
+    callConversationIdRef.current = snapshotConversationId;
+    setCallConversationId(snapshotConversationId);
     setRemoteUserId(peerUserId);
     setCallCurrentMemberSnapshot(findMemberByUserId(currentUserId));
     setCallRemoteMemberSnapshot(findMemberByUserId(peerUserId));
@@ -320,7 +331,7 @@ export function useCallController({
   const reconcileActiveCall = useCallback(async (force = false) => {
     if (!currentUserId || activeCallRefreshInFlightRef.current) return;
     const now = Date.now();
-    if (!force && now - lastActiveCallRefreshAtRef.current < 3_000) return;
+    if (!force && now - lastActiveCallRefreshAtRef.current < CALL_ACTIVE_REFRESH_THROTTLE_MS) return;
 
     activeCallRefreshInFlightRef.current = true;
     lastActiveCallRefreshAtRef.current = now;
@@ -413,9 +424,14 @@ export function useCallController({
       candidateInit?: RTCIceCandidateInit;
     },
   ) => {
+    const conversationId = callConversationIdRef.current || conversation?.id;
+    if (!conversationId) {
+      throw new Error('Call conversation is not available');
+    }
+
     await sendCallSignal({
       event,
-      conversationId: callConversationIdRef.current || conversation.id,
+      conversationId,
       targetUserId: target,
       callId: activeCallId,
       media: 'audio',
@@ -423,7 +439,7 @@ export function useCallController({
       sdpBase64: options?.sdp ? encodeSdp(options.sdp) : undefined,
       candidateInit: options?.candidateInit,
     });
-  }, [conversation.id]);
+  }, [conversation?.id]);
 
   useEffect(() => {
     const activeCallId = callId;
@@ -583,7 +599,7 @@ export function useCallController({
     if (peerConnectionRef.current) return peerConnectionRef.current;
 
     const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers: getCallIceServers(),
     });
 
     pc.onicecandidate = (event) => {
@@ -748,7 +764,7 @@ export function useCallController({
   }, [updateDebug]);
 
   const startCall = useCallback(async () => {
-    if (!supportsDirectCall || !targetUserId || busy) return;
+    if (!conversation || !supportsDirectCall || !targetUserId || busy) return;
     const nextCallId = createCallId();
 
     clearResetTimer();
@@ -772,7 +788,7 @@ export function useCallController({
       setPhase('failed');
       setNotice(getCallStartErrorMessage(err));
     }
-  }, [busy, clearResetTimer, conversation.id, currentMember, remoteMember, sendSignal, supportsDirectCall, targetUserId]);
+  }, [busy, clearResetTimer, conversation, currentMember, remoteMember, sendSignal, supportsDirectCall, targetUserId]);
 
   const acceptCall = useCallback(async () => {
     if (!callId || !remoteUserId) return;
@@ -847,9 +863,16 @@ export function useCallController({
   }, [cleanupMedia, clearHeartbeatTimer, clearPeerDisconnectTimer, clearResetTimer]);
 
   useEffect(() => {
+    const matchesCurrentConversation = Boolean(
+      conversation && pendingIncomingCall && isConversationEvent(conversation, pendingIncomingCall),
+    );
+    const pendingConversationId = pendingIncomingCall?.conversation_id ||
+      (matchesCurrentConversation ? conversation?.id : null);
+
     if (
       !pendingIncomingCall ||
-      !isConversationEvent(conversation, pendingIncomingCall) ||
+      !pendingConversationId ||
+      !matchesCurrentConversation ||
       pendingIncomingCall.call_id === callIdRef.current
     ) {
       return;
@@ -857,8 +880,8 @@ export function useCallController({
 
     setPhase('incoming');
     setCallId(pendingIncomingCall.call_id);
-    callConversationIdRef.current = pendingIncomingCall.conversation_id || conversation.id;
-    setCallConversationId(pendingIncomingCall.conversation_id || conversation.id);
+    callConversationIdRef.current = pendingConversationId;
+    setCallConversationId(pendingConversationId);
     setCallCurrentMemberSnapshot(currentMember);
     setCallRemoteMemberSnapshot(remoteMember);
     setRemoteUserId(pendingIncomingCall.from_user_id);
@@ -908,13 +931,17 @@ export function useCallController({
     );
 
     const handleInvite = (payload: CallEventPayload) => {
-      if (!isConversationEvent(conversation, payload) || !payload.call_id || !payload.from_user_id) return;
+      const matchesCurrentConversation = Boolean(conversation && isConversationEvent(conversation, payload));
+      const payloadConversationId = payload.conversation_id ||
+        (matchesCurrentConversation ? conversation?.id : null);
+
+      if (!matchesCurrentConversation || !payloadConversationId || !payload.call_id || !payload.from_user_id) return;
       clearResetTimer();
       setIsCallShelfCollapsed(true);
       setPhase('incoming');
       setCallId(payload.call_id);
-      callConversationIdRef.current = payload.conversation_id || conversation.id;
-      setCallConversationId(payload.conversation_id || conversation.id);
+      callConversationIdRef.current = payloadConversationId;
+      setCallConversationId(payloadConversationId);
       setCallCurrentMemberSnapshot(currentMember);
       setCallRemoteMemberSnapshot(remoteMember);
       setRemoteUserId(payload.from_user_id);
@@ -939,7 +966,7 @@ export function useCallController({
     const handleEnded = (payload: CallEventPayload) => {
       if (callIdRef.current) {
         if (payload.call_id !== callIdRef.current) return;
-      } else if (!isConversationEvent(conversation, payload)) {
+      } else if (!conversation || !isConversationEvent(conversation, payload)) {
         return;
       }
       const duration = Number.isFinite(payload.call_duration_seconds)
@@ -1064,7 +1091,7 @@ export function useCallController({
       callShelfNotice,
       elapsedSeconds,
       debugState,
-      supportsDirectCall,
+      supportsDirectCall: phase === 'idle' ? supportsDirectCall : canControlCurrentCall,
       isMuted,
       localSpeaking,
       remoteSpeaking,

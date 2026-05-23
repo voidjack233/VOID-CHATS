@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
   readonly VITE_API_HOST?: string;
+  readonly VITE_CALL_ICE_SERVERS?: string;
 }
 
 interface ImportMeta {

@@ -13,6 +13,7 @@ import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
 import CallHeaderControls from '../components/Calls/CallHeaderControls';
+import { CallProvider } from '../components/Calls/CallProvider';
 import ForwardMessageModal from '../components/Chat/ForwardMessageModal';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
@@ -976,7 +977,21 @@ const ChatDashboard = () => {
   };
 
   return (
-    <div
+    <CallProvider
+      conversation={activeConversation}
+      members={members}
+      currentUserId={user?.id}
+      pendingIncomingCall={incomingCall}
+      autoAnswerIncomingCallId={autoAnswerIncomingCallId}
+      mobileAnchorRef={conversationPaneRef}
+      onAutoAnswerIncomingHandled={(callId) => {
+        setAutoAnswerIncomingCallId((current) => current === callId ? null : current);
+      }}
+      onPendingIncomingHandled={(callId) => {
+        setIncomingCall((current) => current?.call_id === callId ? null : current);
+      }}
+    >
+      <div
       className="flex flex-col overflow-hidden bg-void-bg-main font-sans text-void-text"
       style={{
         height: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
@@ -1281,17 +1296,6 @@ const ChatDashboard = () => {
                 </div>
                 <CallHeaderControls
                   conversation={activeConversation}
-                  members={members}
-                  currentUserId={user?.id}
-                  pendingIncomingCall={incomingCall}
-                  autoAnswerIncomingCallId={autoAnswerIncomingCallId}
-                  mobileAnchorRef={conversationPaneRef}
-                  onAutoAnswerIncomingHandled={(callId) => {
-                    setAutoAnswerIncomingCallId((current) => current === callId ? null : current);
-                  }}
-                  onPendingIncomingHandled={(callId) => {
-                    setIncomingCall((current) => current?.call_id === callId ? null : current);
-                  }}
                 />
                 <button
                   onClick={() => setShowConvSettings(true)}
@@ -1389,7 +1393,8 @@ const ChatDashboard = () => {
         )}
       </div>
       </div>
-    </div>
+      </div>
+    </CallProvider>
   );
 };
 
