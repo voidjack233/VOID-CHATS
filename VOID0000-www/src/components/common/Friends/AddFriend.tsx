@@ -1,20 +1,20 @@
 // src/components/common/Friends/AddFriend.tsx
 import { useState } from 'react';
 import { Search, UserPlus, Loader2, Check, Users } from 'lucide-react';
-import { useFriendRequests } from '../../../Services/hooks/Friends/useFriendRequests';
-import type { FriendRequest } from '../../../Services/hooks/Friends/useFriendRequests';
+import { API_URL } from '../../../Services/config';
+import { useFriendRequests, FriendRequest } from '../../../Services/hooks/Friends/useFriendRequests';
 import { useFriends } from '../../../Services/hooks/Friends/useFriends';
-import { searchUsers } from '../../../Services/api/usersApi';
-import type { UserSearchResult } from '../../../Services/api/usersApi';
 import UserAvatar from '../../common/UserAvatar';
 
-type SearchResult = UserSearchResult;
+interface SearchResult {
+  id: string;
+  username: string;
+  profile_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+}
 
 type FriendStatus = 'none' | 'friends' | 'incoming';
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Search failed';
-}
 
 export default function AddFriend() {
   const [query, setQuery] = useState('');
@@ -40,14 +40,21 @@ export default function AddFriend() {
       setLoading(true);
       setError(null);
 
-      const users = await searchUsers(query);
-      setResults(users);
+      const res = await fetch(
+        `${API_URL}/api/users/search?q=${encodeURIComponent(query.trim())}`,
+        { credentials: 'include' }
+      );
 
-      if (users.length === 0) {
+      if (!res.ok) throw new Error('Search failed');
+
+      const data = await res.json();
+      setResults(data.users || []);
+
+      if (data.users?.length === 0) {
         setError('No users found');
       }
-    } catch (err: unknown) {
-      setError(getErrorMessage(err));
+    } catch (err: any) {
+      setError(err.message);
       setResults([]);
     } finally {
       setLoading(false);

@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 
-import { getAccount } from '../../api/usersApi';
-import type { AccountData } from '../../api/usersApi';
+import { API_URL } from '../../config';
 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'Failed to fetch';
+interface AccountData {
+  id: string;
+  email: string;
+  username: string;
+  created_at?: string;
 }
 
 export const useAccountSettings = () => {
@@ -32,14 +34,20 @@ export const useAccountSettings = () => {
     const fetchAccount = async () => {
       setLoading(true);
       try {
-        const accountData = await getAccount();
+        const res = await fetch(`${API_URL}/api/users/account`, {
+          credentials: 'include',
+        });
 
-        if (accountData) {
-          setAccount(accountData);
-          localStorage.setItem('void_user', JSON.stringify(accountData));
+        if (!res.ok) throw new Error('Failed to fetch');
+
+        const data = await res.json();
+
+        if (data.success && data.account) {
+          setAccount(data.account);
+          localStorage.setItem('void_user', JSON.stringify(data.account));
         }
-      } catch (err: unknown) {
-        setError(getErrorMessage(err));
+      } catch (err: any) {
+        setError(err.message);
       } finally {
         setLoading(false);
       }

@@ -1,20 +1,25 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode, useRef } from 'react';
+import { API_URL } from '../../config';
+import { ensureCSRFToken, fetchWithAuth } from '../../Auth/authServiceApi';
 import { useUser } from '../../Auth/UserContext';
 import { gateway } from '../../Gateway/gateway';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { fetchAppBootstrap } from '../../bootstrap';
-import {
-  getFriends as getFriendsApi,
-  removeFriend as removeFriendApi,
-} from '../../api/friendsApi';
-import type { Friend } from '../../api/friendsApi';
-
-export type { Friend } from '../../api/friendsApi';
 
 const FRIENDS_RESYNC_MIN_GAP_MS = 60_000;
 
-function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+export interface Friend {
+  friendship_id: number;
+  friends_since: string;
+  id: string;
+  username: string;
+  profile_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  bio: string | null;
+  member_since: string | null;
+  status?: 'online' | 'idle' | 'offline';
+  last_active?: number | null;
 }
 
 interface FriendsContextType {
@@ -66,12 +71,16 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const apiFriends = await getFriendsApi();
-        setFriends(apiFriends);
+        const res = await fetchWithAuth('/api/friends');
+
+        if (!res.ok) throw new Error('Failed to fetch friends');
+
+        const data = await res.json();
+        setFriends(data.friends || []);
         hasFetched.current = true;
         lastFetchAtRef.current = Date.now();
-      } catch (err: unknown) {
-        setError(getErrorMessage(err, 'Failed to fetch friends'));
+      } catch (err: any) {
+        setError(err.message);
       } finally {
         setLoading(false);
         fetchInFlightRef.current = null;
@@ -84,11 +93,22 @@ export function FriendsProvider({ children }: { children: ReactNode }) {
 
   const removeFriend = async (friendshipId: number) => {
     try {
-      await removeFriendApi(friendshipId);
+      const csrfToken = await ensureCSRFToken();
+
+      const res = await fetch(`${API_URL}/api/friends/${friendshipId}`, {
+        method: 'DELETE',
+        credentials: 'include',
+        headers: {
+          'X-CSRF-Token': csrfToken || '',
+        },
+      });
+
+      if (!res.ok) throw new Error('Failed to remove friend');
+
       setFriends(prev => prev.filter(f => f.friendship_id !== friendshipId));
       return { success: true };
-    } catch (err: unknown) {
-      return { success: false, error: getErrorMessage(err, 'Failed to remove friend') };
+    } catch (err: any) {
+      return { success: false, error: err.message };
     }
   };
 
