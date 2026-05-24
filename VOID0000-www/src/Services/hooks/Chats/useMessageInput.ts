@@ -8,6 +8,7 @@ import {
   sendMessage,
   sendImageOnlyMessage,
   editMessage,
+  updateMessageLinkPreview,
   uploadEncryptedAttachments,
   sendTypingStart,
   bootstrapDmKey,
@@ -311,7 +312,7 @@ export const useMessageInput = ({
             setLinkPreviewLoading(false);
           }
         });
-    }, 500);
+    }, 250);
 
     return () => {
       window.clearTimeout(timer);
@@ -773,7 +774,7 @@ export const useMessageInput = ({
 
     const trimmed = text.trim();
     const activePreviewUrl = getFirstPreviewableUrl(trimmed);
-    const activeLinkPreview =
+    let activeLinkPreview =
       activePreviewUrl && linkPreview?.url === activePreviewUrl
         ? linkPreview
         : null;
@@ -865,11 +866,42 @@ export const useMessageInput = ({
           linkPreview: activeLinkPreview,
           mentions: resolvedMentions,
         });
-        onMessageSent(localClientId ? {
+        const sentMessage: Message = localClientId ? {
           ...msg,
+          link_preview: activeLinkPreview || msg.link_preview,
           local_status: 'sent',
           local_client_id: localClientId,
-        } : msg);
+        } : {
+          ...msg,
+          link_preview: activeLinkPreview || msg.link_preview,
+        };
+        onMessageSent(sentMessage);
+        if (activePreviewUrl && previousDismissedLinkPreviewUrl !== activePreviewUrl) {
+          const previewUrl = activePreviewUrl;
+          const previewAtSend = activeLinkPreview;
+          void (async () => {
+            try {
+              const preview = previewAtSend?.url === previewUrl
+                ? previewAtSend
+                : await fetchLinkPreview(previewUrl);
+              if (!preview) return;
+
+              const previewUpdate = await updateMessageLinkPreview(
+                conversation.id,
+                msg.message_id,
+                preview,
+                sendCrypto.key,
+                msg.key_version || sendCrypto.version,
+              );
+              onMessageSent({
+                ...sentMessage,
+                ...previewUpdate,
+              });
+            } catch (previewError) {
+              console.warn('[LINK_PREVIEW] failed to attach encrypted preview after send', previewError);
+            }
+          })();
+        }
         onCancelReply?.();
         if (conversation.slowmode_seconds && !['owner', 'admin'].includes(conversation.role)) {
           setSlowmodeRemaining(conversation.slowmode_seconds);

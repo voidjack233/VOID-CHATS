@@ -20,7 +20,10 @@ import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { getHandshakeEntry, setHandshakeEntry, deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
 import { deleteConversationDetails } from '../../Chat/conversationCache';
-import { resolveDecryptedMessagePayload } from '../../Chat/messageEnvelope';
+import {
+  resolveDecryptedLinkPreviewPayload,
+  resolveDecryptedMessagePayload,
+} from '../../Chat/messageEnvelope';
 import { keyManager } from '../../Crypto/keyManager';
 import type { MessageStreamEvent, MessageUpdate } from './MessageList/messageListTypes';
 
@@ -334,6 +337,51 @@ export const useMessageStream = ({
     }
   };
 
+  const attemptPreviewUpdateDecryption = async (data: any, key: CryptoKey) => {
+    if (!data.encrypted_link_preview || !data.link_preview_iv) {
+      return;
+    }
+
+    const previewKeyVersion =
+      Number.isInteger(data?.link_preview_key_version) && data.link_preview_key_version > 0
+        ? data.link_preview_key_version
+        : data.key_version;
+    const previewDecryptable = {
+      ...data,
+      encrypted_content: data.encrypted_link_preview,
+      iv: data.link_preview_iv,
+      key_version: previewKeyVersion,
+      is_deleted: false,
+    };
+
+    try {
+      const decryptedPreview = await decryptMessage(
+        data.encrypted_link_preview,
+        data.link_preview_iv,
+        await resolveMessageKey(previewDecryptable, key),
+      );
+      const linkPreview = resolveDecryptedLinkPreviewPayload(decryptedPreview);
+      if (!linkPreview) {
+        return;
+      }
+
+      setMessageUpdate({
+        message_id: data.message_id,
+        link_preview: linkPreview,
+        encrypted_link_preview: data.encrypted_link_preview,
+        link_preview_iv: data.link_preview_iv,
+        link_preview_key_version: previewKeyVersion ?? null,
+      });
+    } catch (err) {
+      console.warn('[LINK_PREVIEW] failed to decrypt live preview update', {
+        conversation_id: data.conversation_id,
+        message_id: data.message_id,
+        key_version: previewKeyVersion,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   // Buffer Flush: drains pendingMessages once encryptionKey becomes available
   useEffect(() => {
     if (!encryptionKey || !activeConversation?.id || pendingMessages.current.length === 0) return;
@@ -392,6 +440,11 @@ export const useMessageStream = ({
     if (!user?.id) return;
     const handleUpdate = async (data: any) => {
       if (data.conversation_id === activeConversation?.id && encryptionKeyRef.current) {
+        if (data.encrypted_link_preview && data.link_preview_iv && !data.encrypted_content) {
+          await attemptPreviewUpdateDecryption(data, encryptionKeyRef.current);
+          return;
+        }
+
         await attemptDecryption(data, encryptionKeyRef.current, true);
       }
     };

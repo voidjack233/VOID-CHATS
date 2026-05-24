@@ -81,6 +81,7 @@ const useMessageListRealtime = ({
           created_at: record.created_at,
           content: record.text || undefined,
           reactions: {},
+          link_preview: record.link_preview ?? undefined,
           mentions: record.mentions ?? undefined,
           local_status: 'queued' as const,
           local_client_id: record.local_client_id,
@@ -165,6 +166,7 @@ const useMessageListRealtime = ({
           attachments: normalizedMessage.attachments,
           forwarded: normalizedMessage.forwarded ?? undefined,
           mentions: normalizedMessage.mentions ?? undefined,
+          link_preview: normalizedMessage.link_preview ?? undefined,
           protocol: normalizedMessage.protocol ?? null,
           protocol_version: normalizedMessage.protocol_version ?? null,
         };
@@ -214,29 +216,41 @@ const useMessageListRealtime = ({
   useEffect(() => {
     if (!messageUpdate) return;
 
-    messageSync
-      .handleEdit(conversationId, messageUpdate.message_id, {
-        content: messageUpdate.content,
-        edited_at: messageUpdate.edited_at,
-        forwarded: messageUpdate.forwarded ?? undefined,
-        mentions: messageUpdate.mentions ?? undefined,
-        link_preview: messageUpdate.link_preview ?? undefined,
-        message_type: messageUpdate.message_type ?? undefined,
-      })
-      .catch(console.error);
+    const hasLinkPreviewUpdate = Object.prototype.hasOwnProperty.call(messageUpdate, 'link_preview');
+    const hasContentUpdate = typeof messageUpdate.content === 'string';
+
+    if (hasContentUpdate) {
+      messageSync
+        .handleEdit(conversationId, messageUpdate.message_id, {
+          content: messageUpdate.content || '',
+          edited_at: messageUpdate.edited_at || new Date().toISOString(),
+          forwarded: messageUpdate.forwarded ?? undefined,
+          mentions: messageUpdate.mentions ?? undefined,
+          link_preview: messageUpdate.link_preview ?? undefined,
+          message_type: messageUpdate.message_type ?? undefined,
+        })
+        .catch(console.error);
+    } else if (hasLinkPreviewUpdate) {
+      messageSync
+        .handlePreviewUpdate(conversationId, messageUpdate.message_id, messageUpdate.link_preview ?? null)
+        .catch(console.error);
+    }
 
     setMessages((previous) =>
       previous.map((message) => (
         message.message_id === messageUpdate.message_id
           ? {
               ...message,
-              content: messageUpdate.content,
-              is_edited: messageUpdate.is_edited,
-              edited_at: messageUpdate.edited_at,
+              content: hasContentUpdate ? messageUpdate.content : message.content,
+              is_edited: messageUpdate.is_edited ?? message.is_edited,
+              edited_at: messageUpdate.edited_at ?? message.edited_at,
               forwarded: messageUpdate.forwarded ?? message.forwarded,
               mentions: messageUpdate.mentions ?? message.mentions,
-              link_preview: messageUpdate.link_preview ?? message.link_preview,
+              link_preview: hasLinkPreviewUpdate ? messageUpdate.link_preview : message.link_preview,
               message_type: messageUpdate.message_type ?? message.message_type,
+              encrypted_link_preview: messageUpdate.encrypted_link_preview ?? message.encrypted_link_preview,
+              link_preview_iv: messageUpdate.link_preview_iv ?? message.link_preview_iv,
+              link_preview_key_version: messageUpdate.link_preview_key_version ?? message.link_preview_key_version,
             }
           : message
       ))

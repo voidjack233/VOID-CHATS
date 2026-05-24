@@ -39,8 +39,22 @@ function hasUndecryptablePlaceholder(messages: LocalMessage[]): boolean {
 
 const CACHE_TTL_MS = 60 * 1000;
 
+function getSyncRequestKey(
+  conversationId: string,
+  syncLimit: number,
+  options?: MessageDecryptionContext,
+): string {
+  return [
+    conversationId,
+    syncLimit,
+    options?.currentKeyVersion ?? 'default',
+    options?.userId ?? 'anonymous',
+  ].join(':');
+}
+
 class MessageSync {
-  private sessionValidatedConversations = new Set<string>();
+  private sessionValidatedAtByConversation = new Map<string, number>();
+  private syncInFlightByKey = new Map<string, Promise<SyncResult>>();
 
   // ============== Load Conversation ==============
 
@@ -53,11 +67,14 @@ class MessageSync {
     syncPromise: Promise<SyncResult>;
   }> {
     const initialLimit = options?.initialLimit ?? MESSAGE_PAGE_SIZE;
+    const syncLimit = options?.syncLimit ?? MESSAGE_PAGE_SIZE;
     const cached = await messageStore.getMessages(conversationId, { limit: initialLimit });
     const cursor = await messageStore.getSyncCursor(conversationId);
-    const hasSessionValidation = this.sessionValidatedConversations.has(conversationId);
-    const shouldPreferSessionCache = options?.preferSessionCache ?? false;
+    const sessionValidatedAt = this.sessionValidatedAtByConversation.get(conversationId) ?? 0;
     const hasStaleUndecryptableMessage = hasUndecryptablePlaceholder(cached.messages);
+    const hasRecentSessionValidation =
+      cached.messages.length > 0 &&
+      Date.now() - sessionValidatedAt < CACHE_TTL_MS;
 
     const isFreshByTtl = !!(
       cached.messages.length > 0 &&
@@ -69,24 +86,34 @@ class MessageSync {
       ? true
       : hasStaleUndecryptableMessage
         ? true
-      : shouldPreferSessionCache && !hasSessionValidation
-        ? true
-        : !isFreshByTtl;
+      : !(isFreshByTtl || hasRecentSessionValidation);
 
     let syncPromise: Promise<SyncResult>;
 
     if (shouldSync) {
-      syncPromise = this._syncFromServer(
-        conversationId,
-        encryptionKey,
-        cached,
-        options?.syncLimit ?? MESSAGE_PAGE_SIZE,
-        options
-      )
-        .then((result) => {
-          this.sessionValidatedConversations.add(conversationId);
-          return result;
-        });
+      const syncRequestKey = getSyncRequestKey(conversationId, syncLimit, options);
+      const inFlightSync = this.syncInFlightByKey.get(syncRequestKey);
+
+      if (inFlightSync) {
+        syncPromise = inFlightSync;
+      } else {
+        syncPromise = this._syncFromServer(
+          conversationId,
+          encryptionKey,
+          cached,
+          syncLimit,
+          options
+        )
+          .then((result) => {
+            this.sessionValidatedAtByConversation.set(conversationId, Date.now());
+            return result;
+          })
+          .finally(() => {
+            this.syncInFlightByKey.delete(syncRequestKey);
+          });
+
+        this.syncInFlightByKey.set(syncRequestKey, syncPromise);
+      }
     } else {
       syncPromise = Promise.resolve({ newMessages: [], hasMore: cached.has_more, didSync: false });
     }
@@ -228,12 +255,27 @@ class MessageSync {
     });
   }
 
+  async handlePreviewUpdate(
+    conversationId: string,
+    messageId: string,
+    linkPreview: LocalMessage['link_preview']
+  ): Promise<void> {
+    await messageStore.updateMessage(conversationId, messageId, {
+      link_preview: linkPreview,
+    });
+  }
+
   async handleDelete(conversationId: string, messageId: string): Promise<void> {
     await messageStore.markDeleted(conversationId, messageId);
   }
 
   invalidateConversation(conversationId: string): void {
-    this.sessionValidatedConversations.delete(conversationId);
+    this.sessionValidatedAtByConversation.delete(conversationId);
+    Array.from(this.syncInFlightByKey.keys()).forEach((key) => {
+      if (key.startsWith(`${conversationId}:`)) {
+        this.syncInFlightByKey.delete(key);
+      }
+    });
   }
 }
 

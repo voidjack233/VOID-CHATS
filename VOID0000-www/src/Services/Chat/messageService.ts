@@ -1,5 +1,5 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
-import { decryptMessages, encryptMessage } from '../Crypto/messageEncryption';
+import { decryptMessage, decryptMessages, encryptMessage } from '../Crypto/messageEncryption';
 import { encryptAttachmentFile, resolveAttachmentBlob } from '../Crypto/attachmentEncryption';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
@@ -10,7 +10,9 @@ import {
 } from './chatCryptoService';
 import {
   applyEncryptedMessageEnvelope,
+  buildEncryptedLinkPreviewPayload,
   buildEncryptedMessagePayload,
+  resolveDecryptedLinkPreviewPayload,
 } from './messageEnvelope';
 import {
   parseAttachment,
@@ -370,6 +372,62 @@ async function retryDmDecryptionAfterKeyRepair(
   });
 }
 
+async function applyEncryptedLinkPreviewBlocks(
+  messages: Message[],
+  encryptionKey: CryptoKey,
+  context?: MessageDecryptionContext,
+): Promise<Message[]> {
+  const keyResolver = createMessageKeyResolver(encryptionKey, context);
+
+  return Promise.all(messages.map(async (message) => {
+    if (
+      message.is_deleted ||
+      !message.encrypted_link_preview ||
+      !message.link_preview_iv
+    ) {
+      return message;
+    }
+
+    const previewKeyVersion = normalizeKeyVersion(
+      message.link_preview_key_version ?? message.key_version,
+      message.key_version ?? context?.currentKeyVersion ?? 1,
+    );
+    const previewDecryptable: Message = {
+      ...message,
+      encrypted_content: message.encrypted_link_preview,
+      iv: message.link_preview_iv,
+      key_version: previewKeyVersion,
+    };
+
+    try {
+      const key = keyResolver
+        ? await keyResolver(previewDecryptable)
+        : encryptionKey;
+      const decryptedPreview = await decryptMessage(
+        message.encrypted_link_preview,
+        message.link_preview_iv,
+        key,
+      );
+      const linkPreview = resolveDecryptedLinkPreviewPayload(decryptedPreview);
+      if (!linkPreview) {
+        return message;
+      }
+
+      return {
+        ...message,
+        link_preview: linkPreview,
+      };
+    } catch (error) {
+      console.warn('[LINK_PREVIEW] failed to decrypt preview block', {
+        message_id: message.message_id,
+        key_version: previewKeyVersion,
+        error: error instanceof Error ? error.message : String(error || ''),
+      });
+      return message;
+    }
+  }));
+}
+
 export async function getMessages(
   conversationId: string,
   encryptionKey: CryptoKey,
@@ -420,7 +478,13 @@ export async function getMessages(
     } as Message)
   );
 
-  return { messages: messagesWithReactions as Message[], has_more: data.has_more };
+  const messagesWithPreviews = await applyEncryptedLinkPreviewBlocks(
+    messagesWithReactions as Message[],
+    encryptionKey,
+    options,
+  );
+
+  return { messages: messagesWithPreviews, has_more: data.has_more };
 }
 
 export async function editMessage(
@@ -463,6 +527,42 @@ export async function editMessage(
 
   const data = await response.json();
   if (!data.success) throw new Error(data.error);
+}
+
+export async function updateMessageLinkPreview(
+  conversationId: string,
+  messageId: string,
+  preview: LinkPreviewMetadata,
+  encryptionKey: CryptoKey,
+  keyVersion: number,
+): Promise<Pick<Message, 'link_preview' | 'encrypted_link_preview' | 'link_preview_iv' | 'link_preview_key_version'>> {
+  const payload = buildEncryptedLinkPreviewPayload(preview);
+  const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
+
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/messages/${messageId}/preview`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      encrypted_link_preview: encrypted_content,
+      iv,
+      key_version: keyVersion,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw createApiError(data, {
+      status: response.status,
+      statusCode: response.status,
+      retryAfterMs: getRetryAfterMsFromResponse(response),
+    });
+  }
+
+  return {
+    link_preview: preview,
+    encrypted_link_preview: data.encrypted_link_preview ?? encrypted_content,
+    link_preview_iv: data.link_preview_iv ?? iv,
+    link_preview_key_version: data.link_preview_key_version ?? keyVersion,
+  };
 }
 
 async function resolveForwardSendCrypto(
@@ -615,11 +715,15 @@ export async function getMessageById(
     const keyResolver = createMessageKeyResolver(encryptionKey, options);
     const [decrypted] = await decryptMessages([normalizedMessage], keyResolver || encryptionKey);
 
-    return applyEncryptedMessageEnvelope({
+    const [messageWithPreview] = await applyEncryptedLinkPreviewBlocks([
+      applyEncryptedMessageEnvelope({
       ...(decrypted as Message),
       protocol: cryptoMetadata.protocol,
       protocol_version: cryptoMetadata.protocol_version,
-    } as Message);
+      } as Message),
+    ], encryptionKey, options);
+
+    return messageWithPreview || null;
   } catch (error) {
     console.error('Failed to fetch single message:', error);
     return null;

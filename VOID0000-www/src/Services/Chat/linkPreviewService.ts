@@ -2,6 +2,14 @@ import { fetchWithAuth } from '../Auth/authServiceApi';
 import type { LinkPreviewMetadata } from './chatTypes';
 
 const URL_REGEX = /https?:\/\/[^\s<>"']+/gi;
+const LINK_PREVIEW_CACHE_TTL_MS = 10 * 60 * 1000;
+const LINK_PREVIEW_TIMEOUT_MS = 3_500;
+
+const previewCache = new Map<string, {
+  expiresAt: number;
+  preview: LinkPreviewMetadata | null;
+}>();
+const previewInFlight = new Map<string, Promise<LinkPreviewMetadata | null>>();
 
 function splitTrailingPunctuation(value: string) {
   let core = value;
@@ -59,6 +67,20 @@ export function getFirstPreviewableUrl(text: string): string | null {
   return null;
 }
 
+function getCachedPreview(url: string): LinkPreviewMetadata | null | undefined {
+  const cached = previewCache.get(url);
+  if (!cached) {
+    return undefined;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    previewCache.delete(url);
+    return undefined;
+  }
+
+  return cached.preview;
+}
+
 function normalizeLinkPreview(value: unknown): LinkPreviewMetadata | null {
   if (!value || typeof value !== 'object') {
     return null;
@@ -91,15 +113,58 @@ export async function fetchLinkPreview(
     return null;
   }
 
-  const response = await fetchWithAuth(
-    `/api/link-preview?url=${encodeURIComponent(normalizedUrl)}`,
-    { signal },
-  );
-  const data = await response.json().catch(() => null);
-
-  if (!response.ok || !data?.success) {
+  if (signal?.aborted) {
     return null;
   }
 
-  return normalizeLinkPreview(data.preview);
+  const cachedPreview = getCachedPreview(normalizedUrl);
+  if (cachedPreview !== undefined) {
+    return cachedPreview;
+  }
+
+  const existingPreviewRequest = previewInFlight.get(normalizedUrl);
+  if (existingPreviewRequest) {
+    const preview = await existingPreviewRequest;
+    return signal?.aborted ? null : preview;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, LINK_PREVIEW_TIMEOUT_MS);
+
+  const previewRequest = (async () => {
+    try {
+      const response = await fetchWithAuth(
+        `/api/link-preview?url=${encodeURIComponent(normalizedUrl)}`,
+        { signal: controller.signal },
+      );
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok || !data?.success) {
+        return null;
+      }
+
+      return normalizeLinkPreview(data.preview);
+    } catch {
+      return null;
+    } finally {
+      window.clearTimeout(timeoutId);
+      previewInFlight.delete(normalizedUrl);
+    }
+  })();
+
+  previewInFlight.set(normalizedUrl, previewRequest);
+  const preview = await previewRequest;
+  previewCache.set(normalizedUrl, {
+    expiresAt: Date.now() + LINK_PREVIEW_CACHE_TTL_MS,
+    preview,
+  });
+
+  return signal?.aborted ? null : preview;
+}
+
+export function clearLinkPreviewCache(): void {
+  previewCache.clear();
+  previewInFlight.clear();
 }

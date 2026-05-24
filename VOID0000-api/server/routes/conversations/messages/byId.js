@@ -61,6 +61,102 @@ router.get('/:messageId', async (req, res) => {
   }
 });
 
+router.patch('/:messageId/preview', async (req, res) => {
+  const userId = req.user.id;
+  const { conversationId: conversationIdentifier, messageId } = req.params;
+  const { encrypted_link_preview, iv, key_version } = req.body || {};
+
+  if (
+    typeof encrypted_link_preview !== 'string' ||
+    encrypted_link_preview.trim().length === 0 ||
+    typeof iv !== 'string' ||
+    iv.trim().length === 0
+  ) {
+    return res.status(400).json({ error: 'encrypted_link_preview and iv are required' });
+  }
+
+  try {
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ error: 'Conversation not found' });
+
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
+    const member = await verifyMembership(conversationId, userId);
+    if (!member) return res.status(403).json({ error: 'Not a member' });
+
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ error: 'Missing group key membership state' });
+    }
+
+    const messageResult = await scylla.execute(
+      `SELECT sender_id, is_deleted, key_version FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
+      { prepare: true }
+    );
+
+    if (messageResult.rows.length === 0) return res.status(404).json({ error: 'Message not found' });
+
+    const messageRow = messageResult.rows[0];
+    if (messageRow.sender_id.toString() !== userId) {
+      return res.status(403).json({ error: 'Can only update previews for your own messages' });
+    }
+    if (messageRow.is_deleted) return res.status(400).json({ error: 'Cannot update a deleted message' });
+
+    const messageKeyVersion = normalizeKeyVersion(messageRow.key_version, keyState.currentKeyVersion);
+    const requestedKeyVersion = normalizeKeyVersion(key_version, messageKeyVersion);
+    if (requestedKeyVersion !== messageKeyVersion) {
+      return res.status(409).json({
+        error: `Expected key_version ${messageKeyVersion}`,
+        code: 'STALE_KEY_VERSION',
+        current_key_version: messageKeyVersion,
+      });
+    }
+
+    await scylla.execute(
+      `UPDATE messages SET encrypted_link_preview = ?, link_preview_iv = ?, link_preview_key_version = ?
+       WHERE conversation_id = ? AND message_id = ?`,
+      [
+        encrypted_link_preview,
+        iv,
+        requestedKeyVersion,
+        cassandra.types.Uuid.fromString(storageConversationId),
+        cassandra.types.TimeUuid.fromString(messageId),
+      ],
+      { prepare: true }
+    );
+
+    const update = {
+      conversation_id: conversationId,
+      conversation_public_id: conversationPublic,
+      message_id: messageId,
+      encrypted_link_preview,
+      link_preview_iv: iv,
+      link_preview_key_version: requestedKeyVersion,
+    };
+
+    const members = await getConversationMembers(conversationId);
+    debugLog('[WS_FANOUT] MESSAGE_UPDATE preview', {
+      conversation_id: conversationId,
+      sender_id: userId,
+      recipient_count: members.length,
+      includes_sender_sessions: true,
+    });
+    members.forEach((memberId) => {
+      sendLiveEventToUser(memberId, 'MESSAGE_UPDATE', update);
+    });
+
+    res.json({ success: true, ...update });
+  } catch (err) {
+    console.error('Message preview update error:', err);
+    res.status(500).json({ error: 'Failed to update message preview' });
+  }
+});
+
 router.put('/:messageId', async (req, res) => {
   const userId = req.user.id;
   const { conversationId: conversationIdentifier, messageId } = req.params;
@@ -147,7 +243,9 @@ router.put('/:messageId', async (req, res) => {
     );
 
     await scylla.execute(
-      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, message_type = ?, forwarded = ?, mentions = ?, is_edited = true, edited_at = ?
+      `UPDATE messages SET encrypted_content = ?, iv = ?, key_version = ?, message_type = ?, forwarded = ?, mentions = ?,
+         encrypted_link_preview = null, link_preview_iv = null, link_preview_key_version = null,
+         is_edited = true, edited_at = ?
        WHERE conversation_id = ? AND message_id = ?`,
       [
         encrypted_content,
@@ -224,7 +322,8 @@ router.delete('/:messageId', async (req, res) => {
     if (!canDelete) return res.status(403).json({ error: 'Cannot delete this message' });
 
     await scylla.execute(
-      `UPDATE messages SET is_deleted = true, encrypted_content = null, iv = null
+      `UPDATE messages SET is_deleted = true, encrypted_content = null, iv = null,
+         encrypted_link_preview = null, link_preview_iv = null, link_preview_key_version = null
        WHERE conversation_id = ? AND message_id = ?`,
       [cassandra.types.Uuid.fromString(storageConversationId), cassandra.types.TimeUuid.fromString(messageId)],
       { prepare: true }

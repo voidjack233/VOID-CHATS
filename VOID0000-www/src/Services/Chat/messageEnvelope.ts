@@ -8,6 +8,8 @@ import { parseAttachments, serializeAttachments } from './messageAttachments';
 
 const MESSAGE_ENVELOPE_MARKER = 'void_message_envelope';
 const MESSAGE_ENVELOPE_VERSION = 1;
+const LINK_PREVIEW_ENVELOPE_MARKER = 'void_link_preview_envelope';
+const LINK_PREVIEW_ENVELOPE_VERSION = 1;
 
 interface MessageEnvelope {
   __void_envelope: typeof MESSAGE_ENVELOPE_MARKER;
@@ -16,6 +18,12 @@ interface MessageEnvelope {
   attachments?: ReturnType<typeof parseAttachments>;
   forwarded?: ForwardedMessageMetadata;
   mentions?: MessageMentionMetadata[];
+  link_preview?: LinkPreviewMetadata;
+}
+
+interface LinkPreviewEnvelope {
+  __void_envelope: typeof LINK_PREVIEW_ENVELOPE_MARKER;
+  version: typeof LINK_PREVIEW_ENVELOPE_VERSION;
   link_preview?: LinkPreviewMetadata;
 }
 
@@ -201,6 +209,39 @@ export function resolveDecryptedMessagePayload(
     mentions: normalizeMentionMetadata(envelope.mentions),
     link_preview: normalizeLinkPreviewMetadata(envelope.link_preview),
   };
+}
+
+export function buildEncryptedLinkPreviewPayload(preview: LinkPreviewMetadata): string {
+  const linkPreview = normalizeLinkPreviewMetadata(preview);
+  if (!linkPreview) {
+    throw new Error('Invalid link preview metadata');
+  }
+
+  return JSON.stringify({
+    __void_envelope: LINK_PREVIEW_ENVELOPE_MARKER,
+    version: LINK_PREVIEW_ENVELOPE_VERSION,
+    link_preview: linkPreview,
+  } satisfies LinkPreviewEnvelope);
+}
+
+export function resolveDecryptedLinkPreviewPayload(
+  decryptedContent: string,
+): LinkPreviewMetadata | undefined {
+  try {
+    const parsed = JSON.parse(decryptedContent);
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      parsed.__void_envelope === LINK_PREVIEW_ENVELOPE_MARKER &&
+      parsed.version === LINK_PREVIEW_ENVELOPE_VERSION
+    ) {
+      return normalizeLinkPreviewMetadata((parsed as LinkPreviewEnvelope).link_preview);
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
 }
 
 export function applyEncryptedMessageEnvelope<

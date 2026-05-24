@@ -39,6 +39,26 @@ const getMentionSignature = (message: Pick<Message, 'mentions'>) =>
 const getLinkPreviewSignature = (message: Pick<Message, 'link_preview'>) =>
   JSON.stringify(message.link_preview || null);
 
+const preserveExistingPreviewForEcho = (
+  incoming: Message,
+  existing?: Message,
+): Message => {
+  if (incoming.link_preview || !existing?.link_preview) {
+    return incoming;
+  }
+
+  const incomingLocalId = getLocalClientId(incoming);
+  const existingLocalId = getLocalClientId(existing);
+  if (!incomingLocalId || incomingLocalId !== existingLocalId) {
+    return incoming;
+  }
+
+  return {
+    ...incoming,
+    link_preview: existing.link_preview,
+  };
+};
+
 const isEquivalentMessage = (
   existingMessage: Message,
   nextMessage: Message,
@@ -190,11 +210,12 @@ const mergeMessagesWithReconciliation = ({
     const existingIndex = next.findIndex((entry) => String(entry.message_id) === String(message.message_id));
     if (existingIndex >= 0) {
       const existingMessage = next[existingIndex]!;
+      const incomingMessage = preserveExistingPreviewForEcho(message, existingMessage);
       const mergedMessage: Message = {
         ...existingMessage,
-        ...message,
-        local_client_id: message.local_client_id ?? existingMessage.local_client_id,
-        local_status: message.local_status ?? existingMessage.local_status,
+        ...incomingMessage,
+        local_client_id: incomingMessage.local_client_id ?? existingMessage.local_client_id,
+        local_status: incomingMessage.local_status ?? existingMessage.local_status,
       };
       if (!isEquivalentMessage(existingMessage, mergedMessage)) {
         next[existingIndex] = mergedMessage;
@@ -209,6 +230,7 @@ const mergeMessagesWithReconciliation = ({
         : undefined
     );
 
+    let preservedPreviewMessage = message;
     if (replacementId) {
       for (let index = next.length - 1; index >= 0; index -= 1) {
         const candidate = next[index]!;
@@ -216,13 +238,14 @@ const mergeMessagesWithReconciliation = ({
           String(candidate.message_id) === String(replacementId) ||
           getLocalClientId(candidate) === replacementId
         ) {
+          preservedPreviewMessage = preserveExistingPreviewForEcho(preservedPreviewMessage, candidate);
           next.splice(index, 1);
           didChange = true;
         }
       }
     }
 
-    next.push(message);
+    next.push(preservedPreviewMessage);
     didChange = true;
   });
 

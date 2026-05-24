@@ -105,6 +105,9 @@ interface UseMessageListPaginationParams {
 
 const FETCH_SIZE = MESSAGE_PAGE_SIZE;
 const ESTIMATED_MESSAGE_HEIGHT = 72;
+const PASSIVE_RECONCILE_TTL_MS = 15_000;
+const MESSAGE_CREATE_RECONCILE_TTL_MS = 1_500;
+const recentReconcileAtByConversation = new Map<string, number>();
 
 const sumMessageHeights = (
   messages: Message[],
@@ -811,7 +814,18 @@ const useMessageListPagination = ({
       if (now - lastResyncAt < 1500) {
         return;
       }
+
+      const reconcileKey = `${conversationId}:${source === 'message_create' ? 'message_create' : 'passive'}`;
+      const ttl = source === 'message_create'
+        ? MESSAGE_CREATE_RECONCILE_TTL_MS
+        : PASSIVE_RECONCILE_TTL_MS;
+      const lastConversationResyncAt = recentReconcileAtByConversation.get(reconcileKey) ?? 0;
+      if (now - lastConversationResyncAt < ttl) {
+        return;
+      }
+
       lastResyncAt = now;
+      recentReconcileAtByConversation.set(reconcileKey, now);
       void reconcileRecentMessages(source);
     };
 

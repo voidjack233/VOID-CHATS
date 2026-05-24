@@ -194,7 +194,11 @@ async function fetchHtmlWithRedirects(initialUrl) {
 
     const contentType = response.headers.get('content-type') || '';
     if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
-      throw Object.assign(new Error('Preview target is not an HTML page'), { status: 415 });
+      throw Object.assign(new Error('Preview target is not an HTML page'), {
+        status: 415,
+        finalUrl: currentUrl.toString(),
+        contentType,
+      });
     }
 
     return {
@@ -394,6 +398,21 @@ function createFallbackPreview(url, favicon = null) {
   };
 }
 
+function isLikelyImageUrl(url) {
+  return /\.(?:apng|avif|gif|jpe?g|png|svg|webp)$/i.test(url.pathname);
+}
+
+function createScrapeFailureFallbackPreview(url, options = {}) {
+  const fallback = createFallbackPreview(url);
+  const contentType = typeof options.contentType === 'string' ? options.contentType : '';
+  const isImageContent = /^image\//i.test(contentType);
+
+  return {
+    ...fallback,
+    image: isImageContent || isLikelyImageUrl(url) ? url.toString() : fallback.image,
+  };
+}
+
 function getIconHref(html) {
   return getLinkHrefByRel(html, ['icon', 'shortcut', 'apple-touch-icon']);
 }
@@ -558,6 +577,20 @@ router.get('/', async (req, res) => {
     return res.json({ success: true, preview });
   } catch (error) {
     const status = Number(error?.status) || (error?.name === 'AbortError' ? 504 : 500);
+    if (status !== 400) {
+      try {
+        const fallbackUrl = parseCandidateUrl(error?.finalUrl) || parsedUrl;
+        await assertPublicHttpUrl(fallbackUrl);
+        const fallbackPreview = createScrapeFailureFallbackPreview(fallbackUrl, {
+          contentType: error?.contentType,
+        });
+        res.set('Cache-Control', 'private, max-age=300');
+        return res.json({ success: true, preview: fallbackPreview });
+      } catch {
+        // Preserve security-sensitive failures as hard errors.
+      }
+    }
+
     return res.status(status).json({
       success: false,
       error: status >= 500 ? 'Unable to fetch link preview right now.' : error.message,

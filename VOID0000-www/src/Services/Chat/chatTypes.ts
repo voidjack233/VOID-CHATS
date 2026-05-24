@@ -94,6 +94,9 @@ export interface Message {
   encrypted_content: string | null;
   iv: string | null;
   key_version: number;
+  encrypted_link_preview?: string | null;
+  link_preview_iv?: string | null;
+  link_preview_key_version?: number | null;
   message_type: string;
   reply_to: string | null;
   attachments?: string[];
