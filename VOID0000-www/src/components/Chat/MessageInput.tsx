@@ -29,6 +29,7 @@ interface MessageInputProps {
       content: string;
       mentions?: Array<{ user_id: string; username: string }>;
       forwarded?: Message['forwarded'];
+      link_preview?: Message['link_preview'];
       message_type?: string | null;
     },
   ) => void;

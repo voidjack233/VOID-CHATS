@@ -36,6 +36,9 @@ const getForwardedSignature = (message: Pick<Message, 'forwarded'>) =>
 const getMentionSignature = (message: Pick<Message, 'mentions'>) =>
   JSON.stringify(message.mentions || []);
 
+const getLinkPreviewSignature = (message: Pick<Message, 'link_preview'>) =>
+  JSON.stringify(message.link_preview || null);
+
 const isEquivalentMessage = (
   existingMessage: Message,
   nextMessage: Message,
@@ -59,7 +62,8 @@ const isEquivalentMessage = (
   getAttachmentSignature(existingMessage) === getAttachmentSignature(nextMessage) &&
   getReactionSignature(existingMessage) === getReactionSignature(nextMessage) &&
   getForwardedSignature(existingMessage) === getForwardedSignature(nextMessage) &&
-  getMentionSignature(existingMessage) === getMentionSignature(nextMessage)
+  getMentionSignature(existingMessage) === getMentionSignature(nextMessage) &&
+  getLinkPreviewSignature(existingMessage) === getLinkPreviewSignature(nextMessage)
 );
 
 const findOptimisticReplacementId = (

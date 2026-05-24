@@ -334,6 +334,7 @@ const ChatDashboard = () => {
     content: string;
     mentions?: Message['mentions'];
     forwarded?: Message['forwarded'];
+    link_preview?: Message['link_preview'];
     message_type?: string | null;
   }) => {
     setMessageUpdate({
@@ -343,6 +344,7 @@ const ChatDashboard = () => {
       edited_at: new Date().toISOString(),
       mentions: updates.mentions,
       forwarded: updates.forwarded,
+      link_preview: updates.link_preview,
       message_type: updates.message_type ?? undefined,
     });
   }, [setMessageUpdate]);

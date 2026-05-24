@@ -215,7 +215,7 @@ class MessageSync {
   async handleEdit(
     conversationId: string,
     messageId: string,
-    updates: Pick<LocalMessage, 'content' | 'edited_at'> & Partial<Pick<LocalMessage, 'forwarded' | 'mentions' | 'message_type'>>
+    updates: Pick<LocalMessage, 'content' | 'edited_at'> & Partial<Pick<LocalMessage, 'forwarded' | 'mentions' | 'link_preview' | 'message_type'>>
   ): Promise<void> {
     await messageStore.updateMessage(conversationId, messageId, {
       content: updates.content,
@@ -223,6 +223,7 @@ class MessageSync {
       edited_at: updates.edited_at,
       forwarded: updates.forwarded,
       mentions: updates.mentions,
+      link_preview: updates.link_preview,
       message_type: updates.message_type,
     });
   }

@@ -268,6 +268,13 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
     logAction: 'REACTION_RATE_LIMIT_HIT',
   }),
 
+  linkPreview: userTokenBucket({
+    keyPrefix: 'link-preview',
+    refillWindowSec: 60,
+    bucketSize: 40,
+    logAction: 'LINK_PREVIEW_RATE_LIMIT_HIT',
+  }),
+
   mlsSync: userTokenBucket({
     keyPrefix: 'mls:sync',
     refillWindowSec: 60,

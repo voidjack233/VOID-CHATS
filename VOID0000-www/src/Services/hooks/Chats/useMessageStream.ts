@@ -218,6 +218,7 @@ export const useMessageStream = ({
           message_type: data.message_type ?? null,
           forwarded: resolvedPayload.forwarded ?? undefined,
           mentions: resolvedPayload.mentions ?? undefined,
+          link_preview: resolvedPayload.link_preview ?? undefined,
         });
       } else {
         pushMessageEvent(normalizeLiveMessageShape({ ...data, ...resolvedPayload }));
@@ -241,6 +242,7 @@ export const useMessageStream = ({
             attachments: data.attachments,
             forwarded: undefined,
             mentions: undefined,
+            link_preview: undefined,
           };
 
       if (isUpdate) {
@@ -252,6 +254,7 @@ export const useMessageStream = ({
           message_type: data.message_type ?? null,
           forwarded: resolvedPayload.forwarded ?? undefined,
           mentions: resolvedPayload.mentions ?? undefined,
+          link_preview: resolvedPayload.link_preview ?? undefined,
         });
       } else {
         pushMessageEvent(normalizeLiveMessageShape({ ...data, ...resolvedPayload }));

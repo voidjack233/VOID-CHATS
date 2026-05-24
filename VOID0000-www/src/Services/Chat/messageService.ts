@@ -19,6 +19,7 @@ import {
 import type {
   Conversation,
   ForwardedMessageMetadata,
+  LinkPreviewMetadata,
   Message,
   MessageCryptoProtocol,
   MessageDecryptionContext,
@@ -94,6 +95,7 @@ export async function sendMessage(
     message_type?: string;
     forwarded?: ForwardedMessageMetadata | null;
     mentions?: MessageMentionMetadata[] | null;
+    linkPreview?: LinkPreviewMetadata | null;
   },
 ): Promise<Message> {
   const payload = buildEncryptedMessagePayload(
@@ -102,6 +104,7 @@ export async function sendMessage(
     {
       forwarded: options?.forwarded,
       mentions: options?.mentions,
+      linkPreview: options?.linkPreview,
     },
   );
   const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
@@ -156,6 +159,7 @@ export async function sendMessage(
     attachments: options?.secure_attachments || data.message.attachments,
     forwarded: options?.forwarded || undefined,
     mentions: options?.mentions || undefined,
+    link_preview: options?.linkPreview || undefined,
     protocol: cryptoMetadata.protocol,
     protocol_version: cryptoMetadata.protocol_version,
   };
@@ -195,11 +199,13 @@ export async function sendImageOnlyMessage(
     message_type?: string;
     forwarded?: ForwardedMessageMetadata | null;
     mentions?: MessageMentionMetadata[] | null;
+    linkPreview?: LinkPreviewMetadata | null;
   },
 ): Promise<Message> {
   const payload = buildEncryptedMessagePayload('', secureAttachments, {
     forwarded: options?.forwarded,
     mentions: options?.mentions,
+    linkPreview: options?.linkPreview,
   });
   const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const messageType = options?.message_type || CHAT_DEFAULT_MLS_MESSAGE_TYPE;
@@ -249,6 +255,7 @@ export async function sendImageOnlyMessage(
     attachments: secureAttachments,
     forwarded: options?.forwarded || undefined,
     mentions: options?.mentions || undefined,
+    link_preview: options?.linkPreview || undefined,
     protocol: cryptoMetadata.protocol,
     protocol_version: cryptoMetadata.protocol_version,
   };
@@ -427,11 +434,13 @@ export async function editMessage(
     secureAttachments?: string[];
     forwarded?: ForwardedMessageMetadata | null;
     mentions?: MessageMentionMetadata[] | null;
+    linkPreview?: LinkPreviewMetadata | null;
   },
 ): Promise<void> {
   const payload = buildEncryptedMessagePayload(newPlaintext, options?.secureAttachments, {
     forwarded: options?.forwarded,
     mentions: options?.mentions,
+    linkPreview: options?.linkPreview,
   });
   const { encrypted_content, iv } = await encryptMessage(payload, encryptionKey);
   const payloadMessageType = options?.messageType || CHAT_DEFAULT_MLS_MESSAGE_TYPE;

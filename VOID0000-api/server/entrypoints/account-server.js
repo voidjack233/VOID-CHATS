@@ -69,6 +69,7 @@ import accountReadRouter from '../routes/user/accountRead.js';
 import sessionsRouter from '../routes/user/sessions.js';
 import preferencesRouter from '../routes/user/preferences.js';
 import notificationsRouter from '../routes/notifications/index.js';
+import linkPreviewRouter from '../routes/linkPreview/index.js';
 import { noCache } from '../middleware/noCache.js';
 
 import {
@@ -80,7 +81,8 @@ import {
   authCheckLimiter,
   refreshTokenLimiter,
   captchaGenerateLimiter,
-  captchaCheckLimiter
+  captchaCheckLimiter,
+  linkPreviewLimiter
 } from '../middleware/rate_limit.js';
 
 // ================== API ROUTES ==================
@@ -169,6 +171,7 @@ app.use('/api/users/account', accountReadRouter);
 app.use('/api/users/sessions', sessionsRouter);
 app.use('/api/users', authenticateUser, preferencesRouter);
 app.use('/api/notifications', noCache, authenticateUser, notificationsRouter);
+app.use('/api/link-preview', noCache, authenticateUser, linkPreviewLimiter, linkPreviewRouter);
 
 // ================== HTTP SERVER ==================
 

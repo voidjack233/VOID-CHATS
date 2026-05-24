@@ -18,6 +18,7 @@ import AttachmentAudioPlayer, { isAudioAttachment } from './AttachmentAudioPlaye
 import AttachmentFileCard from './AttachmentFileCard';
 import FormattedMessageText from './FormattedMessageText';
 import InviteEmbed from './InviteEmbed';
+import LinkPreviewCard from './LinkPreviewCard';
 import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../common/UserAvatar';
 import { parseAttachment, parseAttachments } from '../../Services/Chat/chatService';
@@ -1130,6 +1131,16 @@ const MessageItem = memo(function MessageItem({
                 inviteCode={inviteCode}
                 inviteUrl={inviteUrl}
                 onOpenInvite={(url) => onOpenLink?.(url)}
+              />
+            </div>
+          )}
+
+          {!message.is_deleted && message.link_preview && !inviteUrl && (
+            <div className={`pt-2 ${isRightAligned ? 'self-end' : 'self-start'}`}>
+              <LinkPreviewCard
+                preview={message.link_preview}
+                onOpenLink={onOpenLink}
+                onMediaLoad={onAttachmentLoad}
               />
             </div>
           )}

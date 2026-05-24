@@ -28,6 +28,7 @@ function toUIMessage(local: LocalMessage): Message {
     attachments: local.attachments,
     forwarded: local.forwarded ?? undefined,
     mentions: local.mentions ?? undefined,
+    link_preview: local.link_preview ?? undefined,
     protocol: local.protocol ?? null,
     protocol_version: local.protocol_version ?? null,
   };
@@ -97,6 +98,7 @@ const toLocalMessages = (messages: Message[]): LocalMessage[] =>
       attachments: message.attachments,
       forwarded: message.forwarded ?? undefined,
       mentions: message.mentions ?? undefined,
+      link_preview: message.link_preview ?? undefined,
       protocol: cryptoMetadata.protocol,
       protocol_version: cryptoMetadata.protocol_version,
     };
@@ -160,6 +162,7 @@ const mergeLocalMessages = (...pages: LocalMessage[][]): LocalMessage[] => {
       attachments: message.attachments ?? existing.attachments,
       forwarded: message.forwarded ?? existing.forwarded,
       mentions: message.mentions ?? existing.mentions,
+      link_preview: message.link_preview ?? existing.link_preview,
       reactions:
         Object.keys(message.reactions || {}).length > 0
           ? message.reactions

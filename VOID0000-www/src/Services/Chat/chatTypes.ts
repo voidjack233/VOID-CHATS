@@ -76,6 +76,15 @@ export interface MessageMentionMetadata {
   username: string;
 }
 
+export interface LinkPreviewMetadata {
+  url: string;
+  title?: string | null;
+  description?: string | null;
+  image?: string | null;
+  site_name?: string | null;
+  favicon?: string | null;
+}
+
 export interface Message {
   conversation_id: string;
   conversation_public_id?: string | null;
@@ -96,6 +105,7 @@ export interface Message {
   reactions?: ReactionMap;
   forwarded?: ForwardedMessageMetadata | null;
   mentions?: MessageMentionMetadata[];
+  link_preview?: LinkPreviewMetadata | null;
   protocol?: MessageCryptoProtocol | null;
   protocol_version?: number | null;
   decryption_failed?: boolean;

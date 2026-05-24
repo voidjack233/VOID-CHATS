@@ -220,6 +220,7 @@ const useMessageListRealtime = ({
         edited_at: messageUpdate.edited_at,
         forwarded: messageUpdate.forwarded ?? undefined,
         mentions: messageUpdate.mentions ?? undefined,
+        link_preview: messageUpdate.link_preview ?? undefined,
         message_type: messageUpdate.message_type ?? undefined,
       })
       .catch(console.error);
@@ -234,6 +235,7 @@ const useMessageListRealtime = ({
               edited_at: messageUpdate.edited_at,
               forwarded: messageUpdate.forwarded ?? message.forwarded,
               mentions: messageUpdate.mentions ?? message.mentions,
+              link_preview: messageUpdate.link_preview ?? message.link_preview,
               message_type: messageUpdate.message_type ?? message.message_type,
             }
           : message

@@ -261,6 +261,7 @@ export async function applyLiveMessageEditPreview(
         message_type: message.message_type || 'mls_application',
         forwarded: (message as { forwarded?: LocalMessage['forwarded'] }).forwarded ?? undefined,
         mentions: (message as { mentions?: LocalMessage['mentions'] }).mentions ?? undefined,
+        link_preview: (message as { link_preview?: LocalMessage['link_preview'] }).link_preview ?? undefined,
       },
     );
   }

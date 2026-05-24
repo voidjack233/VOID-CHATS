@@ -15,11 +15,13 @@ import {
   Message,
   Conversation,
   ConversationMember,
+  LinkPreviewMetadata,
   MessageMentionMetadata,
 } from '../../Chat/chatService';
 import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProtocolService';
 import { queuedSendStore } from '../../Chat/queuedSendStore';
 import { resolveMessageMentions } from '../../Chat/messageMentions';
+import { fetchLinkPreview, getFirstPreviewableUrl } from '../../Chat/linkPreviewService';
 
 export interface PendingAttachment {
   id: string;
@@ -54,6 +56,7 @@ interface UseMessageInputProps {
       content: string;
       mentions?: MessageMentionMetadata[];
       forwarded?: Message['forwarded'];
+      link_preview?: Message['link_preview'];
       message_type?: string | null;
     },
   ) => void;
@@ -217,6 +220,9 @@ export const useMessageInput = ({
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [linkPreview, setLinkPreview] = useState<LinkPreviewMetadata | null>(null);
+  const [linkPreviewLoading, setLinkPreviewLoading] = useState(false);
+  const [dismissedLinkPreviewUrl, setDismissedLinkPreviewUrl] = useState<string | null>(null);
   const [attachmentAlert, setAttachmentAlert] = useState<AttachmentAlertState | null>(null);
   const [slowmodeRemaining, setSlowmodeRemaining] = useState(0);
   const lastTypingSentAtRef = useRef(0);
@@ -256,6 +262,8 @@ export const useMessageInput = ({
   useEffect(() => {
     if (editingMessage) {
       setText(editingMessage.content || '');
+      setLinkPreview(editingMessage.link_preview || null);
+      setDismissedLinkPreviewUrl(null);
       inputRef.current?.focus();
     }
   }, [editingMessage]);
@@ -263,10 +271,53 @@ export const useMessageInput = ({
   useEffect(() => {
     inputRef.current?.focus();
     setAttachments([]);
+    setLinkPreview(null);
+    setLinkPreviewLoading(false);
+    setDismissedLinkPreviewUrl(null);
     setAttachmentAlert(null);
     setSlowmodeRemaining(0);
     lastTypingSentAtRef.current = 0;
   }, [conversation.id]);
+
+  useEffect(() => {
+    const previewUrl = getFirstPreviewableUrl(text);
+    if (!previewUrl || previewUrl === dismissedLinkPreviewUrl) {
+      setLinkPreview(null);
+      setLinkPreviewLoading(false);
+      return;
+    }
+
+    if (linkPreview?.url === previewUrl) {
+      setLinkPreviewLoading(false);
+      return;
+    }
+
+    setLinkPreview(null);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLinkPreviewLoading(true);
+      fetchLinkPreview(previewUrl, controller.signal)
+        .then((preview) => {
+          if (controller.signal.aborted) return;
+          setLinkPreview(preview);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setLinkPreview(null);
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setLinkPreviewLoading(false);
+          }
+        });
+    }, 500);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [dismissedLinkPreviewUrl, linkPreview?.url, text]);
 
   useEffect(() => {
     if (replyTo) inputRef.current?.focus();
@@ -583,6 +634,7 @@ export const useMessageInput = ({
             created_at: queued.created_at,
             content: queued.text || undefined,
             reactions: {},
+            link_preview: queued.link_preview || undefined,
             mentions: queued.mentions ?? undefined,
             local_status: 'sending',
             local_client_id: queued.local_client_id,
@@ -596,6 +648,7 @@ export const useMessageInput = ({
               message_type: MLS_MESSAGE_TYPE,
               reply_to: queued.reply_to_id || undefined,
               secure_attachments: queued.uploaded_urls,
+              linkPreview: queued.link_preview || undefined,
               mentions: queued.mentions ?? undefined,
             });
           } else if (queued.uploaded_urls.length > 0) {
@@ -646,6 +699,7 @@ export const useMessageInput = ({
               created_at: queued.created_at,
               content: queued.text || undefined,
               reactions: {},
+              link_preview: queued.link_preview || undefined,
               mentions: queued.mentions ?? undefined,
               local_status: 'failed',
               local_client_id: queued.local_client_id,
@@ -718,9 +772,16 @@ export const useMessageInput = ({
     if (!canSend) return;
 
     const trimmed = text.trim();
+    const activePreviewUrl = getFirstPreviewableUrl(trimmed);
+    const activeLinkPreview =
+      activePreviewUrl && linkPreview?.url === activePreviewUrl
+        ? linkPreview
+        : null;
     const resolvedMentions = trimmed ? resolveDraftMentions(trimmed) : [];
     const previousText = text;
     const previousAttachments = attachments;
+    const previousLinkPreview = linkPreview;
+    const previousDismissedLinkPreviewUrl = dismissedLinkPreviewUrl;
     const uploadedAttachments = attachments
       .filter((a) => a.url)
       .map((a) => a.url!);
@@ -747,6 +808,7 @@ export const useMessageInput = ({
           created_at: new Date().toISOString(),
           content: trimmed || undefined,
           reactions: {},
+          link_preview: activeLinkPreview || undefined,
           mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           local_status: 'sending',
           local_client_id: localClientId as string,
@@ -755,6 +817,9 @@ export const useMessageInput = ({
 
     setText('');
     setAttachments([]);
+    setLinkPreview(null);
+    setLinkPreviewLoading(false);
+    setDismissedLinkPreviewUrl(null);
     setSending(true);
     onSendError?.(null);
     if (optimisticMessage) {
@@ -778,6 +843,7 @@ export const useMessageInput = ({
             messageType: editingMessage.message_type || null,
             secureAttachments: editingMessage.attachments,
             forwarded: editingMessage.forwarded,
+            linkPreview: activeLinkPreview,
             mentions: resolvedMentions,
           }
         );
@@ -785,6 +851,7 @@ export const useMessageInput = ({
           content: trimmed,
           mentions: resolvedMentions,
           forwarded: editingMessage.forwarded,
+          link_preview: activeLinkPreview || undefined,
           message_type: editingMessage.message_type || null,
         });
         onCancelEdit?.();
@@ -795,6 +862,7 @@ export const useMessageInput = ({
           message_type: MLS_MESSAGE_TYPE,
           reply_to: replyTo?.message_id || undefined,
           secure_attachments: uploadedAttachments,
+          linkPreview: activeLinkPreview,
           mentions: resolvedMentions,
         });
         onMessageSent(localClientId ? {
@@ -851,6 +919,7 @@ export const useMessageInput = ({
           text: trimmed,
           uploaded_urls: uploadedAttachments,
           reply_to_id: replyTo?.message_id || null,
+          link_preview: activeLinkPreview || undefined,
           mentions: resolvedMentions.length > 0 ? resolvedMentions : undefined,
           created_at: optimisticMessage.created_at,
         }).catch((e) => console.error('[QUEUED_SEND] failed to persist queued send', e));
@@ -865,6 +934,8 @@ export const useMessageInput = ({
         if (!optimisticMessage) {
           setText(previousText);
           setAttachments(previousAttachments);
+          setLinkPreview(previousLinkPreview);
+          setDismissedLinkPreviewUrl(previousDismissedLinkPreviewUrl);
         }
         if (optimisticMessage && localClientId) {
           onMessageSent({
@@ -910,8 +981,19 @@ export const useMessageInput = ({
     if (editingMessage) {
       onCancelEdit?.();
       setText('');
+      setLinkPreview(null);
+      setDismissedLinkPreviewUrl(null);
     }
     if (replyTo) onCancelReply?.();
+  };
+
+  const removeLinkPreview = () => {
+    const previewUrl = linkPreview?.url || getFirstPreviewableUrl(text);
+    setLinkPreview(null);
+    setLinkPreviewLoading(false);
+    if (previewUrl) {
+      setDismissedLinkPreviewUrl(previewUrl);
+    }
   };
 
   return {
@@ -921,6 +1003,8 @@ export const useMessageInput = ({
     canSend,
     slowmodeRemaining,
     attachments,
+    linkPreview,
+    linkPreviewLoading,
     attachmentAlert,
     attachmentsAllowed,
     attachmentsRestrictionLabel,
@@ -938,6 +1022,7 @@ export const useMessageInput = ({
     handleFileChange,
     removeAttachment,
     retryAttachment,
+    removeLinkPreview,
     dismissAttachmentAlert,
   };
 };

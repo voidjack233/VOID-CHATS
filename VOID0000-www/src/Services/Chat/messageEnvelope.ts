@@ -1,5 +1,6 @@
 import type {
   ForwardedMessageMetadata,
+  LinkPreviewMetadata,
   Message,
   MessageMentionMetadata,
 } from './chatTypes';
@@ -15,6 +16,7 @@ interface MessageEnvelope {
   attachments?: ReturnType<typeof parseAttachments>;
   forwarded?: ForwardedMessageMetadata;
   mentions?: MessageMentionMetadata[];
+  link_preview?: LinkPreviewMetadata;
 }
 
 function parseEnvelope(value: string): MessageEnvelope | null {
@@ -105,18 +107,64 @@ function normalizeMentionMetadata(value: unknown): MessageMentionMetadata[] | un
   return mentions.size > 0 ? Array.from(mentions.values()) : undefined;
 }
 
+function normalizeUrlString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizePreviewText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  return normalized.length > 280 ? `${normalized.slice(0, 279).trim()}…` : normalized;
+}
+
+function normalizeLinkPreviewMetadata(value: unknown): LinkPreviewMetadata | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const url = normalizeUrlString(candidate.url);
+  if (!url) {
+    return undefined;
+  }
+
+  const preview: LinkPreviewMetadata = {
+    url,
+    title: normalizePreviewText(candidate.title),
+    description: normalizePreviewText(candidate.description),
+    image: normalizeUrlString(candidate.image),
+    site_name: normalizePreviewText(candidate.site_name),
+    favicon: normalizeUrlString(candidate.favicon),
+  };
+
+  return preview.title || preview.description || preview.image ? preview : undefined;
+}
+
 export function buildEncryptedMessagePayload(
   text: string,
   secureAttachments?: string[],
   options?: {
     forwarded?: ForwardedMessageMetadata | null;
     mentions?: MessageMentionMetadata[] | null;
+    linkPreview?: LinkPreviewMetadata | null;
   },
 ): string {
   const forwarded = normalizeForwardedMetadata(options?.forwarded);
   const mentions = normalizeMentionMetadata(options?.mentions);
+  const linkPreview = normalizeLinkPreviewMetadata(options?.linkPreview);
 
-  if ((!secureAttachments || secureAttachments.length === 0) && !forwarded && !mentions) {
+  if ((!secureAttachments || secureAttachments.length === 0) && !forwarded && !mentions && !linkPreview) {
     return text;
   }
 
@@ -127,13 +175,14 @@ export function buildEncryptedMessagePayload(
     attachments: parseAttachments(secureAttachments),
     forwarded,
     mentions,
+    link_preview: linkPreview,
   } satisfies MessageEnvelope);
 }
 
 export function resolveDecryptedMessagePayload(
   decryptedContent: string,
   fallbackAttachments?: string[],
-): Pick<Message, 'content' | 'attachments' | 'forwarded' | 'mentions'> {
+): Pick<Message, 'content' | 'attachments' | 'forwarded' | 'mentions' | 'link_preview'> {
   const envelope = parseEnvelope(decryptedContent);
   if (!envelope) {
     return {
@@ -141,6 +190,7 @@ export function resolveDecryptedMessagePayload(
       attachments: fallbackAttachments,
       forwarded: undefined,
       mentions: undefined,
+      link_preview: undefined,
     };
   }
 
@@ -149,11 +199,12 @@ export function resolveDecryptedMessagePayload(
     attachments: serializeAttachments(envelope.attachments || []),
     forwarded: normalizeForwardedMetadata(envelope.forwarded),
     mentions: normalizeMentionMetadata(envelope.mentions),
+    link_preview: normalizeLinkPreviewMetadata(envelope.link_preview),
   };
 }
 
 export function applyEncryptedMessageEnvelope<
-  T extends Pick<Message, 'content' | 'attachments' | 'forwarded' | 'mentions'>
+  T extends Pick<Message, 'content' | 'attachments' | 'forwarded' | 'mentions' | 'link_preview'>
 >(
   message: T,
 ): T {

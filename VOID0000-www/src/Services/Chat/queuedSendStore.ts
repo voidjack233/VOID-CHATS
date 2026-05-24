@@ -6,6 +6,8 @@
 // switch, refresh, and crash, and are retried automatically when the
 // encryption key becomes available.
 
+import type { LinkPreviewMetadata } from './chatTypes';
+
 const DB_NAME = 'void_queued_sends';
 const DB_VERSION = 1;
 const STORE_NAME = 'queued_sends';
@@ -17,6 +19,7 @@ export interface QueuedSendRecord {
   text: string;
   uploaded_urls: string[];
   reply_to_id: string | null;
+  link_preview?: LinkPreviewMetadata | null;
   mentions?: Array<{
     user_id: string;
     username: string;

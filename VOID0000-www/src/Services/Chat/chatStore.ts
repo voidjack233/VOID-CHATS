@@ -40,6 +40,14 @@ export interface LocalMessage {
     user_id: string;
     username: string;
   }>;
+  link_preview?: {
+    url: string;
+    title?: string | null;
+    description?: string | null;
+    image?: string | null;
+    site_name?: string | null;
+    favicon?: string | null;
+  } | null;
   protocol?: 'legacy_aes' | 'mls' | null;
   protocol_version?: number | null;
 }

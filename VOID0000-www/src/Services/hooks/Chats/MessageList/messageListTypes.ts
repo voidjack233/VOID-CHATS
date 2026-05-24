@@ -1,5 +1,6 @@
 import type {
   ForwardedMessageMetadata,
+  LinkPreviewMetadata,
   Message,
   MessageMentionMetadata,
 } from '../../../Chat/chatTypes';
@@ -17,6 +18,7 @@ export interface MessageUpdate {
   message_type?: string | null;
   forwarded?: ForwardedMessageMetadata | null;
   mentions?: MessageMentionMetadata[];
+  link_preview?: LinkPreviewMetadata | null;
 }
 
 export interface MessageDelete {
