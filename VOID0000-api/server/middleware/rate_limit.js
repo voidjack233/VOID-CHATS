@@ -28,7 +28,6 @@ export const messagesSendLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.m
 export const messageReactionToggleLimiter = createConfiguredLimiter(
   RATE_LIMIT_POLICIES.messageReactionToggle,
 );
-export const callActionLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.callAction);
 export const mlsSyncLimiter = createConfiguredLimiter(RATE_LIMIT_POLICIES.mlsSync);
 export const mlsKeyPackageCheckLimiter = createConfiguredLimiter(
   RATE_LIMIT_POLICIES.mlsKeyPackageCheck,

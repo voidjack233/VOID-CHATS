@@ -177,27 +177,6 @@ services:
       - api-node-modules:/app/node_modules
     command: ["npm", "run", "dev:social"]
 
-  media-call-api:
-    build:
-      context: ./VOID0000-api
-    env_file:
-      - ./docker/dev.env
-    environment:
-      FRONT_URL: "${FRONT_URL:-http://localhost:8080}"
-      MEDIA_CALL_SERVICE_PORT: 3006
-      PORT: 3006
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      valkey:
-        condition: service_healthy
-    ports:
-      - "127.0.0.1:${HOST_MEDIA_CALL_API_PORT:-3006}:3006"
-    volumes:
-      - ./VOID0000-api:/app
-      - api-node-modules:/app/node_modules
-    command: ["npm", "run", "dev:media-calls"]
-
   gateway:
     build:
       context: ./VOID0000-api/void_gateway
@@ -243,7 +222,6 @@ services:
       - message-api
       - conversation-api
       - social-api
-      - media-call-api
       - gateway
       - worker
     ports:
@@ -261,7 +239,6 @@ services:
       - message-api
       - conversation-api
       - social-api
-      - media-call-api
       - gateway
       - minio
     ports:
