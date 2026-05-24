@@ -511,7 +511,6 @@ BIND_HOST=127.0.0.1
 MESSAGE_SERVICE_PORT=3002
 SOCIAL_SERVICE_PORT=3004
 CONVERSATION_SERVICE_PORT=3005
-CALL_SERVICE_PORT=3006
 GATEWAY_PORT=4001
 GATEWAY_HOST=127.0.0.1
 CDN_URL=https://cdn.your-domain.example
@@ -561,7 +560,6 @@ pm2 restart voidapp-api
 pm2 restart voidapp-message-service
 pm2 restart voidapp-conversation-service
 pm2 restart voidapp-social-profile-service
-pm2 restart voidapp-call-service
 pm2 restart voidapp-gateway-phoenix
 pm2 restart voidapp-worker-service
 ```
