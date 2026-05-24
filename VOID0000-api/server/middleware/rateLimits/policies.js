@@ -268,6 +268,13 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
     logAction: 'REACTION_RATE_LIMIT_HIT',
   }),
 
+  callAction: userTokenBucket({
+    keyPrefix: 'calls:sfu-action',
+    refillWindowSec: 60,
+    bucketSize: 60,
+    logAction: 'CALL_ACTION_RATE_LIMIT_HIT',
+  }),
+
   mlsSync: userTokenBucket({
     keyPrefix: 'mls:sync',
     refillWindowSec: 60,

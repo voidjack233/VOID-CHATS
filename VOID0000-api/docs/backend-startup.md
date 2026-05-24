@@ -137,7 +137,7 @@ Startup sequence:
 
 Host/port env:
 
-- `PORT` / service-specific port env, such as `MESSAGE_SERVICE_PORT` and `CONVERSATION_SERVICE_PORT`
+- `PORT` / service-specific port env, such as `MESSAGE_SERVICE_PORT`, `CONVERSATION_SERVICE_PORT`, and `MEDIA_CALL_SERVICE_PORT`
 - `HOST` or `BIND_HOST`
 
 Default manual bind is `0.0.0.0` for compatibility, but the PM2 config sets
@@ -392,6 +392,7 @@ pm2 logs voidapp-api
 pm2 logs voidapp-message-service
 pm2 logs voidapp-conversation-service
 pm2 logs voidapp-social-profile-service
+pm2 logs voidapp-media-call-service
 pm2 logs voidapp-gateway-phoenix
 pm2 logs voidapp-worker-service
 ```

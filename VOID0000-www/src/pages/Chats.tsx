@@ -12,6 +12,8 @@ import SettingsModal from '../components/common/Settings/SettingsModal';
 import ConversationList from '../components/Chat/ConversationList';
 import MessageView from '../components/Chat/MessageViewV2';
 import MessageInput from '../components/Chat/MessageInput';
+import CallHeaderControls from '../components/Calls/CallHeaderControls';
+import { CallProvider } from '../components/Calls/CallProvider';
 import ForwardMessageModal from '../components/Chat/ForwardMessageModal';
 import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
 import FriendsView from '../components/common/Friends/FriendsView';
@@ -825,13 +827,18 @@ const ChatDashboard = () => {
   };
 
   return (
-    <div
-      className="flex flex-col overflow-hidden bg-void-bg-main font-sans text-void-text"
-      style={{
-        height: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
-        maxHeight: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
-      }}
+    <CallProvider
+      conversation={activeConversation}
+      members={members}
+      currentUserId={user?.id}
     >
+      <div
+        className="flex flex-col overflow-hidden bg-void-bg-main font-sans text-void-text"
+        style={{
+          height: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
+          maxHeight: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
+        }}
+      >
       {showReconnectBanner && (
         <div className="flex shrink-0 items-center gap-2 border-b border-white/8 bg-neutral-900/95 px-4 py-2 text-xs text-white/65">
           <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-white/60" />
@@ -1079,6 +1086,7 @@ const ChatDashboard = () => {
                     )}
                   </div>
                 </div>
+                <CallHeaderControls conversation={activeConversation} />
                 <button
                   onClick={() => setShowConvSettings(true)}
                   className="p-2 rounded-lg text-void-text-muted hover:text-void-text hover:bg-void-bg-hover transition-colors shrink-0 ml-2"
@@ -1175,7 +1183,8 @@ const ChatDashboard = () => {
         )}
       </div>
       </div>
-    </div>
+      </div>
+    </CallProvider>
   );
 };
 

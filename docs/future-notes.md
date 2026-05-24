@@ -2,33 +2,31 @@
 
 ## Calls and Video Calls
 
-Calls and video calls are intentionally deferred for now.
+Raw peer-to-peer calls are intentionally avoided. The call direction is now SFU-first.
 
 Why:
 
 - they are a much larger implementation than chat and messaging
 - they add realtime media infrastructure, not just UI work
-- forcing them into the current chat/MLS path would create unnecessary complexity
+- forcing raw browser-to-browser negotiation into the current chat/MLS path creates unnecessary complexity
 
-Current direction soon:
+Current direction:
 
 - keep chat and MLS separate from call media
-- use dedicated call infrastructure instead of building raw call orchestration into the current stack
-- expect at least:
-  - TURN
-  - an SFU or call platform layer
-  - lightweight signaling from the existing app stack
+- use the existing app for call session state, ringing, accept/decline, and auth
+- use an SFU media server for voice/video transport
+- avoid app-level `RTCPeerConnection` offer/answer/ICE plumbing
 
-Likely architecture to revisit later:
+Architecture:
 
 - current app handles auth, ringing, presence, and call history
-- dedicated call service handles audio/video transport
+- SFU handles audio/video transport
 - media stays outside the normal chat encryption flow
 
 Decision for now:
 
-- do not implement calls or video calls during the current polish/refactor phase
-- revisit after the core chat product is more stable
+- keep calls SFU-first
+- do not reintroduce raw peer-to-peer signaling unless there is a measured reason
 
 ## Reaction Scaling
 

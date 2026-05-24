@@ -99,6 +99,21 @@ apps.push({
 });
 
 apps.push({
+  name: 'voidapp-media-call-service',
+  script: 'server/entrypoints/mediaCall-server.js',
+  instances: 1,
+  exec_mode: 'fork',
+  env: {
+    NODE_ENV: 'production',
+    MEDIA_CALL_SERVICE_PORT: 3006,
+    HOST: '127.0.0.1',
+  },
+  max_memory_restart: '300M',
+  watch: false,
+  autorestart: true,
+});
+
+apps.push({
   name: 'voidapp-gateway-phoenix',
   script: 'startup/run-phoenix-gateway.sh',
   instances: 1,
