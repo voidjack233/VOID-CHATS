@@ -68,7 +68,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const [keyInitResolved, setKeyInitResolved] = useState(false);
   const [mlsRecoveryGate, setMlsRecoveryGate] = useState<MlsRecoveryGateState>({
     active: false,
-    pending: false,
     reason: null,
   });
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -152,7 +151,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   };
 
   const clearMlsRecoveryGate = () => {
-    setMlsRecoveryGate({ active: false, pending: false, reason: null });
+    setMlsRecoveryGate({ active: false, reason: null });
   };
 
   const activateMlsRecoveryGate = (
@@ -163,18 +162,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       reason,
       ...metadata,
     });
-    setMlsRecoveryGate({ active: true, pending: false, reason });
-  };
-
-  const markMlsRecoveryPending = (
-    reason: Extract<MlsRecoveryGateReason, 'sync_import_missing'>,
-    metadata: Record<string, unknown>
-  ) => {
-    debugLog('[MLS_RECOVERY_GATE] pending', {
-      reason,
-      ...metadata,
-    });
-    setMlsRecoveryGate({ active: false, pending: true, reason });
+    setMlsRecoveryGate({ active: true, reason });
   };
 
   const resolveKeyStatusFromBackup = (backup: KeyBackupRecord | null): KeyStatus => {
@@ -364,16 +352,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
 
       if (hasRecoverableServerState && !hasLocalChatState) {
-        markMlsRecoveryPending('sync_import_missing', {
+        debugLog('[MLS_RECOVERY_GATE] recovery key accepted; continuing with account-scoped conversation recovery', {
           user_id: user.id,
           retry_source: 'inline_recovery_key_prompt',
           synced_group_states: syncResult.syncedGroupStates,
           synced_welcomes: syncResult.syncedWelcomes,
           synced_commits: syncResult.syncedCommits,
         });
-      } else {
-        clearMlsRecoveryGate();
       }
+      clearMlsRecoveryGate();
     } finally {
       setKeyStatusLoading(false);
       setKeyInitResolved(true);
@@ -438,16 +425,15 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
 
       if (hasRecoverableServerState && !hasLocalChatState) {
-        markMlsRecoveryPending('sync_import_missing', {
+        debugLog('[MLS_RECOVERY_GATE] password accepted; continuing with account-scoped conversation recovery', {
           user_id: user.id,
           retry_source: 'inline_password_prompt',
           synced_group_states: syncResult.syncedGroupStates,
           synced_welcomes: syncResult.syncedWelcomes,
           synced_commits: syncResult.syncedCommits,
         });
-      } else {
-        clearMlsRecoveryGate();
       }
+      clearMlsRecoveryGate();
     } finally {
       setKeyStatusLoading(false);
       setKeyInitResolved(true);
@@ -615,6 +601,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
             }
           }
 
+          let requiresInteractiveRecovery = false;
           if (!cancelled && needsRecoveryAttention && !recoveryAttentionResolvedLocally) {
             const recoveryMetadata = {
               user_id: userId,
@@ -627,29 +614,32 @@ export function UserProvider({ children }: { children: ReactNode }) {
               synced_commits: syncResult.syncedCommits,
             };
 
-            if (!password) {
-              markMlsRecoveryPending('sync_import_missing', {
-                ...recoveryMetadata,
-                source: 'local_identity_present_waiting_for_mls_state',
-              });
-            } else if (restoreSummary.outcome === 'failed') {
+            if (password && restoreSummary.outcome === 'failed') {
+              requiresInteractiveRecovery = true;
               activateMlsRecoveryGate('restore_failed', {
                 ...recoveryMetadata,
               });
-            } else if (hasRecoveryMlsBackup || hasRecoveryBackup) {
+            } else if (password && (hasRecoveryMlsBackup || hasRecoveryBackup)) {
+              requiresInteractiveRecovery = true;
               activateMlsRecoveryGate('recovery_key_required', {
                 ...recoveryMetadata,
               });
-            } else if (hasPasswordMlsBackup) {
+            } else if (password && hasPasswordMlsBackup) {
+              requiresInteractiveRecovery = true;
               activateMlsRecoveryGate('password_required', {
                 ...recoveryMetadata,
               });
             } else {
-              markMlsRecoveryPending('sync_import_missing', {
+              debugLog('[MLS_RECOVERY_GATE] continuing with account-scoped conversation recovery', {
                 ...recoveryMetadata,
+                source: password
+                  ? 'conversation_state_unavailable_after_login'
+                  : 'local_identity_present_without_global_restore',
               });
             }
-          } else if (!cancelled) {
+          }
+
+          if (!cancelled && !requiresInteractiveRecovery) {
             try {
               await chatCryptoProtocolService.bootstrapAccount(userId, true);
               await chatCryptoProtocolService.ensureServerKeyPackageReserve(userId);
@@ -664,7 +654,13 @@ export function UserProvider({ children }: { children: ReactNode }) {
               }
 
               setKeyStatus('SECURE');
-              setRecoveryBackupStatus(recoveryKey ? 'RECOVERY_KEY_READY' : 'PASSWORD_ONLY');
+              setRecoveryBackupStatus(
+                recoveryKey || hasRecoveryBackup
+                  ? 'RECOVERY_KEY_READY'
+                  : password || hasPasswordBackupPayload(backup)
+                    ? 'PASSWORD_ONLY'
+                    : 'UNINITIALIZED',
+              );
             } catch {
               // Non-critical — periodic maintenance and explicit recovery
               // flows can still repair the backup state later.
@@ -691,7 +687,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
           const backup = await callbacks.fetchBackup().catch(() => null);
           const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
           const gateReason = resolveInitialKeyRecoveryGate(err.message, backup);
-          console.warn('🔑 Keys are locked on this device');
+          console.warn('🔑 Keys are unavailable in this browser session');
           setKeyStatus('LOCKED');
           setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
           activateMlsRecoveryGate(gateReason, {
@@ -891,73 +887,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       gateway.off('CONVERSATION_UPDATE', onConversationUpdate);
     };
   }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
-
-  useEffect(() => {
-    if (!user?.id || !mlsRecoveryGate.pending) return;
-    if (keyStatusLoading || keyStatus === 'LOCKED') return;
-
-    let cancelled = false;
-    let retryTimer: number | null = null;
-
-    const clearRetryTimer = () => {
-      if (retryTimer != null) {
-        window.clearTimeout(retryTimer);
-        retryTimer = null;
-      }
-    };
-
-    const inspectRecoveryState = async (source: 'retry_loop' | 'group_key_changed') => {
-      try {
-        const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
-        const localChatState = await inspectLocalMlsChatState();
-        const hasLocalChatState =
-          localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
-
-        debugLog('[MLS_RECOVERY_GATE] pending recheck', {
-          user_id: user.id,
-          source,
-          synced_group_states: syncResult.syncedGroupStates,
-          synced_welcomes: syncResult.syncedWelcomes,
-          synced_commits: syncResult.syncedCommits,
-          local_group_states: localChatState.groupStateCount,
-          local_group_keys: localChatState.groupKeyCount,
-        });
-
-        if (!cancelled && hasLocalChatState) {
-          clearMlsRecoveryGate();
-          return;
-        }
-      } catch (err) {
-        console.warn('[MLS_RECOVERY_GATE] pending recheck failed', {
-          user_id: user.id,
-          source,
-          error: err instanceof Error ? err.message : String(err || ''),
-        });
-      }
-
-      if (!cancelled && source === 'retry_loop') {
-        clearRetryTimer();
-        retryTimer = window.setTimeout(() => {
-          void inspectRecoveryState('retry_loop');
-        }, 2500);
-      }
-    };
-
-    const onGroupKeyChanged = () => {
-      void inspectRecoveryState('group_key_changed');
-    };
-
-    retryTimer = window.setTimeout(() => {
-      void inspectRecoveryState('retry_loop');
-    }, 1500);
-    window.addEventListener('void:group-key-changed', onGroupKeyChanged);
-
-    return () => {
-      cancelled = true;
-      clearRetryTimer();
-      window.removeEventListener('void:group-key-changed', onGroupKeyChanged);
-    };
-  }, [keyStatus, keyStatusLoading, mlsRecoveryGate.pending, user?.id]);
 
   useEffect(() => {
     if (!user?.id) {

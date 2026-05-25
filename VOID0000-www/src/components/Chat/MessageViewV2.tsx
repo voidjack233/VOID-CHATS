@@ -1531,7 +1531,7 @@ const MessageViewV2 = memo(function MessageViewV2({
           ) : (
           <p className="text-center text-void-text-muted text-sm py-8">
             {showCachedHistoryFallback
-              ? conversationSecurityState?.detail || 'Cached history will appear here after this device regains the latest conversation keys.'
+              ? conversationSecurityState?.detail || 'Cached history will appear here after the latest conversation keys are restored.'
               : 'No messages yet. Say something!'}
           </p>
           )

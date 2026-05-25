@@ -8,6 +8,10 @@ import {
   uniqueUserIds,
   validateFriendships,
 } from '../../../utils/groupMembership.js';
+import {
+  insertMembershipFinalizeArtifacts,
+  parseMembershipFinalizeArtifacts,
+} from '../mls/finalizeArtifacts.js';
 
 export function registerMemberRotateAddRoutes(router) {
   router.post('/rotate-add', async (req, res) => {
@@ -206,8 +210,7 @@ export function registerMemberRotateAddRoutes(router) {
       const lockedResult = await client.query(
         `SELECT current_key_version,
                 pending_add_user_ids,
-                pending_add_key_version,
-                updated_at
+                pending_add_key_version
          FROM conversations
          WHERE id = $1 FOR UPDATE`,
         [conversation.id]
@@ -220,7 +223,6 @@ export function registerMemberRotateAddRoutes(router) {
       const pendingKeyVersion = lockedResult.rows[0].pending_add_key_version != null
         ? Number(lockedResult.rows[0].pending_add_key_version)
         : null;
-      const pendingPreparedAt = lockedResult.rows[0].updated_at;
 
       if (pendingUserIds.length === 0 || !pendingKeyVersion) {
         const finalizedAdditions = await client.query(
@@ -266,56 +268,6 @@ export function registerMemberRotateAddRoutes(router) {
         });
       }
 
-      const snapshotCheck = await client.query(
-        `SELECT 1
-         FROM mls_group_states
-         WHERE conversation_id = $1
-           AND user_id = $2
-           AND key_version IS NOT NULL
-           AND key_version >= $3
-         LIMIT 1`,
-        [conversation.id, actorUserId, pendingKeyVersion]
-      ).catch((snapshotErr) => {
-        console.warn('Rotate-add finalize snapshot check failed:', snapshotErr.message);
-        return { rows: [] };
-      });
-
-      if (snapshotCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(428).json({
-          success: false,
-          error: 'Owner group state snapshot for the new key version must be uploaded before finalizing member add',
-          code: 'SNAPSHOT_REQUIRED',
-          required_key_version: pendingKeyVersion,
-          current_key_version: currentKeyVersion,
-        });
-      }
-
-      const welcomeCheck = await client.query(
-        `SELECT user_id::text AS user_id
-         FROM mls_welcome_messages
-         WHERE conversation_id = $1
-           AND user_id = ANY($2::UUID[])
-           AND key_version IS NOT NULL
-           AND key_version >= $3
-           AND received_at >= $4
-           AND consumed_at IS NULL`,
-        [conversation.id, pendingUserIds, pendingKeyVersion, pendingPreparedAt]
-      );
-
-      const welcomedUserIds = new Set(welcomeCheck.rows.map((row) => row.user_id));
-      const missingWelcome = pendingUserIds.find((id) => !welcomedUserIds.has(id));
-
-      if (missingWelcome) {
-        await client.query('ROLLBACK');
-        return res.status(428).json({
-          success: false,
-          error: 'Welcome message for each new member must be uploaded before finalizing member add',
-          code: 'WELCOME_REQUIRED',
-          required_user_id: missingWelcome,
-        });
-      }
-
       const duplicateMembers = await client.query(
         `SELECT user_id::text AS user_id
          FROM conversation_members
@@ -342,31 +294,32 @@ export function registerMemberRotateAddRoutes(router) {
       const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
       const existingPeerIds = currentMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
 
-      if (existingPeerIds.length > 0) {
-        const commitCheck = await client.query(
-          `SELECT 1
-           FROM mls_commit_messages
-           WHERE conversation_id = $1
-             AND epoch IS NOT NULL
-             AND epoch >= $2
-             AND received_at >= $3
-           LIMIT 1`,
-          [conversation.id, pendingKeyVersion - 1, pendingPreparedAt]
-        );
+      const parsedArtifacts = parseMembershipFinalizeArtifacts(
+        req.body?.mls_artifacts ?? req.body?.mlsArtifacts,
+        {
+          expectedWelcomeUserIds: pendingUserIds,
+          pendingKeyVersion,
+          requireCommit: existingPeerIds.length > 0,
+        },
+      );
 
-        if (commitCheck.rows.length === 0) {
-          await client.query('ROLLBACK');
-          return res.status(428).json({
-            success: false,
-            error: 'MLS commit for existing members must be uploaded before finalizing member add',
-            code: 'COMMIT_REQUIRED',
-            required_key_version: pendingKeyVersion,
-            current_key_version: currentKeyVersion,
-          });
-        }
+      if (parsedArtifacts.error) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({
+          success: false,
+          error: parsedArtifacts.error,
+          code: parsedArtifacts.code,
+        });
       }
 
       const childChannelIds = await getChildChannelIds(client, conversation.id);
+
+      await insertMembershipFinalizeArtifacts(client, {
+        conversationId: conversation.id,
+        actorUserId,
+        pendingKeyVersion,
+        artifacts: parsedArtifacts.artifacts,
+      });
 
       for (const memberId of pendingUserIds) {
         await client.query(
@@ -441,7 +394,11 @@ export function registerMemberRotateAddRoutes(router) {
     } catch (err) {
       if (client) await client.query('ROLLBACK').catch(() => {});
       console.error('Rotate-add finalize error:', err);
-      res.status(500).json({ error: 'Failed to finalize member add' });
+      const status = Number(err?.status) || 500;
+      res.status(status).json({
+        error: status === 500 ? 'Failed to finalize member add' : err.message,
+        ...(err?.code ? { code: err.code } : {}),
+      });
     } finally {
       client?.release();
     }

@@ -73,6 +73,10 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
                    OR conversations.type != 'dm'
                  )
                  AND COALESCE(gs.key_version, gs.epoch) >= mc.joined_key_version
+                 AND (
+                   conversations.type = 'dm'
+                   OR COALESCE(gs.key_version, gs.epoch) <= COALESCE(conversations.current_key_version, 1)
+                 )
 
                UNION ALL
 
@@ -93,6 +97,10 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
                    OR conversations.type != 'dm'
                  )
                  AND history.key_version >= mc.joined_key_version
+                 AND (
+                   conversations.type = 'dm'
+                   OR history.key_version <= COALESCE(conversations.current_key_version, 1)
+                 )
              ),
              deduped_states AS (
                SELECT DISTINCT ON (conversation_id, COALESCE(key_version, epoch))
@@ -122,22 +130,46 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
         : Promise.resolve({ rows: [] }),
       isEnabledFor(capabilities, 'welcome_inbox')
         ? pool.query(
-            `SELECT welcomes.user_id::text AS user_id,
-                    welcomes.welcome_ref,
-                    welcomes.payload,
-                    welcomes.conversation_id::text AS conversation_id,
-                    welcomes.received_at,
-                    COALESCE(welcomes.key_version, conversations.current_key_version, cm.joined_key_version, 1) AS key_version,
-                    COALESCE(cm.joined_key_version, 1) AS joined_key_version_floor
-             FROM mls_welcome_messages AS welcomes
-             JOIN conversation_members cm
-               ON cm.conversation_id = welcomes.conversation_id
-              AND cm.user_id = welcomes.user_id
-             JOIN conversations
-               ON conversations.id = welcomes.conversation_id
-             WHERE welcomes.user_id = $1::UUID
-               AND welcomes.consumed_at IS NULL
-               AND welcomes.conversation_id IS NOT NULL
+            `SELECT user_id,
+                    welcome_ref,
+                    payload,
+                    conversation_id,
+                    received_at,
+                    key_version,
+                    joined_key_version_floor
+             FROM (
+               SELECT DISTINCT ON (
+                        welcomes.conversation_id,
+                        COALESCE(welcomes.key_version, conversations.current_key_version, cm.joined_key_version, 1)
+                      )
+                      welcomes.user_id::text AS user_id,
+                      welcomes.welcome_ref,
+                      welcomes.payload,
+                      welcomes.conversation_id::text AS conversation_id,
+                      welcomes.received_at,
+                      COALESCE(welcomes.key_version, conversations.current_key_version, cm.joined_key_version, 1) AS key_version,
+                      COALESCE(cm.joined_key_version, 1) AS joined_key_version_floor
+               FROM mls_welcome_messages AS welcomes
+               JOIN conversation_members cm
+                 ON cm.conversation_id = welcomes.conversation_id
+                AND cm.user_id = welcomes.user_id
+               JOIN conversations
+                 ON conversations.id = welcomes.conversation_id
+               WHERE welcomes.user_id = $1::UUID
+                 AND welcomes.consumed_at IS NULL
+                 AND welcomes.conversation_id IS NOT NULL
+                 AND (
+                   conversations.type = 'dm'
+                   OR (
+                     welcomes.key_version IS NOT NULL
+                     AND welcomes.key_version >= COALESCE(cm.joined_key_version, 1)
+                     AND welcomes.key_version <= COALESCE(conversations.current_key_version, 1)
+                   )
+                 )
+               ORDER BY welcomes.conversation_id,
+                        COALESCE(welcomes.key_version, conversations.current_key_version, cm.joined_key_version, 1),
+                        welcomes.received_at DESC
+             ) AS deliverable_welcomes
              ORDER BY received_at ASC
              LIMIT $2`,
             [requesterUserId, limit]
@@ -151,6 +183,8 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
                     commits.epoch,
                     commits.received_at
              FROM mls_commit_messages AS commits
+             JOIN conversations
+               ON conversations.id = commits.conversation_id
              JOIN conversation_members cm
                ON cm.conversation_id = commits.conversation_id
              LEFT JOIN mls_commit_receipts receipts
@@ -162,6 +196,21 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
                AND (
                  commits.epoch IS NULL
                  OR commits.epoch >= GREATEST(COALESCE(cm.joined_key_version, 1) - 1, 1)
+               )
+               AND (
+                 conversations.type = 'dm'
+                 OR (
+                   commits.epoch IS NOT NULL
+                   AND commits.epoch < COALESCE(conversations.current_key_version, 1)
+                 )
+               )
+               AND NOT (
+                 conversations.type != 'dm'
+                 AND (
+                   conversations.pending_add_key_version IS NOT NULL
+                   OR conversations.pending_remove_key_version IS NOT NULL
+                   OR conversations.pending_approve_key_version IS NOT NULL
+                 )
                )
              ORDER BY commits.received_at ASC
              LIMIT $2`,

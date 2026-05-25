@@ -1,6 +1,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
+import type { MlsMembershipFinalizeArtifacts } from '../Crypto/mls/mlsTypes';
 import { debugLog } from '../utils/debugLog';
 import type {
   Conversation,
@@ -141,12 +142,14 @@ export async function distributeGroupSenderKeyWithProtocol(
   options?: {
     allowFreshGroupBootstrap?: boolean;
     forceKeyVersionBump?: boolean;
+    stageOnly?: boolean;
   },
 ): Promise<{
   key: CryptoKey;
   version: number;
   includedMemberUserIds: string[];
   missingMemberUserIds: string[];
+  membershipArtifacts?: MlsMembershipFinalizeArtifacts | null;
 }> {
   const uniqueParticipants = [...new Set([...participantIds, currentUserId].filter(Boolean))];
   const result = await chatCryptoProtocolService.distributeGroupKey({
@@ -155,6 +158,7 @@ export async function distributeGroupSenderKeyWithProtocol(
     memberUserIds: uniqueParticipants,
     allowFreshGroupBootstrap: options?.allowFreshGroupBootstrap,
     forceKeyVersionBump: options?.forceKeyVersionBump,
+    stageOnly: options?.stageOnly,
   });
 
   return {
@@ -162,6 +166,7 @@ export async function distributeGroupSenderKeyWithProtocol(
     version: result.keyVersion,
     includedMemberUserIds: result.includedMemberUserIds,
     missingMemberUserIds: result.missingMemberUserIds,
+    membershipArtifacts: result.membershipArtifacts ?? null,
   };
 }
 

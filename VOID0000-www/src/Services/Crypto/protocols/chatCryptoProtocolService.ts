@@ -10,6 +10,7 @@ export interface DistributeGroupKeyInput {
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
   forceKeyVersionBump?: boolean;
+  stageOnly?: boolean;
 }
 
 export interface ChatCryptoProtocolService {
@@ -26,6 +27,7 @@ export interface ChatCryptoProtocolService {
   preflightGroupRemove(userId: string, conversation: Conversation, removeMemberIds: string[]): Promise<{ requiresFreshBootstrap: boolean }>;
   reuploadGroupState(conversationId: string): Promise<boolean>;
   getLocalGroupMemberUserIds(conversationId: string): Promise<string[] | null>;
+  discardLocalGroupState(conversationId: string): Promise<void>;
 }
 
 class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
@@ -49,6 +51,7 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
   }
 
   async preWarmForDm(userId: string, _peerUserId: string): Promise<void> {
+    void _peerUserId;
     await mlsService.bootstrapAccount(userId, true);
   }
 
@@ -67,6 +70,7 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
       memberUserIds: input.memberUserIds,
       allowFreshGroupBootstrap: input.allowFreshGroupBootstrap,
       forceKeyVersionBump: input.forceKeyVersionBump,
+      stageOnly: input.stageOnly,
     });
   }
 
@@ -84,6 +88,10 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
 
   async getLocalGroupMemberUserIds(conversationId: string): Promise<string[] | null> {
     return mlsService.getLocalGroupMemberUserIds(conversationId);
+  }
+
+  async discardLocalGroupState(conversationId: string): Promise<void> {
+    await mlsService.discardLocalGroupState(conversationId);
   }
 }
 

@@ -1,6 +1,8 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { keyManager } from '../Crypto/keyManager';
-import { distributeGroupSenderKeyWithProtocol, reuploadGroupState } from './chatCryptoService';
+import type { MlsMembershipFinalizeArtifacts } from '../Crypto/mls/mlsTypes';
+import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
+import { distributeGroupSenderKeyWithProtocol } from './chatCryptoService';
 import type {
   Conversation,
   ConversationInviteLink,
@@ -53,6 +55,11 @@ export function approveConversationJoinRequest(
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
     const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
+    const localMemberIds = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
+    if (localMemberIds?.includes(requesterUserId)) {
+      await chatCryptoProtocolService.discardLocalGroupState(keyConversationId);
+      await chatCryptoProtocolService.syncInbox(currentUserId, true);
+    }
 
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
       method: 'POST',
@@ -65,33 +72,29 @@ export function approveConversationJoinRequest(
     const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
 
     let mlsKey: CryptoKey;
+    let mlsArtifacts: MlsMembershipFinalizeArtifacts | null | undefined;
     let finalizeStarted = false;
     try {
-      ({ key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+      ({ key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
         { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
         currentUserId,
         finalMemberIds,
+        { stageOnly: true },
       ));
 
-      finalizeStarted = true;
-      let finalizeResponse = await fetchWithAuth(
-        `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve/finalize`,
-        { method: 'POST' },
-      );
-      let finalizeData = await finalizeResponse.json();
-
-      if (!finalizeData.success && finalizeData.code === 'SNAPSHOT_REQUIRED') {
-        console.warn('[APPROVE_JOIN] snapshot not found on server, re-uploading from local state', {
-          conversation_id: keyConversationId,
-          pending_key_version: pendingKeyVersion,
-        });
-        await reuploadGroupState(keyConversationId);
-        finalizeResponse = await fetchWithAuth(
-          `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve/finalize`,
-          { method: 'POST' },
-        );
-        finalizeData = await finalizeResponse.json();
+      if (!mlsArtifacts) {
+        throw new Error('Secure membership artifacts could not be prepared');
       }
+
+      finalizeStarted = true;
+      const finalizeResponse = await fetchWithAuth(
+        `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve/finalize`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ mls_artifacts: mlsArtifacts }),
+        },
+      );
+      const finalizeData = await finalizeResponse.json();
 
       if (!finalizeData.success) {
         throw createApiError(finalizeData);
@@ -100,6 +103,13 @@ export function approveConversationJoinRequest(
       const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
 
       await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+      await chatCryptoProtocolService.syncInbox(currentUserId, true).catch((error) => {
+        console.warn('[APPROVE_JOIN] finalized but local MLS state refresh failed', {
+          conversation_id: keyConversationId,
+          key_version: resolvedKeyVersion,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
       await notifyMembershipUpdate(keyConversationId);
 
       return {

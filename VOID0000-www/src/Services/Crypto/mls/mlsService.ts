@@ -392,6 +392,10 @@ export class MlsService {
     return getMemberUserIds(state);
   }
 
+  async discardLocalGroupState(conversationId: string): Promise<void> {
+    await mlsStorageService.deleteGroupState(conversationId);
+  }
+
   async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
     const inflight = this.syncInboxPromises.get(userId);
     if (inflight) {

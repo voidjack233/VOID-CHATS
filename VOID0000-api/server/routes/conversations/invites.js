@@ -10,6 +10,10 @@ import {
 } from '../../utils/groupMembership.js';
 import { meetsAdminToggle, meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import { generateInviteCode } from './inviteLinks.js';
+import {
+  insertMembershipFinalizeArtifacts,
+  parseMembershipFinalizeArtifacts,
+} from './mls/finalizeArtifacts.js';
 
 const router = Router({ mergeParams: true });
 
@@ -424,9 +428,8 @@ router.post('/requests/:requestId/approve', async (req, res) => {
 
 // POST /api/conversations/:conversationId/invites/requests/:requestId/approve/finalize
 //
-// Phase 2 of invite approval. Verifies the owner's durable MLS snapshot for
-// the pending key version exists before atomically committing membership,
-// advancing the version, and marking the join request approved.
+// Phase 2 of invite approval. Publishes the generated MLS artifacts in the
+// same transaction that commits membership and advances the key version.
 router.post('/requests/:requestId/approve/finalize', async (req, res) => {
   const actorUserId = req.user.id;
   const requestId = parseInt(req.params.requestId, 10);
@@ -472,8 +475,7 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
       `SELECT current_key_version,
               pending_approve_request_id,
               pending_approve_user_id,
-              pending_approve_key_version,
-              updated_at
+              pending_approve_key_version
        FROM conversations
        WHERE id = $1 FOR UPDATE`,
       [conversation.id]
@@ -489,7 +491,6 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
     const pendingKeyVersion = lockedResult.rows[0].pending_approve_key_version != null
       ? Number(lockedResult.rows[0].pending_approve_key_version)
       : null;
-    const pendingPreparedAt = lockedResult.rows[0].updated_at;
 
     if (!pendingRequestId || !pendingUserId || !pendingKeyVersion) {
       const existingMember = await client.query(
@@ -561,54 +562,6 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
       });
     }
 
-    const snapshotCheck = await client.query(
-      `SELECT 1
-       FROM mls_group_states
-       WHERE conversation_id = $1
-         AND user_id = $2
-         AND key_version IS NOT NULL
-         AND key_version >= $3
-       LIMIT 1`,
-      [conversation.id, actorUserId, pendingKeyVersion]
-    ).catch((snapshotErr) => {
-      console.warn('Finalize approval snapshot check failed:', snapshotErr.message);
-      return { rows: [] };
-    });
-
-    if (snapshotCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(428).json({
-        success: false,
-        error: 'Owner group state snapshot for the new key version must be uploaded before finalizing approval',
-        code: 'SNAPSHOT_REQUIRED',
-        required_key_version: pendingKeyVersion,
-        current_key_version: currentKeyVersion,
-      });
-    }
-
-    const welcomeCheck = await client.query(
-      `SELECT 1
-       FROM mls_welcome_messages
-       WHERE conversation_id = $1
-         AND user_id = $2
-         AND key_version IS NOT NULL
-         AND key_version >= $3
-         AND received_at >= $4
-         AND consumed_at IS NULL
-       LIMIT 1`,
-      [conversation.id, joinRequest.requester_user_id, pendingKeyVersion, pendingPreparedAt]
-    );
-
-    if (welcomeCheck.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(428).json({
-        success: false,
-        error: 'Welcome message for the new member must be uploaded before finalizing approval',
-        code: 'WELCOME_REQUIRED',
-        required_user_id: joinRequest.requester_user_id,
-      });
-    }
-
     const existingMember = await client.query(
       `SELECT 1
        FROM conversation_members
@@ -634,31 +587,32 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
     const currentMemberIds = currentMembersResult.rows.map((row) => row.user_id);
     const existingPeerIds = currentMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
 
-    if (existingPeerIds.length > 0) {
-      const commitCheck = await client.query(
-        `SELECT 1
-         FROM mls_commit_messages
-         WHERE conversation_id = $1
-           AND epoch IS NOT NULL
-           AND epoch >= $2
-           AND received_at >= $3
-         LIMIT 1`,
-        [conversation.id, pendingKeyVersion - 1, pendingPreparedAt]
-      );
+    const parsedArtifacts = parseMembershipFinalizeArtifacts(
+      req.body?.mls_artifacts ?? req.body?.mlsArtifacts,
+      {
+        expectedWelcomeUserIds: [joinRequest.requester_user_id],
+        pendingKeyVersion,
+        requireCommit: existingPeerIds.length > 0,
+      },
+    );
 
-      if (commitCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(428).json({
-          success: false,
-          error: 'MLS commit for existing members must be uploaded before finalizing approval',
-          code: 'COMMIT_REQUIRED',
-          required_key_version: pendingKeyVersion,
-          current_key_version: currentKeyVersion,
-        });
-      }
+    if (parsedArtifacts.error) {
+      await client.query('ROLLBACK');
+      return res.status(422).json({
+        success: false,
+        error: parsedArtifacts.error,
+        code: parsedArtifacts.code,
+      });
     }
 
     const childChannelIds = await getChildChannelIds(client, conversation.id);
+
+    await insertMembershipFinalizeArtifacts(client, {
+      conversationId: conversation.id,
+      actorUserId,
+      pendingKeyVersion,
+      artifacts: parsedArtifacts.artifacts,
+    });
 
     await client.query(
       `INSERT INTO conversation_members (
@@ -748,7 +702,11 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Finalize join approval error:', err);
-    res.status(500).json({ error: 'Failed to finalize join approval' });
+    const status = Number(err?.status) || 500;
+    res.status(status).json({
+      error: status === 500 ? 'Failed to finalize join approval' : err.message,
+      ...(err?.code ? { code: err.code } : {}),
+    });
   } finally {
     client?.release();
   }

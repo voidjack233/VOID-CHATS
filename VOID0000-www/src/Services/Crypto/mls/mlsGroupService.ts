@@ -5,6 +5,7 @@ import {
   decodeGroupState,
   decodeMlsMessage,
   emptyPskIndex,
+  encodeGroupState,
   encodeMlsMessage,
   joinGroup,
   zeroOutUint8Array,
@@ -38,10 +39,12 @@ import type {
   MlsDistributeGroupInput,
   MlsDistributeKeyResult,
   MlsInboxSyncResult,
+  MlsMembershipFinalizeArtifacts,
   MlsServerCapabilities,
   MlsSyncCommitUpdate,
   MlsSyncGroupStateUpdate,
   MlsSyncWelcomeUpdate,
+  MlsUploadGroupStateInput,
   PersistGroupStateOptions,
 } from './mlsTypes';
 import { MlsProtocolVersions } from './mlsTypes';
@@ -114,6 +117,20 @@ export class MlsGroupService {
       },
       options.source,
     );
+  }
+
+  private serializeGroupState(
+    conversationId: string,
+    state: ClientState,
+    keyVersion?: number | null,
+  ): MlsUploadGroupStateInput {
+    return {
+      conversationId,
+      groupId: bytesToBase64(state.groupContext.groupId),
+      epoch: Number(state.groupContext.epoch),
+      keyVersion: keyVersion ?? null,
+      stateBlob: bytesToBase64(encodeGroupState(state)),
+    };
   }
 
   async bootstrapConversation(input: MlsConversationBootstrapInput): Promise<MlsBootstrapResult> {
@@ -451,32 +468,66 @@ export class MlsGroupService {
     const distributionKeyVersion = isDmConversation
       ? (bumpDmVersionForFreshBootstrap || forceDmVersionBump ? currentDmServerVersion + 1 : currentDmServerVersion)
       : requiredServerVersion;
+    const stageMembershipChange = input.stageOnly === true && !isDmConversation;
 
     const distributeSource = existingState ? 'distribute_update' : 'distribute_bootstrap';
-    const durableUploadCount = await this.persistGroupState(conversationId, newState, {
-      source: distributeSource,
-      keyVersion: distributionKeyVersion,
-    });
+    const stagedSnapshot = stageMembershipChange
+      ? this.serializeGroupState(conversationId, newState, distributionKeyVersion)
+      : null;
 
-    if (durableUploadCount === 0) {
-      console.error('[MLS_DISTRIBUTE] CRITICAL: durable group state upload failed after membership change', {
-        conversation_id: conversationId,
+    if (!stageMembershipChange) {
+      const durableUploadCount = await this.persistGroupState(conversationId, newState, {
         source: distributeSource,
-        epoch: Number(newState.groupContext.epoch),
-        key_version: distributionKeyVersion,
+        keyVersion: distributionKeyVersion,
       });
+
+      if (durableUploadCount === 0) {
+        console.error('[MLS_DISTRIBUTE] CRITICAL: durable group state upload failed after membership change', {
+          conversation_id: conversationId,
+          source: distributeSource,
+          epoch: Number(newState.groupContext.epoch),
+          key_version: distributionKeyVersion,
+        });
+      }
     }
 
     if (deferredKeyCleanup) {
       zeroOutPrivateKeyPackage(deferredKeyCleanup);
     }
 
-    const result = await mlsStorageService.cacheDerivedGroupKey(conversationId, newState, impl, {
-      aliasVersion: distributionKeyVersion,
-      userId: input.userId,
-    });
+    const result = stageMembershipChange
+      ? await deriveGroupAesKey(newState, conversationId, impl)
+      : await mlsStorageService.cacheDerivedGroupKey(conversationId, newState, impl, {
+          aliasVersion: distributionKeyVersion,
+          userId: input.userId,
+        });
 
-    if (capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
+    let membershipArtifacts: MlsMembershipFinalizeArtifacts | null = null;
+    if (stageMembershipChange && stagedSnapshot) {
+      const welcomeRef = crypto.randomUUID();
+      membershipArtifacts = {
+        snapshot: stagedSnapshot,
+        welcomes: welcomePayload
+          ? newMembersForWelcome.map((memberId) => ({
+              userId: memberId,
+              welcomeRef,
+              payload: welcomePayload,
+              conversationId,
+              keyVersion: distributionKeyVersion,
+            }))
+          : [],
+        commit: commitPayload && existingPeers.length > 0
+          ? {
+              conversationId,
+              commitRef: crypto.randomUUID(),
+              payload: commitPayload,
+              epoch: Number(newState.groupContext.epoch) - 1,
+            }
+          : null,
+      };
+    }
+
+    if (!stageMembershipChange && capabilities.welcomeInbox && welcomePayload && newMembersForWelcome.length > 0) {
       const welcomeRef = crypto.randomUUID();
       debugLog('[MLS_WELCOME] ingesting welcome payload', {
         conversation_id: conversationId,
@@ -511,7 +562,7 @@ export class MlsGroupService {
       }
     }
 
-    if (capabilities.commitFanout && commitPayload && existingPeers.length > 0) {
+    if (!stageMembershipChange && capabilities.commitFanout && commitPayload && existingPeers.length > 0) {
       debugLog('[MLS_COMMIT] fanout commit payload', {
         conversation_id: conversationId,
         peer_user_ids: existingPeers,
@@ -533,6 +584,7 @@ export class MlsGroupService {
         : result.keyVersion,
       includedMemberUserIds: getMemberUserIds(newState),
       missingMemberUserIds,
+      membershipArtifacts,
     };
   }
 

@@ -59,6 +59,7 @@ export interface MlsDistributeKeyResult {
   keyVersion: number;
   includedMemberUserIds: string[];
   missingMemberUserIds: string[];
+  membershipArtifacts?: MlsMembershipFinalizeArtifacts | null;
 }
 
 export interface MlsWelcomeRecord {
@@ -91,6 +92,7 @@ export interface MlsDistributeGroupInput {
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
   forceKeyVersionBump?: boolean;
+  stageOnly?: boolean;
   _retried?: boolean;
 }
 
@@ -172,6 +174,12 @@ export interface MlsUploadCommitInput {
   commitRef: string;
   payload: string;
   epoch?: number | null;
+}
+
+export interface MlsMembershipFinalizeArtifacts {
+  snapshot: MlsUploadGroupStateInput;
+  welcomes: MlsUploadWelcomeInput[];
+  commit?: MlsUploadCommitInput | null;
 }
 
 export interface MlsInboxSyncPayload {

@@ -631,13 +631,13 @@ export const useConversationHandshake = ({
           setConversationSecurityState(createConversationSecurityState({
             status: 'blocked',
             reason: 'identity_missing',
-            message: 'Your private keys are not available on this device yet.',
-            detail: 'Restore this device with your account password or recovery phrase before opening secure chats.',
+            message: 'Your secure account keys are not available in this browser yet.',
+            detail: 'Sign in again with your account password or recovery key before opening secure chats.',
             canSend: false,
             canRetry: false,
             showCachedHistoryFallback: activeConversation?.type !== 'dm',
           }));
-          setEncryptionError('Your private keys are not available on this device yet.');
+          setEncryptionError('Your secure account keys are not available in this browser yet.');
           return;
         }
 
@@ -662,7 +662,6 @@ export const useConversationHandshake = ({
               requiredGroupVersion,
             );
             const canRecoverInPlace =
-              mlsRecoveryGate.pending ||
               recoveryState.hasLocalGroupState ||
               recoveryState.hasPendingWelcome ||
               recoveryState.hasPendingCommit;
@@ -672,7 +671,7 @@ export const useConversationHandshake = ({
                 status: 'blocked',
                 reason: 'account_restore_required',
                 message: 'Secure chat recovery must finish before this conversation can decrypt again.',
-                detail: 'This device needs a secure restore with your password or another recovery path before group history can reopen.',
+                detail: 'Your account needs a secure restore with your password or recovery key before group history can reopen.',
                 canSend: false,
                 canRetry: false,
                 showCachedHistoryFallback: true,
@@ -688,7 +687,7 @@ export const useConversationHandshake = ({
                 ? createConversationSecurityState({
                     status: 'blocked',
                     reason: 'distribution_missing',
-                    message: 'This device cannot reach the latest secure group state for this conversation.',
+                    message: 'The latest secure group state is unavailable for this conversation.',
                     detail: 'Older secure state still exists locally, but the latest durable recovery artifacts are missing. Ask the group owner to resend the membership change or key distribution.',
                     canSend: false,
                     canRetry: true,
@@ -697,8 +696,8 @@ export const useConversationHandshake = ({
                 : createConversationSecurityState({
                     status: 'blocked',
                     reason: 'conversation_state_missing',
-                    message: 'This device no longer has the secure conversation state needed for this group.',
-                    detail: 'Restore this device from a secure backup, or rejoin the conversation from a device that still has the group state.',
+                    message: 'The secure conversation state needed for this group is unavailable.',
+                    detail: 'Restore it from your account backup, or ask the group owner to resend the membership change or key distribution.',
                     canSend: false,
                     canRetry: false,
                     showCachedHistoryFallback: true,
@@ -750,7 +749,7 @@ export const useConversationHandshake = ({
                 status: 'recovering',
                 reason: 'preparing',
                 message: 'Secure chat is still preparing for this conversation.',
-                detail: 'This device still has recoverable secure state for the thread and is syncing the latest epoch now.',
+                detail: 'Recoverable secure state exists for this thread and the latest epoch is syncing now.',
                 canSend: false,
                 canRetry: true,
                 showCachedHistoryFallback: true,
@@ -767,7 +766,7 @@ export const useConversationHandshake = ({
                 status: 'blocked',
                 reason: 'distribution_missing',
                 message: 'Unable to recover the latest group encryption state for this conversation.',
-                detail: 'This device still has older secure state, but the server does not have enough durable recovery data for the latest version yet. Ask the group owner to resend the membership change or key distribution.',
+                detail: 'Older secure state exists locally, but the server does not have enough durable recovery data for the latest version yet. Ask the group owner to resend the membership change or key distribution.',
                 canSend: false,
                 canRetry: true,
                 showCachedHistoryFallback: true,
@@ -821,7 +820,6 @@ export const useConversationHandshake = ({
     requiredConversationKeyVersion,
     handshakeRetryToken,
     mlsRecoveryGate.active,
-    mlsRecoveryGate.pending,
     user?.id,
   ]);
 

@@ -13,12 +13,10 @@ export type MlsRecoveryGateReason =
   | 'recovery_key_required'
   | 'password_required'
   | 'restore_failed'
-  | 'sync_import_missing'
   | 'local_state_lost';
 
 export interface MlsRecoveryGateState {
   active: boolean;
-  pending: boolean;
   reason: MlsRecoveryGateReason | null;
 }
 

@@ -470,10 +470,6 @@ const ChatDashboard = () => {
       return conversationSecurityState.detail;
     }
 
-    if (mlsRecoveryGate.pending) {
-      return 'This device is still preparing secure chat. Messages will appear once recovery finishes.';
-    }
-
     if (error.includes('no usable secure device keys')) {
       return 'The server does not currently have a published MLS key package for this person, so a new secure DM cannot start yet.';
     }
@@ -525,20 +521,12 @@ const ChatDashboard = () => {
   };
 
   const getMlsRecoveryGateCopy = () => {
-    if (mlsRecoveryGate.pending) {
-      return {
-        title: 'Preparing...',
-        body:
-          'This device is still restoring MLS conversation state in the background. Chats will open automatically once secure recovery becomes usable.',
-      };
-    }
-
     switch (mlsRecoveryGate.reason) {
       case 'recovery_key_required':
         return {
           title: 'Secure chat recovery needs your recovery key',
           body:
-            'This device has secure chat state to restore. Enter the recovery key you saved for this account to unlock encrypted chat on this device.',
+            'Your account has secure chat history to restore. Enter the recovery key you saved for this account to unlock encrypted chat in this browser.',
         };
       case 'password_required':
         return {
@@ -550,7 +538,7 @@ const ChatDashboard = () => {
         return {
           title: 'Secure chat recovery did not complete',
           body:
-            'The previous MLS restore attempt did not unlock the secure backup cleanly. Try your current account password again below. If that still fails, use a device that can still read your chats before continuing here.',
+            'The previous MLS restore attempt did not unlock the secure backup cleanly. Try your current account password again below. If that still fails, use another signed-in browser session that can still read your chats before continuing here.',
         };
       case 'local_state_lost':
         return {
@@ -562,7 +550,7 @@ const ChatDashboard = () => {
         return {
           title: 'Secure chat recovery is incomplete',
           body:
-            'The server reported MLS recovery data for this account, but this device still has no usable conversation state. Do not continue in chat on this device yet. Sign out and log in again with your password so secure chat recovery can retry.',
+            'The server reported MLS recovery data for this account, but this browser still has no usable conversation state. Sign out and log in again with your password so account recovery can retry.',
         };
     }
   };
@@ -594,32 +582,6 @@ const ChatDashboard = () => {
       <div className="min-h-screen bg-void-bg-main flex items-center justify-center">
         <div className="text-void-text text-lg font-medium">
           {isLoggingOut ? 'Signing you out...' : 'Preparing...'}
-        </div>
-      </div>
-    );
-  }
-
-  if (mlsRecoveryGate.pending) {
-    const gateCopy = getMlsRecoveryGateCopy();
-    return (
-      <div className="min-h-screen bg-void-bg-main text-void-text flex items-center justify-center p-6">
-        <div className="w-full max-w-xl bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl p-8 space-y-6">
-          <div className="space-y-3">
-            <div className="w-12 h-12 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center">
-              <ShieldAlert className="w-6 h-6 text-blue-400" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold">{gateCopy.title}</h1>
-              <p className="text-sm text-void-text-muted mt-2">
-                {gateCopy.body}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 text-sm text-void-text-muted">
-            <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-            <span>Continuing MLS recovery checks in the background...</span>
-          </div>
         </div>
       </div>
     );

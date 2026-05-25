@@ -8,6 +8,10 @@ import {
   resolveMembershipConversation,
 } from '../../../utils/groupMembership.js';
 import { meetsAdminToggle, resolvePermissions } from '../../../utils/groupPermissions.js';
+import {
+  insertMembershipFinalizeArtifacts,
+  parseMembershipFinalizeArtifacts,
+} from '../mls/finalizeArtifacts.js';
 
 const ADMIN_REMOVABLE_TARGET_ROLES = new Set(['member', 'viewer']);
 
@@ -254,8 +258,7 @@ export function registerMemberRotateRemoveRoutes(router) {
       const lockedResult = await client.query(
         `SELECT current_key_version,
                 pending_remove_target,
-                pending_remove_key_version,
-                updated_at
+                pending_remove_key_version
          FROM conversations WHERE id = $1 FOR UPDATE`,
         [conversation.id]
       );
@@ -267,7 +270,6 @@ export function registerMemberRotateRemoveRoutes(router) {
         ? Number(lockedResult.rows[0].pending_remove_key_version)
         : null;
       const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
-      const pendingPreparedAt = lockedResult.rows[0].updated_at;
 
       if (!pendingTarget || !pendingKeyVersion) {
         await client.query('ROLLBACK');
@@ -290,33 +292,6 @@ export function registerMemberRotateRemoveRoutes(router) {
         return res.status(409).json({
           error: 'Pending removal is stale — version has moved',
           code: 'PENDING_REMOVE_STALE',
-          current_key_version: currentKeyVersion,
-        });
-      }
-
-      let snapshotExists = false;
-      try {
-        const snapshotCheck = await client.query(
-          `SELECT 1 FROM mls_group_states
-           WHERE conversation_id = $1
-             AND user_id = $2
-             AND key_version IS NOT NULL
-             AND key_version >= $3
-           LIMIT 1`,
-          [conversation.id, actorUserId, pendingKeyVersion]
-        );
-        snapshotExists = snapshotCheck.rows.length > 0;
-      } catch (snapshotErr) {
-        console.warn('Rotate-remove finalize snapshot check failed:', snapshotErr.message);
-      }
-
-      if (!snapshotExists) {
-        await client.query('ROLLBACK');
-        return res.status(428).json({
-          success: false,
-          error: 'Survivor group state snapshot for the new key version must be uploaded before finalizing remove',
-          code: 'SNAPSHOT_REQUIRED',
-          required_key_version: pendingKeyVersion,
           current_key_version: currentKeyVersion,
         });
       }
@@ -377,6 +352,41 @@ export function registerMemberRotateRemoveRoutes(router) {
         });
       }
 
+      const currentMembersResult = await client.query(
+        `SELECT user_id::text AS user_id
+         FROM conversation_members
+         WHERE conversation_id = $1`,
+        [conversation.id]
+      );
+      const survivorMemberIds = currentMembersResult.rows
+        .map((row) => row.user_id)
+        .filter((memberId) => String(memberId) !== String(targetUserId));
+      const survivorPeerIds = survivorMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
+      const parsedArtifacts = parseMembershipFinalizeArtifacts(
+        req.body?.mls_artifacts ?? req.body?.mlsArtifacts,
+        {
+          expectedWelcomeUserIds: [],
+          pendingKeyVersion,
+          requireCommit: survivorPeerIds.length > 0,
+        },
+      );
+
+      if (parsedArtifacts.error) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({
+          success: false,
+          error: parsedArtifacts.error,
+          code: parsedArtifacts.code,
+        });
+      }
+
+      await insertMembershipFinalizeArtifacts(client, {
+        conversationId: conversation.id,
+        actorUserId,
+        pendingKeyVersion,
+        artifacts: parsedArtifacts.artifacts,
+      });
+
       await client.query(
         `DELETE FROM conversation_members
          WHERE conversation_id = $1 AND user_id = $2`,
@@ -415,39 +425,6 @@ export function registerMemberRotateRemoveRoutes(router) {
         [conversation.id, currentKeyVersion, newKeyVersion, actorUserId, targetUserId]
       );
 
-      const survivorMembersResult = await client.query(
-        `SELECT user_id::text AS user_id
-         FROM conversation_members
-         WHERE conversation_id = $1`,
-        [conversation.id]
-      );
-      const survivorMemberIds = survivorMembersResult.rows.map((row) => row.user_id);
-      const survivorPeerIds = survivorMemberIds.filter((memberId) => String(memberId) !== String(actorUserId));
-
-      if (survivorPeerIds.length > 0) {
-        const commitCheck = await client.query(
-          `SELECT 1
-           FROM mls_commit_messages
-           WHERE conversation_id = $1
-             AND epoch IS NOT NULL
-             AND epoch >= $2
-             AND received_at >= $3
-           LIMIT 1`,
-          [conversation.id, newKeyVersion - 1, pendingPreparedAt]
-        );
-
-        if (commitCheck.rows.length === 0) {
-          await client.query('ROLLBACK');
-          return res.status(428).json({
-            success: false,
-            error: 'MLS commit for survivor members must be uploaded before finalizing remove',
-            code: 'COMMIT_REQUIRED',
-            required_key_version: newKeyVersion,
-            current_key_version: currentKeyVersion,
-          });
-        }
-      }
-
       await client.query('COMMIT');
 
       sendLiveEventToUser(targetUserId, 'MEMBER_LEAVE', {
@@ -477,7 +454,11 @@ export function registerMemberRotateRemoveRoutes(router) {
     } catch (err) {
       if (client) await client.query('ROLLBACK').catch(() => {});
       console.error('Rotate-remove finalize error:', err);
-      res.status(500).json({ error: 'Failed to finalize member removal' });
+      const status = Number(err?.status) || 500;
+      res.status(status).json({
+        error: status === 500 ? 'Failed to finalize member removal' : err.message,
+        ...(err?.code ? { code: err.code } : {}),
+      });
     } finally {
       client?.release();
     }

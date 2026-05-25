@@ -1,8 +1,10 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import { fetchAppBootstrap } from '../bootstrap';
 import { keyManager } from '../Crypto/keyManager';
+import type { MlsMembershipFinalizeArtifacts } from '../Crypto/mls/mlsTypes';
+import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import { debugLog } from '../utils/debugLog';
-import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove, reuploadGroupState } from './chatCryptoService';
+import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove } from './chatCryptoService';
 import type {
   Conversation,
   ConversationMember,
@@ -266,6 +268,11 @@ export function rotateAddMembers(
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
     const finalMemberIds = [...new Set([...currentMemberIds, ...additions, currentUserId])];
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
+    const localMemberIds = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
+    if (localMemberIds?.some((memberId) => additions.includes(memberId))) {
+      await chatCryptoProtocolService.discardLocalGroupState(keyConversationId);
+      await chatCryptoProtocolService.syncInbox(currentUserId, true);
+    }
 
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add`, {
       method: 'POST',
@@ -279,33 +286,29 @@ export function rotateAddMembers(
     const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
 
     let mlsKey: CryptoKey;
+    let mlsArtifacts: MlsMembershipFinalizeArtifacts | null | undefined;
     let finalizeStarted = false;
     try {
-      ({ key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+      ({ key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
         { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
         currentUserId,
         finalMemberIds,
+        { stageOnly: true },
       ));
 
-      finalizeStarted = true;
-      let finalizeResponse = await fetchWithAuth(
-        `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/finalize`,
-        { method: 'POST' },
-      );
-      let finalizeData = await finalizeResponse.json();
-
-      if (!finalizeData.success && finalizeData.code === 'SNAPSHOT_REQUIRED') {
-        console.warn('[ROTATE_ADD] snapshot not found on server, re-uploading from local state', {
-          conversation_id: keyConversationId,
-          pending_key_version: pendingKeyVersion,
-        });
-        await reuploadGroupState(keyConversationId);
-        finalizeResponse = await fetchWithAuth(
-          `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/finalize`,
-          { method: 'POST' },
-        );
-        finalizeData = await finalizeResponse.json();
+      if (!mlsArtifacts) {
+        throw new Error('Secure membership artifacts could not be prepared');
       }
+
+      finalizeStarted = true;
+      const finalizeResponse = await fetchWithAuth(
+        `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/finalize`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ mls_artifacts: mlsArtifacts }),
+        },
+      );
+      const finalizeData = await finalizeResponse.json();
 
       if (!finalizeData.success) {
         throw createApiError(finalizeData);
@@ -314,6 +317,13 @@ export function rotateAddMembers(
       const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
 
       await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+      await chatCryptoProtocolService.syncInbox(currentUserId, true).catch((error) => {
+        console.warn('[ROTATE_ADD] finalized but local MLS state refresh failed', {
+          conversation_id: keyConversationId,
+          key_version: resolvedKeyVersion,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
       await notifyMembershipUpdate(keyConversationId);
 
       return {
@@ -362,6 +372,11 @@ export function rotateRemoveMember(
 
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
+    const localMemberIds = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
+    if (localMemberIds && !localMemberIds.includes(targetUserId)) {
+      await chatCryptoProtocolService.discardLocalGroupState(keyConversationId);
+      await chatCryptoProtocolService.syncInbox(currentUserId, true);
+    }
 
     // Preflight: prove local MLS state can apply this removal BEFORE
     // mutating server membership. No durable side effects — just
@@ -389,47 +404,40 @@ export function rotateRemoveMember(
     if (!prepareData.success) throw createApiError(prepareData);
     const pendingKeyVersion = prepareData.pending_key_version || nextKeyVersion;
 
-    // ── Distribute: produce MLS state and upload survivor snapshot ──
-    // The survivor's durable snapshot for pendingKeyVersion must exist
-    // in mls_group_states BEFORE finalize will commit the removal.
-    const { key: mlsKey } = await distributeGroupSenderKeyWithProtocol(
+    // Produce the survivor MLS state without publishing it before membership
+    // is committed. Finalize stores the artifact bundle atomically.
+    const { key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
       { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
       currentUserId,
       survivors,
-      { allowFreshGroupBootstrap: preflightResult.requiresFreshBootstrap },
+      { allowFreshGroupBootstrap: preflightResult.requiresFreshBootstrap, stageOnly: true },
     );
 
-    // ── Phase 2: FINALIZE ────────────────────────────────────────
-    // Server verifies the survivor's snapshot exists in mls_group_states
-    // with key_version >= pendingKeyVersion, then atomically commits:
-    // member deletion, version advance, rotation record.
-    // If the snapshot is missing, returns 428 SNAPSHOT_REQUIRED.
-    let finalizeResponse = await fetchWithAuth(
-      `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
-      { method: 'POST' },
-    );
-    let finalizeData = await finalizeResponse.json();
-
-    // If finalize fails because the upload was silently lost, re-upload
-    // from local state and retry once.
-    if (!finalizeData.success && finalizeData.code === 'SNAPSHOT_REQUIRED') {
-      console.warn('[ROTATE_REMOVE] snapshot not found on server, re-uploading from local state', {
-        conversation_id: keyConversationId,
-        pending_key_version: pendingKeyVersion,
-      });
-      await reuploadGroupState(keyConversationId);
-      finalizeResponse = await fetchWithAuth(
-        `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
-        { method: 'POST' },
-      );
-      finalizeData = await finalizeResponse.json();
+    if (!mlsArtifacts) {
+      throw new Error('Secure membership artifacts could not be prepared');
     }
+
+    const finalizeResponse = await fetchWithAuth(
+      `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ mls_artifacts: mlsArtifacts }),
+      },
+    );
+    const finalizeData = await finalizeResponse.json();
 
     if (!finalizeData.success) throw createApiError(finalizeData);
     const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
 
     if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
       await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+      await chatCryptoProtocolService.syncInbox(currentUserId, true).catch((error) => {
+        console.warn('[ROTATE_REMOVE] finalized but local MLS state refresh failed', {
+          conversation_id: keyConversationId,
+          key_version: resolvedKeyVersion,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
     }
     await notifyMembershipUpdate(keyConversationId);
 
