@@ -69,7 +69,18 @@ export interface MlsWelcomeRecord {
   conversationId?: string | null;
   receivedAt: string;
   consumedAt?: string | null;
+  failureCode?: 'no_matching_key_package' | null;
+  failedAt?: string | null;
+  attemptedKeyPackageRefs?: string[];
 }
+
+export type MlsWelcomeProcessResult =
+  | { status: 'processed' }
+  | { status: 'pending' }
+  | {
+      status: 'failed_no_matching_key_package';
+      attemptedKeyPackageRefs: string[];
+    };
 
 export interface MlsCommitRecord {
   conversationId: string;

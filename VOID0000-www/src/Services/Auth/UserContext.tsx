@@ -769,6 +769,20 @@ export function UserProvider({ children }: { children: ReactNode }) {
       void chatCryptoProtocolService.ensureServerKeyPackageReserve(userId).catch(() => {});
     };
 
+    const refreshMlsBackupsAfterKeyPackageChange = async () => {
+      if (cancelled) return;
+
+      const password = loginPasswordRef.current;
+      if (password) {
+        await uploadSecureBackupsNow(userId, password);
+      }
+
+      const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
+      if (recoveryKey) {
+        await uploadRecoverySecureBackupsNow(userId, recoveryKey);
+      }
+    };
+
     const runForegroundMaintenance = () => {
       if (cancelled) return;
 
@@ -804,6 +818,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     const onKeyPackageChanged = () => {
       runBootstrapMaintenance(true);
+      void refreshMlsBackupsAfterKeyPackageChange().catch((error) => {
+        console.warn('[MLS_BACKUP] failed to refresh backup after publishing new key packages', {
+          user_id: userId,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
     };
 
     // WebSocket READY (fresh identify) / RESUMED (session resume): top-up

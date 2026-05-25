@@ -140,6 +140,9 @@ export const useConversationHandshake = ({
     const matchingWelcomes = welcomes.filter(
       (welcome) => welcome.conversationId === conversationId,
     );
+    const hasFailedWelcome = matchingWelcomes.some(
+      (welcome) => welcome.failureCode === 'no_matching_key_package',
+    );
 
     return {
       hasExactRequestedKey: Boolean(exactKey),
@@ -147,7 +150,8 @@ export const useConversationHandshake = ({
       anyGroupKeyVersion: anyKey?.version ?? null,
       hasLocalGroupState: Boolean(groupState),
       localGroupStateKeyVersion: groupState?.keyVersion ?? null,
-      hasPendingWelcome: matchingWelcomes.length > 0,
+      hasPendingWelcome: matchingWelcomes.some((welcome) => !welcome.failureCode),
+      hasFailedWelcome,
       hasPendingCommit: commits.length > 0,
     };
   };
@@ -487,7 +491,7 @@ export const useConversationHandshake = ({
             // Cache + sync didn't resolve it — bootstrap the MLS group directly.
             // This handles both cases:
             //   - Initiator (new DM): creates group, adds peer, sends welcome
-            //   - Receiver (state exists on server but welcome failed): re-bootstraps
+            //   - Receiver (including one with an unreadable Welcome): re-bootstraps
             try {
               debugLog('[DM_BOOTSTRAP] direct bootstrap from handshake', {
                 conversation_id: activeConversation.id,
@@ -661,6 +665,20 @@ export const useConversationHandshake = ({
               user.id,
               requiredGroupVersion,
             );
+            if (recoveryState.hasFailedWelcome) {
+              setConversationSecurityState(createConversationSecurityState({
+                status: 'blocked',
+                reason: 'welcome_key_package_missing',
+                message: 'Secure membership setup cannot be opened on this device.',
+                detail: 'Restore secure state from the device or backup that published its key package, or ask a group owner to resend the membership key distribution.',
+                canSend: false,
+                canRetry: true,
+                showCachedHistoryFallback: true,
+              }));
+              setEncryptionError('Secure membership setup cannot be opened on this device.');
+              return;
+            }
+
             const canRecoverInPlace =
               recoveryState.hasLocalGroupState ||
               recoveryState.hasPendingWelcome ||

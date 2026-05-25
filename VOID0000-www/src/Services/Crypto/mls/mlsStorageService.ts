@@ -133,8 +133,24 @@ export class MlsStorageService {
     await mlsStore.putWelcome(record);
   }
 
+  async listWelcomes(userId: string): Promise<MlsWelcomeRecord[]> {
+    return mlsStore.listWelcomes(userId);
+  }
+
   async markWelcomeConsumed(userId: string, welcomeRef: string): Promise<void> {
     await mlsStore.markWelcomeConsumed(userId, welcomeRef);
+  }
+
+  async markWelcomeFailedNoMatchingKeyPackage(
+    userId: string,
+    welcomeRef: string,
+    attemptedKeyPackageRefs: string[],
+  ): Promise<void> {
+    await mlsStore.markWelcomeFailedNoMatchingKeyPackage(userId, welcomeRef, attemptedKeyPackageRefs);
+  }
+
+  async clearWelcomeFailure(userId: string, welcomeRef: string): Promise<void> {
+    await mlsStore.clearWelcomeFailure(userId, welcomeRef);
   }
 
   async persistCommit(record: MlsCommitRecord): Promise<void> {

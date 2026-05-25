@@ -189,6 +189,10 @@ export const mlsStore = {
       id,
       ...record,
       consumedAt: record.consumedAt ?? existing?.consumedAt ?? null,
+      failureCode: record.failureCode ?? existing?.failureCode ?? null,
+      failedAt: record.failedAt ?? existing?.failedAt ?? null,
+      attemptedKeyPackageRefs:
+        record.attemptedKeyPackageRefs ?? existing?.attemptedKeyPackageRefs ?? [],
     });
   },
 
@@ -210,6 +214,36 @@ export const mlsStore = {
       id: key,
       ...existing,
       consumedAt: new Date().toISOString(),
+    });
+  },
+
+  async markWelcomeFailedNoMatchingKeyPackage(
+    userId: string,
+    welcomeRef: string,
+    attemptedKeyPackageRefs: string[],
+  ): Promise<void> {
+    const key = buildWelcomeKey(userId, welcomeRef);
+    const existing = await getRow<MlsWelcomeRecord>(WELCOME_STORE, key);
+    if (!existing) return;
+    await putRow(WELCOME_STORE, {
+      id: key,
+      ...existing,
+      failureCode: 'no_matching_key_package',
+      failedAt: new Date().toISOString(),
+      attemptedKeyPackageRefs: [...new Set(attemptedKeyPackageRefs)],
+    });
+  },
+
+  async clearWelcomeFailure(userId: string, welcomeRef: string): Promise<void> {
+    const key = buildWelcomeKey(userId, welcomeRef);
+    const existing = await getRow<MlsWelcomeRecord>(WELCOME_STORE, key);
+    if (!existing) return;
+    await putRow(WELCOME_STORE, {
+      id: key,
+      ...existing,
+      failureCode: null,
+      failedAt: null,
+      attemptedKeyPackageRefs: [],
     });
   },
 

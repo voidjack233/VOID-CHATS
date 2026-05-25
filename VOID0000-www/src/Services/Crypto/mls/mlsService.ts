@@ -480,9 +480,33 @@ export class MlsService {
     const acknowledgedWelcomes: MlsSyncWelcomeUpdate[] = [];
     for (const welcome of payload.welcomes) {
       try {
-        const joined = await this.groupService.processIncomingWelcome(welcome, userId, impl);
-        if (joined) {
+        const localWelcome = (await mlsStorageService.listWelcomes(userId))
+          .find((candidate) => candidate.welcomeRef === welcome.welcomeRef);
+        if (localWelcome?.failureCode === 'no_matching_key_package') {
+          const attemptedRefs = new Set(localWelcome.attemptedKeyPackageRefs || []);
+          const usablePackages = (await mlsStorageService.listKeyPackages(userId))
+            .filter((candidate) => candidate.publishedAt && candidate.privateData);
+          const hasUntriedPackage = usablePackages.some(
+            (candidate) => !attemptedRefs.has(candidate.packageRef),
+          );
+
+          if (!hasUntriedPackage) {
+            continue;
+          }
+
+          await mlsStorageService.clearWelcomeFailure(userId, welcome.welcomeRef);
+        }
+
+        const result = await this.groupService.processIncomingWelcome(welcome, userId, impl);
+        if (result.status === 'processed') {
           acknowledgedWelcomes.push(welcome);
+        } else if (result.status === 'failed_no_matching_key_package') {
+          await mlsStorageService.markWelcomeFailedNoMatchingKeyPackage(
+            userId,
+            welcome.welcomeRef,
+            result.attemptedKeyPackageRefs,
+          );
+          await this.ensureServerKeyPackageReserve(userId).catch(() => {});
         }
       } catch (err) {
         console.warn('[MLS] Welcome processing failed:', err);

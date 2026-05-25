@@ -45,6 +45,7 @@ import type {
   MlsSyncGroupStateUpdate,
   MlsSyncWelcomeUpdate,
   MlsUploadGroupStateInput,
+  MlsWelcomeProcessResult,
   PersistGroupStateOptions,
 } from './mlsTypes';
 import { MlsProtocolVersions } from './mlsTypes';
@@ -687,9 +688,9 @@ export class MlsGroupService {
     welcome: MlsSyncWelcomeUpdate,
     userId: string,
     impl: CiphersuiteImpl,
-  ): Promise<boolean> {
+  ): Promise<MlsWelcomeProcessResult> {
     const conversationId = welcome.conversationId;
-    if (!conversationId) return false;
+    if (!conversationId) return { status: 'pending' };
 
     const joinedKeyVersionFloor =
       typeof welcome.joinedKeyVersionFloor === 'number' &&
@@ -706,10 +707,10 @@ export class MlsGroupService {
 
     const welcomeBytes = base64ToBytes(welcome.payload);
     const decoded = decodeMlsMessage(welcomeBytes, 0);
-    if (!decoded) return false;
+    if (!decoded) return { status: 'pending' };
 
     const [msg] = decoded;
-    if (msg.wireformat !== 'mls_welcome') return false;
+    if (msg.wireformat !== 'mls_welcome') return { status: 'pending' };
 
     const myKeyPackages = await mlsStorageService.listKeyPackages(userId);
     const candidates = myKeyPackages.filter((kp) => kp.publishedAt && kp.privateData);
@@ -741,7 +742,7 @@ export class MlsGroupService {
             welcome_key_version: derivedKey.keyVersion,
             joined_key_version_floor: joinedKeyVersionFloor,
           });
-          return true;
+          return { status: 'processed' };
         }
 
         await this.persistGroupState(conversationId, joinedState, {
@@ -761,7 +762,7 @@ export class MlsGroupService {
           key_version: result.keyVersion,
           welcome_key_version: welcomeKeyVersion,
         });
-        return true;
+        return { status: 'processed' };
       } catch {
         // Key package did not match this welcome; try the next one.
       }
@@ -772,7 +773,10 @@ export class MlsGroupService {
       conversation_id: conversationId,
       welcome_ref: welcome.welcomeRef,
     });
-    return false;
+    return {
+      status: 'failed_no_matching_key_package',
+      attemptedKeyPackageRefs: candidates.map((candidate) => candidate.packageRef),
+    };
   }
 
   async processIncomingCommit(

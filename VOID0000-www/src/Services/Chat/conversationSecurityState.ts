@@ -8,6 +8,7 @@ export type ConversationSecurityReason =
   | 'distribution_missing'
   | 'identity_missing'
   | 'peer_not_ready'
+  | 'welcome_key_package_missing'
   | 'recipient_details_missing'
   | 'key_load_failed';
 
