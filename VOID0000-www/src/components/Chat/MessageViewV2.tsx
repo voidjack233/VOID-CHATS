@@ -575,6 +575,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         reply_to: failedMessage.reply_to || undefined,
         forwarded: failedMessage.forwarded || null,
         mentions: failedMessage.mentions || undefined,
+        linkPreview: failedMessage.link_preview ?? null,
       };
       const sentMessage = content.trim()
         ? await sendMessage(conversation.id, content, encryptionKey, {

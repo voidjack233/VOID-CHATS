@@ -167,6 +167,7 @@ class MessageSync {
           attachments: msg.attachments,
           forwarded: msg.forwarded ?? undefined,
           mentions: msg.mentions ?? undefined,
+          link_preview: msg.link_preview ?? undefined,
           protocol: cryptoMetadata.protocol,
           protocol_version: cryptoMetadata.protocol_version,
         };

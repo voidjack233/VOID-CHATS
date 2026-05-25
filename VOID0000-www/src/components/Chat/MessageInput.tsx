@@ -4,9 +4,7 @@ import { Send, Plus, X, Pencil, CornerUpRight, Loader2, Image, FileText, TimerRe
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
-import { getMentionUsernames, resolveMessageMentions } from '../../Services/Chat/messageMentions';
 import AttachmentLimitModal from './AttachmentLimitModal';
-import FormattedMessageText from './FormattedMessageText';
 import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../common/UserAvatar';
 
@@ -116,8 +114,6 @@ const MessageInput = (props: MessageInputProps) => {
   const { editingMessage, replyTo, encryptionKey } = props;
   const hasAttachments = attachments.length > 0;
   const hasBanner = !!(editingMessage || replyTo);
-  const hasCodeFenceDraft = text.includes('```');
-  const showComposerPreview = text.length > 0 && !hasCodeFenceDraft;
   const isGroupConversation = props.conversation.type === 'group';
   const inputDisabled =
     props.conversationSecurityState?.canSend === false ||
@@ -130,7 +126,6 @@ const MessageInput = (props: MessageInputProps) => {
   const [activeMentionQuery, setActiveMentionQuery] = useState<MentionQueryState | null>(null);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const attachMenuRef = useRef<HTMLDivElement>(null);
-  const composerPreviewRef = useRef<HTMLDivElement>(null);
 
   const groupMembers = useMemo(() => {
     if (!isGroupConversation || !props.members) {
@@ -191,11 +186,6 @@ const MessageInput = (props: MessageInputProps) => {
       .slice(0, 6);
   }, [activeMentionQuery, groupMembers]);
 
-  const composerMentionUsernames = useMemo(
-    () => getMentionUsernames(resolveMessageMentions(text, groupMembers)),
-    [groupMembers, text],
-  );
-
   const showMentionSuggestions =
     Boolean(activeMentionQuery) &&
     mentionSuggestions.length > 0 &&
@@ -203,13 +193,10 @@ const MessageInput = (props: MessageInputProps) => {
 
   useEffect(() => {
     const input = inputRef.current;
-    const preview = composerPreviewRef.current;
-
-    if (!input || !preview) return;
+    if (!input) return;
 
     input.style.height = 'auto';
-    const targetHeight = Math.min(Math.max(input.scrollHeight, preview.scrollHeight), 120);
-    input.style.height = `${targetHeight}px`;
+    input.style.height = `${Math.min(input.scrollHeight, 120)}px`;
   }, [inputRef, text]);
 
   useEffect(() => {
@@ -222,12 +209,6 @@ const MessageInput = (props: MessageInputProps) => {
       Math.min(current, Math.max(mentionSuggestions.length - 1, 0)),
     );
   }, [mentionSuggestions.length, showMentionSuggestions]);
-
-  const syncComposerScroll = () => {
-    if (!inputRef.current || !composerPreviewRef.current) return;
-    composerPreviewRef.current.scrollTop = inputRef.current.scrollTop;
-    composerPreviewRef.current.scrollLeft = inputRef.current.scrollLeft;
-  };
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -552,26 +533,6 @@ const MessageInput = (props: MessageInputProps) => {
             </div>
           ) : null}
 
-          {showComposerPreview ? (
-            <div
-              ref={composerPreviewRef}
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 overflow-hidden py-1.5 text-void-text"
-            >
-              <div className="whitespace-pre-wrap break-words leading-5">
-                <FormattedMessageText
-                  content={text}
-                  linkClassName="font-medium underline decoration-current/70 decoration-2 underline-offset-2"
-                  interactiveSpoilers={false}
-                  codeBlockVariant="composer"
-                  authoringMode
-                  enableMentions={isGroupConversation}
-                  mentionUsernames={composerMentionUsernames}
-                />
-              </div>
-            </div>
-          ) : null}
-
           <textarea
             ref={inputRef}
             value={text}
@@ -584,16 +545,13 @@ const MessageInput = (props: MessageInputProps) => {
             onKeyUp={() => syncMentionQuery()}
             onSelect={() => syncMentionQuery()}
             onPaste={handlePaste}
-            onScroll={syncComposerScroll}
             placeholder={getPlaceholder()}
             disabled={inputDisabled}
             autoComplete="off"
             spellCheck="false"
             enterKeyHint="enter"
             rows={1}
-            className={`block w-full min-h-8 border-none bg-transparent focus:outline-none placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1.5 leading-5 ${
-              showComposerPreview ? 'text-transparent caret-void-text' : 'text-void-text'
-            }`}
+            className="block w-full min-h-8 border-none bg-transparent text-void-text focus:outline-none placeholder-void-text-muted disabled:opacity-50 resize-none max-h-32 overflow-y-auto py-1.5 leading-5"
           />
         </div>
 
