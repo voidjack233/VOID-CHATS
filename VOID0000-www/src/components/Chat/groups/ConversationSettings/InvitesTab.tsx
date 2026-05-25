@@ -166,7 +166,7 @@ export default function InvitesTab({
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-row">
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-row">
                       <button
                         type="button"
                         onClick={() => void onDeclineRequest(request.id)}
@@ -271,7 +271,7 @@ export default function InvitesTab({
                         </p>
                       </div>
 
-                      <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-row">
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-row">
                         <button
                           type="button"
                           onClick={() => void onCopyInvite(invite)}

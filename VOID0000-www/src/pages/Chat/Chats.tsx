@@ -1,29 +1,31 @@
-// src/pages/Chats.tsx
+// src/pages/Chat/Chats.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, Users, MessageCircle, ArrowLeft, ShieldAlert, SlidersHorizontal, KeyRound } from 'lucide-react';
+import { ArrowLeft, ShieldAlert, KeyRound } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import ConversationSettings from '../components/Chat/ConversationSettings';
-import { useAuth } from '../Services/hooks/Auth/useAuth';
-import { useProfileRecord } from '../Services/hooks/profile/useProfileRecord';
-import { useChatManager } from '../Services/hooks/Chats/useChatManager';
-import { useFriends } from '../Services/hooks/Friends/useFriends';
-import UserProfileModal from '../components/common/Profile/UserProfileModal';
-import SettingsModal from '../components/common/Settings/SettingsModal';
-import ConversationList from '../components/Chat/ConversationList';
-import MessageView from '../components/Chat/MessageViewV2';
-import MessageInput from '../components/Chat/MessageInput';
-import ForwardMessageModal from '../components/Chat/ForwardMessageModal';
-import GroupCreateModal from '../components/Chat/groups/GroupCreateModal';
-import FriendsView from '../components/common/Friends/FriendsView';
-import { gateway } from '../Services/Gateway/gateway';
-import { Message, Conversation, forwardMessageToConversation } from '../Services/Chat/chatService';
-import { matchesConversationIdentifier } from '../Services/Chat/utils/conversationUtils';
-import { useUser } from '../Services/Auth/UserContext';
-import UserAvatar from '../components/common/UserAvatar';
-import { ConversationPaneSkeleton } from '../components/common/Skeleton';
-import { useConnectionStatus } from '../Services/hooks/common/useConnectionStatus';
-import { useServiceHealth } from '../Services/hooks/common/useServiceHealth';
-import PushNotificationPrompt from '../components/common/Notifications/PushNotificationPrompt';
+import ConversationSettings from '../../components/Chat/ConversationSettings';
+import { useAuth } from '../../Services/hooks/Auth/useAuth';
+import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
+import { useChatManager } from '../../Services/hooks/Chats/useChatManager';
+import { useFriends } from '../../Services/hooks/Friends/useFriends';
+import UserProfileModal from '../../components/common/Profile/UserProfileModal';
+import SettingsModal from '../../components/common/Settings/SettingsModal';
+import ConversationList from '../../components/Chat/ConversationList';
+import MessageView from '../../components/Chat/MessageViewV2';
+import MessageInput from '../../components/Chat/MessageInput';
+import ForwardMessageModal from '../../components/Chat/ForwardMessageModal';
+import GroupCreateModal from '../../components/Chat/groups/GroupCreateModal';
+import FriendsView from '../../components/common/Friends/FriendsView';
+import { gateway } from '../../Services/Gateway/gateway';
+import { Message, Conversation, ConversationMember, forwardMessageToConversation } from '../../Services/Chat/chatService';
+import { matchesConversationIdentifier } from '../../Services/Chat/utils/conversationUtils';
+import { useUser } from '../../Services/Auth/UserContext';
+import { ConversationPaneSkeleton } from '../../components/common/Skeleton';
+import { useConnectionStatus } from '../../Services/hooks/common/useConnectionStatus';
+import { useServiceHealth } from '../../Services/hooks/common/useServiceHealth';
+import ChatSidebar from './ChatSidebar';
+import ConversationHeader from './ConversationHeader';
+import ConversationSecurityBanner from './ConversationSecurityBanner';
+import ChatStatusBanners from './ChatStatusBanners';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
@@ -103,7 +105,7 @@ const ChatDashboard = () => {
   const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
   const [mlsRecoveryError, setMlsRecoveryError] = useState('');
   const [isSubmittingMlsRecoveryKey, setIsSubmittingMlsRecoveryKey] = useState(false);
-  const memberDisplayCacheRef = useRef<Record<string, any>>({});
+  const memberDisplayCacheRef = useRef<Record<string, ConversationMember>>({});
 
   const {
     members,
@@ -411,114 +413,15 @@ const ChatDashboard = () => {
     null;
   const resolvedDmUsername = dmPeer?.username || dmFriend?.username || displayConversation?.dm_username || null;
   const resolvedDmAvatarUrl = dmPeer?.avatar_url || dmFriend?.avatar_url || displayConversation?.dm_avatar_url || null;
-  const resolvedGroupName = displayConversation?.type === 'group'
-    ? displayConversation.name || 'Unnamed'
-    : '';
   const resolvedGroupIconUrl = displayConversation?.type === 'group'
     ? displayConversation.icon_url || null
     : null;
-
-  const getHeaderIcon = () => {
-    if (!displayConversation) return null;
-    switch (displayConversation.type) {
-      case 'dm':
-        return (
-          <UserAvatar
-            src={resolvedDmAvatarUrl}
-            displayName={resolvedDmDisplayName}
-            username={resolvedDmUsername}
-            className="w-8 h-8 rounded-full mr-3 shrink-0"
-            fallbackClassName="text-sm"
-          />
-        );
-      case 'group':
-        return resolvedGroupIconUrl ? (
-          <img
-            src={resolvedGroupIconUrl}
-            alt=""
-            className="mr-3 h-8 w-8 shrink-0 rounded-full object-cover"
-          />
-        ) : (
-          <div className="mr-3 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-void-accent/15 text-xs font-semibold text-void-accent">
-            {resolvedGroupName.trim().charAt(0).toUpperCase() || '#'}
-          </div>
-        );
-      default:
-        return <Users className="w-5 h-5 text-void-text-muted mr-2 shrink-0" />;
-    }
-  };
-
-  const getHeaderName = () => {
-    if (!displayConversation) return '';
-    if (displayConversation.type === 'dm') {
-      const nameFromConv = resolvedDmDisplayName || resolvedDmUsername;
-      if (nameFromConv) return nameFromConv;
-      return 'Unknown';
-    }
-    return displayConversation.name || 'Unnamed';
-  };
-
-  const getHeaderSubtitle = () => {
-    if (displayConversation?.type === 'dm') {
-      return resolvedDmUsername ? `@${resolvedDmUsername}` : '';
-    }
-    return '';
-  };
-
-  const getEncryptionHint = (error: string) => {
-    if (conversationSecurityState?.detail) {
-      return conversationSecurityState.detail;
-    }
-
-    if (error.includes('no usable secure device keys')) {
-      return 'The server does not currently have a published MLS key package for this person, so a new secure DM cannot start yet.';
-    }
-
-    if (error.includes('secure recipient details')) {
-      return 'This DM is still loading the recipient identity needed for secure bootstrap. Open the conversation again once it finishes loading.';
-    }
-
-    if (
-      error.includes('private keys') ||
-      error.includes('not available')
-    ) {
-      return 'Your private keys are stored on the device where you first set up encryption. Use that browser to read messages.';
-    }
-
-    if (error.includes('distribution')) {
-      return 'This account does not have a usable group key yet. Ask the group owner to resend key distribution for your account.';
-    }
-
-    if (error.includes('preparing secure chat')) {
-      return 'Secure chat is still preparing for this conversation. Retry in a moment.';
-    }
-
-    return 'Secure chat is not ready for this conversation yet. Retry in a moment.';
-  };
-
-  const getSecurityBannerClasses = () => {
-    if (conversationSecurityState?.status === 'recovering') {
-      return {
-        container: 'border-blue-400/25 bg-blue-500/10',
-        icon: 'text-blue-300',
-      };
-    }
-
-    if (
-      conversationSecurityState?.reason === 'conversation_state_missing' ||
-      conversationSecurityState?.reason === 'account_restore_required'
-    ) {
-      return {
-        container: 'border-red-400/25 bg-red-500/10',
-        icon: 'text-red-300',
-      };
-    }
-
-    return {
-      container: 'border-orange-400/25 bg-orange-500/10',
-      icon: 'text-orange-300',
-    };
-  };
+  const conversationHeaderTitle = displayConversation?.type === 'dm'
+    ? resolvedDmDisplayName || resolvedDmUsername || 'Unknown'
+    : displayConversation?.name || 'Unnamed';
+  const conversationHeaderSubtitle = displayConversation?.type === 'dm' && resolvedDmUsername
+    ? `@${resolvedDmUsername}`
+    : '';
 
   const getMlsRecoveryGateCopy = () => {
     switch (mlsRecoveryGate.reason) {
@@ -734,9 +637,7 @@ const ChatDashboard = () => {
   }
 
   const isFriendsPaneVisible = !displayConversation;
-  const isFriendsMobileActive = mobileSidebarMode === 'friends';
   const securityBannerMessage = conversationSecurityState?.message || encryptionError;
-  const securityBannerClasses = getSecurityBannerClasses();
 
   const openFriendsPane = () => {
     handleBackToMe();
@@ -766,7 +667,7 @@ const ChatDashboard = () => {
       original_conversation_id: displayConversation.id,
       original_conversation_name:
         displayConversation.type === 'dm'
-          ? getHeaderName()
+          ? conversationHeaderTitle
           : displayConversation.name || 'Conversation',
     };
 
@@ -796,23 +697,12 @@ const ChatDashboard = () => {
         maxHeight: chatViewportHeight ? `${chatViewportHeight}px` : '100dvh',
       }}
     >
-      {showReconnectBanner && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/8 bg-neutral-900/95 px-4 py-2 text-xs text-white/65">
-          <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-white/60" />
-          {isOnline
-            ? 'Reconnecting\u2026'
-            : 'You\u2019re offline \u2014 reconnecting when network returns'}
-        </div>
-      )}
-      {isOnline && serviceIssue && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-amber-400/15 bg-amber-500/10 px-4 py-2 text-xs text-amber-100/85">
-          <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-200/90" />
-          <span className="min-w-0 truncate">
-            {serviceIssue.message}
-            {serviceHealth.issues.length > 1 ? ` +${serviceHealth.issues.length - 1} more` : ''}
-          </span>
-        </div>
-      )}
+      <ChatStatusBanners
+        isOnline={isOnline}
+        showReconnectBanner={showReconnectBanner}
+        serviceIssue={serviceIssue}
+        serviceIssueCount={serviceHealth.issues.length}
+      />
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
       {/* Modals */}
       {showProfile && user?.profile_id && (
@@ -854,104 +744,21 @@ const ChatDashboard = () => {
         onForward={handleForwardToConversation}
       />
 
-      {/* Conversation Sidebar */}
-      <div className={`bg-void-bg-main flex-col shrink-0 border-r border-void-bg-sec transition-all ${isMobileSidebarOpen ? 'flex' : 'hidden md:flex'} w-full md:w-72`}>
-        <div className="h-16 flex items-center px-4 font-bold text-base border-b border-void-bg-sec shrink-0">
-          <span>Messages</span>
-        </div>
-
-        {mobileSidebarMode === 'messages' && !isFriendsPaneVisible ? (
-          <PushNotificationPrompt />
-        ) : null}
-
-        <div className="px-3 pt-3 pb-2 shrink-0 border-b border-void-bg-sec md:hidden">
-          <div className="grid grid-cols-3 gap-1 rounded-2xl border border-void-bg-hover bg-void-bg-sec/80 p-1 shadow-[0_14px_32px_rgba(0,0,0,0.16)]">
-            <button
-              onClick={openFriendsPane}
-              className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
-                isFriendsMobileActive
-                  ? 'bg-void-accent/14 text-void-accent ring-1 ring-void-accent/30'
-                  : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
-              }`}
-              aria-pressed={isFriendsMobileActive}
-            >
-              <Users className="h-3.5 w-3.5" />
-              <span>Friends</span>
-            </button>
-            <button
-              onClick={() => {
-                setMobileSidebarMode('messages');
-                setChatFilter('dm');
-              }}
-              className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
-                chatFilter === 'dm' && !isFriendsMobileActive
-                  ? 'bg-void-bg-hover text-void-text ring-1 ring-white/5'
-                  : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
-              }`}
-              aria-pressed={chatFilter === 'dm' && !isFriendsMobileActive}
-            >
-              <MessageCircle className="h-3.5 w-3.5" />
-              <span>DMs</span>
-            </button>
-            <button
-              onClick={() => {
-                setMobileSidebarMode('messages');
-                setChatFilter('group');
-              }}
-              className={`flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition-all ${
-                chatFilter === 'group' && !isFriendsMobileActive
-                  ? 'bg-void-bg-hover text-void-text ring-1 ring-white/5'
-                  : 'text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
-              }`}
-              aria-pressed={chatFilter === 'group' && !isFriendsMobileActive}
-            >
-              <Users className="h-3.5 w-3.5" />
-              <span>Groups</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="hidden px-3 pt-3 pb-2 md:block shrink-0 border-b border-void-bg-sec">
-          <button
-            onClick={openFriendsPane}
-            className={`w-full flex items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-all ${
-              isFriendsPaneVisible
-                ? 'bg-void-accent/12 border-void-accent/45 text-void-accent ring-1 ring-void-accent/20'
-                : 'border-void-bg-hover bg-void-bg-sec/70 text-void-text-muted hover:bg-void-bg-hover/80 hover:text-void-text'
-            }`}
-            aria-pressed={isFriendsPaneVisible}
-          >
-            <Users className="h-4 w-4" />
-            <span>Friends</span>
-          </button>
-        </div>
-
-        <div className="hidden px-3 pt-3 pb-1 md:flex gap-1 shrink-0">
-          <button
-            onClick={() => setChatFilter('dm')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${
-              chatFilter === 'dm'
-                ? 'bg-void-bg-hover text-void-text'
-                : 'text-void-text-muted hover:bg-void-bg-hover'
-            }`}
-            aria-pressed={chatFilter === 'dm'}
-          >
-            <MessageCircle className="w-3.5 h-3.5" /> DMs
-          </button>
-          <button
-            onClick={() => setChatFilter('group')}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-bold rounded-md transition-all ${
-              chatFilter === 'group'
-                ? 'bg-void-bg-hover text-void-text'
-                : 'text-void-text-muted hover:bg-void-bg-hover'
-            }`}
-            aria-pressed={chatFilter === 'group'}
-          >
-            <Users className="w-3.5 h-3.5" /> Groups
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+      <ChatSidebar
+        isOpen={isMobileSidebarOpen}
+        mobileMode={mobileSidebarMode}
+        isFriendsPaneVisible={isFriendsPaneVisible}
+        filter={chatFilter}
+        profile={myProfile}
+        username={user?.username}
+        onOpenFriends={openFriendsPane}
+        onSelectFilter={(filter) => {
+          setMobileSidebarMode('messages');
+          setChatFilter(filter);
+        }}
+        onShowProfile={() => setShowProfile(true)}
+        onShowSettings={() => setShowSettings(true)}
+      >
           {isMobile && mobileSidebarMode === 'friends' ? (
             <FriendsView
               friends={friends}
@@ -984,28 +791,7 @@ const ChatDashboard = () => {
               currentUserId={user?.id || null}
             />
           )}
-        </div>
-
-        {/* User Mini Profile */}
-        <div className="h-[52px] bg-void-bg-main/90 flex items-center px-2 border-t border-void-bg-sec shrink-0">
-          <div className="flex items-center hover:bg-void-bg-hover p-1 rounded-md cursor-pointer flex-1 min-w-0" onClick={() => setShowProfile(true)}>
-            <div className="w-8 h-8 rounded-full mr-2 relative shrink-0">
-              <UserAvatar
-                src={myProfile?.avatar_url || null}
-                displayName={myProfile?.display_name}
-                username={user?.username}
-                alt="Avatar"
-                className="w-full h-full rounded-full"
-                fallbackClassName="text-xs"
-              />
-            </div>
-            <div className="text-sm font-semibold truncate flex-1">{myProfile?.display_name || user?.username || 'User'}</div>
-          </div>
-          <button onClick={() => setShowSettings(true)} className="p-1.5 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md shrink-0 ml-1">
-            <Settings className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
+      </ChatSidebar>
 
       {/* Main Area */}
       <div className={`flex-1 flex flex-col bg-void-bg-sec min-w-0 ${!isMobileSidebarOpen ? 'flex' : 'hidden md:flex'}`}>
@@ -1022,49 +808,24 @@ const ChatDashboard = () => {
               </div>
             ) : null}
             <div className="flex min-w-0 flex-1 flex-col">
-              <nav
-                data-chat-conversation-header="true"
-                className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b border-void-bg-hover bg-void-bg-sec/95 px-4 shadow-sm supports-[backdrop-filter]:backdrop-blur md:relative md:top-auto md:bg-void-bg-sec"
-              >
-                <div className="flex items-center min-w-0 flex-1">
-                  <button
-                    onClick={openMobileMessageList}
-                    className="mr-3 p-1 text-void-text-muted hover:text-void-text hover:bg-void-bg-hover rounded-md md:hidden shrink-0 transition-colors"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  {getHeaderIcon()}
-                  <div className="min-w-0">
-                    <h1 className="text-lg font-bold truncate">{getHeaderName()}</h1>
-                    {getHeaderSubtitle() && (
-                      <p className="truncate text-xs font-medium text-void-text-muted">
-                        {getHeaderSubtitle()}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowConvSettings(true)}
-                  className="p-2 rounded-lg text-void-text-muted hover:text-void-text hover:bg-void-bg-hover transition-colors shrink-0 ml-2"
-                  title="Conversation settings"
-                >
-                  <SlidersHorizontal className="w-4 h-4" />
-                </button>
-              </nav>
+              <ConversationHeader
+                type={displayConversation?.type || activeConversation.type}
+                title={conversationHeaderTitle}
+                subtitle={conversationHeaderSubtitle}
+                dmAvatarUrl={resolvedDmAvatarUrl}
+                dmDisplayName={resolvedDmDisplayName}
+                dmUsername={resolvedDmUsername}
+                groupIconUrl={resolvedGroupIconUrl}
+                onBack={openMobileMessageList}
+                onOpenSettings={() => setShowConvSettings(true)}
+              />
 
               <>
                 {securityBannerMessage && (
-                  <div className={`mx-4 mt-4 rounded-2xl border px-4 py-3 ${securityBannerClasses.container}`}>
-                    <div className="flex items-start gap-3">
-                      <ShieldAlert className={`mt-0.5 h-5 w-5 shrink-0 ${securityBannerClasses.icon}`} />
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-void-text">{securityBannerMessage}</p>
-                        <p className="mt-1 text-xs text-void-text-muted">
-                          {getEncryptionHint(securityBannerMessage)}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
+                  <ConversationSecurityBanner
+                    message={securityBannerMessage}
+                    securityState={conversationSecurityState}
+                  />
                 )}
                 <MessageView
                   key={activeConversation.id}

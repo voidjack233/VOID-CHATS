@@ -203,9 +203,9 @@ const GroupConversationSettings = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[320] bg-black/55 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[320] bg-void-bg-main/90 md:bg-black/55 md:backdrop-blur-sm">
       <div className="flex h-full items-center justify-center p-0 md:p-4">
-        <div className="flex h-full w-full flex-col overflow-hidden border border-void-bg-hover bg-void-bg-sec shadow-2xl md:h-[680px] md:max-w-6xl md:flex-row md:rounded-2xl">
+        <div className="flex h-full w-full flex-col overflow-hidden bg-void-bg-sec md:h-[680px] md:max-w-6xl md:flex-row md:rounded-2xl md:border md:border-void-bg-hover md:shadow-2xl">
           <aside className="hidden w-72 flex-shrink-0 border-r border-void-bg-hover bg-void-bg-main/55 md:flex md:flex-col">
             <div className="border-b border-void-bg-hover px-6 py-5">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-void-text-muted">Group Settings</p>
@@ -265,7 +265,7 @@ const GroupConversationSettings = ({
           </aside>
 
           <div className="flex min-h-0 flex-1 flex-col">
-            <div className="sticky top-0 z-10 border-b border-void-bg-hover bg-void-bg-sec px-5 py-4 md:px-6">
+            <div className="sticky top-0 z-10 border-b border-void-bg-hover bg-void-bg-sec px-4 py-4 md:px-6">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="flex items-center gap-3 min-w-0">
@@ -280,7 +280,7 @@ const GroupConversationSettings = ({
                       </button>
                     ) : null}
                     <div className="min-w-0">
-                      <h2 className="text-lg font-semibold text-void-text">
+                      <h2 className="truncate text-lg font-semibold text-void-text">
                         {mobileView === 'menu' ? 'Group Settings' : activeTabMeta?.label}
                       </h2>
                       <p className="mt-1 hidden text-sm text-void-text-muted md:block">
@@ -301,7 +301,7 @@ const GroupConversationSettings = ({
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 md:p-6">
+            <div className="flex-1 overflow-y-auto overscroll-contain p-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:p-6">
               <div className="md:hidden">
                 {mobileView === 'menu' ? (
                   <div className="space-y-5">

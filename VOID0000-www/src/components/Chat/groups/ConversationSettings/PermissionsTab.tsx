@@ -24,13 +24,13 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
+    <div className="flex flex-col items-start gap-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <span className="text-sm text-void-text">{label}</span>
-      <div className="flex flex-shrink-0 overflow-hidden rounded-lg border border-void-bg-hover bg-void-bg-main">
+      <div className="flex w-full flex-shrink-0 overflow-hidden rounded-lg border border-void-bg-hover bg-void-bg-main sm:w-auto">
         <button
           type="button"
           onClick={() => onChange(true)}
-          className={`px-4 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex-1 px-4 py-2 text-xs font-semibold transition-colors sm:flex-none sm:py-1.5 ${
             value
               ? 'bg-void-accent text-white'
               : 'text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
@@ -41,7 +41,7 @@ function ToggleRow({
         <button
           type="button"
           onClick={() => onChange(false)}
-          className={`px-4 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex-1 px-4 py-2 text-xs font-semibold transition-colors sm:flex-none sm:py-1.5 ${
             !value
               ? 'bg-void-bg-hover text-void-text'
               : 'text-void-text-muted hover:bg-void-bg-hover hover:text-void-text'
@@ -81,13 +81,13 @@ function WhoDropdown({
   }, [isOpen]);
 
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
+    <div className="flex flex-col items-start gap-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <span className="text-sm text-void-text">{label}</span>
-      <div ref={menuRef} className="relative flex-shrink-0">
+      <div ref={menuRef} className="relative w-full flex-shrink-0 sm:w-auto">
         <button
           type="button"
           onClick={() => setIsOpen((current) => !current)}
-          className={`flex min-w-[136px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs font-semibold shadow-sm transition-colors ${
+          className={`flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2.5 text-xs font-semibold shadow-sm transition-colors sm:min-w-[136px] sm:py-2 ${
             isOpen
               ? 'border-void-accent/50 bg-void-bg-hover text-void-text ring-1 ring-void-accent/30'
               : 'border-void-bg-hover bg-void-bg-main text-void-text hover:border-void-accent/40 hover:bg-void-bg-hover/70'
@@ -106,7 +106,7 @@ function WhoDropdown({
         {isOpen && (
           <div
             role="listbox"
-            className="absolute right-0 top-[calc(100%+0.45rem)] z-20 min-w-[180px] overflow-hidden rounded-xl border border-void-bg-hover bg-void-bg-main p-1.5 shadow-2xl"
+            className="absolute inset-x-0 top-[calc(100%+0.45rem)] z-20 overflow-hidden rounded-xl border border-void-bg-hover bg-void-bg-main p-1.5 shadow-2xl sm:left-auto sm:min-w-[180px]"
           >
             {WHO_OPTIONS.map((option) => {
               const isSelected = option.value === value;
@@ -151,28 +151,21 @@ function SectionCard({
   );
 }
 
-// Camel-to-snake key mapping
-function toSnake(perms: Record<string, any>): Partial<GroupPermissions> {
-  const map: Record<string, keyof GroupPermissions> = {
-    adminCanRemoveMembers: 'admin_can_remove_members',
-    adminCanApproveJoinRequests: 'admin_can_approve_join_requests',
-    adminCanEditMemberNicknames: 'admin_can_edit_member_nicknames',
-    adminCanEditGroupProfile: 'admin_can_edit_group_profile',
-    adminCanManageInviteLinks: 'admin_can_manage_invite_links',
-    membersCanSetOwnNickname: 'members_can_set_own_nickname',
-    whoCanSendAttachments: 'who_can_send_attachments',
-    whoCanCreateInviteLinks: 'who_can_create_invite_links',
-    whoCanApproveRequests: 'who_can_approve_requests',
-    whoCanEditOtherNicknames: 'who_can_edit_other_nicknames',
-    whoCanEditOwnNickname: 'who_can_edit_own_nickname',
-    whoCanEditGroupProfile: 'who_can_edit_group_profile',
+function toSnake(perms: CamelPermissions): Partial<GroupPermissions> {
+  return {
+    admin_can_remove_members: perms.adminCanRemoveMembers,
+    admin_can_approve_join_requests: perms.adminCanApproveJoinRequests,
+    admin_can_edit_member_nicknames: perms.adminCanEditMemberNicknames,
+    admin_can_edit_group_profile: perms.adminCanEditGroupProfile,
+    admin_can_manage_invite_links: perms.adminCanManageInviteLinks,
+    members_can_set_own_nickname: perms.membersCanSetOwnNickname,
+    who_can_send_attachments: perms.whoCanSendAttachments,
+    who_can_create_invite_links: perms.whoCanCreateInviteLinks,
+    who_can_approve_requests: perms.whoCanApproveRequests,
+    who_can_edit_other_nicknames: perms.whoCanEditOtherNicknames,
+    who_can_edit_own_nickname: perms.whoCanEditOwnNickname,
+    who_can_edit_group_profile: perms.whoCanEditGroupProfile,
   };
-  const result: Record<string, any> = {};
-  for (const [camel, value] of Object.entries(perms)) {
-    const snake = map[camel];
-    if (snake) result[snake] = value;
-  }
-  return result as Partial<GroupPermissions>;
 }
 
 function fromSnake(perms: GroupPermissions) {
@@ -230,9 +223,9 @@ export default function PermissionsTab({
           setLoading(false);
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err.message || 'Failed to load permissions');
+          setError(err instanceof Error ? err.message : 'Failed to load permissions');
           setLoading(false);
         }
       });
@@ -248,8 +241,8 @@ export default function PermissionsTab({
           const result = await updateConversationPermissions(conversationId, toSnake(updated));
           setPerms(fromSnake(result));
           setError(null);
-        } catch (err: any) {
-          setError(err.message || 'Failed to save permissions');
+        } catch (err: unknown) {
+          setError(err instanceof Error ? err.message : 'Failed to save permissions');
         } finally {
           setSaving(false);
         }
@@ -274,7 +267,7 @@ export default function PermissionsTab({
           <ShieldAlert className="h-5 w-5" />
         </div>
         <h3 className="mt-4 text-base font-semibold text-void-text">Owner Only</h3>
-        <p className="mx-auto mt-2 hidden max-w-sm text-sm leading-relaxed text-void-text-muted md:block">
+        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-void-text-muted">
           Permissions can only be changed by the group owner.
         </p>
       </section>

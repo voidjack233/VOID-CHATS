@@ -32,8 +32,8 @@ export default function ConfirmDialog({
   onConfirm,
 }: ConfirmDialogProps) {
   return (
-    <div className="fixed inset-0 z-[340] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-2xl border border-void-bg-hover bg-void-bg-sec shadow-2xl">
+    <div className="fixed inset-0 z-[340] flex items-end justify-center bg-black/65 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+      <div className="w-full max-w-md rounded-t-3xl border border-void-bg-hover bg-void-bg-sec shadow-2xl sm:rounded-2xl">
         <div className="border-b border-void-bg-hover px-5 py-4">
           <h3 className="text-base font-semibold text-void-text">{title}</h3>
           <div className="mt-1 text-sm text-void-text-muted">{description}</div>
@@ -42,7 +42,7 @@ export default function ConfirmDialog({
           ) : null}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-5 py-4">
+        <div className="grid grid-cols-2 gap-2 px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 sm:flex sm:items-center sm:justify-end sm:pb-4">
           <button
             type="button"
             onClick={onCancel}
