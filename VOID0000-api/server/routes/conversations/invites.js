@@ -11,14 +11,17 @@ import {
 import { meetsAdminToggle, meetsWhoThreshold, resolvePermissions } from '../../utils/groupPermissions.js';
 import { generateInviteCode } from './inviteLinks.js';
 import {
-  insertMembershipFinalizeArtifacts,
   parseMembershipFinalizeArtifacts,
 } from './mls/finalizeArtifacts.js';
+import {
+  finalizeMlsAddedMembers,
+  getMembershipOperationId,
+  lockMembershipRotation,
+  markMembershipRotationRolledBack,
+  reserveMembershipRotation,
+} from './members/membershipRotations.js';
 
 const router = Router({ mergeParams: true });
-
-// Requires conversation pending-approval columns to be created by a DB migration:
-// pending_approve_request_id, pending_approve_user_id, pending_approve_key_version.
 
 function buildInviteUrl(code) {
   const frontUrl = process.env.FRONT_URL || 'https://void0000.online';
@@ -325,62 +328,14 @@ router.post('/requests/:requestId/approve', async (req, res) => {
       return res.status(409).json({ error: 'Join request is no longer pending' });
     }
 
-    // Lock the conversation row to serialize concurrent invite approvals for
-    // this conversation. Prepare only records intent; no membership changes
-    // are committed until finalize verifies the MLS snapshot is durable.
-    const lockedVersionResult = await client.query(
-      `SELECT current_key_version,
-              pending_approve_request_id,
-              pending_approve_user_id,
-              pending_approve_key_version
-       FROM conversations WHERE id = $1 FOR UPDATE`,
-      [conversation.id]
-    );
-    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
-    const existingPendingRequestId = lockedVersionResult.rows[0].pending_approve_request_id != null
-      ? Number(lockedVersionResult.rows[0].pending_approve_request_id)
-      : null;
-    const existingPendingUserId = lockedVersionResult.rows[0].pending_approve_user_id
-      ? String(lockedVersionResult.rows[0].pending_approve_user_id)
-      : null;
-    const existingPendingVersion = lockedVersionResult.rows[0].pending_approve_key_version != null
-      ? Number(lockedVersionResult.rows[0].pending_approve_key_version)
-      : null;
-
-    if (existingPendingRequestId && existingPendingUserId && existingPendingVersion) {
-      if (
-        existingPendingRequestId === requestId &&
-        existingPendingUserId === String(joinRequest.requester_user_id) &&
-        existingPendingVersion === newKeyVersion
-      ) {
-        await client.query('ROLLBACK');
-        return res.json({
-          success: true,
-          phase: 'prepared',
-          pending_key_version: existingPendingVersion,
-          current_key_version: currentKeyVersion,
-          requester_user_id: joinRequest.requester_user_id,
-        });
-      }
-
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Another join approval is already pending for this conversation',
-        code: 'PENDING_APPROVAL_CONFLICT',
-        pending_request_id: existingPendingRequestId,
-        pending_user_id: existingPendingUserId,
-        pending_key_version: existingPendingVersion,
-      });
-    }
-
-    if (newKeyVersion !== currentKeyVersion + 1) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: `Expected new_key_version ${currentKeyVersion + 1}`,
-        code: 'INVALID_KEY_VERSION',
-        current_key_version: currentKeyVersion,
-      });
-    }
+    const { operation, currentKeyVersion } = await reserveMembershipRotation(client, {
+      conversationId: conversation.id,
+      actorUserId,
+      kind: 'invite_approval',
+      targetUserIds: [joinRequest.requester_user_id],
+      requestedKeyVersion: newKeyVersion,
+      joinRequestId: joinRequest.id,
+    });
 
     const currentMembersResult = await client.query(
       `SELECT user_id
@@ -398,29 +353,25 @@ router.post('/requests/:requestId/approve', async (req, res) => {
       });
     }
 
-    await client.query(
-      `UPDATE conversations
-       SET pending_approve_request_id = $2,
-           pending_approve_user_id = $3::UUID,
-           pending_approve_key_version = $4,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [conversation.id, joinRequest.id, joinRequest.requester_user_id, newKeyVersion]
-    );
-
     await client.query('COMMIT');
 
     res.json({
       success: true,
       phase: 'prepared',
       requester_user_id: joinRequest.requester_user_id,
-      pending_key_version: newKeyVersion,
+      operation_id: operation.operationId,
+      pending_key_version: operation.reservedKeyVersion,
       current_key_version: currentKeyVersion,
     });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Approve join request prepare error:', err);
-    res.status(500).json({ error: 'Failed to prepare join approval' });
+    const status = Number(err?.status) || 500;
+    res.status(status).json({
+      error: status === 500 ? 'Failed to prepare join approval' : err.message,
+      ...(err?.code ? { code: err.code } : {}),
+      ...(err?.data || {}),
+    });
   } finally {
     client?.release();
   }
@@ -471,80 +422,44 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
 
     const joinRequest = requestResult.rows[0];
 
-    const lockedResult = await client.query(
-      `SELECT current_key_version,
-              pending_approve_request_id,
-              pending_approve_user_id,
-              pending_approve_key_version
-       FROM conversations
-       WHERE id = $1 FOR UPDATE`,
-      [conversation.id]
-    );
+    const operationId = getMembershipOperationId(req.body);
+    const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
+      conversationId: conversation.id,
+      operationId,
+      actorUserId,
+      kind: 'invite_approval',
+      joinRequestId: joinRequest.id,
+    });
+    const pendingKeyVersion = operation.reservedKeyVersion;
 
-    const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
-    const pendingRequestId = lockedResult.rows[0].pending_approve_request_id != null
-      ? Number(lockedResult.rows[0].pending_approve_request_id)
-      : null;
-    const pendingUserId = lockedResult.rows[0].pending_approve_user_id
-      ? String(lockedResult.rows[0].pending_approve_user_id)
-      : null;
-    const pendingKeyVersion = lockedResult.rows[0].pending_approve_key_version != null
-      ? Number(lockedResult.rows[0].pending_approve_key_version)
-      : null;
-
-    if (!pendingRequestId || !pendingUserId || !pendingKeyVersion) {
-      const existingMember = await client.query(
-        `SELECT joined_key_version
-         FROM conversation_members
-         WHERE conversation_id = $1 AND user_id = $2
-         LIMIT 1`,
-        [conversation.id, joinRequest.requester_user_id]
-      );
-
-      if (
-        joinRequest.status === 'approved' &&
-        existingMember.rows.length > 0
-      ) {
-        await client.query('ROLLBACK');
-        return res.json({
-          success: true,
-          phase: 'finalized',
-          approved_user_id: joinRequest.requester_user_id,
-          key_version: currentKeyVersion,
-        });
-      }
-
+    if (operation.targetUserIds.length !== 1 || operation.targetUserIds[0] !== String(joinRequest.requester_user_id)) {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        error: 'No pending join approval to finalize',
-        code: 'NO_PENDING_APPROVAL',
+        error: 'Membership rotation does not match this join request',
+        code: 'MEMBERSHIP_OPERATION_MISMATCH',
       });
     }
 
-    if (
-      pendingRequestId !== requestId ||
-      pendingUserId !== String(joinRequest.requester_user_id)
-    ) {
+    if (operation.status === 'finalized' && joinRequest.status === 'approved') {
+      await client.query('ROLLBACK');
+      return res.json({
+        success: true,
+        phase: 'finalized',
+        approved_user_id: joinRequest.requester_user_id,
+        key_version: pendingKeyVersion,
+      });
+    }
+
+    if (operation.status !== 'pending') {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        error: 'Pending join approval does not match this request',
-        code: 'PENDING_APPROVAL_MISMATCH',
-        pending_request_id: pendingRequestId,
-        pending_user_id: pendingUserId,
-        pending_key_version: pendingKeyVersion,
+        error: 'Join approval operation is no longer pending',
+        code: 'MEMBERSHIP_OPERATION_ROLLED_BACK',
       });
     }
 
     if (pendingKeyVersion !== currentKeyVersion + 1) {
-      await client.query(
-        `UPDATE conversations
-         SET pending_approve_request_id = NULL,
-             pending_approve_user_id = NULL,
-             pending_approve_key_version = NULL,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [conversation.id]
-      );
+      await markMembershipRotationRolledBack(client, operation.operationId);
       await client.query('COMMIT');
       return res.status(409).json({
         error: 'Pending approval is stale — version has moved',
@@ -607,44 +522,15 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
 
     const childChannelIds = await getChildChannelIds(client, conversation.id);
 
-    await insertMembershipFinalizeArtifacts(client, {
+    await finalizeMlsAddedMembers(client, {
       conversationId: conversation.id,
       actorUserId,
-      pendingKeyVersion,
+      currentKeyVersion,
+      operation,
       artifacts: parsedArtifacts.artifacts,
+      childChannelIds,
+      reason: 'invite_accept',
     });
-
-    await client.query(
-      `INSERT INTO conversation_members (
-         conversation_id,
-         user_id,
-         role,
-         joined_key_version,
-         history_start_version
-       )
-       VALUES ($1, $2, 'member', $3, $3)`,
-      [conversation.id, joinRequest.requester_user_id, pendingKeyVersion]
-    );
-
-    for (const channelId of childChannelIds) {
-      await client.query(
-        `INSERT INTO conversation_members (conversation_id, user_id, role)
-         VALUES ($1, $2, 'member')
-         ON CONFLICT DO NOTHING`,
-        [channelId, joinRequest.requester_user_id]
-      );
-    }
-
-    await client.query(
-      `UPDATE conversations
-       SET current_key_version = $2,
-           pending_approve_request_id = NULL,
-           pending_approve_user_id = NULL,
-           pending_approve_key_version = NULL,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [conversation.id, pendingKeyVersion]
-    );
 
     await client.query(
       `UPDATE conversation_join_requests
@@ -663,19 +549,6 @@ router.post('/requests/:requestId/approve/finalize', async (req, res) => {
         [joinRequest.invite_link_id]
       );
     }
-
-    await client.query(
-      `INSERT INTO conversation_key_rotations (
-         conversation_id,
-         previous_key_version,
-         new_key_version,
-         rotated_by_user_id,
-         reason,
-         affected_user_id
-       )
-       VALUES ($1, $2, $3, $4, 'invite_accept', $5)`,
-      [conversation.id, currentKeyVersion, pendingKeyVersion, actorUserId, joinRequest.requester_user_id]
-    );
 
     await client.query('COMMIT');
 
@@ -745,25 +618,6 @@ router.post('/requests/:requestId/rollback-approval', async (req, res) => {
       return res.status(403).json({ error: 'You do not have permission to manage join requests' });
     }
 
-    const lockedVersionResult = await client.query(
-      `SELECT current_key_version,
-              pending_approve_request_id,
-              pending_approve_user_id,
-              pending_approve_key_version
-       FROM conversations WHERE id = $1 FOR UPDATE`,
-      [conversation.id]
-    );
-    const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
-    const pendingRequestId = lockedVersionResult.rows[0].pending_approve_request_id != null
-      ? Number(lockedVersionResult.rows[0].pending_approve_request_id)
-      : null;
-    const pendingUserId = lockedVersionResult.rows[0].pending_approve_user_id
-      ? String(lockedVersionResult.rows[0].pending_approve_user_id)
-      : null;
-    const pendingKeyVersion = lockedVersionResult.rows[0].pending_approve_key_version != null
-      ? Number(lockedVersionResult.rows[0].pending_approve_key_version)
-      : null;
-
     const requestResult = await client.query(
       `SELECT id, requester_user_id, invite_link_id, status
        FROM conversation_join_requests
@@ -778,138 +632,55 @@ router.post('/requests/:requestId/rollback-approval', async (req, res) => {
     }
 
     const joinRequest = requestResult.rows[0];
+    const operationId = getMembershipOperationId(req.body);
+    const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
+      conversationId: conversation.id,
+      operationId,
+      actorUserId,
+      kind: 'invite_approval',
+      joinRequestId: joinRequest.id,
+    });
 
     if (
-      pendingRequestId === requestId &&
-      pendingUserId === String(joinRequest.requester_user_id) &&
-      pendingKeyVersion === failedKeyVersion &&
-      currentKeyVersion === failedKeyVersion - 1
+      operation.reservedKeyVersion !== failedKeyVersion ||
+      operation.targetUserIds.length !== 1 ||
+      operation.targetUserIds[0] !== String(joinRequest.requester_user_id)
     ) {
-      await client.query(
-        `UPDATE conversations
-         SET pending_approve_request_id = NULL,
-             pending_approve_user_id = NULL,
-             pending_approve_key_version = NULL,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [conversation.id]
-      );
-
-      await client.query('COMMIT');
-
-      return res.json({
-        success: true,
-        requester_user_id: joinRequest.requester_user_id,
-        key_version: currentKeyVersion,
-        request_status: joinRequest.status,
-        phase: 'pending_cleared',
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Join request does not match the pending membership operation',
+        code: 'MEMBERSHIP_OPERATION_MISMATCH',
       });
     }
 
-    if (currentKeyVersion !== failedKeyVersion) {
+    if (operation.status === 'finalized') {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        error: `Cannot roll back key version ${failedKeyVersion}; conversation is now at ${currentKeyVersion}`,
+        error: 'A finalized membership rotation cannot be rolled back automatically',
         code: 'ROLLBACK_NOT_POSSIBLE',
         current_key_version: currentKeyVersion,
       });
     }
 
-    if (joinRequest.status !== 'approved') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Join request is no longer approved',
-        code: 'ROLLBACK_NOT_POSSIBLE',
-      });
-    }
-
-    const memberResult = await client.query(
-      `SELECT 1
-       FROM conversation_members
-       WHERE conversation_id = $1
-         AND user_id = $2
-         AND joined_key_version = $3
-       LIMIT 1`,
-      [conversation.id, joinRequest.requester_user_id, failedKeyVersion]
-    );
-
-    if (memberResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        error: 'Approved member no longer matches the failed add operation',
-        code: 'ROLLBACK_NOT_POSSIBLE',
-      });
-    }
-
-    const childChannelIds = await getChildChannelIds(client, conversation.id);
-
-    await client.query(
-      `DELETE FROM conversation_members
-       WHERE conversation_id = $1
-         AND user_id = $2
-         AND joined_key_version = $3`,
-      [conversation.id, joinRequest.requester_user_id, failedKeyVersion]
-    );
-
-    for (const channelId of childChannelIds) {
-      await client.query(
-        `DELETE FROM conversation_members
-         WHERE conversation_id = $1
-           AND user_id = $2`,
-        [channelId, joinRequest.requester_user_id]
-      );
-    }
-
-    await client.query(
-      `DELETE FROM conversation_key_rotations
-       WHERE conversation_id = $1
-         AND new_key_version = $2
-         AND reason = 'invite_accept'
-         AND affected_user_id = $3`,
-      [conversation.id, failedKeyVersion, joinRequest.requester_user_id]
-    );
-
-    await client.query(
-      `UPDATE conversations
-       SET current_key_version = $2,
-           pending_approve_request_id = NULL,
-           pending_approve_user_id = NULL,
-           pending_approve_key_version = NULL,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [conversation.id, failedKeyVersion - 1]
-    );
-
-    await client.query(
-      `UPDATE conversation_join_requests
-       SET status = 'pending',
-           resolved_at = NULL,
-           resolved_by_user_id = NULL
-       WHERE id = $1`,
-      [joinRequest.id]
-    );
-
-    if (joinRequest.invite_link_id) {
-      await client.query(
-        `UPDATE conversation_invite_links
-         SET use_count = GREATEST(use_count - 1, 0)
-         WHERE id = $1`,
-        [joinRequest.invite_link_id]
-      );
-    }
+    await markMembershipRotationRolledBack(client, operation.operationId);
 
     await client.query('COMMIT');
 
     res.json({
       success: true,
       requester_user_id: joinRequest.requester_user_id,
-      key_version: failedKeyVersion - 1,
-      request_status: 'pending',
+      key_version: currentKeyVersion,
+      request_status: joinRequest.status,
+      phase: 'pending_cleared',
     });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Rollback approval error:', err);
-    res.status(500).json({ error: 'Failed to roll back join approval' });
+    const status = Number(err?.status) || 500;
+    res.status(status).json({
+      error: status === 500 ? 'Failed to roll back join approval' : err.message,
+      ...(err?.code ? { code: err.code } : {}),
+    });
   } finally {
     client?.release();
   }

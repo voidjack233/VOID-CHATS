@@ -26,6 +26,7 @@ async function rollbackFailedApproval(
   keyConversationId: string,
   requestId: number,
   failedKeyVersion: number,
+  operationId: string,
 ): Promise<void> {
   const response = await fetchWithAuth(
     `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/rollback-approval`,
@@ -33,6 +34,7 @@ async function rollbackFailedApproval(
       method: 'POST',
       body: JSON.stringify({
         failed_key_version: failedKeyVersion,
+        operation_id: operationId,
       }),
     },
   );
@@ -70,6 +72,10 @@ export function approveConversationJoinRequest(
     const data = await response.json();
     if (!data.success) throw createApiError(data);
     const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
+    const operationId = typeof data.operation_id === 'string' ? data.operation_id : '';
+    if (!operationId) {
+      throw new Error('Secure membership reservation was not returned by the server');
+    }
 
     let mlsKey: CryptoKey;
     let mlsArtifacts: MlsMembershipFinalizeArtifacts | null | undefined;
@@ -91,7 +97,7 @@ export function approveConversationJoinRequest(
         `${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve/finalize`,
         {
           method: 'POST',
-          body: JSON.stringify({ mls_artifacts: mlsArtifacts }),
+          body: JSON.stringify({ operation_id: operationId, mls_artifacts: mlsArtifacts }),
         },
       );
       const finalizeData = await finalizeResponse.json();
@@ -120,7 +126,7 @@ export function approveConversationJoinRequest(
       if (!finalizeStarted) {
         const rollbackNotice = 'Pending approval was cleared.';
         try {
-          await rollbackFailedApproval(keyConversationId, requestId, pendingKeyVersion);
+          await rollbackFailedApproval(keyConversationId, requestId, pendingKeyVersion, operationId);
         } catch (rollbackError) {
           throw new Error(`${getErrorMessage(error)} Pending approval cleanup failed; manual cleanup may be required. ${getErrorMessage(rollbackError)}`);
         }

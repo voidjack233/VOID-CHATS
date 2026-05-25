@@ -24,6 +24,7 @@ const REQUIRED_MLS_TABLES = [
   'mls_commit_messages',
   'mls_commit_receipts',
   'mls_group_key_archive',
+  'conversation_membership_rotations',
 ];
 const REQUIRED_MLS_COLUMNS = [
   ['mls_group_states', 'user_id'],
@@ -41,6 +42,7 @@ const REQUIRED_MLS_INDEXES = [
   'idx_mls_commit_messages_conversation_id',
   'idx_mls_commit_receipts_conversation_user',
   'idx_mls_group_key_archive_user_unique',
+  'idx_conversation_membership_rotations_pending',
 ];
 
 export function parseBoolean(value, fallback = false) {

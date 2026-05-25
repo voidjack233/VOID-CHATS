@@ -9,9 +9,15 @@ import {
   validateFriendships,
 } from '../../../utils/groupMembership.js';
 import {
-  insertMembershipFinalizeArtifacts,
   parseMembershipFinalizeArtifacts,
 } from '../mls/finalizeArtifacts.js';
+import {
+  finalizeMlsAddedMembers,
+  getMembershipOperationId,
+  lockMembershipRotation,
+  markMembershipRotationRolledBack,
+  reserveMembershipRotation,
+} from './membershipRotations.js';
 
 export function registerMemberRotateAddRoutes(router) {
   router.post('/rotate-add', async (req, res) => {
@@ -56,73 +62,13 @@ export function registerMemberRotateAddRoutes(router) {
         return res.status(403).json({ error: 'Only the owner can add members during key rotation' });
       }
 
-      const lockedVersionResult = await client.query(
-        `SELECT current_key_version,
-                pending_remove_target,
-                pending_remove_key_version,
-                pending_add_user_ids,
-                pending_add_key_version
-         FROM conversations
-         WHERE id = $1 FOR UPDATE`,
-        [conversation.id]
-      );
-      const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
-      const existingPendingRemoveTarget = lockedVersionResult.rows[0].pending_remove_target
-        ? String(lockedVersionResult.rows[0].pending_remove_target)
-        : null;
-      const existingPendingRemoveVersion = lockedVersionResult.rows[0].pending_remove_key_version != null
-        ? Number(lockedVersionResult.rows[0].pending_remove_key_version)
-        : null;
-      const existingPendingUserIds = Array.isArray(lockedVersionResult.rows[0].pending_add_user_ids)
-        ? lockedVersionResult.rows[0].pending_add_user_ids.map((value) => String(value))
-        : [];
-      const existingPendingVersion = lockedVersionResult.rows[0].pending_add_key_version != null
-        ? Number(lockedVersionResult.rows[0].pending_add_key_version)
-        : null;
-
-      if (existingPendingUserIds.length > 0 && existingPendingVersion) {
-        const samePendingMembers =
-          existingPendingUserIds.length === requestedMembers.length &&
-          existingPendingUserIds.every((memberId, index) => memberId === requestedMembers[index]);
-
-        if (samePendingMembers && existingPendingVersion === newKeyVersion) {
-          await client.query('ROLLBACK');
-          return res.json({
-            success: true,
-            phase: 'prepared',
-            added: requestedMembers,
-            pending_key_version: existingPendingVersion,
-            current_key_version: currentKeyVersion,
-          });
-        }
-
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: 'Another member add is already pending for this conversation',
-          code: 'PENDING_ADD_CONFLICT',
-          pending_members: existingPendingUserIds,
-          pending_key_version: existingPendingVersion,
-        });
-      }
-
-      if (existingPendingRemoveTarget && existingPendingRemoveVersion) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: 'A member removal is already pending for this conversation',
-          code: 'PENDING_REMOVE_CONFLICT',
-          pending_remove_target: existingPendingRemoveTarget,
-          pending_remove_key_version: existingPendingRemoveVersion,
-        });
-      }
-
-      if (newKeyVersion !== currentKeyVersion + 1) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: `Expected new_key_version ${currentKeyVersion + 1}`,
-          code: 'INVALID_KEY_VERSION',
-          current_key_version: currentKeyVersion,
-        });
-      }
+      const { operation, currentKeyVersion } = await reserveMembershipRotation(client, {
+        conversationId: conversation.id,
+        actorUserId,
+        kind: 'direct_add',
+        targetUserIds: requestedMembers,
+        requestedKeyVersion: newKeyVersion,
+      });
 
       const currentMembersResult = await client.query(
         `SELECT user_id
@@ -153,28 +99,25 @@ export function registerMemberRotateAddRoutes(router) {
         });
       }
 
-      await client.query(
-        `UPDATE conversations
-         SET pending_add_user_ids = $2::UUID[],
-             pending_add_key_version = $3,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [conversation.id, requestedMembers, newKeyVersion]
-      );
-
       await client.query('COMMIT');
 
       res.json({
         success: true,
         phase: 'prepared',
         added: requestedMembers,
-        pending_key_version: newKeyVersion,
+        operation_id: operation.operationId,
+        pending_key_version: operation.reservedKeyVersion,
         current_key_version: currentKeyVersion,
       });
     } catch (err) {
       if (client) await client.query('ROLLBACK').catch(() => {});
       console.error('Rotate-add prepare error:', err);
-      res.status(500).json({ error: 'Failed to prepare member add with key rotation' });
+      const status = Number(err?.status) || 500;
+      res.status(status).json({
+        error: status === 500 ? 'Failed to prepare member add with key rotation' : err.message,
+        ...(err?.code ? { code: err.code } : {}),
+        ...(err?.data || {}),
+      });
     } finally {
       client?.release();
     }
@@ -207,59 +150,36 @@ export function registerMemberRotateAddRoutes(router) {
         return res.status(403).json({ error: 'Only the owner can finalize member add' });
       }
 
-      const lockedResult = await client.query(
-        `SELECT current_key_version,
-                pending_add_user_ids,
-                pending_add_key_version
-         FROM conversations
-         WHERE id = $1 FOR UPDATE`,
-        [conversation.id]
-      );
+      const operationId = getMembershipOperationId(req.body);
+      const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
+        conversationId: conversation.id,
+        operationId,
+        actorUserId,
+        kind: 'direct_add',
+      });
+      const pendingUserIds = operation.targetUserIds;
+      const pendingKeyVersion = operation.reservedKeyVersion;
 
-      const currentKeyVersion = normalizeKeyVersion(lockedResult.rows[0].current_key_version, 1);
-      const pendingUserIds = Array.isArray(lockedResult.rows[0].pending_add_user_ids)
-        ? lockedResult.rows[0].pending_add_user_ids.map((value) => String(value))
-        : [];
-      const pendingKeyVersion = lockedResult.rows[0].pending_add_key_version != null
-        ? Number(lockedResult.rows[0].pending_add_key_version)
-        : null;
+      if (operation.status === 'finalized') {
+        await client.query('ROLLBACK');
+        return res.json({
+          success: true,
+          phase: 'finalized',
+          added: pendingUserIds,
+          key_version: pendingKeyVersion,
+        });
+      }
 
-      if (pendingUserIds.length === 0 || !pendingKeyVersion) {
-        const finalizedAdditions = await client.query(
-          `SELECT affected_user_id::text AS user_id
-           FROM conversation_key_rotations
-           WHERE conversation_id = $1
-             AND reason = 'member_add'
-             AND new_key_version = $2`,
-          [conversation.id, currentKeyVersion]
-        );
-
-        if (finalizedAdditions.rows.length > 0) {
-          await client.query('ROLLBACK');
-          return res.json({
-            success: true,
-            phase: 'finalized',
-            added: finalizedAdditions.rows.map((row) => row.user_id),
-            key_version: currentKeyVersion,
-          });
-        }
-
+      if (operation.status !== 'pending') {
         await client.query('ROLLBACK');
         return res.status(409).json({
-          error: 'No pending member add to finalize',
-          code: 'NO_PENDING_ADD',
+          error: 'Member add operation is no longer pending',
+          code: 'MEMBERSHIP_OPERATION_ROLLED_BACK',
         });
       }
 
       if (pendingKeyVersion !== currentKeyVersion + 1) {
-        await client.query(
-          `UPDATE conversations
-           SET pending_add_user_ids = NULL,
-               pending_add_key_version = NULL,
-               updated_at = NOW()
-           WHERE id = $1`,
-          [conversation.id]
-        );
+        await markMembershipRotationRolledBack(client, operation.operationId);
         await client.query('COMMIT');
         return res.status(409).json({
           error: 'Pending member add is stale — version has moved',
@@ -314,60 +234,15 @@ export function registerMemberRotateAddRoutes(router) {
 
       const childChannelIds = await getChildChannelIds(client, conversation.id);
 
-      await insertMembershipFinalizeArtifacts(client, {
+      await finalizeMlsAddedMembers(client, {
         conversationId: conversation.id,
         actorUserId,
-        pendingKeyVersion,
+        currentKeyVersion,
+        operation,
         artifacts: parsedArtifacts.artifacts,
+        childChannelIds,
+        reason: 'member_add',
       });
-
-      for (const memberId of pendingUserIds) {
-        await client.query(
-          `INSERT INTO conversation_members (
-             conversation_id,
-             user_id,
-             role,
-             joined_key_version,
-             history_start_version
-           )
-           VALUES ($1, $2, 'member', $3, $3)`,
-          [conversation.id, memberId, pendingKeyVersion]
-        );
-
-        for (const channelId of childChannelIds) {
-          await client.query(
-            `INSERT INTO conversation_members (conversation_id, user_id, role)
-             VALUES ($1, $2, 'member')
-             ON CONFLICT DO NOTHING`,
-            [channelId, memberId]
-          );
-        }
-      }
-
-      await client.query(
-        `UPDATE conversations
-         SET current_key_version = $2,
-             pending_add_user_ids = NULL,
-             pending_add_key_version = NULL,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [conversation.id, pendingKeyVersion]
-      );
-
-      for (const memberId of pendingUserIds) {
-        await client.query(
-          `INSERT INTO conversation_key_rotations (
-             conversation_id,
-             previous_key_version,
-             new_key_version,
-             rotated_by_user_id,
-             reason,
-             affected_user_id
-           )
-           VALUES ($1, $2, $3, $4, 'member_add', $5)`,
-          [conversation.id, currentKeyVersion, pendingKeyVersion, actorUserId, memberId]
-        );
-      }
 
       await client.query('COMMIT');
 
@@ -446,120 +321,54 @@ export function registerMemberRotateAddRoutes(router) {
         return res.status(403).json({ error: 'Only the owner can roll back failed member adds' });
       }
 
-      const lockedVersionResult = await client.query(
-        `SELECT current_key_version,
-                pending_add_user_ids,
-                pending_add_key_version
-         FROM conversations
-         WHERE id = $1 FOR UPDATE`,
-        [conversation.id]
-      );
-      const currentKeyVersion = normalizeKeyVersion(lockedVersionResult.rows[0].current_key_version, 1);
-      const pendingUserIds = Array.isArray(lockedVersionResult.rows[0].pending_add_user_ids)
-        ? lockedVersionResult.rows[0].pending_add_user_ids.map((value) => String(value))
-        : [];
-      const pendingKeyVersion = lockedVersionResult.rows[0].pending_add_key_version != null
-        ? Number(lockedVersionResult.rows[0].pending_add_key_version)
-        : null;
+      const operationId = getMembershipOperationId(req.body);
+      const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
+        conversationId: conversation.id,
+        operationId,
+        actorUserId,
+        kind: 'direct_add',
+      });
+      const expectedMembers = [...new Set(requestedMembers.map((memberId) => String(memberId)))].sort();
+      const matchesRequest =
+        operation.reservedKeyVersion === failedKeyVersion &&
+        operation.targetUserIds.length === expectedMembers.length &&
+        operation.targetUserIds.every((memberId, index) => memberId === expectedMembers[index]);
 
-      const pendingMatches =
-        pendingKeyVersion === failedKeyVersion &&
-        pendingUserIds.length === requestedMembers.length &&
-        pendingUserIds.every((memberId, index) => memberId === requestedMembers[index]);
-
-      if (pendingMatches) {
-        await client.query(
-          `UPDATE conversations
-           SET pending_add_user_ids = NULL,
-               pending_add_key_version = NULL,
-               updated_at = NOW()
-           WHERE id = $1`,
-          [conversation.id]
-        );
-
-        await client.query('COMMIT');
-
-        return res.json({
-          success: true,
-          rolled_back: requestedMembers,
-          key_version: currentKeyVersion,
-          phase: 'pending_cleared',
+      if (!matchesRequest) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          error: 'Requested members do not match the pending add operation',
+          code: 'MEMBERSHIP_OPERATION_MISMATCH',
         });
       }
 
-      if (currentKeyVersion !== failedKeyVersion) {
+      if (operation.status === 'finalized') {
         await client.query('ROLLBACK');
         return res.status(409).json({
-          error: `Cannot roll back key version ${failedKeyVersion}; conversation is now at ${currentKeyVersion}`,
+          error: 'A finalized membership rotation cannot be rolled back automatically',
           code: 'ROLLBACK_NOT_POSSIBLE',
           current_key_version: currentKeyVersion,
         });
       }
 
-      const addedMembersResult = await client.query(
-        `SELECT user_id::text AS user_id
-         FROM conversation_members
-         WHERE conversation_id = $1
-           AND user_id = ANY($2::UUID[])
-           AND joined_key_version = $3`,
-        [conversation.id, requestedMembers, failedKeyVersion]
-      );
-
-      if (addedMembersResult.rows.length !== requestedMembers.length) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({
-          error: 'Requested members no longer match the failed add operation',
-          code: 'ROLLBACK_NOT_POSSIBLE',
-        });
-      }
-
-      const childChannelIds = await getChildChannelIds(client, conversation.id);
-
-      await client.query(
-        `DELETE FROM conversation_members
-         WHERE conversation_id = $1
-           AND user_id = ANY($2::UUID[])
-           AND joined_key_version = $3`,
-        [conversation.id, requestedMembers, failedKeyVersion]
-      );
-
-      for (const channelId of childChannelIds) {
-        await client.query(
-          `DELETE FROM conversation_members
-           WHERE conversation_id = $1
-             AND user_id = ANY($2::UUID[])`,
-          [channelId, requestedMembers]
-        );
-      }
-
-      await client.query(
-        `DELETE FROM conversation_key_rotations
-         WHERE conversation_id = $1
-           AND new_key_version = $2
-           AND reason = 'member_add'
-           AND affected_user_id = ANY($3::UUID[])`,
-        [conversation.id, failedKeyVersion, requestedMembers]
-      );
-
-      await client.query(
-        `UPDATE conversations
-         SET current_key_version = $2,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [conversation.id, failedKeyVersion - 1]
-      );
+      await markMembershipRotationRolledBack(client, operation.operationId);
 
       await client.query('COMMIT');
 
       res.json({
         success: true,
-        rolled_back: requestedMembers,
-        key_version: failedKeyVersion - 1,
+        rolled_back: operation.targetUserIds,
+        key_version: currentKeyVersion,
+        phase: 'pending_cleared',
       });
     } catch (err) {
       if (client) await client.query('ROLLBACK').catch(() => {});
       console.error('Rotate-add rollback error:', err);
-      res.status(500).json({ error: 'Failed to roll back member add' });
+      const status = Number(err?.status) || 500;
+      res.status(status).json({
+        error: status === 500 ? 'Failed to roll back member add' : err.message,
+        ...(err?.code ? { code: err.code } : {}),
+      });
     } finally {
       client?.release();
     }

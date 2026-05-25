@@ -29,12 +29,34 @@ async function rollbackFailedRotateAdd(
   keyConversationId: string,
   memberIds: string[],
   failedKeyVersion: number,
+  operationId: string,
 ): Promise<void> {
   const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/rollback`, {
     method: 'POST',
     body: JSON.stringify({
       members: memberIds,
       failed_key_version: failedKeyVersion,
+      operation_id: operationId,
+    }),
+  });
+  const data = await response.json();
+  if (!data.success) {
+    throw createApiError(data);
+  }
+}
+
+async function rollbackFailedRotateRemove(
+  keyConversationId: string,
+  targetUserId: string,
+  failedKeyVersion: number,
+  operationId: string,
+): Promise<void> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({
+      target_user_id: targetUserId,
+      failed_key_version: failedKeyVersion,
+      operation_id: operationId,
     }),
   });
   const data = await response.json();
@@ -284,6 +306,10 @@ export function rotateAddMembers(
     const data = await response.json();
     if (!data.success) throw createApiError(data);
     const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
+    const operationId = typeof data.operation_id === 'string' ? data.operation_id : '';
+    if (!operationId) {
+      throw new Error('Secure membership reservation was not returned by the server');
+    }
 
     let mlsKey: CryptoKey;
     let mlsArtifacts: MlsMembershipFinalizeArtifacts | null | undefined;
@@ -305,7 +331,7 @@ export function rotateAddMembers(
         `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-add/finalize`,
         {
           method: 'POST',
-          body: JSON.stringify({ mls_artifacts: mlsArtifacts }),
+          body: JSON.stringify({ operation_id: operationId, mls_artifacts: mlsArtifacts }),
         },
       );
       const finalizeData = await finalizeResponse.json();
@@ -334,7 +360,7 @@ export function rotateAddMembers(
       if (!finalizeStarted) {
         const rollbackNotice = 'Pending member add was cleared.';
         try {
-          await rollbackFailedRotateAdd(keyConversationId, additions, pendingKeyVersion);
+          await rollbackFailedRotateAdd(keyConversationId, additions, pendingKeyVersion, operationId);
         } catch (rollbackError) {
           throw new Error(`${getErrorMessage(error)} Pending member add cleanup failed; manual cleanup may be required. ${getErrorMessage(rollbackError)}`);
         }
@@ -389,10 +415,8 @@ export function rotateRemoveMember(
       [targetUserId],
     );
 
-    // ── Phase 1: PREPARE ─────────────────────────────────────────
-    // Server validates the removal and records intent (pending_remove_*
-    // columns on the conversation row). Does NOT delete the member or
-    // advance current_key_version. Idempotent for the same target/version.
+    // Phase 1 reserves the one conversation-wide membership rotation slot.
+    // No member removal or key-version advance occurs before finalize.
     const prepareResponse = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove`, {
       method: 'POST',
       body: JSON.stringify({
@@ -403,45 +427,65 @@ export function rotateRemoveMember(
     const prepareData = await prepareResponse.json();
     if (!prepareData.success) throw createApiError(prepareData);
     const pendingKeyVersion = prepareData.pending_key_version || nextKeyVersion;
-
-    // Produce the survivor MLS state without publishing it before membership
-    // is committed. Finalize stores the artifact bundle atomically.
-    const { key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
-      { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
-      currentUserId,
-      survivors,
-      { allowFreshGroupBootstrap: preflightResult.requiresFreshBootstrap, stageOnly: true },
-    );
-
-    if (!mlsArtifacts) {
-      throw new Error('Secure membership artifacts could not be prepared');
+    const operationId = typeof prepareData.operation_id === 'string' ? prepareData.operation_id : '';
+    if (!operationId) {
+      throw new Error('Secure membership reservation was not returned by the server');
     }
 
-    const finalizeResponse = await fetchWithAuth(
-      `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ mls_artifacts: mlsArtifacts }),
-      },
-    );
-    const finalizeData = await finalizeResponse.json();
+    let finalizeStarted = false;
+    try {
+      // Produce the survivor MLS state without publishing it before membership
+      // is committed. Finalize stores the artifact bundle atomically.
+      const { key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
+        { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
+        currentUserId,
+        survivors,
+        { allowFreshGroupBootstrap: preflightResult.requiresFreshBootstrap, stageOnly: true },
+      );
 
-    if (!finalizeData.success) throw createApiError(finalizeData);
-    const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
+      if (!mlsArtifacts) {
+        throw new Error('Secure membership artifacts could not be prepared');
+      }
 
-    if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
-      await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
-      await chatCryptoProtocolService.syncInbox(currentUserId, true).catch((error) => {
-        console.warn('[ROTATE_REMOVE] finalized but local MLS state refresh failed', {
-          conversation_id: keyConversationId,
-          key_version: resolvedKeyVersion,
-          error: error instanceof Error ? error.message : String(error || ''),
+      finalizeStarted = true;
+      const finalizeResponse = await fetchWithAuth(
+        `${CHAT_API_PREFIX}/${keyConversationId}/members/rotate-remove/finalize`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ operation_id: operationId, mls_artifacts: mlsArtifacts }),
+        },
+      );
+      const finalizeData = await finalizeResponse.json();
+
+      if (!finalizeData.success) throw createApiError(finalizeData);
+      const resolvedKeyVersion = finalizeData.key_version || pendingKeyVersion;
+
+      if (survivors.includes(currentUserId) && targetUserId !== currentUserId) {
+        await keyManager.storeGroupKey(keyConversationId, resolvedKeyVersion, mlsKey);
+        await chatCryptoProtocolService.syncInbox(currentUserId, true).catch((error) => {
+          console.warn('[ROTATE_REMOVE] finalized but local MLS state refresh failed', {
+            conversation_id: keyConversationId,
+            key_version: resolvedKeyVersion,
+            error: error instanceof Error ? error.message : String(error || ''),
+          });
         });
-      });
-    }
-    await notifyMembershipUpdate(keyConversationId);
+      }
+      await notifyMembershipUpdate(keyConversationId);
 
-    return { key_version: resolvedKeyVersion };
+      return { key_version: resolvedKeyVersion };
+    } catch (error) {
+      if (!finalizeStarted) {
+        try {
+          await rollbackFailedRotateRemove(keyConversationId, targetUserId, pendingKeyVersion, operationId);
+        } catch (rollbackError) {
+          throw new Error(`${getErrorMessage(error)} Pending member removal cleanup failed; manual cleanup may be required. ${getErrorMessage(rollbackError)}`);
+        }
+
+        throw new Error(`${getErrorMessage(error)} Pending member removal was cleared.`);
+      }
+
+      throw error;
+    }
   });
 }
 

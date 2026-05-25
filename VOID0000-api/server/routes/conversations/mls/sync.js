@@ -204,12 +204,14 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
                    AND commits.epoch < COALESCE(conversations.current_key_version, 1)
                  )
                )
-               AND NOT (
-                 conversations.type != 'dm'
-                 AND (
-                   conversations.pending_add_key_version IS NOT NULL
-                   OR conversations.pending_remove_key_version IS NOT NULL
-                   OR conversations.pending_approve_key_version IS NOT NULL
+               AND (
+                 conversations.type = 'dm'
+                 OR NOT EXISTS (
+                   SELECT 1
+                   FROM conversation_membership_rotations rotations
+                   WHERE rotations.conversation_id = conversations.id
+                     AND rotations.status = 'pending'
+                     AND (rotations.expires_at IS NULL OR rotations.expires_at > NOW())
                  )
                )
              ORDER BY commits.received_at ASC

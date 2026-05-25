@@ -40,6 +40,7 @@ Current canonical migrations cover:
 - `conversation_categories`
 - `conversation_members`
 - `conversation_key_rotations`
+- `conversation_membership_rotations`
 - `dm_pairs`
 - `conversation_invite_links`
 - `conversation_join_requests`
@@ -60,9 +61,17 @@ Migration order matters:
 - `0000_core_schema.sql`
 - `0001_conversation_schema.sql`
 - `0002_mls_schema.sql`
+- migrations `0003` through `0013` in numeric order
+- `0014_membership_rotation_reservations.sql`
 - `db/scylla-migrations/0000_message_storage.cql`
 
 The `0000` prefix is intentional because later conversation migrations reference `users(id)`.
+
+## Membership rotation rollout
+
+`0014_membership_rotation_reservations.sql` switches group member add, invite approval, and member removal onto one serialized MLS reservation lane. Deploy the updated API and web client together after applying this migration because finalize and rollback requests now include `operation_id`.
+
+Applying this migration clears only unfinished legacy `pending_add_*`, `pending_remove_*`, and `pending_approve_*` intents. A user who had one of those changes prepared but not finalized will need to retry it.
 
 ## Current limitation
 
