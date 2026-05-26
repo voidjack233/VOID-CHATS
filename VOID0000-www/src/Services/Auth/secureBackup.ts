@@ -11,6 +11,7 @@ export interface SecureKeyBackupPayload {
   mls_state_encrypted?: string;
   mls_state_iv?: string;
   mls_state_salt?: string;
+  mls_key_package_refs?: string[];
 }
 
 export interface RecoveryKeyBackupPayload {
@@ -21,18 +22,26 @@ export interface RecoveryKeyBackupPayload {
   recovery_mls_state_encrypted?: string;
   recovery_mls_state_iv?: string;
   recovery_mls_state_salt?: string;
+  mls_key_package_refs?: string[];
 }
 
 export async function buildMlsBackupFields(
   userId: string,
   password: string
-): Promise<Pick<SecureKeyBackupPayload, 'mls_state_encrypted' | 'mls_state_iv' | 'mls_state_salt'> | null> {
+): Promise<Pick<SecureKeyBackupPayload, 'mls_state_encrypted' | 'mls_state_iv' | 'mls_state_salt' | 'mls_key_package_refs'> | null> {
   try {
     const mlsData = await mlsStore.exportForBackup(userId);
     const groupKeys = await keyManager.exportGroupKeys();
     const payload: MlsBackupData = { ...mlsData, groupKeys };
     const { encrypted, iv, salt } = await keyManager.encryptDataWithPassword(payload, password);
-    return { mls_state_encrypted: encrypted, mls_state_iv: iv, mls_state_salt: salt };
+    return {
+      mls_state_encrypted: encrypted,
+      mls_state_iv: iv,
+      mls_state_salt: salt,
+      mls_key_package_refs: mlsData.keyPackages
+        .filter((record) => Boolean(record.privateData) && !record.consumedAt)
+        .map((record) => record.packageRef),
+    };
   } catch (err) {
     console.warn('🔑 MLS state export failed (non-critical):', err);
     return null;
@@ -42,7 +51,7 @@ export async function buildMlsBackupFields(
 export async function buildRecoveryMlsBackupFields(
   userId: string,
   recoveryKey: string
-): Promise<Pick<RecoveryKeyBackupPayload, 'recovery_mls_state_encrypted' | 'recovery_mls_state_iv' | 'recovery_mls_state_salt'> | null> {
+): Promise<Pick<RecoveryKeyBackupPayload, 'recovery_mls_state_encrypted' | 'recovery_mls_state_iv' | 'recovery_mls_state_salt' | 'mls_key_package_refs'> | null> {
   try {
     const mlsData = await mlsStore.exportForBackup(userId);
     const groupKeys = await keyManager.exportGroupKeys();
@@ -52,6 +61,9 @@ export async function buildRecoveryMlsBackupFields(
       recovery_mls_state_encrypted: encrypted,
       recovery_mls_state_iv: iv,
       recovery_mls_state_salt: salt,
+      mls_key_package_refs: mlsData.keyPackages
+        .filter((record) => Boolean(record.privateData) && !record.consumedAt)
+        .map((record) => record.packageRef),
     };
   } catch (err) {
     console.warn('🔑 Recovery MLS state export failed (non-critical):', err);
@@ -72,7 +84,8 @@ export async function prepareSecureBackup(
 }
 
 export async function uploadSecureBackups(userId: string, password: string): Promise<void> {
-  await backupKeyToServer(await prepareSecureBackup(userId, password));
+  const activatedRefs = await backupKeyToServer(await prepareSecureBackup(userId, password));
+  await Promise.all(activatedRefs.map((packageRef) => mlsStore.markKeyPackageClaimable(userId, packageRef)));
 }
 
 export async function prepareRecoverySecureBackup(
@@ -88,5 +101,6 @@ export async function prepareRecoverySecureBackup(
 }
 
 export async function uploadRecoverySecureBackups(userId: string, recoveryKey: string): Promise<void> {
-  await backupRecoveryKeyToServer(await prepareRecoverySecureBackup(userId, recoveryKey));
+  const activatedRefs = await backupRecoveryKeyToServer(await prepareRecoverySecureBackup(userId, recoveryKey));
+  await Promise.all(activatedRefs.map((packageRef) => mlsStore.markKeyPackageClaimable(userId, packageRef)));
 }

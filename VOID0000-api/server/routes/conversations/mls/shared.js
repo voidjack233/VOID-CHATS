@@ -27,6 +27,7 @@ const REQUIRED_MLS_TABLES = [
   'conversation_membership_rotations',
 ];
 const REQUIRED_MLS_COLUMNS = [
+  ['mls_key_packages', 'claimable_at'],
   ['mls_group_states', 'user_id'],
   ['mls_group_states', 'key_version'],
   ['mls_welcome_messages', 'key_version'],
@@ -34,6 +35,7 @@ const REQUIRED_MLS_COLUMNS = [
 ];
 const REQUIRED_MLS_INDEXES = [
   'idx_mls_key_packages_user_id',
+  'idx_mls_key_packages_claimable',
   'idx_mls_group_states_updated_at',
   'idx_mls_group_states_user_unique',
   'idx_mls_group_state_history_conversation_version',
@@ -181,6 +183,7 @@ export async function getAvailableKeyPackageCount(userId, db = pool) {
      FROM mls_key_packages
      WHERE user_id = $1::UUID
        AND published_at IS NOT NULL
+       AND claimable_at IS NOT NULL
        AND consumed_at IS NULL`,
     [userId]
   );

@@ -51,6 +51,7 @@ export interface MlsKeyPackageRecord {
   privateData?: string | null;
   createdAt: string;
   publishedAt?: string | null;
+  claimableAt?: string | null;
   consumedAt?: string | null;
 }
 
@@ -128,6 +129,7 @@ export interface MlsSyncKeyPackageUpdate {
   packageRef: string;
   packageData?: string | null;
   publishedAt?: string | null;
+  claimableAt?: string | null;
   consumedAt?: string | null;
 }
 

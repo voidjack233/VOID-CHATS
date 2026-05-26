@@ -3,6 +3,10 @@ import { Router } from 'express';
 import { pool } from '../../db.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { emitConversationUpdate, normalizeKeyVersion } from '../../utils/groupMembership.js';
+import {
+  activateBackedUpMlsKeyPackages,
+  normalizeBackedUpMlsKeyPackageRefs,
+} from '../../utils/mlsKeyPackageBackupActivation.js';
 
 const router = Router();
 
@@ -30,16 +34,53 @@ function hasEncryptedKeyPayload(payload) {
 // POST /api/conversations/keys/backup — store encrypted private key backup (+ optional MLS state)
 router.post('/backup', async (req, res) => {
   const userId = req.user.id;
-  const { encrypted_private_key, iv, salt, key_id, mls_state_encrypted, mls_state_iv, mls_state_salt } = req.body;
+  const {
+    encrypted_private_key,
+    iv,
+    salt,
+    key_id,
+    mls_state_encrypted,
+    mls_state_iv,
+    mls_state_salt,
+    mls_key_package_refs,
+  } = req.body;
 
   if (!encrypted_private_key || !iv || !salt || !key_id) {
     return res.status(400).json({ error: 'encrypted_private_key, iv, salt, and key_id required' });
   }
 
-  const hasMlsState = mls_state_encrypted && mls_state_iv && mls_state_salt;
+  const hasMlsState = Boolean(mls_state_encrypted && mls_state_iv && mls_state_salt);
+  const hasPartialMlsState = Boolean(mls_state_encrypted || mls_state_iv || mls_state_salt);
+  const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(mls_key_package_refs);
+
+  if (hasPartialMlsState && !hasMlsState) {
+    return res.status(400).json({
+      error: 'mls_state_encrypted, mls_state_iv, and mls_state_salt must all be provided together',
+      code: 'INVALID_MLS_BACKUP',
+    });
+  }
+
+  if (!backedUpMlsKeyPackageRefs) {
+    return res.status(400).json({
+      error: 'mls_key_package_refs must be an array of valid package refs',
+      code: 'INVALID_MLS_KEY_PACKAGE_REFS',
+    });
+  }
+
+  if (backedUpMlsKeyPackageRefs.length > 0 && !hasMlsState) {
+    return res.status(400).json({
+      error: 'An encrypted MLS state backup is required before key packages can be activated',
+      code: 'MLS_BACKUP_REQUIRED',
+    });
+  }
+
+  let client;
 
   try {
-    await pool.query(
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    await client.query(
       `INSERT INTO user_key_backups (user_id, encrypted_private_key, iv, salt, key_id, mls_state_encrypted, mls_state_iv, mls_state_salt)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (user_id)
@@ -60,10 +101,22 @@ router.post('/backup', async (req, res) => {
       ]
     );
 
-    res.json({ success: true, message: 'Key backup stored' });
+    const activatedKeyPackageRefs = hasMlsState
+      ? await activateBackedUpMlsKeyPackages(client, userId, backedUpMlsKeyPackageRefs)
+      : [];
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: 'Key backup stored',
+      data: { activated_key_package_refs: activatedKeyPackageRefs },
+    });
   } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Key backup error:', err);
     res.status(500).json({ error: 'Failed to store key backup' });
+  } finally {
+    client?.release();
   }
 });
 
@@ -118,6 +171,21 @@ router.post('/backup/recovery', async (req, res) => {
     return res.status(400).json({
       error: 'recovery_mls_state_encrypted, recovery_mls_state_iv, and recovery_mls_state_salt must all be provided together',
       code: 'INVALID_RECOVERY_MLS_BACKUP',
+    });
+  }
+
+  const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(payload.mls_key_package_refs);
+  if (!backedUpMlsKeyPackageRefs) {
+    return res.status(400).json({
+      error: 'mls_key_package_refs must be an array of valid package refs',
+      code: 'INVALID_MLS_KEY_PACKAGE_REFS',
+    });
+  }
+
+  if (backedUpMlsKeyPackageRefs.length > 0 && !hasRecoveryMlsState) {
+    return res.status(400).json({
+      error: 'An encrypted MLS state backup is required before key packages can be activated',
+      code: 'MLS_BACKUP_REQUIRED',
     });
   }
 
@@ -185,8 +253,16 @@ router.post('/backup/recovery', async (req, res) => {
       ]
     );
 
+    const activatedKeyPackageRefs = hasRecoveryMlsState
+      ? await activateBackedUpMlsKeyPackages(client, userId, backedUpMlsKeyPackageRefs)
+      : [];
+
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Recovery backup stored' });
+    res.json({
+      success: true,
+      message: 'Recovery backup stored',
+      data: { activated_key_package_refs: activatedKeyPackageRefs },
+    });
   } catch (err) {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Recovery backup error:', err);

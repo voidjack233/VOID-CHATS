@@ -15,7 +15,7 @@
 import { useCallback, useState, useEffect, useRef } from 'react';
 import { debugLog } from '../../utils/debugLog';
 import type { ConversationSecurityState } from '../../Chat/conversationSecurityState';
-import { Conversation, Message, getEncryptionKey } from '../../Chat/chatService';
+import { Conversation, Message, getEncryptionKey, tryActivateDmDecryptHealer } from '../../Chat/chatService';
 import { gateway } from '../../Gateway/gateway';
 import { decryptMessage } from '../../Crypto/messageEncryption';
 import { getHandshakeEntry, setHandshakeEntry, deleteHandshakeEntry } from '../../Chat/handshakeKeyCache';
@@ -157,7 +157,7 @@ export const useMessageStream = ({
 
   // DM decrypt path.
   // DMs use MLS-tagged payloads encrypted with the conversation key.
-  // Returns null on failure so attemptDecryption's auto-healer can run.
+  // Returns null on failure so attemptDecryption's throttled healer can run.
   // Previously returned '[unable to decrypt]' which was treated as a
   // successful decrypt (non-null) and permanently bypassed recovery.
   const tryDmDecrypt = async (data: any, key: CryptoKey): Promise<string | null> => {
@@ -185,7 +185,7 @@ export const useMessageStream = ({
       );
     } catch (err) {
       // Return null — not '[unable to decrypt]' — so the healer in
-      // attemptDecryption wipes the cache and re-runs syncInbox.
+      // attemptDecryption can schedule one bounded repair attempt.
       console.warn('[DM_DECRYPT] key mismatch, routing to healer', {
         conversation_id: data.conversation_id,
         sender_id: data.sender_id,
@@ -196,8 +196,9 @@ export const useMessageStream = ({
     }
   };
 
-  // Auto-healer: if decryption fails, wipes the cache and forces a re-fetch.
-  // tryDmDecrypt returns null on failure so DM failures also reach the healer.
+  // Auto-healer: if decryption fails, invalidate stale state and re-handshake.
+  // DM activation is throttled because several failed ciphertexts can arrive
+  // together while one repair attempt is already in progress.
   const attemptDecryption = async (data: any, key: CryptoKey, isUpdate = false) => {
     if (data.message_type === 'system' && !data.iv) {
       const content = data.content || data.encrypted_content || 'System event';
@@ -273,6 +274,33 @@ export const useMessageStream = ({
         return;
       }
 
+      const bufferPendingMessage = () => {
+        const isAlreadyBuffered = pendingMessages.current.some(
+          (pending) =>
+            pending.message_id === data.message_id &&
+            pending.conversation_id === data.conversation_id &&
+            pending.edited_at === data.edited_at,
+        );
+        if (!isAlreadyBuffered) {
+          pendingMessages.current.push(data);
+        }
+      };
+      const keyScopeId = getConversationKeyScopeId(activeConversation);
+      const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
+
+      if (activeConversation?.type === 'dm' && keyScopeId) {
+        const healer = tryActivateDmDecryptHealer(keyScopeId);
+        if (!healer.activated) {
+          console.warn('[DECRYPT_HEALER] DM repair cooldown active; buffering without another cache wipe', {
+            conversation_id: keyScopeId,
+            key_version: data?.key_version,
+            retry_after_ms: healer.retryAfterMs,
+          });
+          bufferPendingMessage();
+          return;
+        }
+      }
+
       console.warn('[DECRYPT_HEALER] activating — wiping cache and retrying handshake', {
         conversation_id: activeConversation?.id,
         conversation_type: activeConversation?.type,
@@ -282,9 +310,6 @@ export const useMessageStream = ({
       });
 
       // Wipe the memory cache so the handshake runs fresh
-      const keyScopeId = getConversationKeyScopeId(activeConversation);
-      const keyScopePublicId = getConversationKeyScopePublicId(activeConversation);
-
       if (keyScopeId) {
         deleteHandshakeEntry(keyScopeId);
       }
@@ -325,15 +350,7 @@ export const useMessageStream = ({
       retryHandshake();
 
       // Buffer the message to try again once the new key arrives
-      const isAlreadyBuffered = pendingMessages.current.some(
-        (pending) =>
-          pending.message_id === data.message_id &&
-          pending.conversation_id === data.conversation_id &&
-          pending.edited_at === data.edited_at,
-      );
-      if (!isAlreadyBuffered) {
-        pendingMessages.current.push(data);
-      }
+      bufferPendingMessage();
     }
   };
 

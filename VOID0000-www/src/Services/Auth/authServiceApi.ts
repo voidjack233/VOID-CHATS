@@ -404,6 +404,7 @@ export const authService = {
       mls_state_encrypted?: string;
       mls_state_iv?: string;
       mls_state_salt?: string;
+      mls_key_package_refs?: string[];
     } | null,
     twoFactor?: {
       method: string;

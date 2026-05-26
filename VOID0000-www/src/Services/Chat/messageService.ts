@@ -7,6 +7,7 @@ import {
   createMessageKeyResolver,
   getEncryptionKey,
   resolveMessageCryptoMetadata,
+  tryActivateDmDecryptHealer,
 } from './chatCryptoService';
 import {
   applyEncryptedMessageEnvelope,
@@ -349,6 +350,15 @@ async function retryDmDecryptionAfterKeyRepair(
   }
 
   const keyConversationId = getConversationKeyId(context.conversation);
+  const healer = tryActivateDmDecryptHealer(keyConversationId);
+  if (!healer.activated) {
+    console.warn('[DM_DECRYPT_REPAIR] cooldown active; skipping repeated key deletion and sync retry', {
+      conversation_id: keyConversationId,
+      retry_after_ms: healer.retryAfterMs,
+    });
+    return firstPass;
+  }
+
   await Promise.all(
     Array.from(failedVersions).map((version) =>
       keyManager.deleteGroupKey(keyConversationId, version).catch(() => {})

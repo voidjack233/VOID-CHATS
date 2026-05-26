@@ -39,6 +39,7 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
                     package_ref,
                     package_data,
                     published_at,
+                    claimable_at,
                     consumed_at
              FROM mls_key_packages
              WHERE user_id = $1::UUID

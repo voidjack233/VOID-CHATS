@@ -84,6 +84,7 @@ export class MlsService {
       }
 
       const nextPublishedAt = update.publishedAt ?? existing?.publishedAt ?? null;
+      const nextClaimableAt = update.claimableAt ?? null;
       const nextConsumedAt = update.consumedAt ?? existing?.consumedAt ?? null;
       const nextCreatedAt =
         existing?.createdAt ||
@@ -98,6 +99,7 @@ export class MlsService {
         privateData: existing?.privateData ?? null,
         createdAt: nextCreatedAt,
         publishedAt: nextPublishedAt,
+        claimableAt: nextClaimableAt,
         consumedAt: nextConsumedAt,
       };
 
@@ -106,6 +108,7 @@ export class MlsService {
         existing.packageData !== nextRecord.packageData ||
         (existing.privateData ?? null) !== nextRecord.privateData ||
         (existing.publishedAt ?? null) !== nextPublishedAt ||
+        (existing.claimableAt ?? null) !== nextClaimableAt ||
         (existing.consumedAt ?? null) !== nextConsumedAt;
 
       if (!didChange) {
@@ -165,7 +168,8 @@ export class MlsService {
   }
 
   private async publishPendingKeyPackages(userId: string): Promise<number> {
-    const unpublished = await mlsStorageService.listUnpublishedKeyPackages(userId);
+    const unpublished = (await mlsStorageService.listUnpublishedKeyPackages(userId))
+      .filter((record) => Boolean(record.privateData));
     let published = 0;
 
     for (const record of unpublished) {
@@ -183,13 +187,14 @@ export class MlsService {
   }
 
   /**
-   * Ensure this user has at least `target` usable key packages on the server.
-   * Server availability is the source of truth — local counts are not trusted.
+   * Ensure this user has at least `target` claimable key packages on the server.
+   * Newly published packages are staged until an encrypted MLS backup activates
+   * them, so local staged inventory is included only to avoid duplicate work.
    *
    * Steps:
    * 1. Fetch exact server count via /check endpoint.
    * 2. If count >= target → done.
-   * 3. Publish any genuinely local-unpublished packages (never reached server).
+   * 3. Stage any genuinely local-unpublished packages (never reached server).
    * 4. If still below target, generate brand-new packages with fresh refs.
    * 5. Re-check server count after publishing.
    *
@@ -228,15 +233,21 @@ export class MlsService {
     const localUsablePackages = localKeyPackages.filter(
       (record) => !record.consumedAt && Boolean(record.privateData),
     );
-    const localPublishedUsableCount = localUsablePackages.filter(
-      (record) => Boolean(record.publishedAt),
+    const localClaimableUsableCount = localUsablePackages.filter(
+      (record) => Boolean(record.claimableAt),
     ).length;
+    const localStagedUsableCount = localUsablePackages.filter(
+      (record) => Boolean(record.publishedAt) && !record.claimableAt,
+    ).length;
+    const localPublishedUsableCount = localClaimableUsableCount + localStagedUsableCount;
+    const claimableOrStagedCount =
+      Math.max(status.availableCount, localClaimableUsableCount) + localStagedUsableCount;
 
-    if (status.availableCount >= effectiveTarget && localPublishedUsableCount >= effectiveMinimum) {
+    if (claimableOrStagedCount >= effectiveTarget && localPublishedUsableCount >= effectiveMinimum) {
       return { published: 0, serverCount: status.availableCount };
     }
 
-    const serverDeficit = Math.max(0, effectiveTarget - status.availableCount);
+    const serverDeficit = Math.max(0, effectiveTarget - claimableOrStagedCount);
     const localUsableDeficit = Math.max(0, effectiveMinimum - localPublishedUsableCount);
     const desiredLocalUsableTopUp =
       localUsableDeficit > 0
@@ -274,7 +285,7 @@ export class MlsService {
 
     // Re-check: server is source of truth.
     const after = await fetchKeyPackageReserveStatus(userId);
-    const finalCount = after?.availableCount ?? status.availableCount + published;
+    const finalCount = after?.availableCount ?? status.availableCount;
 
     if (finalCount < effectiveMinimum) {
       console.warn('[MLS_KEY_PACKAGE] server reserve still below minimum after top-up', {
@@ -282,16 +293,19 @@ export class MlsService {
         server_count: finalCount,
         target: effectiveTarget,
         minimum: effectiveMinimum,
-        published,
+        staged: published,
         local_published_usable_count: localPublishedUsableCount,
+        local_staged_usable_count: localStagedUsableCount + published,
+        awaiting_encrypted_backup: localStagedUsableCount + published > 0,
       });
     } else {
       debugLog('[MLS_KEY_PACKAGE] server reserve topped up', {
         user_id: userId,
         server_count: finalCount,
         target: effectiveTarget,
-        published,
+        staged: published,
         local_published_usable_count: localPublishedUsableCount,
+        local_staged_usable_count: localStagedUsableCount + published,
       });
     }
 
@@ -329,7 +343,7 @@ export class MlsService {
       const localKeyPackages = await mlsStorageService.listKeyPackages(userId);
       availableKeyPackages = localKeyPackages.filter((record) => !record.consumedAt).length;
       localPublishedKeyPackages = localKeyPackages.filter(
-        (record) => !record.consumedAt && Boolean(record.publishedAt),
+        (record) => !record.consumedAt && Boolean(record.claimableAt),
       ).length;
     }
 

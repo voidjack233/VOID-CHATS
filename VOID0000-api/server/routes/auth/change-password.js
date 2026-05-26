@@ -8,6 +8,10 @@ import { totp } from '../../middleware/2fa/totp.js';
 import { decrypt } from './2fa/setup-totp.js';
 import valkey from '../../valkey.js';
 import crypto from 'crypto';
+import {
+  activateBackedUpMlsKeyPackages,
+  normalizeBackedUpMlsKeyPackageRefs,
+} from '../../utils/mlsKeyPackageBackupActivation.js';
 
 const router = Router();
 const CHANGE_PASSWORD_EMAIL_ACTION = 'change_password';
@@ -75,6 +79,7 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       typeof keyBackup.mls_state_encrypted === 'string' &&
       typeof keyBackup.mls_state_iv === 'string' &&
       typeof keyBackup.mls_state_salt === 'string';
+    const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(keyBackup.mls_key_package_refs);
 
     if (!hasAllBackupFields) {
       return res.status(400).json({
@@ -87,6 +92,20 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       return res.status(400).json({
         success: false,
         message: 'mls_state_encrypted, mls_state_iv, and mls_state_salt must all be provided together'
+      });
+    }
+
+    if (!backedUpMlsKeyPackageRefs) {
+      return res.status(400).json({
+        success: false,
+        message: 'mls_key_package_refs must be an array of valid package refs'
+      });
+    }
+
+    if (backedUpMlsKeyPackageRefs.length > 0 && !hasCompleteMlsFields) {
+      return res.status(400).json({
+        success: false,
+        message: 'An encrypted MLS state backup is required before key packages can be activated'
       });
     }
   }
@@ -322,6 +341,11 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
           hasMlsState ? keyBackup.mls_state_salt : null,
         ]
       );
+
+      if (hasMlsState) {
+        const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(keyBackup.mls_key_package_refs) || [];
+        await activateBackedUpMlsKeyPackages(client, userId, backedUpMlsKeyPackageRefs);
+      }
     }
 
     await client.query('COMMIT');

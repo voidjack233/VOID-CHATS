@@ -125,6 +125,10 @@ export class MlsStorageService {
     await mlsStore.markKeyPackagePublished(userId, packageRef);
   }
 
+  async markKeyPackageClaimable(userId: string, packageRef: string): Promise<void> {
+    await mlsStore.markKeyPackageClaimable(userId, packageRef);
+  }
+
   async markKeyPackageConsumed(userId: string, packageRef: string): Promise<void> {
     await mlsStore.markKeyPackageConsumed(userId, packageRef);
   }

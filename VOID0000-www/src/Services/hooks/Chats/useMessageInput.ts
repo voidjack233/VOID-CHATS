@@ -480,8 +480,15 @@ export const useMessageInput = ({
 
     if (encryptionKey) {
       const localMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(conversation.id);
+      if (localMembers === null) {
+        debugLog('[DM_SEND] local MLS member coverage unknown; keeping resolved encryption key', {
+          conversation_id: conversation.id,
+          expected_peer: peerUserId,
+        });
+        return { key: encryptionKey, version: keyVersion, bootstrapped: false };
+      }
+
       const hasValidLocalCoverage =
-        localMembers != null &&
         localMembers.includes(currentUserId) &&
         localMembers.includes(peerUserId);
 
@@ -504,8 +511,15 @@ export const useMessageInput = ({
     try {
       const recovered = await getEncryptionKey(currentUserId, conversation);
       const recoveredMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(conversation.id);
+      if (recoveredMembers === null) {
+        debugLog('[DM_SEND] recovered DM key with unknown local member coverage', {
+          conversation_id: conversation.id,
+          expected_peer: peerUserId,
+        });
+        return { ...recovered, bootstrapped: false };
+      }
+
       const recoveredCoverageValid =
-        recoveredMembers != null &&
         recoveredMembers.includes(currentUserId) &&
         recoveredMembers.includes(peerUserId);
 

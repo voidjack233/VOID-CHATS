@@ -168,6 +168,18 @@ export const mlsStore = {
       id: key,
       ...existing,
       publishedAt: new Date().toISOString(),
+      claimableAt: null,
+    });
+  },
+
+  async markKeyPackageClaimable(userId: string, packageRef: string): Promise<void> {
+    const key = buildKeyPackageKey(userId, packageRef);
+    const existing = await getRow<MlsKeyPackageRecord>(KEY_PACKAGE_STORE, key);
+    if (!existing) return;
+    await putRow(KEY_PACKAGE_STORE, {
+      id: key,
+      ...existing,
+      claimableAt: new Date().toISOString(),
     });
   },
 

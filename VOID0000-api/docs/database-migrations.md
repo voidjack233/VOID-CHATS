@@ -63,6 +63,7 @@ Migration order matters:
 - `0002_mls_schema.sql`
 - migrations `0003` through `0013` in numeric order
 - `0014_membership_rotation_reservations.sql`
+- `0015_mls_claimable_key_packages.sql`
 - `db/scylla-migrations/0000_message_storage.cql`
 
 The `0000` prefix is intentional because later conversation migrations reference `users(id)`.
@@ -72,6 +73,14 @@ The `0000` prefix is intentional because later conversation migrations reference
 `0014_membership_rotation_reservations.sql` switches group member add, invite approval, and member removal onto one serialized MLS reservation lane. Deploy the updated API and web client together after applying this migration because finalize and rollback requests now include `operation_id`.
 
 Applying this migration clears only unfinished legacy `pending_add_*`, `pending_remove_*`, and `pending_approve_*` intents. A user who had one of those changes prepared but not finalized will need to retry it.
+
+## KeyPackage backup gate rollout
+
+`0015_mls_claimable_key_packages.sql` quarantines public MLS KeyPackages until the owning authenticated client includes their matching private KeyPackages in a freshly uploaded encrypted MLS-state backup.
+
+Existing unconsumed KeyPackages are intentionally not claimable after this migration until that user next opens the app with an available password or configured recovery key so the browser can refresh its encrypted MLS backup.
+
+Deploy the API and web client together with this migration: older clients can stage KeyPackages but cannot include the backed-up private KeyPackage refs needed to activate them.
 
 ## Current limitation
 

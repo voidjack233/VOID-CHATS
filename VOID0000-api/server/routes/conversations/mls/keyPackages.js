@@ -51,15 +51,17 @@ router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
     });
 
     const result = await pool.query(
-      `INSERT INTO mls_key_packages (user_id, package_ref, package_data, published_at)
-       VALUES ($1::UUID, $2, $3, NOW())
+      `INSERT INTO mls_key_packages (user_id, package_ref, package_data, published_at, claimable_at)
+       VALUES ($1::UUID, $2, $3, NOW(), NULL)
        ON CONFLICT (user_id, package_ref)
        DO UPDATE SET
          package_data = EXCLUDED.package_data,
-         published_at = NOW()
+         published_at = NOW(),
+         claimable_at = NULL
        RETURNING user_id::text AS user_id,
                  package_ref,
                  published_at,
+                 claimable_at,
                  (xmax = 0) AS inserted`,
       [userId, packageRef, packageData]
     );
@@ -89,6 +91,7 @@ router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
         user_id: row?.user_id,
         package_ref: row?.package_ref,
         published_at: row?.published_at,
+        claimable_at: row?.claimable_at,
       },
     });
   } catch (err) {
@@ -162,12 +165,13 @@ router.get('/key-packages/:userId', mlsKeyPackageCheckLimiter, async (req, res) 
          SELECT id FROM mls_key_packages
          WHERE user_id = $1::UUID
            AND published_at IS NOT NULL
+           AND claimable_at IS NOT NULL
            AND consumed_at IS NULL
          ORDER BY created_at DESC
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING user_id::text AS user_id, package_ref, package_data, published_at`,
+       RETURNING user_id::text AS user_id, package_ref, package_data, published_at, claimable_at`,
       [targetUserId]
     );
 

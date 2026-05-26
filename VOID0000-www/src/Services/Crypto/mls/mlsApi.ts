@@ -397,6 +397,7 @@ function normalizeSyncKeyPackageUpdates(raw: unknown, userId: string): MlsSyncKe
     if (!packageRef) return [];
     const packageData = pickString(obj, ['package_data', 'packageData', 'data']);
     const publishedAt = pickString(obj, ['published_at', 'publishedAt']);
+    const claimableAt = pickString(obj, ['claimable_at', 'claimableAt']);
     const consumedAt = pickString(obj, ['consumed_at', 'consumedAt']);
     const rowUserId = pickString(obj, ['user_id', 'userId']) || userId;
     return [{
@@ -404,6 +405,7 @@ function normalizeSyncKeyPackageUpdates(raw: unknown, userId: string): MlsSyncKe
       packageRef,
       packageData,
       publishedAt,
+      claimableAt,
       consumedAt,
     }];
   });

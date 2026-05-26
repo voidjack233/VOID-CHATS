@@ -17,6 +17,28 @@ import {
   normalizeKeyVersion,
 } from './chatUtils';
 
+const DM_DECRYPT_HEALER_COOLDOWN_MS = 45_000;
+const dmDecryptHealerActivatedAt = new Map<string, number>();
+
+export function tryActivateDmDecryptHealer(conversationId: string): {
+  activated: boolean;
+  retryAfterMs: number;
+} {
+  const now = Date.now();
+  const lastActivatedAt = dmDecryptHealerActivatedAt.get(conversationId) ?? 0;
+  const elapsed = now - lastActivatedAt;
+
+  if (elapsed < DM_DECRYPT_HEALER_COOLDOWN_MS) {
+    return {
+      activated: false,
+      retryAfterMs: DM_DECRYPT_HEALER_COOLDOWN_MS - elapsed,
+    };
+  }
+
+  dmDecryptHealerActivatedAt.set(conversationId, now);
+  return { activated: true, retryAfterMs: 0 };
+}
+
 function normalizeMessageProtocol(value: unknown): MessageCryptoProtocol | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
@@ -211,19 +233,30 @@ export async function getEncryptionKey(
     ? (requestedKeyVersion as number)
     : normalizeKeyVersion(conversation.current_key_version, 1);
 
-  // For DMs: before returning any cached key, verify the local MLS group
-  // state includes both DM members. A stale single-member state (from when
-  // the peer had no keys) would produce a key the peer cannot decrypt.
+  // For DMs, reject a cached key only when local MLS state proves that the
+  // self/peer pair is incomplete. A missing local MLS state does not prove a
+  // cached key is wrong; deleting it can destroy the only usable message key.
   const isDm = conversation.type === 'dm';
-  let dmCoverageValid = !isDm; // non-DMs skip this check
+  let canUseCachedGroupKey = !isDm;
+  let confirmedInvalidDmCoverage = false;
   if (isDm) {
     const peerUserId = conversation.dm_user_id;
     if (peerUserId) {
       const localMembers = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
-      dmCoverageValid = localMembers != null &&
-        localMembers.includes(userId) &&
-        localMembers.includes(peerUserId);
-      if (!dmCoverageValid) {
+      if (localMembers === null) {
+        canUseCachedGroupKey = true;
+        console.warn('[KEY_RESOLVE] DM local MLS member coverage unknown', {
+          conversation_id: keyConversationId,
+          local_members: localMembers,
+          expected_peer: peerUserId,
+        });
+      } else {
+        canUseCachedGroupKey =
+          localMembers.includes(userId) &&
+          localMembers.includes(peerUserId);
+        confirmedInvalidDmCoverage = !canUseCachedGroupKey;
+      }
+      if (confirmedInvalidDmCoverage) {
         console.warn('[KEY_RESOLVE] DM cached key coverage invalid — peer missing from local MLS state', {
           conversation_id: keyConversationId,
           local_members: localMembers,
@@ -233,7 +266,7 @@ export async function getEncryptionKey(
     }
   }
 
-  if (isDm && !dmCoverageValid) {
+  if (confirmedInvalidDmCoverage) {
     const versionsToDelete = new Set<number>([targetVersion]);
     if (requestedVersion != null) {
       versionsToDelete.add(requestedVersion);
@@ -246,7 +279,7 @@ export async function getEncryptionKey(
     );
   }
 
-  if (dmCoverageValid) {
+  if (canUseCachedGroupKey) {
     if (requestedVersion != null) {
       const cachedRequestedGroupKey = await keyManager.getGroupKey(keyConversationId, requestedVersion);
       if (cachedRequestedGroupKey) {
@@ -318,7 +351,8 @@ export async function backupKeyToServer(data: {
   mls_state_encrypted?: string;
   mls_state_iv?: string;
   mls_state_salt?: string;
-}): Promise<void> {
+  mls_key_package_refs?: string[];
+}): Promise<string[]> {
   const response = await fetchWithAuth('/api/conversations/keys/backup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -334,6 +368,14 @@ export async function backupKeyToServer(data: {
     }
     throw new Error(errorCode);
   }
+
+  const payload = await response.json().catch(() => null) as {
+    data?: { activated_key_package_refs?: unknown };
+  } | null;
+  const refs = payload?.data?.activated_key_package_refs;
+  return Array.isArray(refs)
+    ? refs.filter((value): value is string => typeof value === 'string')
+    : [];
 }
 
 export async function backupRecoveryKeyToServer(data: {
@@ -344,7 +386,8 @@ export async function backupRecoveryKeyToServer(data: {
   recovery_mls_state_encrypted?: string;
   recovery_mls_state_iv?: string;
   recovery_mls_state_salt?: string;
-}): Promise<void> {
+  mls_key_package_refs?: string[];
+}): Promise<string[]> {
   const response = await fetchWithAuth('/api/conversations/keys/backup/recovery', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -360,6 +403,14 @@ export async function backupRecoveryKeyToServer(data: {
     }
     throw new Error(errorCode);
   }
+
+  const payload = await response.json().catch(() => null) as {
+    data?: { activated_key_package_refs?: unknown };
+  } | null;
+  const refs = payload?.data?.activated_key_package_refs;
+  return Array.isArray(refs)
+    ? refs.filter((value): value is string => typeof value === 'string')
+    : [];
 }
 
 export async function fetchKeyBackup(): Promise<KeyBackupRecord | null> {
