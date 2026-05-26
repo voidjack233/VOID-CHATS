@@ -413,6 +413,37 @@ export async function backupRecoveryKeyToServer(data: {
     : [];
 }
 
+export async function backupAccountMlsStateToServer(data: {
+  account_mls_state_encrypted: string;
+  account_mls_state_iv: string;
+  account_mls_state_key_id: string;
+  mls_key_package_refs: string[];
+}): Promise<string[]> {
+  const response = await fetchWithAuth('/api/conversations/keys/backup/account-mls', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    let errorCode = 'Failed to backup account MLS state';
+    try {
+      const payload = await response.json();
+      errorCode = payload?.code || payload?.error || errorCode;
+    } catch {
+      // Ignore JSON parsing failure and use fallback message.
+    }
+    throw new Error(errorCode);
+  }
+
+  const payload = await response.json().catch(() => null) as {
+    data?: { activated_key_package_refs?: unknown };
+  } | null;
+  const refs = payload?.data?.activated_key_package_refs;
+  return Array.isArray(refs)
+    ? refs.filter((value): value is string => typeof value === 'string')
+    : [];
+}
+
 export async function fetchKeyBackup(): Promise<KeyBackupRecord | null> {
   const response = await fetchWithAuth('/api/conversations/keys/backup');
   if (response.status === 404) return null;

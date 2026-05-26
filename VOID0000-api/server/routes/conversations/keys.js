@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { pool } from '../../db.js';
 import { findConversationByIdentifier } from '../../utils/conversationIdentity.js';
 import { emitConversationUpdate, normalizeKeyVersion } from '../../utils/groupMembership.js';
+import { debugLog } from '../../utils/debugLog.js';
 import {
   activateBackedUpMlsKeyPackages,
   normalizeBackedUpMlsKeyPackageRefs,
@@ -106,6 +107,11 @@ router.post('/backup', async (req, res) => {
       : [];
 
     await client.query('COMMIT');
+    debugLog('[MLS_ACCOUNT_KEYS] password backup activation complete', {
+      user_id: userId,
+      backed_up_key_package_refs_count: backedUpMlsKeyPackageRefs.length,
+      activated_key_package_refs_count: activatedKeyPackageRefs.length,
+    });
     res.json({
       success: true,
       message: 'Key backup stored',
@@ -115,6 +121,108 @@ router.post('/backup', async (req, res) => {
     if (client) await client.query('ROLLBACK').catch(() => {});
     console.error('Key backup error:', err);
     res.status(500).json({ error: 'Failed to store key backup' });
+  } finally {
+    client?.release();
+  }
+});
+
+// POST /api/conversations/keys/backup/account-mls — store MLS state wrapped by the unlocked account identity
+router.post('/backup/account-mls', async (req, res) => {
+  const userId = req.user.id;
+  const {
+    account_mls_state_encrypted,
+    account_mls_state_iv,
+    account_mls_state_key_id,
+    mls_key_package_refs,
+  } = req.body;
+
+  if (
+    typeof account_mls_state_encrypted !== 'string' ||
+    typeof account_mls_state_iv !== 'string' ||
+    typeof account_mls_state_key_id !== 'string'
+  ) {
+    return res.status(400).json({
+      error: 'account_mls_state_encrypted, account_mls_state_iv, and account_mls_state_key_id required',
+      code: 'INVALID_ACCOUNT_MLS_BACKUP',
+    });
+  }
+
+  const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(mls_key_package_refs);
+  if (!backedUpMlsKeyPackageRefs) {
+    return res.status(400).json({
+      error: 'mls_key_package_refs must be an array of valid package refs',
+      code: 'INVALID_MLS_KEY_PACKAGE_REFS',
+    });
+  }
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const activeKeyResult = await client.query(
+      `SELECT key_id
+       FROM user_keys
+       WHERE user_id = $1 AND is_active = TRUE
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+    const activeKeyId = activeKeyResult.rows[0]?.key_id || null;
+    if (!activeKeyId || activeKeyId !== account_mls_state_key_id) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Account MLS backup key does not match the active identity key',
+        code: 'KEY_ID_MISMATCH',
+      });
+    }
+
+    const updatedBackupResult = await client.query(
+      `UPDATE user_key_backups
+       SET account_mls_state_encrypted = $2,
+           account_mls_state_iv = $3,
+           account_mls_state_key_id = $4,
+           updated_at = NOW()
+       WHERE user_id = $1
+       RETURNING user_id`,
+      [
+        userId,
+        account_mls_state_encrypted,
+        account_mls_state_iv,
+        account_mls_state_key_id,
+      ]
+    );
+
+    if (updatedBackupResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: 'Create the account identity backup before storing MLS state',
+        code: 'ACCOUNT_BACKUP_REQUIRED',
+      });
+    }
+
+    const activatedKeyPackageRefs = await activateBackedUpMlsKeyPackages(
+      client,
+      userId,
+      backedUpMlsKeyPackageRefs
+    );
+
+    await client.query('COMMIT');
+    debugLog('[MLS_ACCOUNT_KEYS] account MLS backup activation complete', {
+      user_id: userId,
+      backed_up_key_package_refs_count: backedUpMlsKeyPackageRefs.length,
+      activated_key_package_refs_count: activatedKeyPackageRefs.length,
+    });
+    return res.json({
+      success: true,
+      message: 'Account MLS backup stored',
+      data: { activated_key_package_refs: activatedKeyPackageRefs },
+    });
+  } catch (err) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    console.error('Account MLS backup error:', err);
+    return res.status(500).json({ error: 'Failed to store account MLS backup' });
   } finally {
     client?.release();
   }
@@ -130,6 +238,7 @@ router.get('/backup', async (req, res) => {
              , recovery_encrypted_private_key, recovery_iv, recovery_salt, recovery_key_id, recovery_configured_at
              , mls_state_encrypted, mls_state_iv, mls_state_salt
              , recovery_mls_state_encrypted, recovery_mls_state_iv, recovery_mls_state_salt
+             , account_mls_state_encrypted, account_mls_state_iv, account_mls_state_key_id
        FROM user_key_backups
        WHERE user_id = $1`,
       [userId]
@@ -258,6 +367,11 @@ router.post('/backup/recovery', async (req, res) => {
       : [];
 
     await client.query('COMMIT');
+    debugLog('[MLS_ACCOUNT_KEYS] recovery backup activation complete', {
+      user_id: userId,
+      backed_up_key_package_refs_count: backedUpMlsKeyPackageRefs.length,
+      activated_key_package_refs_count: activatedKeyPackageRefs.length,
+    });
     res.json({
       success: true,
       message: 'Recovery backup stored',

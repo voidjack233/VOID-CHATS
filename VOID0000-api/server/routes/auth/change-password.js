@@ -8,6 +8,7 @@ import { totp } from '../../middleware/2fa/totp.js';
 import { decrypt } from './2fa/setup-totp.js';
 import valkey from '../../valkey.js';
 import crypto from 'crypto';
+import { debugLog } from '../../utils/debugLog.js';
 import {
   activateBackedUpMlsKeyPackages,
   normalizeBackedUpMlsKeyPackageRefs,
@@ -265,7 +266,7 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
       return res.status(409).json({
         success: false,
         code: 'KEY_BACKUP_REQUIRED',
-        message: 'This device must re-encrypt your chat key backup before changing password.'
+        message: 'Your account must re-encrypt its secure chat backup before changing password.'
       });
     }
 
@@ -285,7 +286,7 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
         return res.status(409).json({
           success: false,
           code: 'KEY_ID_MISMATCH',
-          message: 'Your local chat key does not match the active server key. Refresh and try again from the device that can still read your chats.'
+          message: 'Your local chat key does not match the active account key. Restore your account secure state and try again.'
         });
       }
     }
@@ -344,7 +345,12 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
 
       if (hasMlsState) {
         const backedUpMlsKeyPackageRefs = normalizeBackedUpMlsKeyPackageRefs(keyBackup.mls_key_package_refs) || [];
-        await activateBackedUpMlsKeyPackages(client, userId, backedUpMlsKeyPackageRefs);
+        const activatedKeyPackageRefs = await activateBackedUpMlsKeyPackages(client, userId, backedUpMlsKeyPackageRefs);
+        debugLog('[MLS_ACCOUNT_KEYS] password change activation complete', {
+          user_id: userId,
+          backed_up_key_package_refs_count: backedUpMlsKeyPackageRefs.length,
+          activated_key_package_refs_count: activatedKeyPackageRefs.length,
+        });
       }
     }
 

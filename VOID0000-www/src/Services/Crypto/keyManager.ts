@@ -9,6 +9,7 @@ const KEY_STORE = 'keys';
 const LOCAL_KEY_WRAP_ID = 'meta:local_key_wrap';
 const LOCAL_PRIVATE_KEY_STORAGE_VERSION = 1;
 const LOCAL_RECOVERY_KEY_STORAGE_VERSION = 1;
+const ACCOUNT_MLS_BACKUP_WRAP_SALT = new TextEncoder().encode('VOID account MLS backup wrap v1');
 
 // ============== IndexedDB Helpers ==============
 
@@ -811,6 +812,76 @@ async function decryptDataWithRecoveryPhrase(
   return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
+async function deriveAccountMlsBackupWrappingKey(
+  userId: string
+): Promise<{ key: CryptoKey; keyId: string }> {
+  const stored = await dbGet(`keypair:${userId}`);
+  const privateKeyBase64 = stored ? await decryptStoredPrivateKey(stored) : null;
+  if (!privateKeyBase64 || typeof stored?.keyId !== 'string') {
+    throw new Error('LOCAL_KEY_MISSING');
+  }
+
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    base64ToArrayBuffer(privateKeyBase64),
+    'HKDF',
+    false,
+    ['deriveKey']
+  );
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: ACCOUNT_MLS_BACKUP_WRAP_SALT,
+      info: new TextEncoder().encode(`account:${userId}`),
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  return { key, keyId: stored.keyId };
+}
+
+async function encryptDataWithAccountIdentity(
+  userId: string,
+  data: unknown
+): Promise<{ encrypted: string; iv: string; keyId: string }> {
+  const { key, keyId } = await deriveAccountMlsBackupWrappingKey(userId);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv.buffer as ArrayBuffer },
+    key,
+    new TextEncoder().encode(JSON.stringify(data))
+  );
+
+  return {
+    encrypted: arrayBufferToBase64(encrypted),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
+    keyId,
+  };
+}
+
+async function decryptDataWithAccountIdentity(
+  userId: string,
+  encryptedBase64: string,
+  ivBase64: string,
+  expectedKeyId?: string | null
+): Promise<unknown> {
+  const { key, keyId } = await deriveAccountMlsBackupWrappingKey(userId);
+  if (expectedKeyId && expectedKeyId !== keyId) {
+    throw new Error('ACCOUNT_MLS_BACKUP_KEY_MISMATCH');
+  }
+
+  const decrypted = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToArrayBuffer(ivBase64) },
+    key,
+    base64ToArrayBuffer(encryptedBase64)
+  );
+  return JSON.parse(new TextDecoder().decode(decrypted));
+}
+
 // ============== Cleanup ==============
 
 async function clearAllKeys(): Promise<void> {
@@ -968,6 +1039,8 @@ export const keyManager = {
   decryptDataWithPassword,
   encryptDataWithRecoveryPhrase,
   decryptDataWithRecoveryPhrase,
+  encryptDataWithAccountIdentity,
+  decryptDataWithAccountIdentity,
   exportGroupKeys: async (): Promise<Array<{ id: string; version: number; key: string }>> => {
     const db = await openDB();
     return new Promise((resolve, reject) => {

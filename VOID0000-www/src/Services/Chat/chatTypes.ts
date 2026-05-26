@@ -133,6 +133,9 @@ export interface KeyBackupRecord {
   recovery_mls_state_encrypted?: string | null;
   recovery_mls_state_iv?: string | null;
   recovery_mls_state_salt?: string | null;
+  account_mls_state_encrypted?: string | null;
+  account_mls_state_iv?: string | null;
+  account_mls_state_key_id?: string | null;
 }
 
 export interface MessageDecryptionContext {

@@ -501,17 +501,38 @@ export const useConversationHandshake = ({
             } catch (dmErr) {
               if (ignore) return;
               const dmReason = dmErr instanceof Error ? dmErr.message : String(dmErr || '');
-              if (dmReason.includes('DM peer device is not ready')) {
+              if (dmReason.includes('DM peer account secure keys are still preparing')) {
                 clearKeySetupTimeout();
+                const dmReadinessRetryKey = `${preparingRetryKey}:peer-account-keys`;
+                const nextAttempt = (preparingRetryAttemptsRef.current[dmReadinessRetryKey] || 0) + 1;
+                preparingRetryAttemptsRef.current[dmReadinessRetryKey] = nextAttempt;
+                if (nextAttempt <= 3) {
+                  scheduledPrepareRetry = window.setTimeout(() => {
+                    if (!ignore) {
+                      retryHandshake();
+                    }
+                  }, 1200 * nextAttempt);
+                  setConversationSecurityState(createConversationSecurityState({
+                    status: 'recovering',
+                    reason: 'peer_not_ready',
+                    message: 'Preparing secure chat keys...',
+                    detail: "Waiting for this account's secure setup keys to become available.",
+                    canSend: false,
+                    canRetry: true,
+                  }));
+                  setEncryptionError('Preparing secure chat keys...');
+                  return;
+                }
+
                 setConversationSecurityState(createConversationSecurityState({
                   status: 'blocked',
                   reason: 'peer_not_ready',
-                  message: 'This person has no usable secure device keys on the server yet.',
-                  detail: 'They need to open the app on a secure device before a new DM can start.',
+                  message: 'Secure chat keys are not ready yet.',
+                  detail: "This account's secure setup keys could not finish preparing automatically. Retry in a moment.",
                   canSend: false,
                   canRetry: true,
                 }));
-                setEncryptionError('This person has no usable secure device keys on the server yet.');
+                setEncryptionError('Secure chat keys are not ready yet.');
                 return;
               }
               if (dmReason.includes('DM peer could not be resolved')) {
@@ -669,13 +690,13 @@ export const useConversationHandshake = ({
               setConversationSecurityState(createConversationSecurityState({
                 status: 'blocked',
                 reason: 'welcome_key_package_missing',
-                message: 'Secure membership setup cannot be opened on this device.',
-                detail: 'Restore secure state from the device or backup that published its key package, or ask a group owner to resend the membership key distribution.',
+                message: 'Secure membership setup cannot be restored for this account yet.',
+                detail: 'Restore account secure state from backup, or ask a group owner to resend the membership key distribution.',
                 canSend: false,
                 canRetry: true,
                 showCachedHistoryFallback: true,
               }));
-              setEncryptionError('Secure membership setup cannot be opened on this device.');
+              setEncryptionError('Secure membership setup cannot be restored for this account yet.');
               return;
             }
 

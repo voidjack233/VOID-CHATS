@@ -39,6 +39,14 @@ export function hasRecoveryMlsBackupPayload(backup: KeyBackupRecord | null): boo
   );
 }
 
+export function hasAccountMlsBackupPayload(backup: KeyBackupRecord | null): boolean {
+  return Boolean(
+    backup?.account_mls_state_encrypted &&
+    backup.account_mls_state_iv &&
+    backup.account_mls_state_key_id
+  );
+}
+
 export function hasPasswordBackupPayload(backup: KeyBackupRecord | null): boolean {
   return Boolean(
     backup?.encrypted_private_key &&
@@ -102,30 +110,43 @@ export async function inspectLocalMlsChatState(): Promise<{
 export async function restoreMlsStateFromBackup(
   userId: string,
   backup: KeyBackupRecord,
-  secret: string,
-  mode: 'password' | 'recovery_key' = 'password'
+  secret: string | null,
+  mode: 'password' | 'recovery_key' | 'account_identity' = 'password'
 ): Promise<MlsRestoreSummary> {
-  const hasPayload = mode === 'recovery_key'
-    ? hasRecoveryMlsBackupPayload(backup)
-    : hasMlsBackupPayload(backup);
+  const hasPayload = mode === 'account_identity'
+    ? hasAccountMlsBackupPayload(backup)
+    : mode === 'recovery_key'
+      ? hasRecoveryMlsBackupPayload(backup)
+      : hasMlsBackupPayload(backup);
 
   if (!hasPayload) {
     return createEmptyRestoreSummary();
   }
 
   try {
-    const payload = mode === 'recovery_key'
+    if (mode !== 'account_identity' && !secret) {
+      throw new Error('MLS_BACKUP_SECRET_REQUIRED');
+    }
+
+    const payload = mode === 'account_identity'
+      ? await keyManager.decryptDataWithAccountIdentity(
+          userId,
+          backup.account_mls_state_encrypted!,
+          backup.account_mls_state_iv!,
+          backup.account_mls_state_key_id
+        ) as MlsBackupData
+      : mode === 'recovery_key'
       ? await keyManager.decryptDataWithRecoveryPhrase(
           backup.recovery_mls_state_encrypted!,
           backup.recovery_mls_state_iv!,
           backup.recovery_mls_state_salt!,
-          secret
+          secret!
         ) as MlsBackupData
       : await keyManager.decryptDataWithPassword(
           backup.mls_state_encrypted!,
           backup.mls_state_iv!,
           backup.mls_state_salt!,
-          secret
+          secret!
         ) as MlsBackupData;
 
     const existingAccount = await mlsStore.getAccountState(userId);
@@ -201,6 +222,7 @@ export async function restoreMlsStateFromBackup(
         privateData: existing.privateData ?? keyPackage.privateData ?? null,
         createdAt: existing.createdAt || keyPackage.createdAt,
         publishedAt: pickLatestTimestamp(existing.publishedAt, keyPackage.publishedAt),
+        claimableAt: pickLatestTimestamp(existing.claimableAt, keyPackage.claimableAt),
         consumedAt: pickLatestTimestamp(existing.consumedAt, keyPackage.consumedAt),
       };
 
@@ -208,6 +230,7 @@ export async function restoreMlsStateFromBackup(
         merged.packageData !== existing.packageData ||
         (merged.privateData ?? null) !== (existing.privateData ?? null) ||
         (merged.publishedAt ?? null) !== (existing.publishedAt ?? null) ||
+        (merged.claimableAt ?? null) !== (existing.claimableAt ?? null) ||
         (merged.consumedAt ?? null) !== (existing.consumedAt ?? null);
 
       if (!didChange) {
@@ -268,6 +291,7 @@ export async function restoreMlsStateFromBackup(
 
     debugLog('[MLS_RESTORE] reconciled MLS state from backup', {
       user_id: userId,
+      backup_mode: mode,
       restored_account: restoredAccount,
       restored_group_states: restoredGroups,
       restored_group_keys: restoredGroupKeys,
@@ -285,6 +309,7 @@ export async function restoreMlsStateFromBackup(
   } catch (err) {
     console.warn('[MLS_RESTORE] restore failed', {
       user_id: userId,
+      backup_mode: mode,
       error: err instanceof Error ? err.message : String(err || ''),
     });
     return {

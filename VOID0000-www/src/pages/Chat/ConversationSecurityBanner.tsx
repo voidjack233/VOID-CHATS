@@ -16,8 +16,8 @@ function getEncryptionHint(error: string, securityState?: ConversationSecuritySt
     return securityState.detail;
   }
 
-  if (error.includes('no usable secure device keys')) {
-    return 'The server does not currently have a published MLS key package for this person, so a new secure DM cannot start yet.';
+  if (error.includes('Preparing secure chat keys') || error.includes('Secure chat keys are not ready')) {
+    return 'Account secure keys are being prepared automatically. Retry in a moment if this takes longer than expected.';
   }
 
   if (error.includes('secure recipient details')) {
@@ -25,7 +25,7 @@ function getEncryptionHint(error: string, securityState?: ConversationSecuritySt
   }
 
   if (error.includes('private keys') || error.includes('not available')) {
-    return 'Your private keys are stored on the device where you first set up encryption. Use that browser to read messages.';
+    return 'Restore your account secure state with your password or recovery key to read encrypted messages.';
   }
 
   if (error.includes('distribution')) {

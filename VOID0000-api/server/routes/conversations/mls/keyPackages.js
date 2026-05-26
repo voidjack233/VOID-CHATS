@@ -23,6 +23,15 @@ import {
 
 const router = Router();
 
+function requestAccountSecureKeyRefill(userId, reason, availableCount) {
+  sendLiveEventToUser(userId, 'KEY_PACKAGE_LOW', {
+    reason,
+    available_count: availableCount,
+    low_watermark: MLS_KEY_PACKAGE_LOW_WATERMARK,
+    target_recommended: MLS_KEY_PACKAGE_TARGET,
+  });
+}
+
 router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
   const capabilities = resolveCapabilities();
   if (!isEnabledFor(capabilities, 'key_packages')) {
@@ -82,7 +91,8 @@ router.post('/key-packages', mlsKeyPackagePublishLimiter, async (req, res) => {
       package_ref: packageRef,
       action: row?.inserted ? 'inserted' : 'updated_on_conflict',
       conflicted: row?.inserted !== true,
-      available_count: availableCount,
+      staged_key_packages_count: 1,
+      claimable_key_packages_count: availableCount,
     });
 
     return res.json({
@@ -121,8 +131,12 @@ router.get('/key-packages/:userId/check', mlsKeyPackageCheckLimiter, async (req,
 
     debugLog('[MLS_KEY_PACKAGE] count endpoint raw count', {
       user_id: targetUserId,
-      available_count: count,
+      claimable_key_packages_count: count,
     });
+
+    if (String(req.user.id) !== targetUserId && count < MLS_KEY_PACKAGE_LOW_WATERMARK) {
+      requestAccountSecureKeyRefill(targetUserId, 'peer_readiness_check', count);
+    }
 
     return res.json({
       success: true,
@@ -178,6 +192,9 @@ router.get('/key-packages/:userId', mlsKeyPackageCheckLimiter, async (req, res) 
     await client.query('COMMIT');
 
     if (result.rows.length === 0) {
+      if (requesterUserId !== targetUserId) {
+        requestAccountSecureKeyRefill(targetUserId, 'peer_claim_empty', 0);
+      }
       return res.status(404).json({ success: false, error: 'No key packages available for this user', code: 'NO_KEY_PACKAGE' });
     }
 
@@ -193,14 +210,10 @@ router.get('/key-packages/:userId', mlsKeyPackageCheckLimiter, async (req, res) 
       const remainingCount = await getAvailableKeyPackageCount(targetUserId);
       debugLog('[MLS_KEY_PACKAGE] claim remaining available count', {
         owner_user_id: targetUserId,
-        available_count: remainingCount,
+        claimable_key_packages_count: remainingCount,
       });
       if (remainingCount < MLS_KEY_PACKAGE_LOW_WATERMARK) {
-        sendLiveEventToUser(targetUserId, 'KEY_PACKAGE_LOW', {
-          available_count: remainingCount,
-          low_watermark: MLS_KEY_PACKAGE_LOW_WATERMARK,
-          target_recommended: MLS_KEY_PACKAGE_TARGET,
-        });
+        requestAccountSecureKeyRefill(targetUserId, 'post_claim_low_watermark', remainingCount);
       }
     } catch (notifyErr) {
       console.warn('MLS key package low watermark notification failed:', notifyErr);

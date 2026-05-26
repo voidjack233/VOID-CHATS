@@ -250,7 +250,7 @@ export async function bootstrapDmKey(
       included_member_user_ids: result.includedMemberUserIds,
       missing_member_user_ids: result.missingMemberUserIds,
     });
-    throw new Error('DM peer device is not ready for secure chat yet');
+    throw new Error('DM peer account secure keys are still preparing');
   }
 
   return result;

@@ -9,8 +9,8 @@ import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncr
 import { debugLog } from '../utils/debugLog';
 import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
 import {
+  ensureAccountSecureKeysReady,
   uploadRecoverySecureBackups as uploadRecoverySecureBackupsNow,
-  uploadSecureBackups as uploadSecureBackupsNow,
 } from './secureBackup';
 import {
   uploadPublicKey,
@@ -20,6 +20,7 @@ import {
 } from '../Chat/chatService';
 import {
   createEmptyRestoreSummary,
+  hasAccountMlsBackupPayload,
   hasMlsBackupPayload,
   hasPasswordBackupPayload,
   hasRecoveryBackupPayload,
@@ -121,7 +122,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
       throw new Error('PASSWORD_REQUIRED');
     }
 
-    await uploadSecureBackupsNow(user.id, password);
+    await ensureAccountSecureKeysReady(user.id, {
+      password,
+      source: 'password_backup_refresh',
+    });
     setKeyStatus('SECURE');
     setRecoveryBackupStatus('PASSWORD_ONLY');
   };
@@ -146,6 +150,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     await uploadRecoverySecureBackupsNow(user.id, recoveryKey);
     await keyManager.storeRecoveryKeyForBackup(user.id, recoveryKey);
+    await ensureAccountSecureKeysReady(user.id, {
+      source: 'recovery_key_setup',
+    });
     setKeyStatus('SECURE');
     setRecoveryBackupStatus('RECOVERY_KEY_READY');
   };
@@ -319,7 +326,13 @@ export function UserProvider({ children }: { children: ReactNode }) {
       setKeyStatus(resolveKeyStatusFromBackup(backup));
       setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
 
-      const restoreSummary = await restoreMlsStateFromBackup(user.id, backup, recoveryKey, 'recovery_key');
+      let restoreSummary = createEmptyRestoreSummary();
+      if (hasAccountMlsBackupPayload(backup)) {
+        restoreSummary = await restoreMlsStateFromBackup(user.id, backup, null, 'account_identity');
+      }
+      if (restoreSummary.outcome === 'failed' || restoreSummary.outcome === 'skipped') {
+        restoreSummary = await restoreMlsStateFromBackup(user.id, backup, recoveryKey, 'recovery_key');
+      }
       const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
       const localChatState = await inspectLocalMlsChatState();
       const hasLocalChatState =
@@ -360,6 +373,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
           synced_commits: syncResult.syncedCommits,
         });
       }
+      await ensureAccountSecureKeysReady(user.id, {
+        source: 'recovery_key_retry',
+      });
       clearMlsRecoveryGate();
     } finally {
       setKeyStatusLoading(false);
@@ -389,7 +405,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
       let restoreSummary = createEmptyRestoreSummary();
       if (backup) {
-        restoreSummary = await restoreMlsStateFromBackup(user.id, backup, password);
+        if (hasAccountMlsBackupPayload(backup)) {
+          restoreSummary = await restoreMlsStateFromBackup(user.id, backup, null, 'account_identity');
+        }
+        if (restoreSummary.outcome === 'failed' || restoreSummary.outcome === 'skipped') {
+          restoreSummary = await restoreMlsStateFromBackup(user.id, backup, password);
+        }
       }
 
       const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
@@ -433,6 +454,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
           synced_commits: syncResult.syncedCommits,
         });
       }
+      await ensureAccountSecureKeysReady(user.id, {
+        password,
+        source: 'password_recovery_retry',
+      });
       clearMlsRecoveryGate();
     } finally {
       setKeyStatusLoading(false);
@@ -512,7 +537,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
           const backup = await callbacks.fetchBackup();
           const hasPasswordMlsBackup = hasMlsBackupPayload(backup);
           const hasRecoveryMlsBackup = hasRecoveryMlsBackupPayload(backup);
-          const hasMlsBackup = hasPasswordMlsBackup || hasRecoveryMlsBackup;
+          const hasAccountMlsBackup = hasAccountMlsBackupPayload(backup);
+          const hasMlsBackup = hasPasswordMlsBackup || hasRecoveryMlsBackup || hasAccountMlsBackup;
           const hasRecoveryBackup = hasRecoveryBackupPayload(backup);
           let restoreSummary: MlsRestoreSummary = createEmptyRestoreSummary();
           if (!cancelled) {
@@ -520,8 +546,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
             setRecoveryBackupStatus(resolveRecoveryBackupStatusFromBackup(backup));
           }
 
-          // Restore MLS state on a new device if the backup contains it.
-          if (password && backup) {
+          // Once the account identity is unlocked it can restore the latest
+          // automatically refreshed MLS snapshot without retaining a password.
+          if (backup && hasAccountMlsBackup) {
+            restoreSummary = await restoreMlsStateFromBackup(userId, backup, null, 'account_identity');
+          }
+          if (
+            password &&
+            backup &&
+            (restoreSummary.outcome === 'failed' || restoreSummary.outcome === 'skipped')
+          ) {
             restoreSummary = await restoreMlsStateFromBackup(userId, backup, password);
           }
 
@@ -529,9 +563,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
           const localChatState = await inspectLocalMlsChatState();
           const hasLocalChatState =
             localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
-          const hasBackupConversationArtifacts = password
+          const hasBackupConversationArtifacts = restoreSummary.outcome !== 'failed' &&
+            restoreSummary.outcome !== 'skipped'
             ? restoreSummary.hasConversationArtifacts
-            : hasRecoveryMlsBackup;
+            : hasAccountMlsBackup || hasRecoveryMlsBackup;
           const hasRecoverableServerState =
             hasBackupConversationArtifacts ||
             syncResult.syncedGroupStates > 0 ||
@@ -543,6 +578,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
             has_password: Boolean(password),
             has_recovery_backup: hasRecoveryBackup,
             has_recovery_mls_backup: hasRecoveryMlsBackup,
+            has_account_mls_backup: hasAccountMlsBackup,
             has_mls_backup: hasMlsBackup,
             restore_outcome: restoreSummary.outcome,
             backup_group_state_count: restoreSummary.backupGroupStateCount,
@@ -641,17 +677,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
           if (!cancelled && !requiresInteractiveRecovery) {
             try {
-              await chatCryptoProtocolService.bootstrapAccount(userId, true);
-              await chatCryptoProtocolService.ensureServerKeyPackageReserve(userId);
-
-              if (password) {
-                await uploadSecureBackupsNow(userId, password);
-              }
-
               const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
-              if (recoveryKey) {
-                await uploadRecoverySecureBackupsNow(userId, recoveryKey);
-              }
+              await ensureAccountSecureKeysReady(userId, {
+                password,
+                restoreBackup: false,
+                source: 'key_initialization',
+              });
 
               setKeyStatus('SECURE');
               setRecoveryBackupStatus(
@@ -710,8 +741,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
   }, [user?.id]);
 
-  // Bootstrap MLS account state, then refresh the backup so a new device
-  // gets an up-to-date MLS state blob on its next login.
+  // Keep account secure keys ready so every published MLS KeyPackage has an
+  // encrypted backup before another account is allowed to claim it.
   useEffect(() => {
     if (!user?.id) return;
     if (!keyInitResolved || keyStatusLoading || keyStatus === 'LOCKED' || mlsRecoveryGate.active) return;
@@ -721,9 +752,22 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     liveConversationKeyVersionsRef.current = {};
 
-    const runBootstrapMaintenance = (force = false) => {
+    const runAccountSecureKeyReadiness = (
+      source: string,
+      restoreBackup = false,
+    ) => {
       if (cancelled) return;
-      void chatCryptoProtocolService.bootstrapAccount(userId, force).catch(() => {});
+      void ensureAccountSecureKeysReady(userId, {
+        password: loginPasswordRef.current,
+        restoreBackup,
+        source,
+      }).catch((error) => {
+        console.warn('[MLS_ACCOUNT_KEYS] automatic readiness pass failed', {
+          user_id: userId,
+          source,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
     };
 
     const clearPendingLiveInboxSync = () => {
@@ -761,28 +805,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }, 150);
     };
 
-    // Top-up the server key-package reserve.  The single-flight mutex inside
-    // ensureServerKeyPackageReserve prevents concurrent duplicate jobs when
-    // multiple triggers (READY, RESUMED, focus, online) fire close together.
-    const runKeyPackageTopUp = () => {
-      if (cancelled) return;
-      void chatCryptoProtocolService.ensureServerKeyPackageReserve(userId).catch(() => {});
-    };
-
-    const refreshMlsBackupsAfterKeyPackageChange = async () => {
-      if (cancelled) return;
-
-      const password = loginPasswordRef.current;
-      if (password) {
-        await uploadSecureBackupsNow(userId, password);
-      }
-
-      const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
-      if (recoveryKey) {
-        await uploadRecoverySecureBackupsNow(userId, recoveryKey);
-      }
-    };
-
     const runForegroundMaintenance = () => {
       if (cancelled) return;
 
@@ -792,13 +814,12 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
 
       lastForegroundMlsMaintenanceAtRef.current = now;
-      runBootstrapMaintenance(false);
+      runAccountSecureKeyReadiness('foreground_maintenance');
     };
 
-    // Periodic maintenance fallback — run bootstrap + top-up every 60s.
+    // Periodic fallback keeps claimable reserve replenished while the app is open.
     const maintenanceInterval = window.setInterval(() => {
-      runBootstrapMaintenance(true);
-      runKeyPackageTopUp();
+      runAccountSecureKeyReadiness('periodic_maintenance');
     }, 60_000);
 
     const onVisibilityChange = () => {
@@ -812,34 +833,25 @@ export function UserProvider({ children }: { children: ReactNode }) {
     };
 
     const onOnline = () => {
-      runBootstrapMaintenance(true);
-      runKeyPackageTopUp();
+      runAccountSecureKeyReadiness('network_online', true);
     };
 
     const onKeyPackageChanged = () => {
-      runBootstrapMaintenance(true);
-      void refreshMlsBackupsAfterKeyPackageChange().catch((error) => {
-        console.warn('[MLS_BACKUP] failed to refresh backup after publishing new key packages', {
-          user_id: userId,
-          error: error instanceof Error ? error.message : String(error || ''),
-        });
-      });
+      runAccountSecureKeyReadiness('key_package_changed');
     };
 
-    // WebSocket READY (fresh identify) / RESUMED (session resume): top-up
-    // the server reserve so same-account multiple devices stay DM-reachable.
+    // WebSocket READY / RESUMED: run the complete stage, backup, activate flow.
     const onGatewayReady = () => {
-      runBootstrapMaintenance(true);
-      runKeyPackageTopUp();
+      runAccountSecureKeyReadiness('gateway_ready', true);
     };
     const onGatewayResumed = () => {
-      runKeyPackageTopUp();
+      runAccountSecureKeyReadiness('gateway_resumed');
     };
 
-    // Server notifies that key-package count dropped below low watermark
-    // after another user claimed packages.  Immediately replenish.
+    // The server sends this both after claims and when an online account is
+    // needed for a pending DM bootstrap with no claimable reserve.
     const onKeyPackageLow = () => {
-      runKeyPackageTopUp();
+      runAccountSecureKeyReadiness('server_low_reserve_request', true);
     };
 
     const onConversationUpdate = (data: any) => {

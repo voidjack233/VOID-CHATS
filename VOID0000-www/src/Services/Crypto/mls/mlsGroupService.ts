@@ -58,8 +58,37 @@ interface MlsGroupServiceDependencies {
   syncInbox: (userId: string, force?: boolean) => Promise<MlsInboxSyncResult>;
 }
 
+const DM_PEER_READINESS_BACKOFF_MS = [0, 450, 1100];
+
 export class MlsGroupService {
   constructor(private readonly deps: MlsGroupServiceDependencies) {}
+
+  private async waitForDmPeerAccountKeys(
+    conversationId: string,
+    currentUserId: string,
+    peerUserId: string,
+  ): Promise<boolean> {
+    for (let attempt = 0; attempt < DM_PEER_READINESS_BACKOFF_MS.length; attempt += 1) {
+      const delayMs = DM_PEER_READINESS_BACKOFF_MS[attempt] ?? 0;
+      if (delayMs > 0) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delayMs));
+      }
+
+      const peerReady = await checkKeyPackageAvailability(peerUserId);
+      debugLog('[DM_BOOTSTRAP] peer account secure-key readiness check', {
+        conversation_id: conversationId,
+        user_id: currentUserId,
+        peer_user_id: peerUserId,
+        attempt: attempt + 1,
+        ready: peerReady,
+      });
+      if (peerReady) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 
   private async uploadGroupStateRecord(
     record: Pick<MlsSyncGroupStateUpdate, 'conversationId' | 'groupId' | 'epoch' | 'keyVersion' | 'stateBlob'>,
@@ -398,14 +427,14 @@ export class MlsGroupService {
 
       if (isDmConversation) {
         for (const peerId of otherMembers) {
-          const peerReady = await checkKeyPackageAvailability(peerId);
+          const peerReady = await this.waitForDmPeerAccountKeys(conversationId, input.userId, peerId);
           if (!peerReady) {
-            console.warn('[DM_BOOTSTRAP] peer failed non-consuming readiness check', {
+            console.warn('[DM_BOOTSTRAP] peer account secure keys did not become claimable after readiness retries', {
               conversation_id: conversationId,
               user_id: input.userId,
               peer_user_id: peerId,
             });
-            throw new Error('DM peer device is not ready for secure chat yet');
+            throw new Error('DM peer account secure keys are still preparing');
           }
         }
       }
@@ -429,12 +458,12 @@ export class MlsGroupService {
       missingMemberUserIds = addProposalResult.missingUserIds;
 
       if (isDmConversation && missingMemberUserIds.length > 0) {
-        console.warn('[DM_BOOTSTRAP] peer key package unavailable during initial bootstrap', {
+        console.warn('[DM_BOOTSTRAP] peer account secure key package unavailable during initial bootstrap', {
           conversation_id: conversationId,
           user_id: input.userId,
           missing_member_user_ids: missingMemberUserIds,
         });
-        throw new Error('DM peer device is not ready for secure chat yet');
+        throw new Error('DM peer account secure keys are still preparing');
       }
 
       const commitResult = await createCommit(

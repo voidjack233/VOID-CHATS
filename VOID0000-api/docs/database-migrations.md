@@ -64,6 +64,7 @@ Migration order matters:
 - migrations `0003` through `0013` in numeric order
 - `0014_membership_rotation_reservations.sql`
 - `0015_mls_claimable_key_packages.sql`
+- `0016_account_mls_backups.sql`
 - `db/scylla-migrations/0000_message_storage.cql`
 
 The `0000` prefix is intentional because later conversation migrations reference `users(id)`.
@@ -78,9 +79,11 @@ Applying this migration clears only unfinished legacy `pending_add_*`, `pending_
 
 `0015_mls_claimable_key_packages.sql` quarantines public MLS KeyPackages until the owning authenticated client includes their matching private KeyPackages in a freshly uploaded encrypted MLS-state backup.
 
-Existing unconsumed KeyPackages are intentionally not claimable after this migration until that user next opens the app with an available password or configured recovery key so the browser can refresh its encrypted MLS backup.
+Existing unconsumed KeyPackages are intentionally not claimable after this migration until that account next opens the app and refreshes its encrypted MLS backup.
 
 Deploy the API and web client together with this migration: older clients can stage KeyPackages but cannot include the backed-up private KeyPackage refs needed to activate them.
+
+`0016_account_mls_backups.sql` stores a separate MLS snapshot encrypted by the already-unlocked account identity. It lets an active account replenish and activate KeyPackages automatically after login without retaining the password or requiring a manual backup action. Password and recovery backups remain responsible for restoring that account identity on a new browser.
 
 ## Current limitation
 

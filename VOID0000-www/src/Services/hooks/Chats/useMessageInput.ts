@@ -91,8 +91,7 @@ function isDmPeerNotReadyError(error: unknown): boolean {
   return (
     code === 'DM_RECIPIENT_KEYS_MISSING' ||
     code === 'MLS_ADD_KEY_PACKAGE_MISSING' ||
-    normalizedMessage.includes('no usable secure device keys') ||
-    normalizedMessage.includes('dm peer device is not ready') ||
+    normalizedMessage.includes('account secure keys are still preparing') ||
     normalizedMessage.includes('no published mls key packages') ||
     normalizedMessage.includes('not ready for secure group add yet')
   );
@@ -538,7 +537,7 @@ export const useMessageInput = ({
       return { ...result, bootstrapped: true };
     } catch (err) {
       if (isDmPeerNotReadyError(err)) {
-        throw new Error('This person has no usable secure device keys on the server yet.');
+        throw new Error('Preparing secure chat keys...');
       }
       throw err;
     }
