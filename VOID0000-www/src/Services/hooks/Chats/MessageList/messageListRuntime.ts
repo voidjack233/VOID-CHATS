@@ -415,7 +415,47 @@ const applyPrependedPage = (
   return runtime;
 };
 
+const applyAppendedPage = (
+  currentRuntime: ConversationRuntime,
+  messages: Message[],
+  pageMessages: Message[],
+  options: {
+    bottomSpacerHeightConsume?: number;
+    clearBottomSpacer?: boolean;
+    trimmedFromOldMessages?: Message[];
+    resolveHeight?: (message: Message) => number;
+    hasOlder?: boolean;
+    hasNewer?: boolean;
+  },
+) => {
+  const runtime = setRenderedMessages(currentRuntime, messages);
+  const pageIds = toSortedUniqueIds(runtime, pageMessages);
+  if (pageIds.length > 0) {
+    runtime.pages.push(makePage('newer', pageIds));
+  }
+
+  runtime.bottomSpacerHeight = options.clearBottomSpacer
+    ? 0
+    : Math.max(0, runtime.bottomSpacerHeight - (options.bottomSpacerHeightConsume ?? 0));
+
+  if (options.trimmedFromOldMessages && options.trimmedFromOldMessages.length > 0) {
+    evictTrimmedMessages(
+      runtime,
+      options.trimmedFromOldMessages.map(getMessageId),
+      [],
+      { resolveHeight: options.resolveHeight },
+    );
+  }
+
+  runtime.hasOlder = options.hasOlder ?? runtime.hasOlder;
+  runtime.hasNewer = options.hasNewer ?? runtime.hasNewer;
+  pruneRuntimeCache(runtime);
+  saveConversationRuntime(runtime);
+  return runtime;
+};
+
 export {
+  applyAppendedPage,
   applyPrependedPage,
   applyRenderedUpdate,
   createEmptyRuntime,

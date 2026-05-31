@@ -29,6 +29,7 @@ interface UseMessageTimelineVirtualizerParams {
 
 const HISTORY_LOAD_COOLDOWN_MS = 400;
 const SCROLL_DIRECTION_EPSILON = 1;
+const SCROLL_DIRECTION_SIGNAL_TTL_MS = 1_500;
 
 export const useMessageTimelineVirtualizer = ({
   scrollerRef,
@@ -56,33 +57,36 @@ export const useMessageTimelineVirtualizer = ({
   const historyLoadInFlightRef = useRef<HistoryLoadDirection | null>(null);
   const lastScrollTopRef = useRef<number | null>(null);
   const lastHistoryLoadAtRef = useRef(0);
-  const visibleRangeRetryTimerRef = useRef<number | null>(null);
+  const lastHistoryLoadSettledAtRef = useRef(0);
+  const lastScrollDirectionSignalRef = useRef<{ direction: HistoryLoadDirection; at: number } | null>(null);
+  const consumedScrollSignalAtRef = useRef<Record<HistoryLoadDirection, number>>({
+    older: 0,
+    newer: 0,
+  });
 
   useEffect(() => {
     historyLoadInFlightRef.current = null;
     lastHistoryLoadAtRef.current = 0;
+    lastHistoryLoadSettledAtRef.current = 0;
     lastScrollTopRef.current = scrollerRef.current?.scrollTop ?? null;
-    if (visibleRangeRetryTimerRef.current !== null) {
-      window.clearTimeout(visibleRangeRetryTimerRef.current);
-      visibleRangeRetryTimerRef.current = null;
-    }
+    lastScrollDirectionSignalRef.current = null;
+    consumedScrollSignalAtRef.current = {
+      older: 0,
+      newer: 0,
+    };
   }, [resetKey, scrollerRef]);
 
-  useEffect(() => () => {
-    if (visibleRangeRetryTimerRef.current !== null) {
-      window.clearTimeout(visibleRangeRetryTimerRef.current);
-    }
-  }, []);
-
-  const startHistoryLoad = useCallback((direction: HistoryLoadDirection) => {
+  const startHistoryLoad = useCallback((direction: HistoryLoadDirection, signalAt: number) => {
     historyLoadInFlightRef.current = direction;
     lastHistoryLoadAtRef.current = Date.now();
+    consumedScrollSignalAtRef.current[direction] = signalAt;
 
     if (direction === 'older') {
       loadingOlderRequestInFlightRef.current = true;
       void loadOlderPreservingViewport().finally(() => {
         loadingOlderRequestInFlightRef.current = false;
         historyLoadInFlightRef.current = null;
+        lastHistoryLoadSettledAtRef.current = Date.now();
       });
       return true;
     }
@@ -91,6 +95,7 @@ export const useMessageTimelineVirtualizer = ({
     void loadNewerPreservingViewport().finally(() => {
       loadingNewerRequestInFlightRef.current = false;
       historyLoadInFlightRef.current = null;
+      lastHistoryLoadSettledAtRef.current = Date.now();
     });
     return true;
   }, [
@@ -102,24 +107,11 @@ export const useMessageTimelineVirtualizer = ({
 
   const maybeStartBestHistoryLoad = useCallback((preferredDirection?: HistoryLoadDirection) => {
     const scroller = scrollerRef.current;
+    const now = Date.now();
     if (
       !scroller ||
-      !initialLatestRestoreDoneRef.current ||
-      historyLoadInFlightRef.current ||
-      loadingOlderRequestInFlightRef.current ||
-      loadingNewerRequestInFlightRef.current ||
-      loadingOlderStateRef.current ||
-      loadingNewer
+      !initialLatestRestoreDoneRef.current
     ) {
-      return false;
-    }
-
-    const now = Date.now();
-    if (historyLoadPausedUntil > now) {
-      return false;
-    }
-
-    if (now - lastHistoryLoadAtRef.current < HISTORY_LOAD_COOLDOWN_MS) {
       return false;
     }
 
@@ -134,6 +126,49 @@ export const useMessageTimelineVirtualizer = ({
           : null;
 
     lastScrollTopRef.current = currentScrollTop;
+    if (scrollDirection) {
+      lastScrollDirectionSignalRef.current = {
+        direction: scrollDirection,
+        at: now,
+      };
+    }
+
+    const scrollSignal = lastScrollDirectionSignalRef.current;
+    if (
+      !scrollSignal ||
+      now - scrollSignal.at > SCROLL_DIRECTION_SIGNAL_TTL_MS ||
+      scrollSignal.at <= consumedScrollSignalAtRef.current[scrollSignal.direction] ||
+      scrollSignal.at <= lastHistoryLoadSettledAtRef.current ||
+      (preferredDirection && scrollSignal.direction !== preferredDirection)
+    ) {
+      return false;
+    }
+
+    const requestedDirection = preferredDirection ?? scrollSignal.direction;
+    const consumeScrollSignal = () => {
+      consumedScrollSignalAtRef.current[scrollSignal.direction] = scrollSignal.at;
+    };
+
+    if (
+      historyLoadInFlightRef.current ||
+      loadingOlderRequestInFlightRef.current ||
+      loadingNewerRequestInFlightRef.current ||
+      loadingOlderStateRef.current ||
+      loadingNewer
+    ) {
+      consumeScrollSignal();
+      return false;
+    }
+
+    if (historyLoadPausedUntil > now) {
+      consumeScrollSignal();
+      return false;
+    }
+
+    if (now - lastHistoryLoadAtRef.current < HISTORY_LOAD_COOLDOWN_MS) {
+      consumeScrollSignal();
+      return false;
+    }
 
     const olderDistance = getOlderBoundaryDistance(scroller);
     const newerDistance = getNewerBoundaryDistance(scroller);
@@ -146,22 +181,15 @@ export const useMessageTimelineVirtualizer = ({
       return false;
     }
 
-    let nextDirection: HistoryLoadDirection;
-    if (nearOlder && !nearNewer) {
-      nextDirection = 'older';
-    } else if (nearNewer && !nearOlder) {
-      nextDirection = 'newer';
-    } else if (preferredDirection && ((preferredDirection === 'older' && nearOlder) || (preferredDirection === 'newer' && nearNewer))) {
-      nextDirection = preferredDirection;
-    } else if (scrollDirection && ((scrollDirection === 'older' && nearOlder) || (scrollDirection === 'newer' && nearNewer))) {
-      nextDirection = scrollDirection;
-    } else {
-      const olderPressure = olderDistance - olderTopLoadThreshold;
-      const newerPressure = newerDistance - newerBottomLoadThreshold;
-      nextDirection = olderPressure <= newerPressure ? 'older' : 'newer';
+    if (requestedDirection === 'older' && nearOlder) {
+      return startHistoryLoad('older', scrollSignal.at);
     }
 
-    return startHistoryLoad(nextDirection);
+    if (requestedDirection === 'newer' && nearNewer) {
+      return startHistoryLoad('newer', scrollSignal.at);
+    }
+
+    return false;
   }, [
     getNewerBoundaryDistance,
     getOlderBoundaryDistance,
@@ -187,73 +215,6 @@ export const useMessageTimelineVirtualizer = ({
     syncScrollState();
     maybeStartBestHistoryLoad();
   }, [maybeStartBestHistoryLoad, syncScrollState]);
-
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || !initialLatestRestoreDoneRef.current) {
-      return undefined;
-    }
-
-    const olderVisible = hasOlder && olderRangeStatus === 'idle' && isOlderRangeVisible(scroller);
-    const newerVisible = hasNewer && newerRangeStatus === 'idle' && isNewerRangeVisible(scroller);
-    if (!olderVisible && !newerVisible) {
-      return undefined;
-    }
-
-    if (
-      historyLoadInFlightRef.current ||
-      loadingOlderRequestInFlightRef.current ||
-      loadingNewerRequestInFlightRef.current ||
-      loadingOlderStateRef.current ||
-      loadingNewer
-    ) {
-      return undefined;
-    }
-
-    const now = Date.now();
-    const delay = Math.max(
-      0,
-      historyLoadPausedUntil - now,
-      HISTORY_LOAD_COOLDOWN_MS - (now - lastHistoryLoadAtRef.current),
-    );
-    const preferredDirection: HistoryLoadDirection | undefined =
-      newerVisible && !olderVisible
-        ? 'newer'
-        : olderVisible && !newerVisible
-          ? 'older'
-          : undefined;
-
-    if (visibleRangeRetryTimerRef.current !== null) {
-      window.clearTimeout(visibleRangeRetryTimerRef.current);
-    }
-
-    visibleRangeRetryTimerRef.current = window.setTimeout(() => {
-      visibleRangeRetryTimerRef.current = null;
-      maybeStartBestHistoryLoad(preferredDirection);
-    }, delay);
-
-    return () => {
-      if (visibleRangeRetryTimerRef.current !== null) {
-        window.clearTimeout(visibleRangeRetryTimerRef.current);
-        visibleRangeRetryTimerRef.current = null;
-      }
-    };
-  }, [
-    hasNewer,
-    hasOlder,
-    historyLoadPausedUntil,
-    initialLatestRestoreDoneRef,
-    isNewerRangeVisible,
-    isOlderRangeVisible,
-    loadingNewer,
-    loadingNewerRequestInFlightRef,
-    loadingOlderRequestInFlightRef,
-    loadingOlderStateRef,
-    maybeStartBestHistoryLoad,
-    newerRangeStatus,
-    olderRangeStatus,
-    scrollerRef,
-  ]);
 
   return {
     handleScroll,

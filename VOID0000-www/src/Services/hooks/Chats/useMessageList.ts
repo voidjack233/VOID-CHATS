@@ -10,6 +10,7 @@ import { createHistoryAccessFence, normalizeHistoryVersion, } from './MessageLis
 import { mergeMessagesWithReconciliation } from './MessageList/messageListReconciliation';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
 import {
+  applyAppendedPage,
   applyPrependedPage,
   applyRenderedUpdate,
   createEmptyRuntime,
@@ -95,6 +96,7 @@ type MessageWindowAction =
       currentUserId?: string;
       trimFrom?: 'old' | 'new';
       consumeBottomSpacerHeight?: number;
+      clearBottomSpacer?: boolean;
       getMessageHeight?: (message: Message) => number;
       hasOlder?: boolean;
       hasNewer?: boolean;
@@ -132,6 +134,18 @@ type MessageWindowAction =
       bottomSpacerHeightDelta?: number;
       trimmedFromNewMessages?: Message[];
       getMessageHeight?: (message: Message) => number;
+    }
+  | {
+      type: 'apply_appended_window';
+      messages: Message[];
+      pageMessages: Message[];
+      appendedCount: number;
+      bottomSpacerHeightConsume?: number;
+      clearBottomSpacer?: boolean;
+      trimmedFromOldMessages?: Message[];
+      getMessageHeight?: (message: Message) => number;
+      hasNewer?: boolean;
+      isAtPresent?: boolean;
     };
 
 const initialMessageWindowState: MessageWindowState = {
@@ -291,8 +305,12 @@ const messageWindowReducer = (
         allowOptimisticFallback: true,
       });
       const consumedBottomSpacerHeight = action.consumeBottomSpacerHeight ?? 0;
-      const nextBottomSpacerHeight = action.hasNewer === false
+      const nextBottomSpacerHeight = action.clearBottomSpacer
         ? 0
+        : action.hasNewer === false
+        ? (consumedBottomSpacerHeight > 0
+            ? Math.max(0, state.runtime.bottomSpacerHeight - consumedBottomSpacerHeight)
+            : 0)
         : Math.max(0, state.runtime.bottomSpacerHeight - consumedBottomSpacerHeight);
       let nextRuntime = setRenderedMessages(state.runtime, mergeResult.messages);
       nextRuntime.bottomSpacerHeight = nextBottomSpacerHeight;
@@ -303,8 +321,16 @@ const messageWindowReducer = (
         { resolveHeight: action.getMessageHeight },
       );
       nextRuntime = recordRuntimePage(nextRuntime, action.incoming, action.trimFrom === 'new' ? 'older' : 'newer');
+      const hasLogicalNewerRange = nextBottomSpacerHeight > 1;
+      const nextHasNewer = mergeResult.trimmedFromNew > 0
+        ? true
+        : action.clearBottomSpacer
+          ? false
+        : action.hasNewer === false
+          ? hasLogicalNewerRange
+          : (action.hasNewer ?? nextRuntime.hasNewer);
       nextRuntime.hasOlder = mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? nextRuntime.hasOlder);
-      nextRuntime.hasNewer = mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? nextRuntime.hasNewer);
+      nextRuntime.hasNewer = nextHasNewer;
       saveConversationRuntime(nextRuntime);
       return {
         ...state,
@@ -313,8 +339,10 @@ const messageWindowReducer = (
           ? state.firstItemIndex + mergeResult.trimmedFromOld
           : state.firstItemIndex,
         hasOlder: mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? state.hasOlder),
-        hasNewer: mergeResult.trimmedFromNew > 0 ? true : (action.hasNewer ?? state.hasNewer),
-        isAtPresent: mergeResult.trimmedFromNew > 0 ? false : (action.isAtPresent ?? state.isAtPresent),
+        hasNewer: nextHasNewer,
+        isAtPresent: mergeResult.trimmedFromNew > 0 || nextHasNewer || hasLogicalNewerRange
+          ? false
+          : (action.isAtPresent ?? state.isAtPresent),
       };
     }
     case 'set_first_item_index':
@@ -384,6 +412,33 @@ const messageWindowReducer = (
           ? state.firstItemIndex - action.prependedCount
           : state.firstItemIndex,
         groupBreakBeforeIds: nextBreaks,
+      };
+    }
+    case 'apply_appended_window': {
+      const trimmedFromOldCount = action.trimmedFromOldMessages?.length ?? 0;
+      const nextHasNewer = action.clearBottomSpacer
+        ? false
+        : action.hasNewer ?? state.hasNewer;
+      const nextRuntime = applyAppendedPage(state.runtime, action.messages, action.pageMessages, {
+        bottomSpacerHeightConsume: action.bottomSpacerHeightConsume,
+        clearBottomSpacer: action.clearBottomSpacer,
+        trimmedFromOldMessages: action.trimmedFromOldMessages,
+        resolveHeight: action.getMessageHeight,
+        hasOlder: trimmedFromOldCount > 0 ? true : state.hasOlder,
+        hasNewer: nextHasNewer,
+      });
+
+      return {
+        ...state,
+        runtime: nextRuntime,
+        firstItemIndex: trimmedFromOldCount > 0
+          ? state.firstItemIndex + trimmedFromOldCount
+          : state.firstItemIndex,
+        hasOlder: trimmedFromOldCount > 0 ? true : state.hasOlder,
+        hasNewer: nextHasNewer,
+        isAtPresent: nextHasNewer
+          ? false
+          : (action.isAtPresent ?? state.isAtPresent),
       };
     }
     default:
@@ -511,6 +566,7 @@ export const useMessageList = (
     currentUserId?: string;
     trimFrom?: 'old' | 'new';
     consumeBottomSpacerHeight?: number;
+    clearBottomSpacer?: boolean;
     hasOlder?: boolean;
     hasNewer?: boolean;
     isAtPresent?: boolean;
@@ -589,6 +645,23 @@ export const useMessageList = (
     });
   }, [messageWindowMetrics.getMessageHeight]);
 
+  const applyAppendedWindow = useCallback((params: {
+    messages: Message[];
+    pageMessages: Message[];
+    appendedCount: number;
+    bottomSpacerHeightConsume?: number;
+    clearBottomSpacer?: boolean;
+    trimmedFromOldMessages?: Message[];
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
+  }) => {
+    dispatchWindowState({
+      type: 'apply_appended_window',
+      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      ...params,
+    });
+  }, [messageWindowMetrics.getMessageHeight]);
+
   useEffect(() => {
     setInitialHydrationSettled(false);
   }, [conversationId, hasEncryptionKey, historyAccessFenceSignature, waitForEncryptionBootstrap]);
@@ -614,6 +687,7 @@ export const useMessageList = (
     queueNewerMessages,
     flushQueuedNewerMessages,
     applyPrependedWindow,
+    applyAppendedWindow,
     loadingOlder,
     loadingNewer,
     hasOlder,

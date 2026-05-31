@@ -173,8 +173,8 @@ export const useMessageScrollGeometry = ({
     }
 
     const bottomRangeStart = scroller.scrollHeight - renderedBottomSpacerHeight;
-    return scroller.scrollTop + scroller.clientHeight > bottomRangeStart &&
-      scroller.scrollTop < scroller.scrollHeight;
+    return scroller.scrollTop + scroller.clientHeight >= bottomRangeStart &&
+      scroller.scrollTop <= scroller.scrollHeight;
   }, [renderedBottomSpacerHeight]);
 
   const getLoadedScrollHeight = useCallback((scroller: HTMLElement) => (

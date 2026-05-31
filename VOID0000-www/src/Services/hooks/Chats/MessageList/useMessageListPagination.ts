@@ -62,6 +62,7 @@ interface UseMessageListPaginationParams {
     currentUserId?: string;
     trimFrom?: 'old' | 'new';
     consumeBottomSpacerHeight?: number;
+    clearBottomSpacer?: boolean;
     hasOlder?: boolean;
     hasNewer?: boolean;
     isAtPresent?: boolean;
@@ -83,6 +84,16 @@ interface UseMessageListPaginationParams {
     topSpacerHeightConsume?: number;
     bottomSpacerHeightDelta?: number;
     trimmedFromNewMessages?: Message[];
+  }) => void;
+  applyAppendedWindow: (params: {
+    messages: Message[];
+    pageMessages: Message[];
+    appendedCount: number;
+    bottomSpacerHeightConsume?: number;
+    clearBottomSpacer?: boolean;
+    trimmedFromOldMessages?: Message[];
+    hasNewer?: boolean;
+    isAtPresent?: boolean;
   }) => void;
   loadingOlder: boolean;
   loadingNewer: boolean;
@@ -138,6 +149,7 @@ const useMessageListPagination = ({
   queueNewerMessages,
   flushQueuedNewerMessages,
   applyPrependedWindow,
+  applyAppendedWindow,
   loadingOlder,
   loadingNewer,
   hasOlder,
@@ -381,6 +393,78 @@ const useMessageListPagination = ({
     setIsAtPresent,
   ]);
 
+  const applyNewerMessages = useCallback((
+    newerMessages: Message[],
+    options: {
+      clearBottomSpacer: boolean;
+      hasNewerAfterMerge: boolean;
+    },
+  ) => {
+    const prevCount = messagesRef.current.length;
+    const prevFirstItemIndex = firstItemIndexRef.current;
+    const existingIds = new Set(messagesRef.current.map((message) => message.message_id));
+    const appendedMessages = newerMessages.filter((message) => !existingIds.has(message.message_id));
+    const appendedCount = appendedMessages.length;
+    const mergedMessages = [...messagesRef.current, ...newerMessages];
+    const uniqueMessages = Array.from(
+      new Map(mergedMessages.map((message) => [message.message_id, message])).values()
+    );
+    const sortedUniqueMessages = sortMessages(uniqueMessages);
+    let nextMessages = sortedUniqueMessages;
+    let trimmedFromOldMessages: Message[] = [];
+
+    if (sortedUniqueMessages.length > MESSAGE_WINDOW_TRIM_TRIGGER) {
+      const trimCount = sortedUniqueMessages.length - MESSAGE_WINDOW_TRIM_TARGET;
+      trimmedFromOldMessages = sortedUniqueMessages.slice(0, trimCount);
+      nextMessages = sortedUniqueMessages.slice(trimCount);
+    }
+
+    const bottomSpacerHeightConsume = sumMessageHeights(appendedMessages, getMessageHeight);
+    messagesRef.current = nextMessages;
+    applyAppendedWindow({
+      messages: nextMessages,
+      pageMessages: newerMessages,
+      appendedCount,
+      bottomSpacerHeightConsume,
+      clearBottomSpacer: options.clearBottomSpacer,
+      trimmedFromOldMessages,
+      hasNewer: options.hasNewerAfterMerge,
+      // Geometry marks present only after the user physically reaches bottom.
+      isAtPresent: false,
+    });
+
+    onMessagesLoaded?.(newerMessages);
+    return {
+      appendedCount,
+      prevCount,
+      nextCount: nextMessages.length,
+      trimmedVisibleCount: trimmedFromOldMessages.length,
+      prevFirstItemIndex,
+      nextFirstItemIndex: trimmedFromOldMessages.length > 0
+        ? prevFirstItemIndex + trimmedFromOldMessages.length
+        : prevFirstItemIndex,
+      firstAppendedId: appendedMessages[0]?.message_id || null,
+      lastAppendedId: appendedMessages[appendedMessages.length - 1]?.message_id || null,
+    };
+  }, [
+    applyAppendedWindow,
+    getMessageHeight,
+    messagesRef,
+    onMessagesLoaded,
+  ]);
+
+  const clearNewerHistoryRange = useCallback(() => {
+    applyAppendedWindow({
+      messages: messagesRef.current,
+      pageMessages: [],
+      appendedCount: 0,
+      clearBottomSpacer: true,
+      trimmedFromOldMessages: [],
+      hasNewer: false,
+      isAtPresent: false,
+    });
+  }, [applyAppendedWindow, messagesRef]);
+
   const fetchOlderMessages = useCallback(async (oldestMessageId: string, options?: { forceServer?: boolean }) => {
     const forceServer = options?.forceServer === true;
     let result: { messages: LocalMessage[]; has_more: boolean };
@@ -586,11 +670,6 @@ const useMessageListPagination = ({
   const loadNewer = useCallback(async () => {
     if (!encryptionKeyRef.current || loadingNewer || !hasNewer || messages.length === 0) return false;
 
-    if (initialHydrationSettled && hasQueuedNewer) {
-      flushQueuedNewerMessages({ currentUserId: userId, trimFrom: 'old' });
-      return true;
-    }
-
     setLoadingNewer(true);
     const requestGeneration = historyRequestGenerationRef.current;
 
@@ -634,8 +713,9 @@ const useMessageListPagination = ({
       }
 
       if (newerUI.length > 0) {
-        const hasNewerAfterMerge = newerUI.length < FETCH_SIZE ? false : result.has_more;
-        const isAtPresentAfterMerge = newerUI.length < FETCH_SIZE;
+        const reachedPresentBoundary = result.messages.length < FETCH_SIZE || !result.has_more;
+        const hasNewerAfterMerge = reachedPresentBoundary ? false : result.has_more;
+        const isAtPresentAfterMerge = !hasNewerAfterMerge;
 
         if (!initialHydrationSettled) {
           queueNewerMessages({
@@ -644,22 +724,13 @@ const useMessageListPagination = ({
             incoming: newerUI,
           });
         } else {
-          // Explicit downward pagination should extend the visible window.
-          // Passive live/reconnect messages still use the queue paths below so
-          // they do not create false gaps while the user is reading old history.
-          mergeVisibleMessages({
-            incoming: newerUI,
-            currentUserId: userId,
-            trimFrom: 'old',
-            consumeBottomSpacerHeight: sumMessageHeights(newerUI, getMessageHeight),
-            hasNewer: hasNewerAfterMerge,
-            isAtPresent: isAtPresentAfterMerge,
+          applyNewerMessages(newerUI, {
+            clearBottomSpacer: reachedPresentBoundary,
+            hasNewerAfterMerge,
           });
-          onMessagesLoaded?.(newerUI);
         }
       } else {
-        setHasNewer(false);
-        setIsAtPresent(true);
+        clearNewerHistoryRange();
       }
       return true;
     } catch (error) {
@@ -670,26 +741,21 @@ const useMessageListPagination = ({
       setLoadingNewer(false);
     }
   }, [
+    applyNewerMessages,
+    clearNewerHistoryRange,
     conversationId,
     currentKeyVersionRef,
     decryptionConversation,
     encryptionKeyRef,
     hasNewer,
-    hasQueuedNewer,
     historyAccessFence,
     initialHydrationSettled,
     loadingNewer,
-    mergeVisibleMessages,
-    getMessageHeight,
     messages,
     notifyHistoryRateLimit,
-    onMessagesLoaded,
     queueNewerMessages,
-    setHasNewer,
-    setIsAtPresent,
     setLoadingNewer,
     userId,
-    flushQueuedNewerMessages,
   ]);
 
   type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed' | 'tab_visible' | 'message_create';
