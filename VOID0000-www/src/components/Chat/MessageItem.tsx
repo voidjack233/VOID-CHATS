@@ -60,6 +60,7 @@ const SINGLE_ATTACHMENT_FALLBACK_WIDTH = 220;
 const MULTI_ATTACHMENT_MAX_WIDTH = 320;
 const LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD = 1.2;
 const PORTRAIT_ATTACHMENT_RATIO_THRESHOLD = 0.9;
+const UNAVAILABLE_REPLY_CONTENT = '[deleted or unavailable]';
 
 interface MessageItemProps {
   message: Message;
@@ -193,6 +194,10 @@ function looksLikeImageAttachment(attachment: {
   } catch {
     return false;
   }
+}
+
+function isUnavailableReplyPlaceholder(message: Message): boolean {
+  return message.is_deleted && message.content === UNAVAILABLE_REPLY_CONTENT;
 }
 
 const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
@@ -882,15 +887,27 @@ const MessageItem = memo(function MessageItem({
                 <CornerUpRight className="w-3 h-3 flex-shrink-0" />
                 {replyParent ? (
                   <>
-                    <span className="font-semibold text-void-accent/70">{getSenderName(replyParent.sender_id)}</span>
                     {(() => {
+                      if (isUnavailableReplyPlaceholder(replyParent)) {
+                        return <span className="italic opacity-60">Message unavailable</span>;
+                      }
+
                       const hasRealContent =
                         replyParent.content &&
                         replyParent.content !== '[encrypted]' &&
                         replyParent.content !== '[deleted]';
 
+                      const senderName = replyParent.sender_id
+                        ? getSenderName(replyParent.sender_id)
+                        : 'Unknown';
+
                       if (replyParent.is_deleted) {
-                        return <span className="italic opacity-60">[deleted]</span>;
+                        return (
+                          <>
+                            <span className="font-semibold text-void-accent/70">{senderName}</span>
+                            <span className="italic opacity-60">[deleted]</span>
+                          </>
+                        );
                       }
 
                       if (!hasRealContent && replyParent.attachments?.length) {
@@ -901,28 +918,39 @@ const MessageItem = memo(function MessageItem({
                           : 'Click to download file';
 
                         return (
-                          <span className="flex items-center gap-1.5">
-                            <ReplyAttachmentIcon className="w-4 h-4 flex-shrink-0" />
-                            <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
-                              {replyAttachmentLabel}
+                          <>
+                            <span className="font-semibold text-void-accent/70">{senderName}</span>
+                            <span className="flex items-center gap-1.5">
+                              <ReplyAttachmentIcon className="w-4 h-4 flex-shrink-0" />
+                              <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
+                                {replyAttachmentLabel}
+                              </span>
                             </span>
-                          </span>
+                          </>
                         );
                       }
 
                       if (hasRealContent) {
                         return (
-                          <span className="truncate max-w-[220px]">
-                            <MessagePreviewText
-                              content={replyParent.content}
-                              maxLength={60}
-                              fallback="Message unavailable"
-                            />
-                          </span>
+                          <>
+                            <span className="font-semibold text-void-accent/70">{senderName}</span>
+                            <span className="truncate max-w-[220px]">
+                              <MessagePreviewText
+                                content={replyParent.content}
+                                maxLength={60}
+                                fallback="Message unavailable"
+                              />
+                            </span>
+                          </>
                         );
                       }
 
-                      return <span className="italic opacity-60">Message unavailable</span>;
+                      return (
+                        <>
+                          <span className="font-semibold text-void-accent/70">{senderName}</span>
+                          <span className="italic opacity-60">Message unavailable</span>
+                        </>
+                      );
                     })()}
                   </>
                 ) : (

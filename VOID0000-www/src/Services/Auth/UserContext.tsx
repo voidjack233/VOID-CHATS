@@ -9,7 +9,7 @@ import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncr
 import { debugLog } from '../utils/debugLog';
 import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
 import {
-  ensureAccountSecureKeysReady,
+  scheduleAccountMlsMaintenance,
   uploadRecoverySecureBackups as uploadRecoverySecureBackupsNow,
 } from './secureBackup';
 import {
@@ -55,7 +55,7 @@ declare global {
 
 const UserContext = createContext<UserContextType | null>(null);
 const USER_STORAGE_KEY = 'void_user';
-const FOREGROUND_MLS_MAINTENANCE_MIN_GAP_MS = 30_000;
+const ACCOUNT_MLS_MAINTENANCE_INTERVAL_MS = 120_000;
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<User | null>(() => {
@@ -77,7 +77,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const loginPasswordClearTimerRef = useRef<number | null>(null);
   const liveConversationKeyVersionsRef = useRef<Record<string, number>>({});
   const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
-  const lastForegroundMlsMaintenanceAtRef = useRef(0);
 
   const clearLoginPassword = () => {
     loginPasswordRef.current = null;
@@ -122,9 +121,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       throw new Error('PASSWORD_REQUIRED');
     }
 
-    await ensureAccountSecureKeysReady(user.id, {
+    await scheduleAccountMlsMaintenance(user.id, 'password_backup_refresh', {
       password,
-      source: 'password_backup_refresh',
+      urgent: true,
+      immediate: true,
+      skipRecentSuccess: false,
     });
     setKeyStatus('SECURE');
     setRecoveryBackupStatus('PASSWORD_ONLY');
@@ -150,8 +151,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     await uploadRecoverySecureBackupsNow(user.id, recoveryKey);
     await keyManager.storeRecoveryKeyForBackup(user.id, recoveryKey);
-    await ensureAccountSecureKeysReady(user.id, {
-      source: 'recovery_key_setup',
+    await scheduleAccountMlsMaintenance(user.id, 'recovery_key_setup', {
+      urgent: true,
+      immediate: true,
+      skipRecentSuccess: false,
     });
     setKeyStatus('SECURE');
     setRecoveryBackupStatus('RECOVERY_KEY_READY');
@@ -373,8 +376,10 @@ export function UserProvider({ children }: { children: ReactNode }) {
           synced_commits: syncResult.syncedCommits,
         });
       }
-      await ensureAccountSecureKeysReady(user.id, {
-        source: 'recovery_key_retry',
+      await scheduleAccountMlsMaintenance(user.id, 'recovery_key_retry', {
+        urgent: true,
+        immediate: true,
+        skipRecentSuccess: false,
       });
       clearMlsRecoveryGate();
     } finally {
@@ -454,9 +459,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
           synced_commits: syncResult.syncedCommits,
         });
       }
-      await ensureAccountSecureKeysReady(user.id, {
+      await scheduleAccountMlsMaintenance(user.id, 'password_recovery_retry', {
         password,
-        source: 'password_recovery_retry',
+        urgent: true,
+        immediate: true,
+        skipRecentSuccess: false,
       });
       clearMlsRecoveryGate();
     } finally {
@@ -678,10 +685,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
           if (!cancelled && !requiresInteractiveRecovery) {
             try {
               const recoveryKey = await keyManager.getStoredRecoveryKeyForBackup(userId);
-              await ensureAccountSecureKeysReady(userId, {
+              await scheduleAccountMlsMaintenance(userId, 'key_initialization', {
                 password,
                 restoreBackup: false,
-                source: 'key_initialization',
+                immediate: true,
+                skipRecentSuccess: false,
               });
 
               setKeyStatus('SECURE');
@@ -752,15 +760,22 @@ export function UserProvider({ children }: { children: ReactNode }) {
 
     liveConversationKeyVersionsRef.current = {};
 
-    const runAccountSecureKeyReadiness = (
+    const requestAccountSecureKeyReadiness = (
       source: string,
-      restoreBackup = false,
+      options: {
+        restoreBackup?: boolean;
+        urgent?: boolean;
+        immediate?: boolean;
+        skipRecentSuccess?: boolean;
+      } = {},
     ) => {
       if (cancelled) return;
-      void ensureAccountSecureKeysReady(userId, {
+      void scheduleAccountMlsMaintenance(userId, source, {
         password: loginPasswordRef.current,
-        restoreBackup,
-        source,
+        restoreBackup: options.restoreBackup === true,
+        urgent: options.urgent === true,
+        immediate: options.immediate === true,
+        skipRecentSuccess: options.skipRecentSuccess,
       }).catch((error) => {
         console.warn('[MLS_ACCOUNT_KEYS] automatic readiness pass failed', {
           user_id: userId,
@@ -805,53 +820,50 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }, 150);
     };
 
-    const runForegroundMaintenance = () => {
-      if (cancelled) return;
-
-      const now = Date.now();
-      if (now - lastForegroundMlsMaintenanceAtRef.current < FOREGROUND_MLS_MAINTENANCE_MIN_GAP_MS) {
-        return;
-      }
-
-      lastForegroundMlsMaintenanceAtRef.current = now;
-      runAccountSecureKeyReadiness('foreground_maintenance');
-    };
-
     // Periodic fallback keeps claimable reserve replenished while the app is open.
     const maintenanceInterval = window.setInterval(() => {
-      runAccountSecureKeyReadiness('periodic_maintenance');
-    }, 60_000);
+      requestAccountSecureKeyReadiness('periodic_maintenance');
+    }, ACCOUNT_MLS_MAINTENANCE_INTERVAL_MS);
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        runForegroundMaintenance();
+        requestAccountSecureKeyReadiness('foreground_visible');
       }
     };
 
     const onFocus = () => {
-      runForegroundMaintenance();
+      requestAccountSecureKeyReadiness('foreground_focus');
     };
 
     const onOnline = () => {
-      runAccountSecureKeyReadiness('network_online', true);
+      requestAccountSecureKeyReadiness('network_online', {
+        restoreBackup: true,
+      });
     };
 
     const onKeyPackageChanged = () => {
-      runAccountSecureKeyReadiness('key_package_changed');
+      requestAccountSecureKeyReadiness('key_package_changed');
     };
 
     // WebSocket READY / RESUMED: run the complete stage, backup, activate flow.
     const onGatewayReady = () => {
-      runAccountSecureKeyReadiness('gateway_ready', true);
+      requestAccountSecureKeyReadiness('gateway_ready', {
+        restoreBackup: true,
+      });
     };
     const onGatewayResumed = () => {
-      runAccountSecureKeyReadiness('gateway_resumed');
+      requestAccountSecureKeyReadiness('gateway_resumed');
     };
 
     // The server sends this both after claims and when an online account is
     // needed for a pending DM bootstrap with no claimable reserve.
     const onKeyPackageLow = () => {
-      runAccountSecureKeyReadiness('server_low_reserve_request', true);
+      requestAccountSecureKeyReadiness('server_low_reserve_request', {
+        restoreBackup: true,
+        urgent: true,
+        immediate: true,
+        skipRecentSuccess: false,
+      });
     };
 
     const onConversationUpdate = (data: any) => {

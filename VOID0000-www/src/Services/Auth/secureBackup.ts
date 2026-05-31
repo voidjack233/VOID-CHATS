@@ -54,19 +54,313 @@ export interface AccountSecureKeysReadinessResult {
   activatedKeyPackageRefsCount: number;
 }
 
-interface EnsureAccountSecureKeysReadyOptions {
+export interface EnsureAccountSecureKeysReadyOptions {
   password?: string | null;
   restoreBackup?: boolean;
   source?: string;
   attempts?: number;
 }
 
+export interface ScheduleAccountMlsMaintenanceOptions extends EnsureAccountSecureKeysReadyOptions {
+  urgent?: boolean;
+  immediate?: boolean;
+  skipRecentSuccess?: boolean;
+  debounceMs?: number;
+}
+
 const ACCOUNT_KEY_READINESS_BACKOFF_MS = [0, 450, 1200];
+const ACCOUNT_MLS_MAINTENANCE_NORMAL_DEBOUNCE_MS = 2_000;
+const ACCOUNT_MLS_MAINTENANCE_URGENT_DEBOUNCE_MS = 250;
+const ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS = 90_000;
 const accountKeyReadinessJobs = new Map<string, Promise<AccountSecureKeysReadinessResult>>();
+
+interface AccountMlsMaintenanceWaiter {
+  resolve: (result: AccountSecureKeysReadinessResult | null) => void;
+  reject: (error: unknown) => void;
+}
+
+interface PendingAccountMlsMaintenance {
+  reasons: Set<string>;
+  options: EnsureAccountSecureKeysReadyOptions;
+  urgent: boolean;
+  immediate: boolean;
+  skipRecentSuccess: boolean;
+  waiters: AccountMlsMaintenanceWaiter[];
+}
+
+interface AccountMlsMaintenanceSchedulerState {
+  timerId: number | null;
+  timerDueAt: number | null;
+  pending: PendingAccountMlsMaintenance | null;
+  inFlight: Promise<AccountSecureKeysReadinessResult> | null;
+  lastSuccessAt: number;
+  runSequence: number;
+}
+
+const accountMlsMaintenanceSchedulers = new Map<string, AccountMlsMaintenanceSchedulerState>();
 
 function delay(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function getAccountMlsMaintenanceScheduler(userId: string): AccountMlsMaintenanceSchedulerState {
+  const existing = accountMlsMaintenanceSchedulers.get(userId);
+  if (existing) {
+    return existing;
+  }
+
+  const created: AccountMlsMaintenanceSchedulerState = {
+    timerId: null,
+    timerDueAt: null,
+    pending: null,
+    inFlight: null,
+    lastSuccessAt: 0,
+    runSequence: 0,
+  };
+  accountMlsMaintenanceSchedulers.set(userId, created);
+  return created;
+}
+
+function summarizeMaintenanceReasons(reasons: Set<string>): string {
+  const list = Array.from(reasons);
+  if (list.length === 0) {
+    return 'unspecified';
+  }
+  if (list.length === 1) {
+    return list[0]!;
+  }
+
+  const visibleReasons = list.slice(0, 5).join(',');
+  return `coalesced:${visibleReasons}${list.length > 5 ? `,+${list.length - 5}` : ''}`;
+}
+
+function mergeMaintenanceOptions(
+  current: EnsureAccountSecureKeysReadyOptions,
+  next: EnsureAccountSecureKeysReadyOptions,
+): EnsureAccountSecureKeysReadyOptions {
+  const password = current.password?.trim()
+    ? current.password
+    : next.password?.trim()
+      ? next.password
+      : current.password ?? next.password;
+  const attempts = Math.max(current.attempts ?? 0, next.attempts ?? 0) || undefined;
+  return {
+    ...current,
+    ...next,
+    password,
+    restoreBackup: current.restoreBackup === true || next.restoreBackup === true,
+    attempts,
+  };
+}
+
+function settleMaintenanceWaiters(
+  waiters: AccountMlsMaintenanceWaiter[],
+  result: AccountSecureKeysReadinessResult | null,
+) {
+  waiters.forEach((waiter) => waiter.resolve(result));
+}
+
+function rejectMaintenanceWaiters(
+  waiters: AccountMlsMaintenanceWaiter[],
+  error: unknown,
+) {
+  waiters.forEach((waiter) => waiter.reject(error));
+}
+
+function schedulePendingAccountMlsMaintenanceRun(
+  userId: string,
+  state: AccountMlsMaintenanceSchedulerState,
+  delayMs: number,
+) {
+  const dueAt = Date.now() + delayMs;
+  if (state.timerId != null && state.timerDueAt != null && state.timerDueAt <= dueAt) {
+    return;
+  }
+
+  if (state.timerId != null) {
+    window.clearTimeout(state.timerId);
+  }
+
+  state.timerDueAt = dueAt;
+  state.timerId = window.setTimeout(() => {
+    state.timerId = null;
+    state.timerDueAt = null;
+    flushAccountMlsMaintenance(userId, state);
+  }, delayMs);
+}
+
+function flushAccountMlsMaintenance(
+  userId: string,
+  state: AccountMlsMaintenanceSchedulerState,
+) {
+  if (state.inFlight || !state.pending) {
+    return;
+  }
+
+  const pending = state.pending;
+  state.pending = null;
+  const source = summarizeMaintenanceReasons(pending.reasons);
+  const now = Date.now();
+
+  if (
+    !pending.urgent &&
+    pending.skipRecentSuccess &&
+    state.lastSuccessAt > 0 &&
+    now - state.lastSuccessAt < ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS
+  ) {
+    debugLog('[MLS_ACCOUNT_KEYS] maintenance skipped after recent success', {
+      user_id: userId,
+      source,
+      reasons: Array.from(pending.reasons),
+      ms_since_success: now - state.lastSuccessAt,
+      recent_success_skip_ms: ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS,
+    });
+    settleMaintenanceWaiters(pending.waiters, null);
+    return;
+  }
+
+  const runId = state.runSequence + 1;
+  state.runSequence = runId;
+  const runOptions: EnsureAccountSecureKeysReadyOptions = {
+    ...pending.options,
+    source,
+  };
+
+  debugLog('[MLS_ACCOUNT_KEYS] maintenance started', {
+    user_id: userId,
+    source,
+    reasons: Array.from(pending.reasons),
+    urgent: pending.urgent,
+    restore_backup: runOptions.restoreBackup === true,
+    run_id: runId,
+  });
+
+  const job = ensureAccountSecureKeysReady(userId, runOptions);
+  state.inFlight = job;
+
+  job
+    .then((result) => {
+      state.lastSuccessAt = Date.now();
+      debugLog('[MLS_ACCOUNT_KEYS] maintenance finished', {
+        user_id: userId,
+        source,
+        run_id: runId,
+        ready: result.ready,
+        claimable_key_packages_count: result.claimableKeyPackagesCount,
+        staged_key_packages_count: result.stagedKeyPackagesCount,
+        backed_up_key_package_refs_count: result.backedUpKeyPackageRefsCount,
+        activated_key_package_refs_count: result.activatedKeyPackageRefsCount,
+      });
+      settleMaintenanceWaiters(pending.waiters, result);
+    })
+    .catch((error) => {
+      console.warn('[MLS_ACCOUNT_KEYS] maintenance failed', {
+        user_id: userId,
+        source,
+        run_id: runId,
+        error: error instanceof Error ? error.message : String(error || ''),
+      });
+      rejectMaintenanceWaiters(pending.waiters, error);
+    })
+    .finally(() => {
+      if (state.inFlight === job) {
+        state.inFlight = null;
+      }
+      if (state.pending) {
+        schedulePendingAccountMlsMaintenanceRun(userId, state, 0);
+      }
+    });
+}
+
+export function scheduleAccountMlsMaintenance(
+  userId: string,
+  reason: string,
+  options: ScheduleAccountMlsMaintenanceOptions = {},
+): Promise<AccountSecureKeysReadinessResult | null> {
+  const trimmedReason = reason.trim() || 'unspecified';
+  const {
+    urgent = false,
+    immediate = false,
+    skipRecentSuccess = true,
+    debounceMs,
+    ...readinessOptions
+  } = options;
+  const state = getAccountMlsMaintenanceScheduler(userId);
+  const now = Date.now();
+
+  if (
+    !urgent &&
+    !immediate &&
+    skipRecentSuccess &&
+    state.lastSuccessAt > 0 &&
+    now - state.lastSuccessAt < ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS
+  ) {
+    debugLog('[MLS_ACCOUNT_KEYS] maintenance request skipped after recent success', {
+      user_id: userId,
+      reason: trimmedReason,
+      ms_since_success: now - state.lastSuccessAt,
+      recent_success_skip_ms: ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS,
+    });
+    return Promise.resolve(null);
+  }
+
+  const shouldQueueAfterCurrentRun =
+    Boolean(state.inFlight) &&
+    (urgent || immediate || readinessOptions.restoreBackup === true || skipRecentSuccess === false);
+
+  if (state.inFlight && !shouldQueueAfterCurrentRun) {
+    debugLog('[MLS_ACCOUNT_KEYS] maintenance request coalesced into active run', {
+      user_id: userId,
+      reason: trimmedReason,
+    });
+    return state.inFlight;
+  }
+
+  return new Promise<AccountSecureKeysReadinessResult | null>((resolve, reject) => {
+    const waiter: AccountMlsMaintenanceWaiter = { resolve, reject };
+    if (!state.pending) {
+      state.pending = {
+        reasons: new Set([trimmedReason]),
+        options: readinessOptions,
+        urgent,
+        immediate,
+        skipRecentSuccess,
+        waiters: [waiter],
+      };
+    } else {
+      state.pending.reasons.add(trimmedReason);
+      state.pending.options = mergeMaintenanceOptions(state.pending.options, readinessOptions);
+      state.pending.urgent = state.pending.urgent || urgent;
+      state.pending.immediate = state.pending.immediate || immediate;
+      state.pending.skipRecentSuccess = state.pending.skipRecentSuccess && skipRecentSuccess;
+      state.pending.waiters.push(waiter);
+    }
+
+    debugLog('[MLS_ACCOUNT_KEYS] maintenance request scheduled', {
+      user_id: userId,
+      reason: trimmedReason,
+      pending_reasons: Array.from(state.pending.reasons),
+      urgent: state.pending.urgent,
+      immediate: state.pending.immediate,
+      in_flight: Boolean(state.inFlight),
+    });
+
+    if (state.inFlight) {
+      return;
+    }
+
+    const pending = state.pending;
+    const nextDelayMs =
+      typeof debounceMs === 'number'
+        ? Math.max(0, debounceMs)
+        : pending.immediate
+          ? 0
+          : pending.urgent
+            ? ACCOUNT_MLS_MAINTENANCE_URGENT_DEBOUNCE_MS
+            : ACCOUNT_MLS_MAINTENANCE_NORMAL_DEBOUNCE_MS;
+    schedulePendingAccountMlsMaintenanceRun(userId, state, nextDelayMs);
+  });
 }
 
 export async function buildMlsBackupFields(

@@ -15,11 +15,27 @@ interface UseMessageListRepliesParams {
   currentKeyVersionRef: MutableRefObject<number>;
 }
 
-const createUnavailableReply = (replyToId: string) => ({
+const UNAVAILABLE_REPLY_CONTENT = '[deleted or unavailable]';
+
+const createUnavailableReply = (conversationId: string, replyToId: string): Message => ({
+  conversation_id: conversationId,
   message_id: replyToId,
-  content: '[deleted or unavailable]',
+  sender_id: '',
+  encrypted_content: null,
+  iv: null,
+  key_version: 1,
+  message_type: 'system',
+  reply_to: null,
+  attachments: [],
+  is_edited: false,
+  edited_at: null,
   is_deleted: true,
-} as Message);
+  created_at: new Date(0).toISOString(),
+  content: UNAVAILABLE_REPLY_CONTENT,
+  reactions: {},
+  protocol: null,
+  protocol_version: null,
+});
 
 const useMessageListReplies = ({
   messages,
@@ -50,19 +66,32 @@ const useMessageListReplies = ({
 
     let ignore = false;
 
-    const missingReplies = messages
-      .map((message) => message.reply_to)
-      .filter((replyToId): replyToId is string => (
-        !!replyToId &&
-        !messages.find((message) => message.message_id === replyToId) &&
-        !replyCache[replyToId] &&
-        !fetchingReplies.current.has(replyToId)
-      ));
+    const missingReplies = Array.from(new Set(
+      messages
+        .map((message) => message.reply_to)
+        .filter((replyToId): replyToId is string => (
+          !!replyToId &&
+          !messages.find((message) => message.message_id === replyToId) &&
+          !replyCache[replyToId] &&
+          !fetchingReplies.current.has(replyToId)
+        ))
+    ));
 
     if (missingReplies.length === 0) return;
 
     missingReplies.forEach((replyToId) => {
       fetchingReplies.current.add(replyToId);
+
+      const cacheUnavailableReply = () => {
+        setReplyCache((previous) => (
+          previous[replyToId]
+            ? previous
+            : {
+                ...previous,
+                [replyToId]: createUnavailableReply(conversationId, replyToId),
+              }
+        ));
+      };
 
       messageStore.getMessage(conversationId, replyToId)
         .then((localMessage) => {
@@ -70,11 +99,12 @@ const useMessageListReplies = ({
 
           if (localMessage && hasReadableMessageContent(localMessage)) {
             const localReply = toUIMessage(localMessage);
+            const replyForCache = isMessageVisibleForHistoryFence(localReply, historyAccessFence)
+              ? localReply
+              : createUnavailableReply(conversationId, replyToId);
             setReplyCache((previous) => ({
               ...previous,
-              [replyToId]: isMessageVisibleForHistoryFence(localReply, historyAccessFence)
-                ? localReply
-                : createUnavailableReply(replyToId),
+              [replyToId]: replyForCache,
             }));
             return;
           }
@@ -87,20 +117,24 @@ const useMessageListReplies = ({
             .then((message: any) => {
               if (ignore) return;
               const actualMessage = message?.message || message;
+              const replyForCache = actualMessage && isMessageVisibleForHistoryFence(actualMessage, historyAccessFence)
+                ? actualMessage
+                : createUnavailableReply(conversationId, replyToId);
               setReplyCache((previous) => ({
                 ...previous,
-                [replyToId]: actualMessage && isMessageVisibleForHistoryFence(actualMessage, historyAccessFence)
-                  ? actualMessage
-                  : createUnavailableReply(replyToId),
+                [replyToId]: replyForCache,
               }));
             })
             .catch(() => {
               if (ignore) return;
-              fetchingReplies.current.delete(replyToId);
+              cacheUnavailableReply();
             });
         })
         .catch(() => {
           if (ignore) return;
+          cacheUnavailableReply();
+        })
+        .finally(() => {
           fetchingReplies.current.delete(replyToId);
         });
     });
