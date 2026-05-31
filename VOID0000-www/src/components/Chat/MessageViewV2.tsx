@@ -382,6 +382,10 @@ const MessageViewV2 = memo(function MessageViewV2({
     olderHistoryLoaderSlotHeight,
     MESSAGE_PAGE_SIZE * historyLogicalRowEstimate,
   );
+  const maxPhysicalBottomSpacerHeight = Math.min(
+    MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
+    historyLogicalSlotHeight,
+  );
   const olderTopScrollLockThreshold = 2;
   const newerBottomLoadThreshold = NEWER_HISTORY_PREFETCH_DISTANCE[density];
   const { friends } = useFriends();
@@ -545,6 +549,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     jumpToPresentRevealDistance: JUMP_TO_PRESENT_REVEAL_DISTANCE,
     enablePhysicalSpacerWindowing: ENABLE_SCROLL_GEOMETRY_COMPACTION,
     maxPhysicalSpacerHeight: MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
+    maxPhysicalBottomSpacerHeight,
   });
   const olderTopExhaustionThreshold = renderedTopSpacerHeight + 8;
   const historySkeletonRowCount = Math.max(
@@ -1190,7 +1195,9 @@ const MessageViewV2 = memo(function MessageViewV2({
     if (
       !scroller ||
       !initialHydrationSettled ||
-      loadingOlder
+      loadingOlder ||
+      loadingNewer ||
+      pendingNewerLoadScrollSnapshotRef.current
     ) {
       return false;
     }
@@ -1207,7 +1214,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     syncScrollState();
     forceFollowOutputRef.current = false;
     return true;
-  }, [initialHydrationSettled, loadingOlder, scrollToBottom, syncScrollState]);
+  }, [initialHydrationSettled, loadingNewer, loadingOlder, scrollToBottom, syncScrollState]);
 
   const attemptInitialBottomRestore = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1352,7 +1359,12 @@ const MessageViewV2 = memo(function MessageViewV2({
     const previousCount = previousListCountRef.current;
     const countIncreased = nextCount > previousCount;
 
-    if (countIncreased && (forceFollowOutputRef.current || atBottomRef.current)) {
+    if (
+      countIncreased &&
+      !loadingNewer &&
+      !pendingNewerLoadScrollSnapshotRef.current &&
+      (forceFollowOutputRef.current || atBottomRef.current)
+    ) {
       requestAnimationFrame(() => {
         scrollToBottom(forceFollowOutputRef.current ? 'auto' : 'smooth');
         forceFollowOutputRef.current = false;
@@ -1361,7 +1373,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     previousListCountRef.current = nextCount;
-  }, [listItems.length, scrollToBottom, syncScrollState]);
+  }, [listItems.length, loadingNewer, scrollToBottom, syncScrollState]);
 
   // ── Sync after layout changes ──
   useEffect(() => {

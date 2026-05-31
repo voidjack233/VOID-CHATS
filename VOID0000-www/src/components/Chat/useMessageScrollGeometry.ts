@@ -19,6 +19,7 @@ interface ScrollGeometryInput {
   jumpToPresentRevealDistance: number;
   enablePhysicalSpacerWindowing?: boolean;
   maxPhysicalSpacerHeight?: number;
+  maxPhysicalBottomSpacerHeight?: number;
 }
 
 interface ScrollState {
@@ -45,6 +46,7 @@ export const useMessageScrollGeometry = ({
   jumpToPresentRevealDistance,
   enablePhysicalSpacerWindowing = false,
   maxPhysicalSpacerHeight = Number.POSITIVE_INFINITY,
+  maxPhysicalBottomSpacerHeight,
 }: ScrollGeometryInput) => {
   const topTrimmedSpacerHeight = Math.max(0, topSpacerHeight);
   const bottomTrimmedSpacerHeight = Math.max(0, bottomSpacerHeight);
@@ -53,14 +55,18 @@ export const useMessageScrollGeometry = ({
   const topLogicalRangeHeight = topTrimmedSpacerHeight + topEstimatedLoadingHeight;
   const bottomLogicalRangeHeight = bottomTrimmedSpacerHeight + bottomEstimatedLoadingHeight;
 
-  const physicalSpacerLimit = enablePhysicalSpacerWindowing && Number.isFinite(maxPhysicalSpacerHeight)
+  const physicalTopSpacerLimit = enablePhysicalSpacerWindowing && Number.isFinite(maxPhysicalSpacerHeight)
     ? Math.max(0, maxPhysicalSpacerHeight)
+    : Number.POSITIVE_INFINITY;
+  const bottomSpacerLimitSource = maxPhysicalBottomSpacerHeight ?? maxPhysicalSpacerHeight;
+  const physicalBottomSpacerLimit = enablePhysicalSpacerWindowing && Number.isFinite(bottomSpacerLimitSource)
+    ? Math.max(0, bottomSpacerLimitSource)
     : Number.POSITIVE_INFINITY;
 
   // Logical spacers remain the source of truth. Rendered spacers can be capped
   // so the browser does not carry a giant physical scroll layer forever.
-  const renderedTopSpacerHeight = Math.min(topLogicalRangeHeight, physicalSpacerLimit);
-  const renderedBottomSpacerHeight = Math.min(bottomLogicalRangeHeight, physicalSpacerLimit);
+  const renderedTopSpacerHeight = Math.min(topLogicalRangeHeight, physicalTopSpacerLimit);
+  const renderedBottomSpacerHeight = Math.min(bottomLogicalRangeHeight, physicalBottomSpacerLimit);
   const topOriginOffset = Math.max(0, topLogicalRangeHeight - renderedTopSpacerHeight);
   const bottomOriginOffset = Math.max(0, bottomLogicalRangeHeight - renderedBottomSpacerHeight);
   const isPhysicalSpacerCompacted = topOriginOffset > 0 || bottomOriginOffset > 0;
