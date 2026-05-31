@@ -57,6 +57,89 @@ const ChatDashboard = () => {
   const { isOnline, showReconnectBanner } = useConnectionStatus();
   const serviceHealth = useServiceHealth();
   const serviceIssue = serviceHealth.issues[0] || null;
+  const currentUserId = user?.id || null;
+  const [hasCompletedInitialKeyStatusLoad, setHasCompletedInitialKeyStatusLoad] = useState(false);
+  const [showBackgroundSecureKeyBanner, setShowBackgroundSecureKeyBanner] = useState(false);
+  const hasObservedInitialKeyStatusLoadRef = useRef(false);
+
+  useEffect(() => {
+    hasObservedInitialKeyStatusLoadRef.current = false;
+    setHasCompletedInitialKeyStatusLoad(false);
+    setShowBackgroundSecureKeyBanner(false);
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId || loading || isLoggingOut) {
+      return;
+    }
+
+    if (keyStatusLoading) {
+      if (!hasCompletedInitialKeyStatusLoad) {
+        hasObservedInitialKeyStatusLoadRef.current = true;
+      }
+      return;
+    }
+
+    if (!hasCompletedInitialKeyStatusLoad && hasObservedInitialKeyStatusLoadRef.current) {
+      setHasCompletedInitialKeyStatusLoad(true);
+    }
+  }, [currentUserId, hasCompletedInitialKeyStatusLoad, isLoggingOut, keyStatusLoading, loading]);
+
+  useEffect(() => {
+    if (
+      !currentUserId ||
+      loading ||
+      keyStatusLoading ||
+      isLoggingOut ||
+      mlsRecoveryGate.active ||
+      hasCompletedInitialKeyStatusLoad ||
+      hasObservedInitialKeyStatusLoadRef.current
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (!hasObservedInitialKeyStatusLoadRef.current) {
+        setHasCompletedInitialKeyStatusLoad(true);
+      }
+    }, 1200);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [
+    currentUserId,
+    hasCompletedInitialKeyStatusLoad,
+    isLoggingOut,
+    keyStatusLoading,
+    loading,
+    mlsRecoveryGate.active,
+  ]);
+
+  const isInitialSecureBootLoading = Boolean(currentUserId) &&
+    keyStatusLoading &&
+    !hasCompletedInitialKeyStatusLoad;
+  const isBackgroundSecureKeyLoading = Boolean(currentUserId) &&
+    keyStatusLoading &&
+    hasCompletedInitialKeyStatusLoad &&
+    !isLoggingOut &&
+    !mlsRecoveryGate.active;
+  const showFullscreenPreparing = isLoggingOut || loading || (isInitialSecureBootLoading && !mlsRecoveryGate.active);
+
+  useEffect(() => {
+    if (!isBackgroundSecureKeyLoading) {
+      setShowBackgroundSecureKeyBanner(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setShowBackgroundSecureKeyBanner(true);
+    }, 900);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [isBackgroundSecureKeyLoading]);
 
   // Independently detect bootstrap stalls (API down before the gateway ever
   // connects). The gateway stall timer in useConnectionStatus only fires once
@@ -65,7 +148,7 @@ const ChatDashboard = () => {
   const [bootstrapStalled, setBootstrapStalled] = useState(false);
   const bootstrapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const isBootstrapping = (loading || keyStatusLoading) && !isLoggingOut;
+    const isBootstrapping = (loading || isInitialSecureBootLoading) && !isLoggingOut;
     if (isBootstrapping) {
       if (!bootstrapTimerRef.current) {
         bootstrapTimerRef.current = setTimeout(() => setBootstrapStalled(true), 8000);
@@ -77,7 +160,7 @@ const ChatDashboard = () => {
       }
       setBootstrapStalled(false);
     }
-  }, [loading, keyStatusLoading, isLoggingOut]);
+  }, [isInitialSecureBootLoading, isLoggingOut, loading]);
 
   // Friends from the shared FriendsProvider — single source of truth
   const { friends } = useFriends();
@@ -458,7 +541,7 @@ const ChatDashboard = () => {
     }
   };
 
-  if (loading || keyStatusLoading || isLoggingOut) {
+  if (showFullscreenPreparing) {
     // If the gateway/API is unreachable during startup, surface the reconnect
     // UX instead of the indefinite "Preparing..." spinner.
     // showReconnectBanner covers: offline immediately, or gateway stalled 8s+.
@@ -703,6 +786,11 @@ const ChatDashboard = () => {
         serviceIssue={serviceIssue}
         serviceIssueCount={serviceHealth.issues.length}
       />
+      {showBackgroundSecureKeyBanner && (
+        <div className="border-b border-blue-400/10 bg-blue-500/8 px-4 py-1.5 text-center text-[11px] font-medium text-blue-100/80">
+          Preparing secure chat keys in the background...
+        </div>
+      )}
       <div className="relative flex flex-1 min-h-0 overflow-hidden">
       {/* Modals */}
       {showProfile && user?.profile_id && (
