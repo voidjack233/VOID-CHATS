@@ -182,6 +182,24 @@ const resolveStateAction = <T,>(previous: T, value: SetStateAction<T>): T => (
     : value
 );
 
+const pruneGroupBreaksToMessages = (
+  groupBreakBeforeIds: Set<string>,
+  messages: Message[],
+) => {
+  if (groupBreakBeforeIds.size === 0) {
+    return groupBreakBeforeIds;
+  }
+
+  const renderedIds = new Set(messages.map((message) => String(message.message_id)));
+  const nextBreaks = new Set(
+    Array.from(groupBreakBeforeIds).filter((id) => renderedIds.has(String(id))),
+  );
+
+  return nextBreaks.size === groupBreakBeforeIds.size
+    ? groupBreakBeforeIds
+    : nextBreaks;
+};
+
 const messageWindowReducer = (
   state: MessageWindowState,
   action: MessageWindowAction,
@@ -195,6 +213,10 @@ const messageWindowReducer = (
       return {
         ...state,
         runtime: nextRuntime,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(
+          state.groupBreakBeforeIds,
+          getRenderedMessages(nextRuntime),
+        ),
       };
     }
     case 'replace_window': {
@@ -208,7 +230,10 @@ const messageWindowReducer = (
         ...state,
         runtime: nextRuntime,
         firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
-        groupBreakBeforeIds: action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(
+          action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
+          action.messages,
+        ),
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
         loading: action.loading ?? state.loading,
@@ -227,7 +252,10 @@ const messageWindowReducer = (
         ...state,
         runtime: action.runtime,
         firstItemIndex: action.firstItemIndex ?? state.firstItemIndex,
-        groupBreakBeforeIds: action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(
+          action.groupBreakBeforeIds ?? state.groupBreakBeforeIds,
+          getRenderedMessages(action.runtime),
+        ),
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
         loading: action.loading ?? state.loading,
@@ -301,6 +329,7 @@ const messageWindowReducer = (
         firstItemIndex: flushResult.trimmedFromOld > 0
           ? state.firstItemIndex + flushResult.trimmedFromOld
           : state.firstItemIndex,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(state.groupBreakBeforeIds, flushResult.messages),
         queuedNewerHasNewer: false,
         queuedNewerIsAtPresent: true,
         hasOlder: flushResult.trimmedFromOld > 0 ? true : state.hasOlder,
@@ -350,6 +379,7 @@ const messageWindowReducer = (
         firstItemIndex: mergeResult.trimmedFromOld > 0
           ? state.firstItemIndex + mergeResult.trimmedFromOld
           : state.firstItemIndex,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(state.groupBreakBeforeIds, mergeResult.messages),
         hasOlder: mergeResult.trimmedFromOld > 0 ? true : (action.hasOlder ?? state.hasOlder),
         hasNewer: nextHasNewer,
         isAtPresent: mergeResult.trimmedFromNew > 0 || nextHasNewer || hasLogicalNewerRange
@@ -423,7 +453,7 @@ const messageWindowReducer = (
         firstItemIndex: action.prependedCount > 0
           ? state.firstItemIndex - action.prependedCount
           : state.firstItemIndex,
-        groupBreakBeforeIds: nextBreaks,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(nextBreaks, action.messages),
       };
     }
     case 'apply_appended_window': {
@@ -446,6 +476,7 @@ const messageWindowReducer = (
         firstItemIndex: trimmedFromOldCount > 0
           ? state.firstItemIndex + trimmedFromOldCount
           : state.firstItemIndex,
+        groupBreakBeforeIds: pruneGroupBreaksToMessages(state.groupBreakBeforeIds, action.messages),
         hasOlder: trimmedFromOldCount > 0 ? true : state.hasOlder,
         hasNewer: nextHasNewer,
         isAtPresent: nextHasNewer
