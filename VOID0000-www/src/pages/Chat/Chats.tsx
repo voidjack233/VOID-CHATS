@@ -183,6 +183,9 @@ const ChatDashboard = () => {
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
   const sendNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ownSendNeedsPresentJumpRef = useRef(false);
+  const ownSendJumpResolversRef = useRef<Array<() => void>>([]);
+  const [ownSendJumpRequest, setOwnSendJumpRequest] = useState(0);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
@@ -231,11 +234,28 @@ const ChatDashboard = () => {
       }, 4500);
     }
   }, []);
+  const handleOwnSendHistoryModeChange = useCallback((shouldJumpToPresent: boolean) => {
+    ownSendNeedsPresentJumpRef.current = shouldJumpToPresent;
+  }, []);
+  const requestOwnSendJumpToPresent = useCallback(() => (
+    new Promise<void>((resolve) => {
+      ownSendJumpResolversRef.current.push(resolve);
+      setOwnSendJumpRequest((request) => request + 1);
+    })
+  ), []);
+  const handleOwnSendJumpSettled = useCallback(() => {
+    const resolvers = ownSendJumpResolversRef.current;
+    ownSendJumpResolversRef.current = [];
+    resolvers.forEach((resolve) => resolve());
+  }, []);
 
   useEffect(() => () => {
     if (sendNoticeTimerRef.current) {
       clearTimeout(sendNoticeTimerRef.current);
     }
+    const resolvers = ownSendJumpResolversRef.current;
+    ownSendJumpResolversRef.current = [];
+    resolvers.forEach((resolve) => resolve());
   }, []);
 
   useEffect(() => {
@@ -934,6 +954,9 @@ const ChatDashboard = () => {
                   gateway={gateway}
                   messageUpdate={messageUpdate}
                   messageDelete={messageDelete}
+                  ownSendJumpRequest={ownSendJumpRequest}
+                  onOwnSendHistoryModeChange={handleOwnSendHistoryModeChange}
+                  onOwnSendJumpSettled={handleOwnSendJumpSettled}
                 />
                 <MessageInput
                   currentUserId={user?.id}
@@ -946,6 +969,8 @@ const ChatDashboard = () => {
                     handleMessageSent(msg);
                     if (activeConversation?.id) setLastSentConversationId(activeConversation.id);
                   }}
+                  shouldJumpToPresentAfterOwnSend={() => ownSendNeedsPresentJumpRef.current}
+                  onOwnMessageSentFromHistory={requestOwnSendJumpToPresent}
                   onSendError={showSendNotice}
                   editingMessage={editingMessage}
                   onCancelEdit={() => setEditingMessage(null)}

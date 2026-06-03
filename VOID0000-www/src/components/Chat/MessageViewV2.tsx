@@ -58,6 +58,9 @@ interface MessageViewProps {
   gateway?: any;
   messageUpdate?: MessageUpdate | null;
   messageDelete?: MessageDelete | null;
+  ownSendJumpRequest?: number;
+  onOwnSendHistoryModeChange?: (shouldJumpToPresent: boolean) => void;
+  onOwnSendJumpSettled?: () => void;
 }
 
 type MessageListItem =
@@ -146,6 +149,18 @@ const getFirstVisibleMessageAnchor = (scroller: HTMLElement) => {
   return getVisibleMessageAnchors(scroller)[0] ?? null;
 };
 
+const escapeMessageIdSelector = (messageId: string) => {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(messageId);
+  }
+
+  return messageId.replace(/["\\]/g, '\\$&');
+};
+
+const getMessageElementById = (scroller: HTMLElement, messageId: string) => (
+  scroller.querySelector<HTMLElement>(`[data-message-id="${escapeMessageIdSelector(messageId)}"]`)
+);
+
 const restoreVisibleMessageAnchor = (
   scroller: HTMLElement,
   snapshot: HistoryLoadScrollSnapshot,
@@ -154,8 +169,7 @@ const restoreVisibleMessageAnchor = (
     return false;
   }
 
-  const anchorElement = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
-    .find((element) => element.dataset.messageId === snapshot.anchorMessageId);
+  const anchorElement = getMessageElementById(scroller, snapshot.anchorMessageId);
   if (!anchorElement) {
     return false;
   }
@@ -347,6 +361,9 @@ const MessageViewV2 = memo(function MessageViewV2({
   gateway,
   messageUpdate,
   messageDelete,
+  ownSendJumpRequest = 0,
+  onOwnSendHistoryModeChange,
+  onOwnSendJumpSettled,
 }: MessageViewProps) {
   const { user } = useUser();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -357,8 +374,10 @@ const MessageViewV2 = memo(function MessageViewV2({
   const initialLatestRestoreDoneRef = useRef(false);
   const previousListCountRef = useRef(0);
   const lastFollowedMessageEventSequenceRef = useRef(0);
+  const lastOwnSendJumpRequestRef = useRef(ownSendJumpRequest);
   const pendingOlderLoadScrollSnapshotRef = useRef<HistoryLoadScrollSnapshot | null>(null);
   const pendingNewerLoadScrollSnapshotRef = useRef<NewerHistoryLoadScrollSnapshot | null>(null);
+  const pendingMessageJumpTargetRef = useRef<string | null>(null);
   const hasOlderRef = useRef(false);
   const loadingOlderStateRef = useRef(false);
   const loadingOlderRequestInFlightRef = useRef(false);
@@ -366,8 +385,15 @@ const MessageViewV2 = memo(function MessageViewV2({
   const autofillOlderRequestInFlightRef = useRef(false);
   const messageHeightCacheRef = useRef<Map<string, number>>(new Map());
   const historyLoadPausedUntilRef = useRef(0);
+  const ownSendJumpRequestRef = useRef(ownSendJumpRequest);
+  const onOwnSendHistoryModeChangeRef = useRef(onOwnSendHistoryModeChange);
+  const messageHighlightTimeoutRef = useRef<number | null>(null);
+  const messageJumpNoticeTimeoutRef = useRef<number | null>(null);
+  const messageJumpFallbackTimeoutRef = useRef<number | null>(null);
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [showJumpToPresent, setShowJumpToPresent] = useState(false);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [messageJumpNotice, setMessageJumpNotice] = useState<string | null>(null);
   const [isMobileKeyboardOpen, setIsMobileKeyboardOpen] = useState(false);
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
@@ -439,6 +465,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     handleDelete,
     getReplyParent,
     mergeVisibleMessages,
+    loadMessageContext,
     jumpToPresent,
     loadOlder,
     loadNewer,
@@ -458,6 +485,8 @@ const MessageViewV2 = memo(function MessageViewV2({
       onHistoryRateLimited: handleHistoryRateLimited,
     },
   );
+  ownSendJumpRequestRef.current = ownSendJumpRequest;
+  onOwnSendHistoryModeChangeRef.current = onOwnSendHistoryModeChange;
   hasOlderRef.current = hasOlder;
   loadingOlderStateRef.current = loadingOlder;
 
@@ -467,6 +496,8 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  const firstVisualMessageId = visualMessages[0]?.message_id;
+  const lastVisualMessageId = visualMessages[visualMessages.length - 1]?.message_id;
   const queuedMessageCount = useMemo(
     () => visualMessages.filter((message) => message.local_status === 'queued').length,
     [visualMessages],
@@ -517,8 +548,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   const ServiceBannerIcon = serviceBanner?.icon ?? null;
   const layoutTraitsById = useMessageLayout(visualMessages, groupBreakBeforeIds, hasOlder);
   const retryingFailedMessageIdsRef = useRef<Set<string>>(new Set());
-  const olderSkeletonSeed = `${conversation.id}:${visualMessages[0]?.message_id || 'empty'}`;
-  const newerSkeletonSeed = `${conversation.id}:${visualMessages[visualMessages.length - 1]?.message_id || 'empty'}:newer`;
+  const olderSkeletonSeed = `${conversation.id}:${firstVisualMessageId || 'empty'}`;
+  const newerSkeletonSeed = `${conversation.id}:${lastVisualMessageId || 'empty'}:newer`;
   const {
     topLogicalRangeHeight,
     bottomLogicalRangeHeight,
@@ -683,18 +714,47 @@ const MessageViewV2 = memo(function MessageViewV2({
     lastFollowedMessageEventSequenceRef.current = 0;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
+    pendingMessageJumpTargetRef.current = null;
     loadingOlderStateRef.current = false;
     loadingOlderRequestInFlightRef.current = false;
     loadingNewerRequestInFlightRef.current = false;
     autofillOlderRequestInFlightRef.current = false;
     messageHeightCacheRef.current.clear();
     historyLoadPausedUntilRef.current = 0;
+    lastOwnSendJumpRequestRef.current = ownSendJumpRequestRef.current;
+    onOwnSendHistoryModeChangeRef.current?.(false);
+    if (messageHighlightTimeoutRef.current) {
+      window.clearTimeout(messageHighlightTimeoutRef.current);
+      messageHighlightTimeoutRef.current = null;
+    }
+    if (messageJumpNoticeTimeoutRef.current) {
+      window.clearTimeout(messageJumpNoticeTimeoutRef.current);
+      messageJumpNoticeTimeoutRef.current = null;
+    }
+    if (messageJumpFallbackTimeoutRef.current) {
+      window.clearTimeout(messageJumpFallbackTimeoutRef.current);
+      messageJumpFallbackTimeoutRef.current = null;
+    }
     setHistoryLoadPausedUntil(0);
     setShowJumpToPresent(false);
+    setHighlightedMessageId(null);
+    setMessageJumpNotice(null);
     setOlderRangeError(false);
     setNewerRangeError(false);
     if (scrollerRef.current) scrollerRef.current.style.opacity = '0';
   }, [conversation.id]);
+
+  useEffect(() => () => {
+    if (messageHighlightTimeoutRef.current) {
+      window.clearTimeout(messageHighlightTimeoutRef.current);
+    }
+    if (messageJumpNoticeTimeoutRef.current) {
+      window.clearTimeout(messageJumpNoticeTimeoutRef.current);
+    }
+    if (messageJumpFallbackTimeoutRef.current) {
+      window.clearTimeout(messageJumpFallbackTimeoutRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!hasOlder || topLogicalRangeHeight <= 1) {
@@ -895,8 +955,8 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [
     density,
     visualMessages.length,
-    visualMessages[0]?.message_id,
-    visualMessages[visualMessages.length - 1]?.message_id,
+    firstVisualMessageId,
+    lastVisualMessageId,
   ]);
 
   useEffect(() => {
@@ -933,6 +993,30 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     scroller.scrollTop = scroller.scrollHeight;
+  }, []);
+
+  const showMessageJumpNotice = useCallback((message: string) => {
+    if (messageJumpNoticeTimeoutRef.current) {
+      window.clearTimeout(messageJumpNoticeTimeoutRef.current);
+    }
+
+    setMessageJumpNotice(message);
+    messageJumpNoticeTimeoutRef.current = window.setTimeout(() => {
+      setMessageJumpNotice(null);
+      messageJumpNoticeTimeoutRef.current = null;
+    }, 2400);
+  }, []);
+
+  const highlightMessage = useCallback((messageId: string) => {
+    if (messageHighlightTimeoutRef.current) {
+      window.clearTimeout(messageHighlightTimeoutRef.current);
+    }
+
+    setHighlightedMessageId(messageId);
+    messageHighlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightedMessageId((current) => (current === messageId ? null : current));
+      messageHighlightTimeoutRef.current = null;
+    }, 1800);
   }, []);
 
   const captureHistoryLoadScrollSnapshot = useCallback((): HistoryLoadScrollSnapshot | null => {
@@ -986,13 +1070,97 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     atBottomRef.current = scrollState.atBottom;
     setShowJumpToPresent(scrollState.shouldShowJumpToPresent);
+    onOwnSendHistoryModeChange?.(
+      !scrollState.atBottom ||
+      scrollState.shouldShowJumpToPresent ||
+      hasNewer ||
+      !scrollState.isAtPresent ||
+      !isAtPresent
+    );
 
     if (scrollState.atBottom) {
       forceFollowOutputRef.current = false;
     }
 
     setIsAtPresent(scrollState.isAtPresent);
-  }, [getScrollState, setIsAtPresent]);
+  }, [getScrollState, hasNewer, isAtPresent, onOwnSendHistoryModeChange, setIsAtPresent]);
+
+  const scrollToMessageById = useCallback((
+    messageId: string,
+    behavior: ScrollBehavior = 'smooth',
+    options?: { highlight?: boolean },
+  ) => {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      return false;
+    }
+
+    const messageElement = getMessageElementById(scroller, messageId);
+    if (!messageElement) {
+      return false;
+    }
+
+    const targetTop = messageElement.offsetTop;
+    const centeredTop = targetTop - (scroller.clientHeight / 2) + (messageElement.offsetHeight / 2);
+    scroller.scrollTo({
+      top: Math.max(0, centeredTop),
+      behavior,
+    });
+    if (options?.highlight !== false) {
+      highlightMessage(messageId);
+    }
+    requestAnimationFrame(syncScrollState);
+    return true;
+  }, [highlightMessage, syncScrollState]);
+
+  const handleJumpToMessage = useCallback(async (targetMessageId: string) => {
+    if (!targetMessageId) {
+      return;
+    }
+
+    setMessageJumpNotice(null);
+    if (scrollToMessageById(targetMessageId, 'smooth', { highlight: true })) {
+      return;
+    }
+
+    if (!encryptionKey) {
+      showMessageJumpNotice('Message unavailable');
+      return;
+    }
+
+    pendingMessageJumpTargetRef.current = targetMessageId;
+    pendingOlderLoadScrollSnapshotRef.current = null;
+    pendingNewerLoadScrollSnapshotRef.current = null;
+    forceFollowOutputRef.current = false;
+    setOlderRangeError(false);
+    setNewerRangeError(false);
+    if (messageJumpFallbackTimeoutRef.current) {
+      window.clearTimeout(messageJumpFallbackTimeoutRef.current);
+      messageJumpFallbackTimeoutRef.current = null;
+    }
+
+    const didLoadContext = await loadMessageContext(targetMessageId);
+    if (!didLoadContext) {
+      if (pendingMessageJumpTargetRef.current === targetMessageId) {
+        pendingMessageJumpTargetRef.current = null;
+      }
+      showMessageJumpNotice('Message unavailable');
+      return;
+    }
+
+    messageJumpFallbackTimeoutRef.current = window.setTimeout(() => {
+      if (pendingMessageJumpTargetRef.current === targetMessageId) {
+        pendingMessageJumpTargetRef.current = null;
+        showMessageJumpNotice('Message unavailable');
+      }
+      messageJumpFallbackTimeoutRef.current = null;
+    }, 1200);
+  }, [
+    encryptionKey,
+    loadMessageContext,
+    scrollToMessageById,
+    showMessageJumpNotice,
+  ]);
 
   const restoreHistoryLoadScrollSnapshot = useCallback((snapshot: HistoryLoadScrollSnapshot) => {
     const scroller = scrollerRef.current;
@@ -1107,6 +1275,42 @@ const MessageViewV2 = memo(function MessageViewV2({
     });
   }, [captureNewerHistoryLoadScrollSnapshot, loadNewer, restoreNewerHistoryLoadScrollSnapshot]);
 
+  useLayoutEffect(() => {
+    const targetMessageId = pendingMessageJumpTargetRef.current;
+    if (!targetMessageId) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (pendingMessageJumpTargetRef.current !== targetMessageId) {
+          return;
+        }
+
+        const firstPassFound = scrollToMessageById(targetMessageId, 'auto', { highlight: false });
+        requestAnimationFrame(() => {
+          if (pendingMessageJumpTargetRef.current !== targetMessageId) {
+            return;
+          }
+
+          const finalPassFound = scrollToMessageById(targetMessageId, 'auto', { highlight: true });
+          if (firstPassFound || finalPassFound) {
+            pendingMessageJumpTargetRef.current = null;
+            if (messageJumpFallbackTimeoutRef.current) {
+              window.clearTimeout(messageJumpFallbackTimeoutRef.current);
+              messageJumpFallbackTimeoutRef.current = null;
+            }
+          }
+        });
+      });
+    });
+  }, [
+    scrollToMessageById,
+    visualMessages.length,
+    firstVisualMessageId,
+    lastVisualMessageId,
+  ]);
+
   const {
     handleScroll,
     maybeStartBestHistoryLoad,
@@ -1197,7 +1401,8 @@ const MessageViewV2 = memo(function MessageViewV2({
       !initialHydrationSettled ||
       loadingOlder ||
       loadingNewer ||
-      pendingNewerLoadScrollSnapshotRef.current
+      pendingNewerLoadScrollSnapshotRef.current ||
+      pendingMessageJumpTargetRef.current
     ) {
       return false;
     }
@@ -1298,20 +1503,45 @@ const MessageViewV2 = memo(function MessageViewV2({
     return () => observer.disconnect();
   }, [hasNewer, loadingNewer, maybeStartBestHistoryLoad, newerBottomLoadThreshold, conversation.id]);
 
-  const handleJumpToPresent = useCallback(async () => {
+  const jumpToPresentAndScroll = useCallback(async () => {
     forceFollowOutputRef.current = true;
     pendingOlderLoadScrollSnapshotRef.current = null;
+    pendingNewerLoadScrollSnapshotRef.current = null;
+    pendingMessageJumpTargetRef.current = null;
     setOlderRangeError(false);
     setNewerRangeError(false);
     await jumpToPresent();
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         scrollToBottom('auto');
+        syncScrollState();
       });
     });
-  }, [jumpToPresent, scrollToBottom]);
+  }, [jumpToPresent, scrollToBottom, syncScrollState]);
+
+  useEffect(() => {
+    if (!ownSendJumpRequest || ownSendJumpRequest === lastOwnSendJumpRequestRef.current) {
+      return;
+    }
+
+    lastOwnSendJumpRequestRef.current = ownSendJumpRequest;
+    void jumpToPresentAndScroll().finally(() => {
+      onOwnSendJumpSettled?.();
+    });
+  }, [jumpToPresentAndScroll, onOwnSendJumpSettled, ownSendJumpRequest]);
+
+  const handleJumpToPresent = useCallback(async () => {
+    await jumpToPresentAndScroll();
+  }, [jumpToPresentAndScroll]);
 
   const handleAttachmentLoad = useCallback(() => {
+    if (highlightedMessageId) {
+      requestAnimationFrame(() => {
+        scrollToMessageById(highlightedMessageId, 'auto', { highlight: false });
+      });
+      return;
+    }
+
     if (!atBottomRef.current && !forceFollowOutputRef.current) {
       return;
     }
@@ -1320,7 +1550,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       scrollToBottom('auto');
       forceFollowOutputRef.current = false;
     });
-  }, [scrollToBottom]);
+  }, [highlightedMessageId, scrollToBottom, scrollToMessageById]);
 
   // ── Initial scroll to bottom ──
   useLayoutEffect(() => {
@@ -1349,8 +1579,8 @@ const MessageViewV2 = memo(function MessageViewV2({
     loadingOlder,
     typingParticipants.length,
     visualMessages.length,
-    visualMessages[0]?.message_id,
-    visualMessages[visualMessages.length - 1]?.message_id,
+    firstVisualMessageId,
+    lastVisualMessageId,
   ]);
 
   // ── Follow output for new messages / own sends ──
@@ -1363,6 +1593,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       countIncreased &&
       !loadingNewer &&
       !pendingNewerLoadScrollSnapshotRef.current &&
+      !pendingMessageJumpTargetRef.current &&
       (forceFollowOutputRef.current || atBottomRef.current)
     ) {
       requestAnimationFrame(() => {
@@ -1434,7 +1665,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     hasOlder,
     restoreHistoryLoadScrollSnapshot,
     visualMessages.length,
-    visualMessages[0]?.message_id,
+    firstVisualMessageId,
   ]);
 
   useEffect(() => {
@@ -1484,6 +1715,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         currentUserId={user?.id}
         replyParent={message.reply_to ? getReplyParent(message.reply_to) : null}
         messageReactions={reactions[message.message_id] || message.reactions || emptyReactions}
+        isHighlighted={highlightedMessageId === message.message_id}
         formatTime={formatTime}
         getSenderName={getSmartDisplayName}
         getSenderUsername={getSmartUsername}
@@ -1497,6 +1729,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         }
         onOpenContextMenuAtPosition={openContextMenuAtPosition}
         onReply={onReply}
+        onJumpToMessage={handleJumpToMessage}
         onEdit={onEdit}
         onRetryFailed={encryptionKey ? handleRetryFailedMessage : undefined}
         onDelete={handleDelete}
@@ -1519,10 +1752,12 @@ const MessageViewV2 = memo(function MessageViewV2({
     handleAttachmentLoad,
     handleContextMenu,
     handleDelete,
+    handleJumpToMessage,
     handleOpenMessageLink,
     handleProfileClick,
     handleRetryFailedMessage,
     handleToggleReaction,
+    highlightedMessageId,
     layoutTraitsById,
     messageGroupSpacing,
     metaFontSize,
@@ -1552,8 +1787,16 @@ const MessageViewV2 = memo(function MessageViewV2({
           </div>
         </div>
       ) : null}
+      {messageJumpNotice && !sendNotice ? (
+        <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4">
+          <div className="inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full border border-orange-400/25 bg-void-bg-main/95 px-3 py-1.5 text-xs font-medium text-orange-200 shadow-lg shadow-black/20 supports-[backdrop-filter]:backdrop-blur">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-orange-300" />
+            <span className="truncate">{messageJumpNotice}</span>
+          </div>
+        </div>
+      ) : null}
       {serviceBanner ? (
-        <div className={`pointer-events-none absolute inset-x-0 ${sendNotice ? 'top-14' : 'top-3'} z-20 flex justify-center px-4`}>
+        <div className={`pointer-events-none absolute inset-x-0 ${sendNotice || messageJumpNotice ? 'top-14' : 'top-3'} z-20 flex justify-center px-4`}>
           <div
             className={`inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium shadow-lg shadow-black/20 supports-[backdrop-filter]:backdrop-blur ${
               serviceBanner.tone === 'blue'

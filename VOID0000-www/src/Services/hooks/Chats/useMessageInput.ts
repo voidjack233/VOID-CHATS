@@ -45,6 +45,8 @@ interface UseMessageInputProps {
   keyVersion: number;
   conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
+  shouldJumpToPresentAfterOwnSend?: () => boolean;
+  onOwnMessageSentFromHistory?: (message: Message) => Promise<void> | void;
   onSendError?: (message: string | null) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
@@ -207,6 +209,8 @@ export const useMessageInput = ({
   keyVersion,
   conversationSecurityState,
   onMessageSent,
+  shouldJumpToPresentAfterOwnSend,
+  onOwnMessageSentFromHistory,
   onSendError,
   onEncryptionKeyResolved,
   editingMessage,
@@ -828,6 +832,18 @@ export const useMessageInput = ({
           local_client_id: localClientId as string,
         }
       : null;
+    const shouldJumpAfterOwnSend = Boolean(
+      shouldCreatePendingMessage &&
+      !editingMessage &&
+      shouldJumpToPresentAfterOwnSend?.()
+    );
+    const applyOwnSendResult = async (message: Message) => {
+      if (shouldJumpAfterOwnSend && onOwnMessageSentFromHistory) {
+        await onOwnMessageSentFromHistory(message);
+      }
+
+      onMessageSent(message);
+    };
 
     setText('');
     setAttachments([]);
@@ -836,7 +852,8 @@ export const useMessageInput = ({
     setDismissedLinkPreviewUrl(null);
     setSending(true);
     onSendError?.(null);
-    if (optimisticMessage) {
+    const didRenderOptimisticMessage = Boolean(optimisticMessage && !shouldJumpAfterOwnSend);
+    if (optimisticMessage && !shouldJumpAfterOwnSend) {
       onMessageSent(optimisticMessage);
     }
 
@@ -888,7 +905,7 @@ export const useMessageInput = ({
           ...msg,
           link_preview: activeLinkPreview || msg.link_preview,
         };
-        onMessageSent(sentMessage);
+        await applyOwnSendResult(sentMessage);
         if (activePreviewUrl && previousDismissedLinkPreviewUrl !== activePreviewUrl) {
           const previewUrl = activePreviewUrl;
           const previewAtSend = activeLinkPreview;
@@ -927,7 +944,7 @@ export const useMessageInput = ({
           reply_to: replyTo?.message_id || undefined,
           mentions: resolvedMentions,
         });
-        onMessageSent(localClientId ? {
+        await applyOwnSendResult(localClientId ? {
           ...msg,
           local_status: 'sent',
           local_client_id: localClientId,
@@ -952,7 +969,7 @@ export const useMessageInput = ({
           conversation_id: conversation.id,
           local_client_id: localClientId,
         });
-        onMessageSent({
+        await applyOwnSendResult({
           ...optimisticMessage,
           local_status: 'queued',
           local_client_id: localClientId,
@@ -976,13 +993,13 @@ export const useMessageInput = ({
       } else {
         // Normal failure path. If we already rendered an optimistic bubble,
         // leave the failed bubble visible so the user can retry from there.
-        if (!optimisticMessage) {
+        if (!didRenderOptimisticMessage) {
           setText(previousText);
           setAttachments(previousAttachments);
           setLinkPreview(previousLinkPreview);
           setDismissedLinkPreviewUrl(previousDismissedLinkPreviewUrl);
         }
-        if (optimisticMessage && localClientId) {
+        if (didRenderOptimisticMessage && optimisticMessage && localClientId) {
           onMessageSent({
             ...optimisticMessage,
             local_status: 'failed',

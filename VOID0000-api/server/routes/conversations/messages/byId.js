@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { debugLog } from '../../../utils/debugLog.js';
 import {
+  batchFetchReactions,
   canAccessMessageForHistory,
   cassandra,
   getConversationKeyState,
@@ -17,6 +18,181 @@ import {
 } from './shared.js';
 
 const router = Router({ mergeParams: true });
+const DEFAULT_CONTEXT_LIMIT = 30;
+const MAX_CONTEXT_LIMIT = 50;
+
+function clampContextLimit(value) {
+  const parsed = parseInt(String(value ?? DEFAULT_CONTEXT_LIMIT), 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return DEFAULT_CONTEXT_LIMIT;
+  }
+  return Math.min(parsed, MAX_CONTEXT_LIMIT);
+}
+
+function compareMessagesByCreatedAtAsc(left, right) {
+  const timeDiff = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+  if (timeDiff !== 0) return timeDiff;
+  return String(left.message_id).localeCompare(String(right.message_id));
+}
+
+async function fetchVisibleContextSide({
+  storageConversationId,
+  conversationPublic,
+  conversation,
+  keyState,
+  cursor,
+  direction,
+  limit,
+}) {
+  if (limit <= 0) {
+    return { messages: [], hasMore: false };
+  }
+
+  const conversationUuid = cassandra.types.Uuid.fromString(storageConversationId);
+  const collectedMessages = [];
+  const fetchChunkSize = Math.min(Math.max((limit + 1) * 2, 50), 120);
+  const maxFetchIterations = 8;
+  let nextCursor = cursor;
+  let exhausted = false;
+  let iterations = 0;
+
+  while (collectedMessages.length <= limit && !exhausted && iterations < maxFetchIterations) {
+    iterations += 1;
+
+    const isNewer = direction === 'newer';
+    const result = await scylla.execute(
+      isNewer
+        ? 'SELECT * FROM messages WHERE conversation_id = ? AND message_id > ? ORDER BY message_id ASC LIMIT ?'
+        : 'SELECT * FROM messages WHERE conversation_id = ? AND message_id < ? ORDER BY message_id DESC LIMIT ?',
+      [conversationUuid, nextCursor, fetchChunkSize],
+      { prepare: true }
+    );
+
+    const rows = result.rows || [];
+    if (rows.length === 0) {
+      exhausted = true;
+      break;
+    }
+
+    const mappedMessages = rows.map((row) => mapStoredMessageRow(row, conversationPublic));
+    const visibleMessages = conversation.type === 'dm'
+      ? mappedMessages
+      : mappedMessages.filter((message) => canAccessMessageForHistory(message, keyState));
+
+    collectedMessages.push(...visibleMessages);
+
+    if (rows.length < fetchChunkSize) {
+      exhausted = true;
+    }
+
+    const lastRow = rows[rows.length - 1];
+    if (!lastRow?.message_id) {
+      exhausted = true;
+    } else {
+      nextCursor = lastRow.message_id;
+    }
+  }
+
+  const limitedMessages = collectedMessages.slice(0, limit);
+  return {
+    messages: direction === 'older'
+      ? limitedMessages.reverse()
+      : limitedMessages,
+    hasMore: collectedMessages.length > limit,
+  };
+}
+
+router.get('/:messageId/context', async (req, res) => {
+  const userId = req.user.id;
+  const { conversationId: conversationIdentifier, messageId } = req.params;
+  const beforeLimit = clampContextLimit(req.query.before);
+  const afterLimit = clampContextLimit(req.query.after);
+
+  let targetMessageId;
+  try {
+    targetMessageId = cassandra.types.TimeUuid.fromString(String(messageId));
+  } catch {
+    return res.status(400).json({ success: false, error: 'Invalid message id' });
+  }
+
+  try {
+    const resolvedConversation = await resolveConversationContexts(conversationIdentifier);
+    if (!resolvedConversation) return res.status(404).json({ success: false, error: 'Conversation not found' });
+
+    const {
+      conversation,
+      conversationId,
+      conversationPublic,
+      storageConversationId,
+    } = resolvedConversation;
+    const member = await verifyMembership(conversationId, userId);
+    if (!member) return res.status(403).json({ success: false, error: 'Not a member of this conversation' });
+
+    const keyState = await getConversationKeyState(conversation, userId);
+    if (!keyState) {
+      return res.status(403).json({ success: false, error: 'Missing group key membership state' });
+    }
+
+    const targetResult = await scylla.execute(
+      `SELECT * FROM messages WHERE conversation_id = ? AND message_id = ?`,
+      [cassandra.types.Uuid.fromString(storageConversationId), targetMessageId],
+      { prepare: true }
+    );
+
+    if (targetResult.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Message not found' });
+    }
+
+    const targetMessage = mapStoredMessageRow(targetResult.rows[0], conversationPublic);
+    if (conversation.type !== 'dm' && !canAccessMessageForHistory(targetMessage, keyState)) {
+      return res.status(404).json({ success: false, error: 'Message not found' });
+    }
+
+    const [olderContext, newerContext] = await Promise.all([
+      fetchVisibleContextSide({
+        storageConversationId,
+        conversationPublic,
+        conversation,
+        keyState,
+        cursor: targetMessageId,
+        direction: 'older',
+        limit: beforeLimit,
+      }),
+      fetchVisibleContextSide({
+        storageConversationId,
+        conversationPublic,
+        conversation,
+        keyState,
+        cursor: targetMessageId,
+        direction: 'newer',
+        limit: afterLimit,
+      }),
+    ]);
+
+    const uniqueMessagesById = new Map();
+    [...olderContext.messages, targetMessage, ...newerContext.messages].forEach((message) => {
+      uniqueMessagesById.set(message.message_id, message);
+    });
+    const contextMessages = Array.from(uniqueMessagesById.values())
+      .sort(compareMessagesByCreatedAtAsc);
+    const messageIds = contextMessages.map((message) => message.message_id);
+    const reactions = await batchFetchReactions(storageConversationId, messageIds, userId);
+
+    res.json({
+      success: true,
+      target_message_id: String(messageId),
+      messages: contextMessages.map((message) => ({
+        ...message,
+        reactions: reactions[message.message_id] || {},
+      })),
+      has_older: olderContext.hasMore,
+      has_newer: newerContext.hasMore,
+    });
+  } catch (err) {
+    console.error('Message context fetch error:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch message context' });
+  }
+});
 
 router.get('/:messageId', async (req, res) => {
   const userId = req.user.id;

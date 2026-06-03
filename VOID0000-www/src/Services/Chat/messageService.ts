@@ -438,6 +438,47 @@ async function applyEncryptedLinkPreviewBlocks(
   }));
 }
 
+async function decryptFetchedMessages(
+  rawMessages: Message[],
+  encryptionKey: CryptoKey,
+  context?: MessageDecryptionContext,
+): Promise<Message[]> {
+  const keyResolver = createMessageKeyResolver(encryptionKey, context);
+  const sourceMessages = rawMessages.map((message) => {
+    const cryptoMetadata = resolveMessageCryptoMetadata(message);
+    return {
+      ...message,
+      protocol: cryptoMetadata.protocol,
+      protocol_version: cryptoMetadata.protocol_version,
+    };
+  });
+
+  const decryptedByIndex: Array<Partial<Message> | null> = new Array(sourceMessages.length).fill(null);
+  const firstPass = await decryptMessages(sourceMessages, keyResolver || encryptionKey) as DecryptedMessage[];
+  const decrypted = await retryDmDecryptionAfterKeyRepair(
+    sourceMessages,
+    firstPass,
+    encryptionKey,
+    context,
+  );
+  decrypted.forEach((message, index) => {
+    decryptedByIndex[index] = message || null;
+  });
+
+  const messagesWithReactions = sourceMessages.map((message, index) =>
+    applyEncryptedMessageEnvelope({
+      ...(decryptedByIndex[index] || message),
+      reactions: sourceMessages[index]?.reactions || {},
+    } as Message)
+  );
+
+  return applyEncryptedLinkPreviewBlocks(
+    messagesWithReactions as Message[],
+    encryptionKey,
+    context,
+  );
+}
+
 export async function getMessages(
   conversationId: string,
   encryptionKey: CryptoKey,
@@ -459,42 +500,48 @@ export async function getMessages(
     });
   }
 
-  const keyResolver = createMessageKeyResolver(encryptionKey, options);
-  const sourceMessages = ((data.messages || []) as Message[]).map((message) => {
-    const cryptoMetadata = resolveMessageCryptoMetadata(message);
-    return {
-      ...message,
-      protocol: cryptoMetadata.protocol,
-      protocol_version: cryptoMetadata.protocol_version,
-    };
-  });
-
-  const decryptedByIndex: Array<Partial<Message> | null> = new Array(sourceMessages.length).fill(null);
-  const firstPass = await decryptMessages(sourceMessages, keyResolver || encryptionKey) as DecryptedMessage[];
-  const decrypted = await retryDmDecryptionAfterKeyRepair(
-    sourceMessages,
-    firstPass,
-    encryptionKey,
-    options,
-  );
-  decrypted.forEach((message, index) => {
-    decryptedByIndex[index] = message || null;
-  });
-
-  const messagesWithReactions = sourceMessages.map((message, index) =>
-    applyEncryptedMessageEnvelope({
-      ...(decryptedByIndex[index] || message),
-      reactions: sourceMessages[index]?.reactions || {},
-    } as Message)
-  );
-
-  const messagesWithPreviews = await applyEncryptedLinkPreviewBlocks(
-    messagesWithReactions as Message[],
+  const messagesWithPreviews = await decryptFetchedMessages(
+    (data.messages || []) as Message[],
     encryptionKey,
     options,
   );
 
   return { messages: messagesWithPreviews, has_more: data.has_more };
+}
+
+export async function getMessageContext(
+  conversationId: string,
+  messageId: string,
+  encryptionKey: CryptoKey,
+  options?: { before?: number; after?: number } & MessageDecryptionContext,
+): Promise<{ targetMessageId: string; messages: Message[]; hasOlder: boolean; hasNewer: boolean }> {
+  const params = new URLSearchParams();
+  if (typeof options?.before === 'number') params.set('before', options.before.toString());
+  if (typeof options?.after === 'number') params.set('after', options.after.toString());
+
+  const url = `${CHAT_API_PREFIX}/${conversationId}/messages/${messageId}/context${params.toString() ? `?${params.toString()}` : ''}`;
+  const response = await fetchWithAuth(url, { cache: 'no-store' });
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw createApiError(data, {
+      status: response.status,
+      statusCode: response.status,
+      retryAfterMs: getRetryAfterMsFromResponse(response),
+    });
+  }
+
+  const messagesWithPreviews = await decryptFetchedMessages(
+    (data.messages || []) as Message[],
+    encryptionKey,
+    options,
+  );
+
+  return {
+    targetMessageId: String(data.target_message_id || messageId),
+    messages: messagesWithPreviews,
+    hasOlder: Boolean(data.has_older),
+    hasNewer: Boolean(data.has_newer),
+  };
 }
 
 export async function editMessage(

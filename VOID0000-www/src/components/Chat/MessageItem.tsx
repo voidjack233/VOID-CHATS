@@ -93,6 +93,7 @@ interface MessageItemProps {
     mode?: 'full' | 'reactions',
   ) => void;
   onReply?: (message: Message) => void;
+  onJumpToMessage?: (messageId: string) => void;
   onEdit?: (message: Message) => void;
   onRetryFailed?: (message: Message) => void;
   onDelete: (messageId: string) => void | Promise<void>;
@@ -101,6 +102,7 @@ interface MessageItemProps {
   onAttachmentLoad?: () => void;
   canLoadAttachments?: boolean;
   onOpenLink?: (url: string) => void;
+  isHighlighted?: boolean;
 }
 
 function getSingleAttachmentPresentation(attachment: {
@@ -218,6 +220,8 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.getSenderName === next.getSenderName &&
   prev.getSenderUsername === next.getSenderUsername &&
   prev.getSenderAvatarUrl === next.getSenderAvatarUrl &&
+  prev.onJumpToMessage === next.onJumpToMessage &&
+  prev.isHighlighted === next.isHighlighted &&
   prev.canLoadAttachments === next.canLoadAttachments &&
   prev.onAttachmentLoad === next.onAttachmentLoad
 );
@@ -245,6 +249,7 @@ const MessageItem = memo(function MessageItem({
   onContextMenu,
   onOpenContextMenuAtPosition,
   onReply,
+  onJumpToMessage,
   onEdit,
   onRetryFailed,
   onDelete,
@@ -253,6 +258,7 @@ const MessageItem = memo(function MessageItem({
   onAttachmentLoad,
   canLoadAttachments = true,
   onOpenLink,
+  isHighlighted = false,
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
@@ -753,7 +759,7 @@ const MessageItem = memo(function MessageItem({
     return (
       <div
         data-message-id={message.message_id}
-        className="px-2"
+        className={`px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
         style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
       >
         {showDateSeparator && (
@@ -781,7 +787,7 @@ const MessageItem = memo(function MessageItem({
   return (
     <div
       data-message-id={message.message_id}
-      className="px-2"
+      className={`px-2 transition-colors duration-300 ${isHighlighted ? 'rounded-2xl bg-void-accent/15 ring-1 ring-void-accent/35 animate-pulse' : ''}`}
       style={{ paddingTop: `${startsGroup ? messageGroupSpacing : d.consecutiveGap}px` }}
     >
       {showDateSeparator && (
@@ -880,9 +886,15 @@ const MessageItem = memo(function MessageItem({
         >
           {message.reply_to && (
             <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
-              <div
-                className="inline-flex min-h-[18px] max-w-[260px] items-center gap-1.5 text-void-text-muted cursor-pointer hover:text-void-text transition-colors"
+              <button
+                type="button"
+                className="inline-flex min-h-[18px] max-w-[260px] items-center gap-1.5 border-0 bg-transparent p-0 text-left text-void-text-muted cursor-pointer hover:text-void-text transition-colors"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onJumpToMessage?.(message.reply_to!);
+                }}
                 style={{ fontSize: `${replyFontSize}px` }}
+                title="Jump to replied message"
               >
                 <CornerUpRight className="w-3 h-3 flex-shrink-0" />
                 {replyParent ? (
@@ -956,7 +968,7 @@ const MessageItem = memo(function MessageItem({
                 ) : (
                   <span className="truncate italic opacity-70">Loading reply...</span>
                 )}
-              </div>
+              </button>
             </div>
           )}
 

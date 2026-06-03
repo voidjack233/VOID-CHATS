@@ -177,7 +177,6 @@ const useMessageListRealtime = ({
       const shouldApplyImmediately = (
         !initialHydrationSettled ||
         isAtPresent ||
-        normalizedMessage.sender_id === userId ||
         normalizedMessage.local_status === 'sending' ||
         normalizedMessage.local_status === 'queued' ||
         normalizedMessage.local_status === 'failed'

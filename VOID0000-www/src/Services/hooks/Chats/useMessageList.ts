@@ -2,13 +2,23 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, type SetStateActio
 import {
   type Conversation,
   type ConversationMember,
+  getMessageContext,
   type Message,
 } from '../../Chat/chatService';
 import { MAX_CACHED_MESSAGES_PER_CONVERSATION, MESSAGE_INITIAL_PAGE_SIZE } from '../../Chat/chatConstants';
 import { messageStore } from '../../Chat/chatStore';
-import { createHistoryAccessFence, normalizeHistoryVersion, } from './MessageList/messageListHistory';
+import {
+  createHistoryAccessFence,
+  filterMessagesByHistoryFence,
+  normalizeHistoryVersion,
+} from './MessageList/messageListHistory';
 import { mergeMessagesWithReconciliation } from './MessageList/messageListReconciliation';
 import { getConversationWindowSnapshot, setConversationWindowSnapshot,} from './MessageList/messageListWindowCache';
+import {
+  persistFetchedMessagesSafely,
+  sortMessages,
+  toUIMessage,
+} from './MessageList/messageListPersistence';
 import {
   applyAppendedPage,
   applyPrependedPage,
@@ -31,8 +41,10 @@ import { useMessageListLoading } from './MessageList/useMessageListLoading';
 import { useMessageListPagination } from './MessageList/useMessageListPagination';
 import { useMessageListRealtime } from './MessageList/useMessageListRealtime';
 import { useMessageListReplies } from './MessageList/useMessageListReplies';
+import { getRetryAfterMsFromError, isRateLimitError } from '../../Chat/chatUtils';
 
 const MESSAGE_LIST_BASE_INDEX = 100000;
+const MESSAGE_CONTEXT_RADIUS = 30;
 
 export { saveConversationScrollPosition } from './MessageList/messageListWindowCache';
 
@@ -518,6 +530,8 @@ export const useMessageList = (
   const isAtPresent = windowState.isAtPresent;
   const queuedNewerCount = runtime.pendingLiveIds.length;
   const runtimeStats: RuntimeStats = useMemo(() => getRuntimeStats(runtime), [runtime]);
+  const getMessageHeight = messageWindowMetrics.getMessageHeight;
+  const onHistoryRateLimited = messageWindowMetrics.onHistoryRateLimited;
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -573,10 +587,10 @@ export const useMessageList = (
   }) => {
     dispatchWindowState({
       type: 'merge_visible_messages',
-      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      getMessageHeight,
       ...params,
     });
-  }, [messageWindowMetrics.getMessageHeight]);
+  }, [getMessageHeight]);
 
   const queueNewerMessages = useCallback((params: {
     incoming: Message[];
@@ -592,10 +606,10 @@ export const useMessageList = (
   }) => {
     dispatchWindowState({
       type: 'flush_queued_newer',
-      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      getMessageHeight,
       ...params,
     });
-  }, [messageWindowMetrics.getMessageHeight]);
+  }, [getMessageHeight]);
 
   const setLoading = useCallback((value: SetStateAction<boolean>) => {
     dispatchWindowState({ type: 'set_loading', value });
@@ -640,10 +654,10 @@ export const useMessageList = (
   }) => {
     dispatchWindowState({
       type: 'apply_prepended_window',
-      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      getMessageHeight,
       ...params,
     });
-  }, [messageWindowMetrics.getMessageHeight]);
+  }, [getMessageHeight]);
 
   const applyAppendedWindow = useCallback((params: {
     messages: Message[];
@@ -657,10 +671,80 @@ export const useMessageList = (
   }) => {
     dispatchWindowState({
       type: 'apply_appended_window',
-      getMessageHeight: messageWindowMetrics.getMessageHeight,
+      getMessageHeight,
       ...params,
     });
-  }, [messageWindowMetrics.getMessageHeight]);
+  }, [getMessageHeight]);
+
+  const loadMessageContext = useCallback(async (targetMessageId: string) => {
+    if (!encryptionKeyRef.current) {
+      return false;
+    }
+
+    try {
+      const context = await getMessageContext(
+        conversationId,
+        targetMessageId,
+        encryptionKeyRef.current,
+        {
+          before: MESSAGE_CONTEXT_RADIUS,
+          after: MESSAGE_CONTEXT_RADIUS,
+          conversation: decryptionConversation,
+          userId,
+          currentKeyVersion: currentKeyVersionRef.current,
+        },
+      );
+      const targetId = context.targetMessageId || targetMessageId;
+      const visibleMessages = filterMessagesByHistoryFence(context.messages, historyAccessFence);
+
+      if (!visibleMessages.some((message) => String(message.message_id) === String(targetId))) {
+        return false;
+      }
+
+      const localMessages = await persistFetchedMessagesSafely(visibleMessages);
+      const contextMessages = sortMessages(localMessages.map(toUIMessage));
+      if (!contextMessages.some((message) => String(message.message_id) === String(targetId))) {
+        return false;
+      }
+
+      messagesRef.current = contextMessages;
+      replaceWindow({
+        messages: contextMessages,
+        firstItemIndex: MESSAGE_LIST_BASE_INDEX,
+        topSpacerHeight: 0,
+        bottomSpacerHeight: 0,
+        groupBreakBeforeIds: new Set(),
+        loading: false,
+        syncing: false,
+        initialHydrationSettled: true,
+        loadingOlder: false,
+        loadingNewer: false,
+        hasOlder: context.hasOlder,
+        hasNewer: context.hasNewer,
+        // Scroll geometry decides present only after the target window renders.
+        isAtPresent: false,
+      });
+      onMessagesLoaded?.(contextMessages);
+      return true;
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        onHistoryRateLimited?.(getRetryAfterMsFromError(error) ?? undefined);
+      }
+      console.error('Failed to load message context:', error);
+      return false;
+    }
+  }, [
+    conversationId,
+    currentKeyVersionRef,
+    decryptionConversation,
+    encryptionKeyRef,
+    historyAccessFence,
+    messagesRef,
+    onMessagesLoaded,
+    onHistoryRateLimited,
+    replaceWindow,
+    userId,
+  ]);
 
   useEffect(() => {
     setInitialHydrationSettled(false);
@@ -678,7 +762,7 @@ export const useMessageList = (
     encryptionKey,
     encryptionKeyRef,
     currentKeyVersionRef,
-    getMessageHeight: messageWindowMetrics.getMessageHeight,
+    getMessageHeight,
     messages,
     messagesRef,
     firstItemIndex,
@@ -703,7 +787,7 @@ export const useMessageList = (
     syncing,
     initialHydrationSettled,
     onMessagesLoaded,
-    onHistoryRateLimited: messageWindowMetrics.onHistoryRateLimited,
+    onHistoryRateLimited,
     messageListBaseIndex: MESSAGE_LIST_BASE_INDEX,
   });
 
@@ -811,6 +895,7 @@ export const useMessageList = (
     handleDelete,
     getReplyParent,
     mergeVisibleMessages,
+    loadMessageContext,
     jumpToPresent,
     loadOlder,
     loadNewer,
