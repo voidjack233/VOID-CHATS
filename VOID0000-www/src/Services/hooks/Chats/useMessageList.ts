@@ -862,12 +862,13 @@ export const useMessageList = (
     initialHydrationSettled,
   });
 
-  const { getReplyParent } = useMessageListReplies({
+  const { getReplyParent, isReplyParentLoading } = useMessageListReplies({
     messages,
     conversationId,
     decryptionConversation,
     historyAccessFence,
     userId,
+    encryptionKey,
     encryptionKeyRef,
     currentKeyVersionRef,
   });
@@ -925,6 +926,7 @@ export const useMessageList = (
     setIsAtPresent,
     handleDelete,
     getReplyParent,
+    isReplyParentLoading,
     mergeVisibleMessages,
     loadMessageContext,
     jumpToPresent,

@@ -11,6 +11,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { Message } from '../../Services/Chat/chatService';
+import type { Attachment } from '../../Services/Chat/chatTypes';
 import type { Density } from '../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
 import AttachmentImage from './AttachmentImage';
@@ -25,7 +26,10 @@ import { parseAttachment, parseAttachments } from '../../Services/Chat/chatServi
 import { CHAT_FORWARDED_MLS_MESSAGE_TYPE } from '../../Services/Chat/chatUtils';
 import { getMentionUsernames } from '../../Services/Chat/messageMentions';
 import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../Services/Chat/reactionLimits';
-import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
+import {
+  getCachedAttachmentObjectUrl,
+  resolveAttachmentObjectUrl,
+} from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
 import { extractMessageTextSegments, getInviteCodeFromMessageUrl } from './messageLinks';
 
@@ -75,6 +79,7 @@ interface MessageItemProps {
   encryptedFontSize: number;
   currentUserId?: string;
   replyParent: Message | null;
+  replyParentLoading?: boolean;
   messageReactions: Record<string, any>;
   formatTime: (dateStr: string) => string;
   getSenderName: (senderId: string) => string;
@@ -202,6 +207,192 @@ function isUnavailableReplyPlaceholder(message: Message): boolean {
   return message.is_deleted && message.content === UNAVAILABLE_REPLY_CONTENT;
 }
 
+function getReplyAttachmentDisplayName(attachment: Attachment): string | null {
+  if (attachment.name?.trim()) {
+    return attachment.name.trim();
+  }
+
+  try {
+    const pathname = new URL(attachment.url, window.location.origin).pathname;
+    const lastSegment = pathname.split('/').pop();
+    return lastSegment ? decodeURIComponent(lastSegment) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTextReplyAttachment(attachment: Attachment): boolean {
+  const mime = attachment.mime?.toLowerCase() || '';
+  if (
+    mime.startsWith('text/') ||
+    mime.includes('json') ||
+    mime.includes('javascript') ||
+    mime.includes('xml')
+  ) {
+    return true;
+  }
+
+  const displayName = getReplyAttachmentDisplayName(attachment)?.toLowerCase() || '';
+  return /\.(txt|md|json|js|jsx|ts|tsx|css|html|xml|py|rb|go|rs|java|c|cpp|h|sh|yaml|yml)$/i.test(displayName);
+}
+
+function getReplyAttachmentLabel(attachment: Attachment): string {
+  if (looksLikeImageAttachment(attachment)) {
+    return 'Photo';
+  }
+
+  if (attachment.name?.trim()) {
+    return `File: ${attachment.name.trim()}`;
+  }
+
+  if (isTextReplyAttachment(attachment)) {
+    return 'Text file';
+  }
+
+  const displayName = getReplyAttachmentDisplayName(attachment);
+  if (displayName) {
+    return `File: ${displayName}`;
+  }
+
+  return 'File';
+}
+
+interface CompactReplyPreviewProps {
+  message: Message;
+  replyParent: Message | null;
+  replyParentLoading: boolean;
+  isOwn: boolean;
+  isRightAligned: boolean;
+  replyFontSize: number;
+  getSenderName: (senderId: string) => string;
+  onJumpToMessage?: (messageId: string) => void;
+}
+
+const CompactReplyPreview = memo(function CompactReplyPreview({
+  message,
+  replyParent,
+  replyParentLoading,
+  isOwn,
+  isRightAligned,
+  replyFontSize,
+  getSenderName,
+  onJumpToMessage,
+}: CompactReplyPreviewProps) {
+  const isUnavailable = Boolean(
+    replyParent &&
+    (replyParent.is_deleted || isUnavailableReplyPlaceholder(replyParent)),
+  );
+  const replyAttachments = useMemo(
+    () => isUnavailable ? [] : parseAttachments(replyParent?.attachments),
+    [isUnavailable, replyParent?.attachments],
+  );
+  const firstAttachment = replyAttachments[0] ?? null;
+  const firstAttachmentIsImage = Boolean(firstAttachment && looksLikeImageAttachment(firstAttachment));
+  const thumbnailUrl = firstAttachment && firstAttachmentIsImage
+    ? getCachedAttachmentObjectUrl(firstAttachment)
+    : null;
+  const additionalAttachmentCount = Math.max(0, replyAttachments.length - 1);
+  const replyAuthorName = isOwn ? 'You' : getSenderName(message.sender_id);
+  const targetName = replyParent?.sender_id
+    ? getSenderName(replyParent.sender_id)
+    : 'a message';
+  const targetLabel = replyParent?.sender_id ? targetName : 'Reply';
+  const hasReadableText = Boolean(
+    replyParent?.content &&
+    replyParent.content !== '[encrypted]' &&
+    replyParent.content !== '[deleted]' &&
+    replyParent.content !== UNAVAILABLE_REPLY_CONTENT,
+  );
+  const summaryFallback = !replyParent
+    ? replyParentLoading
+      ? 'Loading message...'
+      : 'Message unavailable'
+    : isUnavailable
+      ? 'Message unavailable'
+      : hasReadableText
+        ? null
+        : firstAttachment
+          ? getReplyAttachmentLabel(firstAttachment)
+          : replyParent.content === '[encrypted]'
+            ? 'Encrypted message'
+            : 'Message unavailable';
+
+  return (
+    <div className={`mb-1 w-[280px] max-w-full ${isRightAligned ? 'self-end' : 'self-start'}`}>
+      <button
+        type="button"
+        className="group block w-full border-0 bg-transparent p-0 text-left"
+        onClick={(event) => {
+          event.stopPropagation();
+          onJumpToMessage?.(message.reply_to!);
+        }}
+        title="Jump to replied message"
+      >
+        <div
+          className={`mb-1 flex h-3.5 items-center gap-1 px-1 text-void-text-muted ${
+            isRightAligned ? 'justify-end' : 'justify-start'
+          }`}
+          style={{ fontSize: `${Math.max(10, replyFontSize - 1)}px` }}
+        >
+          <CornerUpRight className="h-3 w-3 shrink-0" />
+          <span className="truncate font-medium">
+            {replyAuthorName} replied to {targetName}
+          </span>
+        </div>
+
+        <div className="flex h-14 w-full items-center gap-2 overflow-hidden rounded-xl border border-void-bg-hover/80 bg-void-bg-hover/55 px-2.5 py-1.5 shadow-sm transition-colors group-hover:bg-void-bg-hover">
+          <div className="min-w-0 flex-1">
+            <div
+              className="truncate font-semibold leading-3 text-void-accent/80"
+              style={{ fontSize: `${Math.max(10, replyFontSize - 1)}px` }}
+            >
+              {targetLabel}
+            </div>
+            <div
+              className="mt-0.5 line-clamp-2 max-h-7 overflow-hidden break-words leading-[14px] text-void-text-muted"
+              style={{ fontSize: `${replyFontSize}px` }}
+            >
+              {hasReadableText ? (
+                <MessagePreviewText
+                  content={replyParent?.content}
+                  maxLength={120}
+                  fallback="Message unavailable"
+                />
+              ) : (
+                <span className={isUnavailable ? 'italic opacity-70' : ''}>
+                  {summaryFallback}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {firstAttachment ? (
+            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-void-bg-main/65 text-void-text-muted">
+              {thumbnailUrl ? (
+                <img
+                  src={thumbnailUrl}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              ) : firstAttachmentIsImage ? (
+                <Image className="h-4 w-4" />
+              ) : (
+                <FileText className="h-4 w-4" />
+              )}
+              {additionalAttachmentCount > 0 ? (
+                <span className="absolute bottom-0.5 right-0.5 rounded bg-black/65 px-1 text-[9px] font-semibold leading-3 text-white">
+                  +{additionalAttachmentCount}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      </button>
+    </div>
+  );
+});
+
 const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps) => (
   prev.message === next.message &&
   prev.enableMentions === next.enableMentions &&
@@ -215,6 +406,7 @@ const areMessageItemPropsEqual = (prev: MessageItemProps, next: MessageItemProps
   prev.encryptedFontSize === next.encryptedFontSize &&
   prev.currentUserId === next.currentUserId &&
   prev.replyParent === next.replyParent &&
+  prev.replyParentLoading === next.replyParentLoading &&
   prev.messageReactions === next.messageReactions &&
   prev.formatTime === next.formatTime &&
   prev.getSenderName === next.getSenderName &&
@@ -239,6 +431,7 @@ const MessageItem = memo(function MessageItem({
   encryptedFontSize,
   currentUserId,
   replyParent,
+  replyParentLoading = false,
   messageReactions,
   formatTime,
   getSenderName,
@@ -885,91 +1078,16 @@ const MessageItem = memo(function MessageItem({
           }}
         >
           {message.reply_to && (
-            <div className={`pb-0.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
-              <button
-                type="button"
-                className="inline-flex min-h-[18px] max-w-[260px] items-center gap-1.5 border-0 bg-transparent p-0 text-left text-void-text-muted cursor-pointer hover:text-void-text transition-colors"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onJumpToMessage?.(message.reply_to!);
-                }}
-                style={{ fontSize: `${replyFontSize}px` }}
-                title="Jump to replied message"
-              >
-                <CornerUpRight className="w-3 h-3 flex-shrink-0" />
-                {replyParent ? (
-                  <>
-                    {(() => {
-                      if (isUnavailableReplyPlaceholder(replyParent)) {
-                        return <span className="italic opacity-60">Message unavailable</span>;
-                      }
-
-                      const hasRealContent =
-                        replyParent.content &&
-                        replyParent.content !== '[encrypted]' &&
-                        replyParent.content !== '[deleted]';
-
-                      const senderName = replyParent.sender_id
-                        ? getSenderName(replyParent.sender_id)
-                        : 'Unknown';
-
-                      if (replyParent.is_deleted) {
-                        return (
-                          <>
-                            <span className="font-semibold text-void-accent/70">{senderName}</span>
-                            <span className="italic opacity-60">[deleted]</span>
-                          </>
-                        );
-                      }
-
-                      if (!hasRealContent && replyParent.attachments?.length) {
-                        const firstReplyAttachment = parseAttachment(replyParent.attachments[0]!);
-                        const ReplyAttachmentIcon = looksLikeImageAttachment(firstReplyAttachment) ? Image : FileText;
-                        const replyAttachmentLabel = looksLikeImageAttachment(firstReplyAttachment)
-                          ? 'Click to see attachment'
-                          : 'Click to download file';
-
-                        return (
-                          <>
-                            <span className="font-semibold text-void-accent/70">{senderName}</span>
-                            <span className="flex items-center gap-1.5">
-                              <ReplyAttachmentIcon className="w-4 h-4 flex-shrink-0" />
-                              <span className="italic text-void-text-muted/70 cursor-not-allowed select-none">
-                                {replyAttachmentLabel}
-                              </span>
-                            </span>
-                          </>
-                        );
-                      }
-
-                      if (hasRealContent) {
-                        return (
-                          <>
-                            <span className="font-semibold text-void-accent/70">{senderName}</span>
-                            <span className="truncate max-w-[220px]">
-                              <MessagePreviewText
-                                content={replyParent.content}
-                                maxLength={60}
-                                fallback="Message unavailable"
-                              />
-                            </span>
-                          </>
-                        );
-                      }
-
-                      return (
-                        <>
-                          <span className="font-semibold text-void-accent/70">{senderName}</span>
-                          <span className="italic opacity-60">Message unavailable</span>
-                        </>
-                      );
-                    })()}
-                  </>
-                ) : (
-                  <span className="truncate italic opacity-70">Loading reply...</span>
-                )}
-              </button>
-            </div>
+            <CompactReplyPreview
+              message={message}
+              replyParent={replyParent}
+              replyParentLoading={replyParentLoading}
+              isOwn={isOwn}
+              isRightAligned={isRightAligned}
+              replyFontSize={replyFontSize}
+              getSenderName={getSenderName}
+              onJumpToMessage={onJumpToMessage}
+            />
           )}
 
           {isForwardedMessage ? (

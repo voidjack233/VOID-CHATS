@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { getMessageById, type Conversation, type Message } from '../../../Chat/chatService';
-import { messageStore } from '../../../Chat/chatStore';
-import { hasReadableMessageContent } from '../../../Chat/messageDecryptionState';
+import { messageStore, type LocalMessage } from '../../../Chat/chatStore';
+import {
+  hasReadableMessageContent,
+  isTransientUndecryptableMessage,
+} from '../../../Chat/messageDecryptionState';
 import { type HistoryAccessFence, isMessageVisibleForHistoryFence } from './messageListHistory';
 import { toUIMessage } from './messageListPersistence';
 
@@ -11,6 +14,7 @@ interface UseMessageListRepliesParams {
   decryptionConversation: Conversation;
   historyAccessFence: HistoryAccessFence | null;
   userId?: string;
+  encryptionKey: CryptoKey | null;
   encryptionKeyRef: MutableRefObject<CryptoKey | null>;
   currentKeyVersionRef: MutableRefObject<number>;
 }
@@ -37,20 +41,35 @@ const createUnavailableReply = (conversationId: string, replyToId: string): Mess
   protocol_version: null,
 });
 
+const hasRenderableReplyPreview = (message: Message | LocalMessage): boolean => (
+  !isTransientUndecryptableMessage(message) &&
+  (
+    message.is_deleted ||
+    message.message_type === 'system' ||
+    hasReadableMessageContent(message) ||
+    Boolean(message.attachments?.length)
+  )
+);
+
 const useMessageListReplies = ({
   messages,
   conversationId,
   decryptionConversation,
   historyAccessFence,
   userId,
+  encryptionKey,
   encryptionKeyRef,
   currentKeyVersionRef,
 }: UseMessageListRepliesParams) => {
   const [replyCache, setReplyCache] = useState<Record<string, Message>>({});
+  const [fetchingReplyIds, setFetchingReplyIds] = useState<Set<string>>(new Set());
   const fetchingReplies = useRef<Set<string>>(new Set());
+  const requestGenerationRef = useRef(0);
 
   useEffect(() => {
+    requestGenerationRef.current += 1;
     setReplyCache({});
+    setFetchingReplyIds(new Set());
     fetchingReplies.current.clear();
   }, [conversationId]);
 
@@ -61,10 +80,12 @@ const useMessageListReplies = ({
     return null;
   }, [messages, replyCache]);
 
-  useEffect(() => {
-    if (!encryptionKeyRef.current) return;
+  const isReplyParentLoading = useCallback((replyToId: string): boolean => (
+    fetchingReplyIds.has(replyToId)
+  ), [fetchingReplyIds]);
 
-    let ignore = false;
+  useEffect(() => {
+    if (!encryptionKey || !encryptionKeyRef.current) return;
 
     const missingReplies = Array.from(new Set(
       messages
@@ -80,9 +101,21 @@ const useMessageListReplies = ({
     if (missingReplies.length === 0) return;
 
     missingReplies.forEach((replyToId) => {
+      const requestGeneration = requestGenerationRef.current;
       fetchingReplies.current.add(replyToId);
+      setFetchingReplyIds((previous) => {
+        if (previous.has(replyToId)) {
+          return previous;
+        }
+
+        return new Set(previous).add(replyToId);
+      });
 
       const cacheUnavailableReply = () => {
+        if (requestGeneration !== requestGenerationRef.current) {
+          return;
+        }
+
         setReplyCache((previous) => (
           previous[replyToId]
             ? previous
@@ -95,9 +128,9 @@ const useMessageListReplies = ({
 
       messageStore.getMessage(conversationId, replyToId)
         .then((localMessage) => {
-          if (ignore) return;
+          if (requestGeneration !== requestGenerationRef.current) return;
 
-          if (localMessage && hasReadableMessageContent(localMessage)) {
+          if (localMessage && hasRenderableReplyPreview(localMessage)) {
             const localReply = toUIMessage(localMessage);
             const replyForCache = isMessageVisibleForHistoryFence(localReply, historyAccessFence)
               ? localReply
@@ -115,9 +148,11 @@ const useMessageListReplies = ({
             currentKeyVersion: currentKeyVersionRef.current,
           })
             .then((message: any) => {
-              if (ignore) return;
+              if (requestGeneration !== requestGenerationRef.current) return;
               const actualMessage = message?.message || message;
-              const replyForCache = actualMessage && isMessageVisibleForHistoryFence(actualMessage, historyAccessFence)
+              const replyForCache = actualMessage &&
+                hasRenderableReplyPreview(actualMessage) &&
+                isMessageVisibleForHistoryFence(actualMessage, historyAccessFence)
                 ? actualMessage
                 : createUnavailableReply(conversationId, replyToId);
               setReplyCache((previous) => ({
@@ -126,24 +161,34 @@ const useMessageListReplies = ({
               }));
             })
             .catch(() => {
-              if (ignore) return;
               cacheUnavailableReply();
             });
         })
         .catch(() => {
-          if (ignore) return;
           cacheUnavailableReply();
         })
         .finally(() => {
+          if (requestGeneration !== requestGenerationRef.current) {
+            return;
+          }
+
           fetchingReplies.current.delete(replyToId);
+          setFetchingReplyIds((previous) => {
+            if (!previous.has(replyToId)) {
+              return previous;
+            }
+
+            const next = new Set(previous);
+            next.delete(replyToId);
+            return next;
+          });
         });
     });
-
-    return () => { ignore = true; };
   }, [
     conversationId,
     currentKeyVersionRef,
     decryptionConversation,
+    encryptionKey,
     encryptionKeyRef,
     historyAccessFence,
     messages,
@@ -153,6 +198,7 @@ const useMessageListReplies = ({
 
   return {
     getReplyParent,
+    isReplyParentLoading,
   };
 };
 

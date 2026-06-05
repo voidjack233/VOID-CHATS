@@ -464,6 +464,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     setIsAtPresent,
     handleDelete,
     getReplyParent,
+    isReplyParentLoading,
     mergeVisibleMessages,
     loadMessageContext,
     jumpToPresent,
@@ -1714,6 +1715,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         encryptedFontSize={encryptedFontSize}
         currentUserId={user?.id}
         replyParent={message.reply_to ? getReplyParent(message.reply_to) : null}
+        replyParentLoading={message.reply_to ? isReplyParentLoading(message.reply_to) : false}
         messageReactions={reactions[message.message_id] || message.reactions || emptyReactions}
         isHighlighted={highlightedMessageId === message.message_id}
         formatTime={formatTime}
@@ -1746,6 +1748,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     encryptedFontSize,
     formatTime,
     getReplyParent,
+    isReplyParentLoading,
     getSenderAvatarUrl,
     getSmartDisplayName,
     getSmartUsername,
