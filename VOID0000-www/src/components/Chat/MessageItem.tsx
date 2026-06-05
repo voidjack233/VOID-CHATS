@@ -65,6 +65,8 @@ const MULTI_ATTACHMENT_MAX_WIDTH = 320;
 const LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD = 1.2;
 const PORTRAIT_ATTACHMENT_RATIO_THRESHOLD = 0.9;
 const UNAVAILABLE_REPLY_CONTENT = '[deleted or unavailable]';
+const replyPreviewAttachmentUrlCache = new Map<string, string>();
+const replyPreviewAttachmentUrlPromises = new Map<string, Promise<string>>();
 
 interface MessageItemProps {
   message: Message;
@@ -257,12 +259,23 @@ function getReplyAttachmentLabel(attachment: Attachment): string {
   return 'File';
 }
 
+function getReplyPreviewAttachmentCacheKey(attachment: Attachment): string {
+  return [
+    attachment.url || '',
+    attachment.iv || '',
+    attachment.key || '',
+    attachment.mime || '',
+    attachment.name || '',
+  ].join('::');
+}
+
 interface CompactReplyPreviewProps {
   message: Message;
   replyParent: Message | null;
   replyParentLoading: boolean;
   isOwn: boolean;
   isRightAligned: boolean;
+  density: Density;
   replyFontSize: number;
   getSenderName: (senderId: string) => string;
   onJumpToMessage?: (messageId: string) => void;
@@ -274,6 +287,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   replyParentLoading,
   isOwn,
   isRightAligned,
+  density,
   replyFontSize,
   getSenderName,
   onJumpToMessage,
@@ -288,15 +302,75 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   );
   const firstAttachment = replyAttachments[0] ?? null;
   const firstAttachmentIsImage = Boolean(firstAttachment && looksLikeImageAttachment(firstAttachment));
-  const thumbnailUrl = firstAttachment && firstAttachmentIsImage
-    ? getCachedAttachmentObjectUrl(firstAttachment)
+  const firstAttachmentCacheKey = firstAttachment && firstAttachmentIsImage
+    ? getReplyPreviewAttachmentCacheKey(firstAttachment)
     : null;
+  const replyAttachmentConversationId =
+    replyParent?.conversation_public_id ||
+    replyParent?.conversation_id ||
+    message.conversation_public_id ||
+    message.conversation_id;
+  const cachedThumbnailUrl = firstAttachment && firstAttachmentIsImage && firstAttachmentCacheKey
+    ? getCachedAttachmentObjectUrl(firstAttachment) ||
+      (firstAttachment.encrypted === true ? null : replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey)) ||
+      null
+    : null;
+  const [resolvedThumbnail, setResolvedThumbnail] = useState<{ cacheKey: string | null; url: string | null }>({
+    cacheKey: firstAttachmentCacheKey,
+    url: cachedThumbnailUrl,
+  });
+  const [resolvedImageDimensions, setResolvedImageDimensions] = useState<{
+    cacheKey: string | null;
+    width: number;
+    height: number;
+  } | null>(null);
   const additionalAttachmentCount = Math.max(0, replyAttachments.length - 1);
   const replyAuthorName = isOwn ? 'You' : getSenderName(message.sender_id);
   const targetName = replyParent?.sender_id
     ? getSenderName(replyParent.sender_id)
     : 'a message';
-  const targetLabel = replyParent?.sender_id ? targetName : 'Reply';
+  const isCompact = density === 'compact';
+  const hasPreviewImage = Boolean(firstAttachmentIsImage);
+  const thumbnailUrl = (
+    resolvedThumbnail.cacheKey === firstAttachmentCacheKey
+      ? resolvedThumbnail.url
+      : null
+  ) || cachedThumbnailUrl;
+  const replyImageDimensions = resolvedImageDimensions?.cacheKey === firstAttachmentCacheKey
+    ? resolvedImageDimensions
+    : null;
+  const replyImagePresentation = firstAttachment && firstAttachmentIsImage
+    ? getSingleAttachmentPresentation({
+        ...firstAttachment,
+        width: firstAttachment.width ?? replyImageDimensions?.width,
+        height: firstAttachment.height ?? replyImageDimensions?.height,
+      })
+    : null;
+  const replyImageStyle: CSSProperties = replyImagePresentation
+    ? {
+        width: `${replyImagePresentation.width}px`,
+        aspectRatio: replyImagePresentation.aspectRatio,
+      }
+    : {
+        width: `${SINGLE_ATTACHMENT_FALLBACK_WIDTH}px`,
+        aspectRatio: '1 / 1',
+      };
+  const textShellClass = isCompact
+    ? 'min-h-[34px] max-h-11 px-2 py-1'
+    : 'min-h-[40px] max-h-14 px-2.5 py-1.5';
+  const previewTextClass = isCompact
+    ? 'line-clamp-1 max-h-4 leading-4'
+    : 'line-clamp-2 max-h-8 leading-4';
+  const shellToneClass = isOwn
+    ? 'bg-void-accent/45 text-white/90 group-hover:bg-void-accent/55'
+    : 'bg-void-bg-hover/55 text-void-text-muted group-hover:bg-void-bg-hover/70';
+  const previewBubbleShapeClass = isRightAligned
+    ? 'rounded-2xl rounded-br-md'
+    : 'rounded-2xl rounded-bl-md';
+  const stackWidthClass = isCompact ? 'max-w-[220px]' : 'max-w-[260px]';
+  const stackInsetClass = isRightAligned ? 'items-end self-end' : 'items-start self-start';
+  const previewClass = isOwn ? 'text-white/80' : 'text-void-text-muted';
+  const mediaPlaceholderClass = isOwn ? 'bg-void-accent/45 text-white/80' : 'bg-void-bg-hover/65 text-void-text-muted';
   const hasReadableText = Boolean(
     replyParent?.content &&
     replyParent.content !== '[encrypted]' &&
@@ -316,64 +390,126 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
           : replyParent.content === '[encrypted]'
             ? 'Encrypted message'
             : 'Message unavailable';
+  const shouldShowTextPreview = hasReadableText || !hasPreviewImage;
+  const hasTextAndImagePreview = hasPreviewImage && shouldShowTextPreview;
+  useEffect(() => {
+    if (!firstAttachment || !firstAttachmentIsImage || !firstAttachmentCacheKey) {
+      setResolvedThumbnail({ cacheKey: null, url: null });
+      return undefined;
+    }
+
+    const cachedUrl = getCachedAttachmentObjectUrl(firstAttachment) ||
+      (firstAttachment.encrypted === true ? null : replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey)) ||
+      null;
+    if (cachedUrl) {
+      if (firstAttachment.encrypted !== true) {
+        replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, cachedUrl);
+      }
+      setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: cachedUrl });
+      return undefined;
+    }
+
+    let cancelled = false;
+    const pendingUrl = replyPreviewAttachmentUrlPromises.get(firstAttachmentCacheKey) ||
+      resolveAttachmentObjectUrl(firstAttachment, { conversationId: replyAttachmentConversationId })
+        .then((url) => {
+          if (firstAttachment.encrypted !== true) {
+            replyPreviewAttachmentUrlCache.set(firstAttachmentCacheKey, url);
+          }
+          replyPreviewAttachmentUrlPromises.delete(firstAttachmentCacheKey);
+          return url;
+        })
+        .catch((error) => {
+          replyPreviewAttachmentUrlPromises.delete(firstAttachmentCacheKey);
+          throw error;
+        });
+
+    replyPreviewAttachmentUrlPromises.set(firstAttachmentCacheKey, pendingUrl);
+    void pendingUrl
+      .then((url) => {
+        if (!cancelled) {
+          setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: null });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    firstAttachment,
+    firstAttachmentCacheKey,
+    firstAttachmentIsImage,
+    replyAttachmentConversationId,
+  ]);
 
   return (
-    <div className={`mb-1 w-[280px] max-w-full ${isRightAligned ? 'self-end' : 'self-start'}`}>
+    <div className={`mb-0.5 flex max-w-full flex-col ${stackInsetClass}`}>
+      <div
+        className="mb-0.5 flex max-w-full items-center gap-1 truncate px-1 font-medium leading-3 text-void-text-muted"
+        style={{ fontSize: `${Math.max(10, replyFontSize - 1)}px` }}
+      >
+        <CornerUpRight className="h-3 w-3 shrink-0" />
+        <span className="truncate">
+          {replyAuthorName} replied to {targetName}
+        </span>
+      </div>
+
       <button
         type="button"
-        className="group block w-full border-0 bg-transparent p-0 text-left"
+        className={`group block w-fit max-w-full border-0 bg-transparent p-0 text-left ${isRightAligned ? 'text-right' : 'text-left'}`}
         onClick={(event) => {
           event.stopPropagation();
           onJumpToMessage?.(message.reply_to!);
         }}
         title="Jump to replied message"
       >
-        <div
-          className={`mb-1 flex h-3.5 items-center gap-1 px-1 text-void-text-muted ${
-            isRightAligned ? 'justify-end' : 'justify-start'
-          }`}
-          style={{ fontSize: `${Math.max(10, replyFontSize - 1)}px` }}
-        >
-          <CornerUpRight className="h-3 w-3 shrink-0" />
-          <span className="truncate font-medium">
-            {replyAuthorName} replied to {targetName}
-          </span>
-        </div>
-
-        <div className="flex h-14 w-full items-center gap-2 overflow-hidden rounded-xl border border-void-bg-hover/80 bg-void-bg-hover/55 px-2.5 py-1.5 shadow-sm transition-colors group-hover:bg-void-bg-hover">
-          <div className="min-w-0 flex-1">
+        {hasTextAndImagePreview ? (
+          <div
+            data-reply-media-stack="true"
+            className={`flex w-fit max-w-full flex-col ${isRightAligned ? 'items-end' : 'items-start'} ${isCompact ? 'gap-1' : 'gap-1.5'}`}
+          >
             <div
-              className="truncate font-semibold leading-3 text-void-accent/80"
-              style={{ fontSize: `${Math.max(10, replyFontSize - 1)}px` }}
+              data-reply-text-bubble="true"
+              className={`my-0 flex w-fit max-w-full items-center overflow-hidden transition-colors ${stackWidthClass} ${shellToneClass} ${previewBubbleShapeClass} ${textShellClass}`}
             >
-              {targetLabel}
-            </div>
-            <div
-              className="mt-0.5 line-clamp-2 max-h-7 overflow-hidden break-words leading-[14px] text-void-text-muted"
-              style={{ fontSize: `${replyFontSize}px` }}
-            >
-              {hasReadableText ? (
+              <div
+                className={`overflow-hidden break-words ${previewClass} ${previewTextClass}`}
+                style={{ fontSize: `${replyFontSize}px` }}
+              >
                 <MessagePreviewText
                   content={replyParent?.content}
                   maxLength={120}
                   fallback="Message unavailable"
                 />
-              ) : (
-                <span className={isUnavailable ? 'italic opacity-70' : ''}>
-                  {summaryFallback}
-                </span>
-              )}
+              </div>
             </div>
-          </div>
 
-          {firstAttachment ? (
-            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-void-bg-main/65 text-void-text-muted">
+            <div
+              data-reply-thumbnail="true"
+              className={`relative flex max-w-full shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm transition-opacity group-hover:opacity-95 ${mediaPlaceholderClass}`}
+              style={replyImageStyle}
+            >
               {thumbnailUrl ? (
                 <img
                   src={thumbnailUrl}
                   alt=""
-                  className="h-full w-full object-cover"
+                  className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
                   loading="lazy"
+                  onLoad={(event) => {
+                    if (!firstAttachmentCacheKey) return;
+                    const image = event.currentTarget;
+                    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+                    setResolvedImageDimensions({
+                      cacheKey: firstAttachmentCacheKey,
+                      width: image.naturalWidth,
+                      height: image.naturalHeight,
+                    });
+                  }}
                 />
               ) : firstAttachmentIsImage ? (
                 <Image className="h-4 w-4" />
@@ -386,8 +522,70 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                 </span>
               ) : null}
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : (
+          <div className="flex w-fit max-w-full flex-col items-start gap-0.5">
+            {shouldShowTextPreview ? (
+              <div
+                data-reply-text-bubble="true"
+                className={`my-0 flex w-fit max-w-full items-center overflow-hidden transition-colors ${stackWidthClass} ${shellToneClass} ${previewBubbleShapeClass} ${textShellClass}`}
+              >
+                <div
+                  className={`overflow-hidden break-words ${previewClass} ${previewTextClass}`}
+                  style={{ fontSize: `${replyFontSize}px` }}
+                >
+                  {hasReadableText ? (
+                    <MessagePreviewText
+                      content={replyParent?.content}
+                      maxLength={120}
+                      fallback="Message unavailable"
+                    />
+                  ) : (
+                    <span className={isUnavailable ? 'italic opacity-70' : ''}>
+                      {summaryFallback}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            {hasPreviewImage && firstAttachment ? (
+              <div
+                data-reply-thumbnail="true"
+                className={`relative flex max-w-full shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm transition-opacity group-hover:opacity-95 ${mediaPlaceholderClass}`}
+                style={replyImageStyle}
+              >
+                {thumbnailUrl ? (
+                  <img
+                    src={thumbnailUrl}
+                    alt=""
+                    className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
+                    loading="lazy"
+                    onLoad={(event) => {
+                      if (!firstAttachmentCacheKey) return;
+                      const image = event.currentTarget;
+                      if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+                      setResolvedImageDimensions({
+                        cacheKey: firstAttachmentCacheKey,
+                        width: image.naturalWidth,
+                        height: image.naturalHeight,
+                      });
+                    }}
+                  />
+                ) : firstAttachmentIsImage ? (
+                  <Image className="h-4 w-4" />
+                ) : (
+                  <FileText className="h-4 w-4" />
+                )}
+                {additionalAttachmentCount > 0 ? (
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-black/65 px-1 text-[9px] font-semibold leading-3 text-white">
+                    +{additionalAttachmentCount}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )}
       </button>
     </div>
   );
@@ -946,6 +1144,68 @@ const MessageItem = memo(function MessageItem({
       )}
     </div>
   ) : null;
+  const messageHasRealContent = Boolean(message.content && message.content !== '[encrypted]');
+  const messageTextBubble = message.is_deleted ? (
+    <div
+      className={`${d.bubblePadding} rounded-2xl italic text-void-text-muted bg-void-bg-hover/50`}
+      style={{ fontSize: `${bubbleFontSize}px` }}
+    >
+      [deleted]
+    </div>
+  ) : (() => {
+    if (!messageHasRealContent && message.attachments?.length) return null;
+
+    return (
+      <div
+        ref={textActionAnchorRef}
+        className={`min-w-0 max-w-full overflow-hidden ${d.bubblePadding} rounded-2xl whitespace-pre-wrap break-words ${
+          isRightAligned
+            ? 'rounded-br-sm bg-void-accent text-white'
+            : isOwn
+              ? 'rounded-bl-sm bg-void-accent text-white'
+              : 'rounded-bl-sm bg-void-bg-hover text-void-text'
+        } ${isPending ? 'brightness-90' : ''} ${isFailed ? 'ring-1 ring-orange-400/45' : ''}`}
+        style={{ fontSize: `${bubbleFontSize}px` }}
+      >
+        {messageHasRealContent ? (
+          <FormattedMessageText
+            content={message.content || ''}
+            linkClassName={linkClassName}
+            onOpenLink={onOpenLink}
+            enableMentions={enableMentions}
+            mentionUsernames={enableMentions ? getMentionUsernames(message.mentions) : undefined}
+          />
+        ) : (
+          <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>
+            encrypted
+          </span>
+        )}
+        {message.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
+        {isPending && (
+          <div
+            className={`mt-1 text-[10px] italic ${
+              isRightAligned || isOwn ? 'text-white/75' : 'text-void-text-muted'
+            }`}
+          >
+            {pendingStatusLabel}
+          </div>
+        )}
+      </div>
+    );
+  })();
+  const replyPreviewElement = message.reply_to ? (
+    <CompactReplyPreview
+      message={message}
+      replyParent={replyParent}
+      replyParentLoading={replyParentLoading}
+      isOwn={isOwn}
+      isRightAligned={isRightAligned}
+      density={density}
+      replyFontSize={replyFontSize}
+      getSenderName={getSenderName}
+      onJumpToMessage={onJumpToMessage}
+    />
+  ) : null;
 
   if (isSystem) {
     const hasContent = typeof message.content === 'string' && message.content.trim().length > 0;
@@ -1077,18 +1337,7 @@ const MessageItem = memo(function MessageItem({
             touchAction: 'pan-y',
           }}
         >
-          {message.reply_to && (
-            <CompactReplyPreview
-              message={message}
-              replyParent={replyParent}
-              replyParentLoading={replyParentLoading}
-              isOwn={isOwn}
-              isRightAligned={isRightAligned}
-              replyFontSize={replyFontSize}
-              getSenderName={getSenderName}
-              onJumpToMessage={onJumpToMessage}
-            />
-          )}
+          {replyPreviewElement}
 
           {isForwardedMessage ? (
             <div className={`mb-1.5 ${isRightAligned ? 'text-right' : 'text-left'}`}>
@@ -1102,54 +1351,7 @@ const MessageItem = memo(function MessageItem({
             </div>
           ) : null}
 
-          {message.is_deleted ? (
-            <div
-              className={`${d.bubblePadding} rounded-2xl italic text-void-text-muted bg-void-bg-hover/50`}
-              style={{ fontSize: `${bubbleFontSize}px` }}
-            >
-              [deleted]
-            </div>
-          ) : (() => {
-            const hasRealContent = message.content && message.content !== '[encrypted]';
-            if (!hasRealContent && message.attachments?.length) return null;
-            return (
-              <div
-                ref={textActionAnchorRef}
-                className={`min-w-0 max-w-full overflow-hidden ${d.bubblePadding} rounded-2xl whitespace-pre-wrap break-words ${
-                  isRightAligned
-                    ? 'rounded-br-sm bg-void-accent text-white'
-                    : isOwn
-                      ? 'rounded-bl-sm bg-void-accent text-white'
-                      : 'rounded-bl-sm bg-void-bg-hover text-void-text'
-                } ${isPending ? 'brightness-90' : ''} ${isFailed ? 'ring-1 ring-orange-400/45' : ''}`}
-                style={{ fontSize: `${bubbleFontSize}px` }}
-              >
-                {hasRealContent ? (
-                  <FormattedMessageText
-                    content={message.content || ''}
-                    linkClassName={linkClassName}
-                    onOpenLink={onOpenLink}
-                    enableMentions={enableMentions}
-                    mentionUsernames={enableMentions ? getMentionUsernames(message.mentions) : undefined}
-                  />
-                ) : (
-                  <span className="italic opacity-50" style={{ fontSize: `${encryptedFontSize}px` }}>
-                    encrypted
-                  </span>
-                )}
-                {message.is_edited && <span className="text-[10px] opacity-60 ml-1.5">(edited)</span>}
-                {isPending && (
-                  <div
-                    className={`mt-1 text-[10px] italic ${
-                      isRightAligned || isOwn ? 'text-white/75' : 'text-void-text-muted'
-                    }`}
-                  >
-                    {pendingStatusLabel}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+          {messageTextBubble}
 
           {!message.is_deleted && message.attachments && message.attachments.length > 0 && (() => {
             const imageEntries = imageAttachmentEntries;
