@@ -21,6 +21,8 @@ const BLURHASH_COMPONENT_X = 4;
 const BLURHASH_COMPONENT_Y = 4;
 const DECRYPTED_ATTACHMENT_URL_TTL_MS = 60_000;
 const LEGACY_ATTACHMENT_BUCKET_PATH = '/chat-attachments/';
+const PRIVATE_ATTACHMENT_PATH_PATTERN = /\/api\/conversations\/[^/?]+\/attachments\//;
+const ATTACHMENT_REQUEST_SESSION_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 interface AttachmentResolveOptions {
   conversationId?: string | null;
@@ -123,6 +125,15 @@ function shouldUseAuthenticatedFetch(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function preventPrivateAttachmentCacheReuse(url: string): string {
+  if (!PRIVATE_ATTACHMENT_PATH_PATTERN.test(url)) {
+    return url;
+  }
+
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}attachment_session=${encodeURIComponent(ATTACHMENT_REQUEST_SESSION_ID)}`;
 }
 
 function clearResolvedUrlExpiry(cacheKey: string): void {
@@ -261,9 +272,10 @@ export async function encryptAttachmentFile(file: File): Promise<{
 }
 
 async function downloadAttachmentBlob(url: string): Promise<Blob> {
-  const response = shouldUseAuthenticatedFetch(url)
-    ? await fetchWithAuth(url, { cache: 'force-cache' })
-    : await fetch(url, { cache: 'force-cache' });
+  const downloadUrl = preventPrivateAttachmentCacheReuse(url);
+  const response = shouldUseAuthenticatedFetch(downloadUrl)
+    ? await fetchWithAuth(downloadUrl, { cache: 'no-store' })
+    : await fetch(downloadUrl, { cache: 'no-store' });
 
   if (!response.ok) {
     throw new Error(`Attachment download failed with status ${response.status}`);

@@ -11,7 +11,6 @@ import {
 } from '../../Services/Chat/chatService';
 import { MESSAGE_PAGE_SIZE } from '../../Services/Chat/chatConstants';
 import { type Conversation, type ConversationMember, type Message } from '../../Services/Chat/chatService';
-import { isEncryptedAttachment, resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
 import { useUser } from '../../Services/Auth/UserContext';
 import { debugLog } from '../../Services/utils/debugLog';
 import { useFriends } from '../../Services/hooks/Friends/useFriends';
@@ -905,19 +904,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       formatConversationPreview(latestMessage, user?.id),
     );
   }, [conversation.id, conversation.public_id, messages, user?.id]);
-
-  // ── Warm encrypted attachment URLs ──
-  useEffect(() => {
-    visualMessages.forEach((message) => {
-      parseAttachments(message.attachments)
-        .filter(isEncryptedAttachment)
-        .forEach((attachment) => {
-          void resolveAttachmentObjectUrl(attachment, {
-            conversationId: message.conversation_public_id || message.conversation_id,
-          }).catch(() => {});
-        });
-    });
-  }, [visualMessages]);
 
   // ── Row measurements for logical scroll spacers ──
   useLayoutEffect(() => {
