@@ -15,14 +15,114 @@ interface EncryptedAttachment extends Attachment {
 const decryptedUrlCache = new Map<string, Promise<string>>();
 const resolvedUrlCache = new Map<string, string>();
 const resolvedUrlExpiryTimers = new Map<string, number>();
+const encryptedBlobDownloadPromises = new Map<string, {
+  controller: AbortController;
+  generation: number;
+  promise: Promise<Blob>;
+  token: symbol;
+}>();
 const BASE64_CHUNK_SIZE = 0x8000;
 const BLURHASH_MAX_DIMENSION = 32;
 const BLURHASH_COMPONENT_X = 4;
 const BLURHASH_COMPONENT_Y = 4;
 const DECRYPTED_ATTACHMENT_URL_TTL_MS = 60_000;
+const ENCRYPTED_ATTACHMENT_BLOB_TTL_MS = 5 * 60_000;
+const MAX_ENCRYPTED_ATTACHMENT_CACHE_BYTES = 50 * 1024 * 1024;
 const LEGACY_ATTACHMENT_BUCKET_PATH = '/chat-attachments/';
 const PRIVATE_ATTACHMENT_PATH_PATTERN = /\/api\/conversations\/[^/?]+\/attachments\//;
 const ATTACHMENT_REQUEST_SESSION_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+let attachmentCacheGeneration = 0;
+
+interface EncryptedBlobCacheEntry {
+  blob: Blob;
+  lastAccessedAt: number;
+  size: number;
+}
+
+class EncryptedBlobCache {
+  private entries = new Map<string, EncryptedBlobCacheEntry>();
+  private totalSize = 0;
+
+  get(cacheKey: string): Blob | null {
+    const entry = this.entries.get(cacheKey);
+    if (!entry) {
+      return null;
+    }
+
+    if (Date.now() - entry.lastAccessedAt > ENCRYPTED_ATTACHMENT_BLOB_TTL_MS) {
+      this.delete(cacheKey);
+      return null;
+    }
+
+    entry.lastAccessedAt = Date.now();
+    return entry.blob;
+  }
+
+  set(cacheKey: string, blob: Blob): void {
+    if (blob.size > MAX_ENCRYPTED_ATTACHMENT_CACHE_BYTES) {
+      return;
+    }
+
+    this.delete(cacheKey);
+    this.pruneExpired();
+
+    while (
+      this.totalSize + blob.size > MAX_ENCRYPTED_ATTACHMENT_CACHE_BYTES &&
+      this.entries.size > 0
+    ) {
+      this.evictLeastRecentlyUsed();
+    }
+
+    this.entries.set(cacheKey, {
+      blob,
+      lastAccessedAt: Date.now(),
+      size: blob.size,
+    });
+    this.totalSize += blob.size;
+  }
+
+  clear(): void {
+    this.entries.clear();
+    this.totalSize = 0;
+  }
+
+  private delete(cacheKey: string): void {
+    const existing = this.entries.get(cacheKey);
+    if (!existing) {
+      return;
+    }
+
+    this.entries.delete(cacheKey);
+    this.totalSize = Math.max(0, this.totalSize - existing.size);
+  }
+
+  private pruneExpired(): void {
+    const now = Date.now();
+    Array.from(this.entries.entries()).forEach(([cacheKey, entry]) => {
+      if (now - entry.lastAccessedAt > ENCRYPTED_ATTACHMENT_BLOB_TTL_MS) {
+        this.delete(cacheKey);
+      }
+    });
+  }
+
+  private evictLeastRecentlyUsed(): void {
+    let oldestKey: string | null = null;
+    let oldestAccess = Number.POSITIVE_INFINITY;
+
+    this.entries.forEach((entry, cacheKey) => {
+      if (entry.lastAccessedAt < oldestAccess) {
+        oldestAccess = entry.lastAccessedAt;
+        oldestKey = cacheKey;
+      }
+    });
+
+    if (oldestKey) {
+      this.delete(oldestKey);
+    }
+  }
+}
+
+const encryptedBlobCache = new EncryptedBlobCache();
 
 interface AttachmentResolveOptions {
   conversationId?: string | null;
@@ -272,24 +372,66 @@ export async function encryptAttachmentFile(file: File): Promise<{
 }
 
 async function downloadAttachmentBlob(url: string): Promise<Blob> {
-  const downloadUrl = preventPrivateAttachmentCacheReuse(url);
-  const response = shouldUseAuthenticatedFetch(downloadUrl)
-    ? await fetchWithAuth(downloadUrl, { cache: 'no-store' })
-    : await fetch(downloadUrl, { cache: 'no-store' });
-
-  if (!response.ok) {
-    throw new Error(`Attachment download failed with status ${response.status}`);
+  const cachedBlob = encryptedBlobCache.get(url);
+  if (cachedBlob) {
+    return cachedBlob;
   }
 
-  return response.blob();
+  const generation = attachmentCacheGeneration;
+  const existingDownload = encryptedBlobDownloadPromises.get(url);
+  if (existingDownload?.generation === generation) {
+    return existingDownload.promise;
+  }
+
+  const controller = new AbortController();
+  const token = Symbol(url);
+  const trackedPromise = (async () => {
+    const downloadUrl = preventPrivateAttachmentCacheReuse(url);
+    const requestOptions: RequestInit = {
+      cache: 'no-store',
+      signal: controller.signal,
+    };
+    const response = shouldUseAuthenticatedFetch(downloadUrl)
+      ? await fetchWithAuth(downloadUrl, requestOptions)
+      : await fetch(downloadUrl, requestOptions);
+
+    if (!response.ok) {
+      throw new Error(`Attachment download failed with status ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    if (generation !== attachmentCacheGeneration) {
+      throw new Error('Attachment request invalidated');
+    }
+
+    encryptedBlobCache.set(url, blob);
+    return blob;
+  })().finally(() => {
+    if (encryptedBlobDownloadPromises.get(url)?.token === token) {
+      encryptedBlobDownloadPromises.delete(url);
+    }
+  });
+
+  encryptedBlobDownloadPromises.set(url, {
+    controller,
+    generation,
+    promise: trackedPromise,
+    token,
+  });
+  return trackedPromise;
 }
 
 async function decryptAttachmentToBlob(
   attachment: EncryptedAttachment,
   options?: AttachmentResolveOptions,
 ): Promise<Blob> {
+  const generation = attachmentCacheGeneration;
   const downloadUrl = resolveAttachmentDownloadUrl(attachment.url, options);
   const encryptedBlob = await downloadAttachmentBlob(downloadUrl);
+  if (generation !== attachmentCacheGeneration) {
+    throw new Error('Attachment request invalidated');
+  }
+
   const encryptedData = await encryptedBlob.arrayBuffer();
   const key = await crypto.subtle.importKey(
     'raw',
@@ -304,6 +446,9 @@ async function decryptAttachmentToBlob(
     key,
     encryptedData,
   );
+  if (generation !== attachmentCacheGeneration) {
+    throw new Error('Attachment request invalidated');
+  }
 
   return new Blob([decrypted], {
     type: attachment.mime || 'application/octet-stream',
@@ -338,15 +483,30 @@ export async function resolveAttachmentObjectUrl(
   }
 
   if (!decryptedUrlCache.has(cacheKey)) {
-    const pendingUrl = decryptAttachmentToBlob(attachment, options)
+    const generation = attachmentCacheGeneration;
+    const pendingUrl: Promise<string> = decryptAttachmentToBlob(attachment, options)
       .then((blob) => {
+        if (
+          generation !== attachmentCacheGeneration ||
+          decryptedUrlCache.get(cacheKey) !== pendingUrl
+        ) {
+          throw new Error('Attachment request invalidated');
+        }
+
         const objectUrl = URL.createObjectURL(blob);
+        if (generation !== attachmentCacheGeneration) {
+          URL.revokeObjectURL(objectUrl);
+          throw new Error('Attachment request invalidated');
+        }
+
         resolvedUrlCache.set(cacheKey, objectUrl);
         touchResolvedUrl(cacheKey);
         return objectUrl;
       })
       .catch((error) => {
-        revokeResolvedUrl(cacheKey);
+        if (decryptedUrlCache.get(cacheKey) === pendingUrl) {
+          revokeResolvedUrl(cacheKey);
+        }
         throw error;
       });
 
@@ -370,7 +530,18 @@ export function getCachedAttachmentObjectUrl(attachment: Attachment): string | n
 }
 
 export function clearDecryptedAttachmentObjectUrlCache(): void {
-  Array.from(resolvedUrlCache.keys()).forEach((cacheKey) => {
-    revokeResolvedUrl(cacheKey);
-  });
+  clearAttachmentCaches();
+}
+
+export function clearAttachmentCaches(): void {
+  attachmentCacheGeneration += 1;
+  encryptedBlobDownloadPromises.forEach(({ controller }) => controller.abort());
+  encryptedBlobDownloadPromises.clear();
+  encryptedBlobCache.clear();
+
+  resolvedUrlExpiryTimers.forEach((timerId) => window.clearTimeout(timerId));
+  resolvedUrlExpiryTimers.clear();
+  resolvedUrlCache.forEach((objectUrl) => URL.revokeObjectURL(objectUrl));
+  resolvedUrlCache.clear();
+  decryptedUrlCache.clear();
 }

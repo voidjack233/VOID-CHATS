@@ -7,6 +7,7 @@ interface AttachmentAudioPlayerProps {
   attachment: Attachment;
   conversationId?: string | null;
   disabled?: boolean;
+  canLoad?: boolean;
   onLoad?: () => void;
 }
 
@@ -87,6 +88,7 @@ export default function AttachmentAudioPlayer({
   attachment,
   conversationId,
   disabled = false,
+  canLoad = true,
   onLoad,
 }: AttachmentAudioPlayerProps) {
   const [src, setSrc] = useState<string | null>(null);
@@ -101,7 +103,7 @@ export default function AttachmentAudioPlayer({
 
     setFailed(false);
 
-    if (disabled) {
+    if (disabled || !canLoad) {
       setSrc(null);
       setLoading(false);
       return () => {
@@ -148,6 +150,7 @@ export default function AttachmentAudioPlayer({
     attachment.mime,
     attachment.name,
     attachment.url,
+    canLoad,
     conversationId,
     disabled,
     playableMime,
@@ -209,7 +212,11 @@ export default function AttachmentAudioPlayer({
         />
       ) : (
         <div className="flex h-9 items-center rounded-lg bg-void-bg-main/50 px-3 text-xs text-void-text-muted">
-          {failed ? 'Audio preview unavailable' : 'Loading audio...'}
+          {failed
+            ? 'Audio preview unavailable'
+            : canLoad
+              ? 'Loading audio...'
+              : 'Audio loads when nearby'}
         </div>
       )}
     </div>

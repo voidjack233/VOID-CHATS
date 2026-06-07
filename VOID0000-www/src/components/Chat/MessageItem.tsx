@@ -273,6 +273,7 @@ interface CompactReplyPreviewProps {
   message: Message;
   replyParent: Message | null;
   replyParentLoading: boolean;
+  canLoadAttachments: boolean;
   isOwn: boolean;
   isRightAligned: boolean;
   density: Density;
@@ -285,6 +286,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   message,
   replyParent,
   replyParentLoading,
+  canLoadAttachments,
   isOwn,
   isRightAligned,
   density,
@@ -409,6 +411,11 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
       return undefined;
     }
 
+    if (!canLoadAttachments) {
+      setResolvedThumbnail({ cacheKey: firstAttachmentCacheKey, url: null });
+      return undefined;
+    }
+
     let cancelled = false;
     const pendingUrl = replyPreviewAttachmentUrlPromises.get(firstAttachmentCacheKey) ||
       resolveAttachmentObjectUrl(firstAttachment, { conversationId: replyAttachmentConversationId })
@@ -441,6 +448,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
       cancelled = true;
     };
   }, [
+    canLoadAttachments,
     firstAttachment,
     firstAttachmentCacheKey,
     firstAttachmentIsImage,
@@ -1198,6 +1206,7 @@ const MessageItem = memo(function MessageItem({
       message={message}
       replyParent={replyParent}
       replyParentLoading={replyParentLoading}
+      canLoadAttachments={canLoadAttachments}
       isOwn={isOwn}
       isRightAligned={isRightAligned}
       density={density}
@@ -1449,6 +1458,7 @@ const MessageItem = memo(function MessageItem({
                     attachment={attachment}
                     conversationId={attachmentConversationId}
                     disabled={isPending}
+                    canLoad={canLoadAttachments}
                     onLoad={onAttachmentLoad}
                   />
                 ))}

@@ -33,6 +33,7 @@ import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
 import { useMessageScrollGeometry } from './useMessageScrollGeometry';
 import { useMessageTimelineVirtualizer } from './useMessageTimelineVirtualizer';
+import { useNearViewportMessages } from './useNearViewportMessages';
 import type {
   MessageDelete,
   MessageStreamEvent,
@@ -366,6 +367,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 }: MessageViewProps) {
   const { user } = useUser();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [scrollerElement, setScrollerElement] = useState<HTMLDivElement | null>(null);
   const olderSentinelRef = useRef<HTMLDivElement | null>(null);
   const newerSentinelRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
@@ -397,6 +399,10 @@ const MessageViewV2 = memo(function MessageViewV2({
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
   const [historyLoadPausedUntil, setHistoryLoadPausedUntil] = useState(0);
+  const setScrollerRef = useCallback((element: HTMLDivElement | null) => {
+    scrollerRef.current = element;
+    setScrollerElement(element);
+  }, []);
 
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
@@ -496,6 +502,7 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  const nearViewportMessageIds = useNearViewportMessages(scrollerElement, conversation.id);
   const firstVisualMessageId = visualMessages[0]?.message_id;
   const lastVisualMessageId = visualMessages[visualMessages.length - 1]?.message_id;
   const queuedMessageCount = useMemo(
@@ -1726,6 +1733,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         onToggleReaction={handleToggleReaction}
         onOpenImageViewer={openImageViewer}
         onAttachmentLoad={handleAttachmentLoad}
+        canLoadAttachments={nearViewportMessageIds.has(message.message_id)}
         onOpenLink={handleOpenMessageLink}
       />
     );
@@ -1752,6 +1760,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     layoutTraitsById,
     messageGroupSpacing,
     metaFontSize,
+    nearViewportMessageIds,
     onEdit,
     onForward,
     onReply,
@@ -1811,7 +1820,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         </div>
       ) : null}
       <div
-        ref={scrollerRef}
+        ref={setScrollerRef}
         onScroll={handleScroll}
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
         style={{ overflowAnchor: 'auto', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}

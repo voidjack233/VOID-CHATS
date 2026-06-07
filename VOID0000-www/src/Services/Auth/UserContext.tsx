@@ -5,7 +5,7 @@ import { clearAppBootstrap, fetchAppBootstrap } from '../bootstrap';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
-import { clearDecryptedAttachmentObjectUrlCache } from '../Crypto/attachmentEncryption';
+import { clearAttachmentCaches } from '../Crypto/attachmentEncryption';
 import { debugLog } from '../utils/debugLog';
 import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
 import {
@@ -288,7 +288,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     setIsLoggingOut(true);
     gateway.disconnect();
-    clearDecryptedAttachmentObjectUrlCache();
+    clearAttachmentCaches();
     clearLoginPassword();
     clearAppBootstrap();
     setKeyStatus('UNINITIALIZED');
