@@ -1305,6 +1305,8 @@ const MessageViewV2 = memo(function MessageViewV2({
     scrollerRef,
     resetKey: conversation.id,
     initialLatestRestoreDoneRef,
+    pendingOlderLoadScrollSnapshotRef,
+    pendingNewerLoadScrollSnapshotRef,
     loadingOlderRequestInFlightRef,
     loadingNewerRequestInFlightRef,
     loadingOlderStateRef,
@@ -1811,7 +1813,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       <div
         ref={scrollerRef}
         onScroll={handleScroll}
-        className="chat-scrollbar-hidden flex-1 min-h-0 overflow-y-auto overscroll-contain"
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
         style={{ overflowAnchor: 'auto', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}
       >
         {/* Older logical range: lets fast scroll enter unloaded history while the real batch is fetched. */}
