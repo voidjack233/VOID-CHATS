@@ -4,7 +4,7 @@ import { gateway } from '../../Gateway/gateway';
 import { fetchWithAuth } from '../../Auth/authServiceApi';
 
 type PresenceStatus = 'online' | 'idle' | 'offline';
-const PRESENCE_REFRESH_INTERVAL_MS = 30_000;
+const PRESENCE_STARTUP_FALLBACK_DELAY_MS = 1_500;
 
 interface Presence {
   status: PresenceStatus;
@@ -37,6 +37,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    let startupFallbackTimer: number | null = null;
 
     if (!user) {
       setPresences(new Map());
@@ -62,7 +63,7 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
 
     const syncPresenceFromFriends = async (force = false) => {
       const now = Date.now();
-      if (!force && syncInFlightRef.current) return syncInFlightRef.current;
+      if (syncInFlightRef.current) return syncInFlightRef.current;
       if (!force && now - lastSyncAtRef.current < PRESENCE_MIN_SYNC_GAP_MS) return;
 
       const task = (async () => {
@@ -96,19 +97,19 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
     const handleReady = (data: {
       presences?: Array<{ user_id: string; status: PresenceStatus; last_active?: number }>;
     }) => {
-      if (data.presences) {
-        setPresences(prev => {
-          const next = new Map(prev);
-          data.presences!.forEach(p => {
-            next.set(p.user_id, {
-              status: p.status,
-              lastActive: p.last_active || null,
-            });
-          });
-          return next;
-        });
-      }
+      if (Array.isArray(data.presences)) {
+        applyPresenceSnapshot(data.presences.map((presence) => ({
+          id: presence.user_id,
+          status: presence.status,
+          last_active: presence.last_active,
+        })));
+        lastSyncAtRef.current = Date.now();
 
+        if (startupFallbackTimer !== null) {
+          window.clearTimeout(startupFallbackTimer);
+          startupFallbackTimer = null;
+        }
+      }
     };
 
     // Real-time presence updates
@@ -147,34 +148,27 @@ export function PresenceProvider({ children }: { children: ReactNode }) {
       void syncPresenceFromFriends(true);
     };
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        void syncPresenceFromFriends();
-      }
-    };
-
-    void syncPresenceFromFriends(true);
-
-    const refreshInterval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void syncPresenceFromFriends();
-      }
-    }, PRESENCE_REFRESH_INTERVAL_MS);
+    // READY normally supplies the initial snapshot. Keep one delayed HTTP
+    // fallback for providers that mount after READY has already fired.
+    startupFallbackTimer = window.setTimeout(() => {
+      startupFallbackTimer = null;
+      void syncPresenceFromFriends();
+    }, PRESENCE_STARTUP_FALLBACK_DELAY_MS);
 
     gateway.on('READY', handleReady);
     gateway.on('RESUMED', handleResumed);
     gateway.on('PRESENCE_UPDATE', handlePresenceUpdate);
     gateway.on('FRIEND_ACCEPT', handleFriendAccept);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       cancelled = true;
-      window.clearInterval(refreshInterval);
+      if (startupFallbackTimer !== null) {
+        window.clearTimeout(startupFallbackTimer);
+      }
       gateway.off('READY', handleReady);
       gateway.off('RESUMED', handleResumed);
       gateway.off('PRESENCE_UPDATE', handlePresenceUpdate);
       gateway.off('FRIEND_ACCEPT', handleFriendAccept);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [user]);
 

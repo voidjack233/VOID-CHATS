@@ -3,6 +3,7 @@ import type { Conversation } from '../../Chat/chatService';
 
 export const MLS_BOOTSTRAP_COOLDOWN_MS = 5 * 60 * 1000;
 export const MLS_SYNC_COOLDOWN_MS = 30 * 1000;
+export const MLS_ARCHIVE_SYNC_COOLDOWN_MS = 10 * 60 * 1000;
 export const MLS_MINIMUM_KEY_PACKAGES = 3;
 export const MLS_KEY_PACKAGE_TARGET = 10;
 export const MLS_KEY_PACKAGE_LOW_WATERMARK = 3;

@@ -117,7 +117,6 @@ interface UseMessageListPaginationParams {
 const FETCH_SIZE = MESSAGE_PAGE_SIZE;
 const ESTIMATED_MESSAGE_HEIGHT = 72;
 const PASSIVE_RECONCILE_TTL_MS = 15_000;
-const MESSAGE_CREATE_RECONCILE_TTL_MS = 1_500;
 const recentReconcileAtByConversation = new Map<string, number>();
 
 const sumMessageHeights = (
@@ -758,7 +757,7 @@ const useMessageListPagination = ({
     userId,
   ]);
 
-  type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed' | 'tab_visible' | 'message_create';
+  type RecentReconcileSource = 'gateway_ready' | 'gateway_resumed';
 
   const reconcileRecentMessages = useCallback(async (source: RecentReconcileSource) => {
     if (!encryptionKeyRef.current) return;
@@ -766,7 +765,7 @@ const useMessageListPagination = ({
     const newestMessage = getNewestServerBackedMessage(messagesRef.current);
     if (!newestMessage) return;
 
-    debugLog('[WS_RESYNC] reconciling active conversation after reconnect/visibility', {
+    debugLog('[WS_RESYNC] reconciling active conversation after gateway recovery', {
       conversation_id: conversationId,
       source,
       after_message_id: newestMessage.message_id,
@@ -881,12 +880,9 @@ const useMessageListPagination = ({
         return;
       }
 
-      const reconcileKey = `${conversationId}:${source === 'message_create' ? 'message_create' : 'passive'}`;
-      const ttl = source === 'message_create'
-        ? MESSAGE_CREATE_RECONCILE_TTL_MS
-        : PASSIVE_RECONCILE_TTL_MS;
+      const reconcileKey = `${conversationId}:gateway_recovery`;
       const lastConversationResyncAt = recentReconcileAtByConversation.get(reconcileKey) ?? 0;
-      if (now - lastConversationResyncAt < ttl) {
+      if (now - lastConversationResyncAt < PASSIVE_RECONCILE_TTL_MS) {
         return;
       }
 
@@ -897,29 +893,22 @@ const useMessageListPagination = ({
 
     const handleReady = () => runResync('gateway_ready');
     const handleResumed = () => runResync('gateway_resumed');
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        runResync('tab_visible');
-      }
-    };
-    const handleMessageCreate = (data: { conversation_id?: string | null }) => {
-      if (String(data?.conversation_id || '') === String(conversationId)) {
-        runResync('message_create');
-      }
-    };
 
     gateway.on('READY', handleReady);
     gateway.on('RESUMED', handleResumed);
-    gateway.on('MESSAGE_CREATE', handleMessageCreate);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       gateway.off('READY', handleReady);
       gateway.off('RESUMED', handleResumed);
-      gateway.off('MESSAGE_CREATE', handleMessageCreate);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [conversationId, encryptionKey, initialHydrationSettled, loading, reconcileRecentMessages, syncing]);
+  }, [
+    conversationId,
+    encryptionKey,
+    initialHydrationSettled,
+    loading,
+    reconcileRecentMessages,
+    syncing,
+  ]);
 
   const jumpToPresent = useCallback(async () => {
     if (!encryptionKey) return;

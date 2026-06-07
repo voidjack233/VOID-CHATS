@@ -15,6 +15,7 @@ import { mlsStorageService } from './mlsStorageService';
 import { base64ToBytes, unwrapArchiveKey } from './mlsUtils';
 import {
   EMPTY_MLS_SYNC_RESULT,
+  MLS_ARCHIVE_SYNC_COOLDOWN_MS,
   MLS_BOOTSTRAP_COOLDOWN_MS,
   MLS_KEY_PACKAGE_TARGET,
   MLS_MINIMUM_KEY_PACKAGES,
@@ -36,6 +37,8 @@ export class MlsService {
   private readonly keyPackageTarget = MLS_KEY_PACKAGE_TARGET;
   private readonly syncInboxPromises = new Map<string, Promise<MlsInboxSyncResult>>();
   private readonly pendingForcedSyncInboxUsers = new Set<string>();
+  private readonly pendingArchiveSyncInboxUsers = new Set<string>();
+  private readonly lastArchiveSyncAtByUser = new Map<string, number>();
   private readonly reserveTopUpPromises = new Map<string, Promise<{ published: number; serverCount: number }>>();
   private readonly groupService = new MlsGroupService({
     getServerCapabilities: () => this.getServerCapabilities(),
@@ -410,42 +413,62 @@ export class MlsService {
     await mlsStorageService.deleteGroupState(conversationId);
   }
 
-  async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
+  async syncInbox(
+    userId: string,
+    force = false,
+    options: { forceArchiveSync?: boolean } = {},
+  ): Promise<MlsInboxSyncResult> {
     const inflight = this.syncInboxPromises.get(userId);
     if (inflight) {
       if (force) {
         this.pendingForcedSyncInboxUsers.add(userId);
       }
+      if (options.forceArchiveSync) {
+        this.pendingArchiveSyncInboxUsers.add(userId);
+      }
       return inflight;
     }
 
-    const promise = this._syncInboxLoop(userId, force).finally(() => {
+    const promise = this._syncInboxLoop(userId, force, options.forceArchiveSync === true).finally(() => {
       this.syncInboxPromises.delete(userId);
       this.pendingForcedSyncInboxUsers.delete(userId);
+      this.pendingArchiveSyncInboxUsers.delete(userId);
     });
     this.syncInboxPromises.set(userId, promise);
     return promise;
   }
 
-  private async _syncInboxLoop(userId: string, force = false): Promise<MlsInboxSyncResult> {
+  private async _syncInboxLoop(
+    userId: string,
+    force = false,
+    forceArchiveSync = false,
+  ): Promise<MlsInboxSyncResult> {
     let shouldForce = force;
+    let shouldForceArchive = forceArchiveSync;
     let result: MlsInboxSyncResult = { ...EMPTY_MLS_SYNC_RESULT };
 
     do {
       this.pendingForcedSyncInboxUsers.delete(userId);
-      result = await this._syncInboxWork(userId, shouldForce);
+      this.pendingArchiveSyncInboxUsers.delete(userId);
+      result = await this._syncInboxWork(userId, shouldForce, shouldForceArchive);
       shouldForce = this.pendingForcedSyncInboxUsers.has(userId);
-      if (shouldForce) {
+      shouldForceArchive = this.pendingArchiveSyncInboxUsers.has(userId);
+      if (shouldForce || shouldForceArchive) {
         debugLog('[MLS_SYNC] running queued forced inbox sync after inflight request', {
           user_id: userId,
+          force_archive_sync: shouldForceArchive,
         });
       }
-    } while (shouldForce);
+    } while (shouldForce || shouldForceArchive);
 
     return result;
   }
 
-  private async _syncInboxWork(userId: string, force = false): Promise<MlsInboxSyncResult> {
+  private async _syncInboxWork(
+    userId: string,
+    force = false,
+    forceArchiveSync = false,
+  ): Promise<MlsInboxSyncResult> {
     const capabilities = await this.getServerCapabilities();
     if (!capabilities.supported) {
       return { ...EMPTY_MLS_SYNC_RESULT };
@@ -456,7 +479,7 @@ export class MlsService {
     const account = await mlsStorageService.ensureAccountState(userId);
     const publishedKeyPackages = 0;
 
-    if (!force && account.lastSyncedAt) {
+    if (!force && !forceArchiveSync && account.lastSyncedAt) {
       const elapsed = Date.now() - Date.parse(account.lastSyncedAt);
       if (elapsed < MLS_SYNC_COOLDOWN_MS) {
         return {
@@ -466,10 +489,19 @@ export class MlsService {
       }
     }
 
-    const payload = await syncMlsInbox(userId);
+    const lastArchiveSyncAt = this.lastArchiveSyncAtByUser.get(userId) ?? 0;
+    const includeArchivedKeys =
+      forceArchiveSync ||
+      lastArchiveSyncAt === 0 ||
+      Date.now() - lastArchiveSyncAt >= MLS_ARCHIVE_SYNC_COOLDOWN_MS;
+    const payload = await syncMlsInbox(userId, { includeArchivedKeys });
+    if (includeArchivedKeys) {
+      this.lastArchiveSyncAtByUser.set(userId, Date.now());
+    }
     debugLog('[MLS_SYNC] inbox payload received', {
       user_id: userId,
       forced: force,
+      archived_keys_requested: includeArchivedKeys,
       key_packages: payload.keyPackages.length,
       group_states: payload.groupStates.length,
       welcomes: payload.welcomes.length,

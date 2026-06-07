@@ -21,7 +21,11 @@ export interface ChatCryptoProtocolService {
   bootstrapAccount(userId: string, force?: boolean): Promise<void>;
   ensureServerKeyPackageReserve(userId: string): Promise<{ published: number; serverCount: number }>;
   preWarmForDm(userId: string, peerUserId: string): Promise<void>;
-  syncInbox(userId: string, force?: boolean): Promise<MlsInboxSyncResult>;
+  syncInbox(
+    userId: string,
+    force?: boolean,
+    options?: { forceArchiveSync?: boolean },
+  ): Promise<MlsInboxSyncResult>;
   isDmMessageType(messageType: string | null | undefined): boolean;
   distributeGroupKey(input: DistributeGroupKeyInput): Promise<MlsDistributeKeyResult>;
   preflightGroupRemove(userId: string, conversation: Conversation, removeMemberIds: string[]): Promise<{ requiresFreshBootstrap: boolean }>;
@@ -55,8 +59,12 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
     await mlsService.bootstrapAccount(userId, true);
   }
 
-  async syncInbox(userId: string, force = false): Promise<MlsInboxSyncResult> {
-    return mlsService.syncInbox(userId, force);
+  async syncInbox(
+    userId: string,
+    force = false,
+    options: { forceArchiveSync?: boolean } = {},
+  ): Promise<MlsInboxSyncResult> {
+    return mlsService.syncInbox(userId, force, options);
   }
 
   isDmMessageType(messageType: string | null | undefined): boolean {

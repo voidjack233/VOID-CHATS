@@ -28,6 +28,9 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
 
   const requesterUserId = String(req.user.id);
   const limit = parsePositiveInt(req.body?.limit ?? req.query?.limit, DEFAULT_SYNC_LIMIT, MAX_SYNC_LIMIT);
+  const includeArchivedKeys =
+    req.body?.include_archived_keys !== false &&
+    req.body?.includeArchivedKeys !== false;
 
   try {
     await ensureSchema();
@@ -48,7 +51,7 @@ router.post('/sync', mlsSyncLimiter, async (req, res) => {
             [requesterUserId, limit]
           )
         : Promise.resolve({ rows: [] }),
-      isEnabledFor(capabilities, 'group_state')
+      isEnabledFor(capabilities, 'group_state') && includeArchivedKeys
         ? pool.query(
             `WITH member_conversations AS (
                SELECT cm.conversation_id,

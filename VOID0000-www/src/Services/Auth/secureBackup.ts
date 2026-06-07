@@ -57,6 +57,7 @@ export interface AccountSecureKeysReadinessResult {
 export interface EnsureAccountSecureKeysReadyOptions {
   password?: string | null;
   restoreBackup?: boolean;
+  forceBootstrap?: boolean;
   source?: string;
   attempts?: number;
 }
@@ -71,7 +72,7 @@ export interface ScheduleAccountMlsMaintenanceOptions extends EnsureAccountSecur
 const ACCOUNT_KEY_READINESS_BACKOFF_MS = [0, 450, 1200];
 const ACCOUNT_MLS_MAINTENANCE_NORMAL_DEBOUNCE_MS = 2_000;
 const ACCOUNT_MLS_MAINTENANCE_URGENT_DEBOUNCE_MS = 250;
-const ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS = 90_000;
+const ACCOUNT_MLS_MAINTENANCE_RECENT_SUCCESS_SKIP_MS = 10 * 60 * 1000;
 const accountKeyReadinessJobs = new Map<string, Promise<AccountSecureKeysReadinessResult>>();
 
 interface AccountMlsMaintenanceWaiter {
@@ -150,6 +151,7 @@ function mergeMaintenanceOptions(
     ...next,
     password,
     restoreBackup: current.restoreBackup === true || next.restoreBackup === true,
+    forceBootstrap: current.forceBootstrap === true || next.forceBootstrap === true,
     attempts,
   };
 }
@@ -241,7 +243,9 @@ function flushAccountMlsMaintenance(
 
   job
     .then((result) => {
-      state.lastSuccessAt = Date.now();
+      if (result.ready) {
+        state.lastSuccessAt = Date.now();
+      }
       debugLog('[MLS_ACCOUNT_KEYS] maintenance finished', {
         user_id: userId,
         source,
@@ -507,10 +511,12 @@ async function runAccountSecureKeysReadiness(
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await delay(ACCOUNT_KEY_READINESS_BACKOFF_MS[Math.min(attempt, ACCOUNT_KEY_READINESS_BACKOFF_MS.length - 1)] ?? 0);
 
-    if (attempt === 0) {
+    let reserveCount: number | null = null;
+    if (attempt === 0 && options.forceBootstrap === true) {
       await chatCryptoProtocolService.bootstrapAccount(userId, true);
     } else {
-      await chatCryptoProtocolService.ensureServerKeyPackageReserve(userId);
+      const reserveResult = await chatCryptoProtocolService.ensureServerKeyPackageReserve(userId);
+      reserveCount = reserveResult.serverCount;
     }
 
     const localKeyPackages = await mlsStore.listKeyPackages(userId);
@@ -545,7 +551,9 @@ async function runAccountSecureKeysReadiness(
       didUploadEncryptedMlsBackup = true;
     }
 
-    const status = await fetchKeyPackageReserveStatus(userId);
+    const status = activatedRefs.size > 0 || reserveCount === null
+      ? await fetchKeyPackageReserveStatus(userId)
+      : { availableCount: reserveCount };
     latestResult = {
       ready: (status?.availableCount ?? 0) > 0,
       claimableKeyPackagesCount: status?.availableCount ?? 0,

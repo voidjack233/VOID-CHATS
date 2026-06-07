@@ -55,13 +55,13 @@ const SWIPE_START_THRESHOLD = 12;
 const SWIPE_START_THRESHOLD_ATTACHMENT = 18;
 const SWIPE_ACTION_THRESHOLD = 68;
 const SWIPE_ACTION_THRESHOLD_ATTACHMENT = 84;
-const SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH = 280;
-const SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH = 220;
-const SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH = 240;
-const SINGLE_ATTACHMENT_MAX_HEIGHT = 320;
+const SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH = 550;
+const SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH = 320;
+const SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH = 440;
+const SINGLE_ATTACHMENT_MAX_HEIGHT = 520;
 const SINGLE_ATTACHMENT_MIN_WIDTH = 160;
-const SINGLE_ATTACHMENT_FALLBACK_WIDTH = 220;
-const MULTI_ATTACHMENT_MAX_WIDTH = 320;
+const SINGLE_ATTACHMENT_FALLBACK_WIDTH = 360;
+const MULTI_ATTACHMENT_MAX_WIDTH = 440;
 const LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD = 1.2;
 const PORTRAIT_ATTACHMENT_RATIO_THRESHOLD = 0.9;
 const UNAVAILABLE_REPLY_CONTENT = '[deleted or unavailable]';
@@ -137,16 +137,14 @@ function getSingleAttachmentPresentation(attachment: {
       ? SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH
       : SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH;
 
-  let displayWidth = Math.min(width, maxWidth);
-  displayWidth = Math.max(SINGLE_ATTACHMENT_MIN_WIDTH, displayWidth);
-  let displayHeight = displayWidth * (height / width);
-
-  if (displayHeight > SINGLE_ATTACHMENT_MAX_HEIGHT) {
-    displayHeight = SINGLE_ATTACHMENT_MAX_HEIGHT;
-    displayWidth = displayHeight * (width / height);
-  }
-
-  displayWidth = Math.max(SINGLE_ATTACHMENT_MIN_WIDTH, Math.min(displayWidth, maxWidth));
+  const fitScale = Math.min(
+    maxWidth / width,
+    SINGLE_ATTACHMENT_MAX_HEIGHT / height,
+  );
+  const naturalScale = Math.min(1, fitScale);
+  const minimumWidthScale = Math.min(SINGLE_ATTACHMENT_MIN_WIDTH / width, fitScale);
+  const displayScale = Math.max(naturalScale, minimumWidthScale);
+  const displayWidth = width * displayScale;
 
   return {
     width: Math.round(displayWidth),

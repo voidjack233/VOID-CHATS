@@ -55,7 +55,7 @@ declare global {
 
 const UserContext = createContext<UserContextType | null>(null);
 const USER_STORAGE_KEY = 'void_user';
-const ACCOUNT_MLS_MAINTENANCE_INTERVAL_MS = 120_000;
+const ACCOUNT_MLS_MAINTENANCE_INTERVAL_MS = 15 * 60 * 1000;
 
 export function UserProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<User | null>(() => {
@@ -155,6 +155,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       urgent: true,
       immediate: true,
       skipRecentSuccess: false,
+      forceBootstrap: true,
     });
     setKeyStatus('SECURE');
     setRecoveryBackupStatus('RECOVERY_KEY_READY');
@@ -336,7 +337,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
       if (restoreSummary.outcome === 'failed' || restoreSummary.outcome === 'skipped') {
         restoreSummary = await restoreMlsStateFromBackup(user.id, backup, recoveryKey, 'recovery_key');
       }
-      const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
+      const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true, {
+        forceArchiveSync: true,
+      });
       const localChatState = await inspectLocalMlsChatState();
       const hasLocalChatState =
         localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
@@ -380,6 +383,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         urgent: true,
         immediate: true,
         skipRecentSuccess: false,
+        forceBootstrap: true,
       });
       clearMlsRecoveryGate();
     } finally {
@@ -418,7 +422,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true);
+      const syncResult = await chatCryptoProtocolService.syncInbox(user.id, true, {
+        forceArchiveSync: true,
+      });
       const localChatState = await inspectLocalMlsChatState();
       const hasLocalChatState =
         localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
@@ -464,6 +470,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
         urgent: true,
         immediate: true,
         skipRecentSuccess: false,
+        forceBootstrap: true,
       });
       clearMlsRecoveryGate();
     } finally {
@@ -566,7 +573,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
             restoreSummary = await restoreMlsStateFromBackup(userId, backup, password);
           }
 
-          const syncResult = await chatCryptoProtocolService.syncInbox(userId, true);
+          const syncResult = await chatCryptoProtocolService.syncInbox(userId, true, {
+            forceArchiveSync: true,
+          });
           const localChatState = await inspectLocalMlsChatState();
           const hasLocalChatState =
             localChatState.groupStateCount > 0 || localChatState.groupKeyCount > 0;
@@ -617,7 +626,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
                   storedRecoveryKey,
                   'recovery_key',
                 );
-                const recoverySyncResult = await chatCryptoProtocolService.syncInbox(userId, true);
+                const recoverySyncResult = await chatCryptoProtocolService.syncInbox(userId, true, {
+                  forceArchiveSync: true,
+                });
                 const recoveredLocalChatState = await inspectLocalMlsChatState();
                 recoveryAttentionResolvedLocally =
                   recoveredLocalChatState.groupStateCount > 0 ||
@@ -690,6 +701,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
                 restoreBackup: false,
                 immediate: true,
                 skipRecentSuccess: false,
+                forceBootstrap: true,
               });
 
               setKeyStatus('SECURE');
@@ -764,6 +776,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       source: string,
       options: {
         restoreBackup?: boolean;
+        forceBootstrap?: boolean;
         urgent?: boolean;
         immediate?: boolean;
         skipRecentSuccess?: boolean;
@@ -773,6 +786,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       void scheduleAccountMlsMaintenance(userId, source, {
         password: loginPasswordRef.current,
         restoreBackup: options.restoreBackup === true,
+        forceBootstrap: options.forceBootstrap === true,
         urgent: options.urgent === true,
         immediate: options.immediate === true,
         skipRecentSuccess: options.skipRecentSuccess,
@@ -820,20 +834,11 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }, 150);
     };
 
-    // Periodic fallback keeps claimable reserve replenished while the app is open.
+    // Realtime events do the primary repair work. This slower timer is only a
+    // fallback for missed gateway events or a long-lived disconnected tab.
     const maintenanceInterval = window.setInterval(() => {
       requestAccountSecureKeyReadiness('periodic_maintenance');
     }, ACCOUNT_MLS_MAINTENANCE_INTERVAL_MS);
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        requestAccountSecureKeyReadiness('foreground_visible');
-      }
-    };
-
-    const onFocus = () => {
-      requestAccountSecureKeyReadiness('foreground_focus');
-    };
 
     const onOnline = () => {
       requestAccountSecureKeyReadiness('network_online', {
@@ -908,8 +913,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       });
     };
 
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('focus', onFocus);
     window.addEventListener('online', onOnline);
     window.addEventListener('void:mls-key-package-changed', onKeyPackageChanged);
     gateway.on('READY', onGatewayReady);
@@ -921,8 +924,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       clearPendingLiveInboxSync();
       window.clearInterval(maintenanceInterval);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('focus', onFocus);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('void:mls-key-package-changed', onKeyPackageChanged);
       gateway.off('READY', onGatewayReady);

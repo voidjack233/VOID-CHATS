@@ -297,7 +297,9 @@ export async function getEncryptionKey(
     conversation_id: keyConversationId,
     targetVersion,
   });
-  await chatCryptoProtocolService.syncInbox(userId, true);
+  await chatCryptoProtocolService.syncInbox(userId, true, {
+    forceArchiveSync: true,
+  });
 
   const syncedGroupKey = await keyManager.getGroupKey(keyConversationId, targetVersion);
   if (syncedGroupKey) {
