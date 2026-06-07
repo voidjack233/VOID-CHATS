@@ -46,6 +46,7 @@ export interface Conversation {
 
 export interface Attachment {
   url: string;
+  spoiler?: boolean;
   blurhash?: string;
   width?: number;
   height?: number;

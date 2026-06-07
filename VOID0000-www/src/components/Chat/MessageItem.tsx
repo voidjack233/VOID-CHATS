@@ -31,7 +31,12 @@ import {
   resolveAttachmentObjectUrl,
 } from '../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
-import { extractMessageTextSegments, getInviteCodeFromMessageUrl } from './messageLinks';
+import {
+  extractMessageTextSegments,
+  getInviteCodeFromMessageUrl,
+  isMessageUrlInsideSpoiler,
+  messageTextContainsUrl,
+} from './messageLinks';
 
 const DENSITY: Record<Density, {
   consecutiveGap: number;
@@ -302,6 +307,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   );
   const firstAttachment = replyAttachments[0] ?? null;
   const firstAttachmentIsImage = Boolean(firstAttachment && looksLikeImageAttachment(firstAttachment));
+  const firstAttachmentIsSpoiler = firstAttachment?.spoiler === true;
   const firstAttachmentCacheKey = firstAttachment && firstAttachmentIsImage
     ? getReplyPreviewAttachmentCacheKey(firstAttachment)
     : null;
@@ -310,7 +316,10 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     replyParent?.conversation_id ||
     message.conversation_public_id ||
     message.conversation_id;
-  const cachedThumbnailUrl = firstAttachment && firstAttachmentIsImage && firstAttachmentCacheKey
+  const cachedThumbnailUrl = firstAttachment &&
+    firstAttachmentIsImage &&
+    !firstAttachmentIsSpoiler &&
+    firstAttachmentCacheKey
     ? getCachedAttachmentObjectUrl(firstAttachment) ||
       (firstAttachment.encrypted === true ? null : replyPreviewAttachmentUrlCache.get(firstAttachmentCacheKey)) ||
       null
@@ -331,11 +340,11 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     : 'a message';
   const isCompact = density === 'compact';
   const hasPreviewImage = Boolean(firstAttachmentIsImage);
-  const thumbnailUrl = (
+  const thumbnailUrl = !firstAttachmentIsSpoiler ? (
     resolvedThumbnail.cacheKey === firstAttachmentCacheKey
       ? resolvedThumbnail.url
       : null
-  ) || cachedThumbnailUrl;
+  ) || cachedThumbnailUrl : null;
   const replyImageDimensions = resolvedImageDimensions?.cacheKey === firstAttachmentCacheKey
     ? resolvedImageDimensions
     : null;
@@ -393,7 +402,12 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
   const shouldShowTextPreview = hasReadableText || !hasPreviewImage;
   const hasTextAndImagePreview = hasPreviewImage && shouldShowTextPreview;
   useEffect(() => {
-    if (!firstAttachment || !firstAttachmentIsImage || !firstAttachmentCacheKey) {
+    if (
+      !firstAttachment ||
+      !firstAttachmentIsImage ||
+      firstAttachmentIsSpoiler ||
+      !firstAttachmentCacheKey
+    ) {
       setResolvedThumbnail({ cacheKey: null, url: null });
       return undefined;
     }
@@ -450,6 +464,7 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     firstAttachment,
     firstAttachmentCacheKey,
     firstAttachmentIsImage,
+    firstAttachmentIsSpoiler,
     replyAttachmentConversationId,
   ]);
 
@@ -500,7 +515,11 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
               className={`relative flex max-w-full shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm transition-opacity group-hover:opacity-95 ${mediaPlaceholderClass}`}
               style={replyImageStyle}
             >
-              {thumbnailUrl ? (
+              {firstAttachmentIsSpoiler ? (
+                <span className="rounded bg-black/55 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
+                  Spoiler
+                </span>
+              ) : thumbnailUrl ? (
                 <img
                   src={thumbnailUrl}
                   alt=""
@@ -561,7 +580,11 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                 className={`relative flex max-w-full shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm transition-opacity group-hover:opacity-95 ${mediaPlaceholderClass}`}
                 style={replyImageStyle}
               >
-                {thumbnailUrl ? (
+                {firstAttachmentIsSpoiler ? (
+                  <span className="rounded bg-black/55 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-white">
+                    Spoiler
+                  </span>
+                ) : thumbnailUrl ? (
                   <img
                     src={thumbnailUrl}
                     alt=""
@@ -659,7 +682,19 @@ const MessageItem = memo(function MessageItem({
 }: MessageItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [openingImageViewer, setOpeningImageViewer] = useState(false);
+  const [revealedEmbedSpoilers, setRevealedEmbedSpoilers] = useState<{
+    messageKey: string;
+    spoilerIds: Set<string>;
+    coverRevealed: boolean;
+  }>(() => ({
+    messageKey: '',
+    spoilerIds: new Set(),
+    coverRevealed: false,
+  }));
   const [attachmentDimensions, setAttachmentDimensions] = useState<Record<string, { width: number; height: number }>>({});
+  const [revealedSpoilerAttachments, setRevealedSpoilerAttachments] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [desktopActionRailStyle, setDesktopActionRailStyle] = useState<CSSProperties | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const swipeAnimationFrameRef = useRef<number | null>(null);
@@ -788,6 +823,7 @@ const MessageItem = memo(function MessageItem({
 
   useEffect(() => {
     setAttachmentDimensions({});
+    setRevealedSpoilerAttachments(new Set());
   }, [message.message_id]);
 
   const blurActiveComposer = useCallback(() => {
@@ -839,6 +875,77 @@ const MessageItem = memo(function MessageItem({
     () => (inviteUrl ? getInviteCodeFromMessageUrl(inviteUrl) : null),
     [inviteUrl],
   );
+  const firstMessageUrl = useMemo(() => {
+    if (!message.content || message.content === '[encrypted]') return null;
+    const firstLink = extractMessageTextSegments(message.content).find(
+      (segment) => segment.type === 'link',
+    );
+    return firstLink?.type === 'link' ? firstLink.url : null;
+  }, [message.content]);
+  // Preview metadata may contain the final redirected URL. Associate it with
+  // the original URL in the message so spoiler detection remains accurate.
+  const embeddedUrl = inviteUrl || firstMessageUrl || message.link_preview?.url || null;
+  const embeddedSpoilerMessageKey = `${message.message_id}:${message.content || ''}:${embeddedUrl || ''}`;
+  const isEmbeddedUrlSpoilered = useMemo(() => Boolean(
+    embeddedUrl &&
+    message.content &&
+    isMessageUrlInsideSpoiler(message.content, embeddedUrl)
+  ), [embeddedUrl, message.content]);
+  const revealedEmbedSpoilerIds =
+    revealedEmbedSpoilers.messageKey === embeddedSpoilerMessageKey
+      ? revealedEmbedSpoilers.spoilerIds
+      : new Set<string>();
+  const isEmbedCoverRevealed =
+    revealedEmbedSpoilers.messageKey === embeddedSpoilerMessageKey &&
+    revealedEmbedSpoilers.coverRevealed;
+  const shouldCoverEmbeddedContent =
+    isEmbeddedUrlSpoilered &&
+    revealedEmbedSpoilerIds.size === 0 &&
+    !isEmbedCoverRevealed;
+
+  const handleSpoilerVisibilityChange = useCallback((
+    spoilerId: string,
+    spoilerContent: string,
+    revealed: boolean,
+  ) => {
+    if (!embeddedUrl || !messageTextContainsUrl(spoilerContent, embeddedUrl)) {
+      return;
+    }
+
+    setRevealedEmbedSpoilers((current) => {
+      const next = new Set(
+        current.messageKey === embeddedSpoilerMessageKey
+          ? current.spoilerIds
+          : [],
+      );
+      if (revealed) {
+        next.add(spoilerId);
+      } else {
+        next.delete(spoilerId);
+      }
+      return {
+        messageKey: embeddedSpoilerMessageKey,
+        spoilerIds: next,
+        coverRevealed:
+          current.messageKey === embeddedSpoilerMessageKey
+            ? current.coverRevealed
+            : false,
+      };
+    });
+  }, [embeddedSpoilerMessageKey, embeddedUrl]);
+
+  const handleRevealEmbedCover = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setRevealedEmbedSpoilers((current) => ({
+      messageKey: embeddedSpoilerMessageKey,
+      spoilerIds:
+        current.messageKey === embeddedSpoilerMessageKey
+          ? new Set(current.spoilerIds)
+          : new Set(),
+      coverRevealed: true,
+    }));
+  }, [embeddedSpoilerMessageKey]);
 
   const resetTouchGesture = useCallback(() => {
     touchStateRef.current.active = false;
@@ -1178,6 +1285,7 @@ const MessageItem = memo(function MessageItem({
             content={message.content || ''}
             linkClassName={linkClassName}
             onOpenLink={onOpenLink}
+            onSpoilerVisibilityChange={handleSpoilerVisibilityChange}
             enableMentions={enableMentions}
             mentionUsernames={enableMentions ? getMentionUsernames(message.mentions) : undefined}
           />
@@ -1383,11 +1491,25 @@ const MessageItem = memo(function MessageItem({
                     >
                       {visibleImages.map(({ attachment, originalIndex }, index) => {
                         const hasHiddenAttachments = hiddenImageCount > 0 && index === visibleImages.length - 1;
+                        const layoutKey = getAttachmentLayoutKey(attachment, originalIndex);
+                        const isSpoilerCovered =
+                          attachment.spoiler === true &&
+                          !revealedSpoilerAttachments.has(layoutKey);
 
                         return (
                           <button
                             key={`${originalIndex}-${attachment.url}`}
-                            onClick={() => { void handleOpenAttachmentViewer(viewerRawAttachments, index); }}
+                            onClick={() => {
+                              if (isSpoilerCovered) {
+                                setRevealedSpoilerAttachments((current) => {
+                                  const next = new Set(current);
+                                  next.add(layoutKey);
+                                  return next;
+                                });
+                                return;
+                              }
+                              void handleOpenAttachmentViewer(viewerRawAttachments, index);
+                            }}
                             data-message-gesture-target="attachment"
                             disabled={isPending || openingImageViewer}
                             className={`relative block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none ${
@@ -1433,6 +1555,13 @@ const MessageItem = memo(function MessageItem({
                               }}
                               canLoad={canLoadAttachments}
                             />
+                            {isSpoilerCovered ? (
+                              <div className="absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-void-bg-main">
+                                <span className="relative rounded bg-black/55 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.12em] text-white">
+                                  Spoiler
+                                </span>
+                              </div>
+                            ) : null}
                             {hasHiddenAttachments ? (
                               <div className="absolute inset-0 flex items-center justify-center bg-black/45 text-white">
                                 <span className="text-lg font-semibold tracking-tight">
@@ -1495,21 +1624,55 @@ const MessageItem = memo(function MessageItem({
 
           {!message.is_deleted && inviteUrl && inviteCode && (
             <div className="pt-2">
-              <InviteEmbed
-                inviteCode={inviteCode}
-                inviteUrl={inviteUrl}
-                onOpenInvite={(url) => onOpenLink?.(url)}
-              />
+              <div className="relative">
+                <InviteEmbed
+                  inviteCode={inviteCode}
+                  inviteUrl={inviteUrl}
+                  onOpenInvite={(url) => onOpenLink?.(url)}
+                />
+                {shouldCoverEmbeddedContent ? (
+                  <button
+                    type="button"
+                    data-allow-message-gesture="true"
+                    onClick={handleRevealEmbedCover}
+                    className="absolute inset-0 z-10 flex touch-manipulation select-none items-center justify-center rounded-2xl border border-white/5 bg-void-bg-main text-void-text transition-colors hover:bg-void-bg-hover focus:outline-none focus:ring-2 focus:ring-void-accent/40"
+                    aria-label="Reveal spoiler preview"
+                    title="Reveal spoiler"
+                  >
+                    <span className="rounded bg-black/45 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.12em]">
+                      Spoiler
+                    </span>
+                  </button>
+                ) : null}
+              </div>
             </div>
           )}
 
-          {!message.is_deleted && message.link_preview && !inviteUrl && (
+          {!message.is_deleted &&
+            message.link_preview &&
+            !inviteUrl && (
             <div className={`pt-2 ${isRightAligned ? 'self-end' : 'self-start'}`}>
-              <LinkPreviewCard
-                preview={message.link_preview}
-                onOpenLink={onOpenLink}
-                onMediaLoad={onAttachmentLoad}
-              />
+              <div className="relative">
+                <LinkPreviewCard
+                  preview={message.link_preview}
+                  onOpenLink={onOpenLink}
+                  onMediaLoad={onAttachmentLoad}
+                />
+                {shouldCoverEmbeddedContent ? (
+                  <button
+                    type="button"
+                    data-allow-message-gesture="true"
+                    onClick={handleRevealEmbedCover}
+                    className="absolute inset-0 z-10 flex touch-manipulation select-none items-center justify-center rounded-2xl border border-white/5 bg-void-bg-main text-void-text transition-colors hover:bg-void-bg-hover focus:outline-none focus:ring-2 focus:ring-void-accent/40"
+                    aria-label="Reveal spoiler preview"
+                    title="Reveal spoiler"
+                  >
+                    <span className="rounded bg-black/45 px-2 py-1 text-[11px] font-bold uppercase tracking-[0.12em]">
+                      Spoiler
+                    </span>
+                  </button>
+                ) : null}
+              </div>
             </div>
           )}
 

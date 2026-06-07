@@ -23,6 +23,7 @@ import { chatCryptoProtocolService } from '../../Crypto/protocols/chatCryptoProt
 import { queuedSendStore } from '../../Chat/queuedSendStore';
 import { resolveMessageMentions } from '../../Chat/messageMentions';
 import { fetchLinkPreview, getFirstPreviewableUrl } from '../../Chat/linkPreviewService';
+import { parseAttachment, serializeAttachment } from '../../Chat/messageAttachments';
 
 export interface PendingAttachment {
   id: string;
@@ -31,6 +32,7 @@ export interface PendingAttachment {
   name: string;
   mime: string;
   size: number;
+  spoiler: boolean;
   blurhash?: string;
   uploading: boolean;
   error?: string;
@@ -390,6 +392,7 @@ export const useMessageInput = ({
       name: f.name,
       mime: f.type || 'application/octet-stream',
       size: f.size,
+      spoiler: false,
       uploading: true,
       file: f,
     }));
@@ -404,6 +407,14 @@ export const useMessageInput = ({
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
+  }, []);
+
+  const toggleAttachmentSpoiler = useCallback((id: string) => {
+    setAttachments((prev) => prev.map((attachment) => (
+      attachment.id === id && attachment.preview
+        ? { ...attachment, spoiler: !attachment.spoiler }
+        : attachment
+    )));
   }, []);
 
   const retryAttachment = useCallback((id: string) => {
@@ -802,7 +813,16 @@ export const useMessageInput = ({
     const previousDismissedLinkPreviewUrl = dismissedLinkPreviewUrl;
     const uploadedAttachments = attachments
       .filter((a) => a.url)
-      .map((a) => a.url!);
+      .map((a) => {
+        if (!a.spoiler) {
+          return a.url!;
+        }
+
+        return serializeAttachment({
+          ...parseAttachment(a.url!),
+          spoiler: true,
+        });
+      });
     const shouldCreatePendingMessage = !editingMessage && (trimmed.length > 0 || uploadedAttachments.length > 0);
     const localClientId = shouldCreatePendingMessage
       ? `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -1083,6 +1103,7 @@ export const useMessageInput = ({
     openFilePicker,
     handleFileChange,
     removeAttachment,
+    toggleAttachmentSpoiler,
     retryAttachment,
     removeLinkPreview,
     dismissAttachmentAlert,

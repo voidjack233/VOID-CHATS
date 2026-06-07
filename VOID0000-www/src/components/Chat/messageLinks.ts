@@ -2,7 +2,7 @@ export type MessageTextSegment =
   | { type: 'text'; value: string }
   | { type: 'link'; value: string; url: string };
 
-const URL_REGEX = /https?:\/\/[^\s<>"']+/gi;
+const URL_REGEX = /https?:\/\/[^\s<>"'|]+/gi;
 const TRUSTED_ROOT_HOSTS = ['void0000.online'];
 
 const normalizeHostname = (hostname: string) => hostname.trim().toLowerCase().replace(/^www\./, '');
@@ -135,4 +135,45 @@ export const extractMessageTextSegments = (text: string): MessageTextSegment[] =
   }
 
   return segments;
+};
+
+export const messageTextContainsUrl = (text: string, targetUrl: string): boolean => {
+  const normalizedTargetUrl = parseHttpUrl(targetUrl)?.toString();
+  if (!normalizedTargetUrl) {
+    return false;
+  }
+
+  return extractMessageTextSegments(text).some((segment) => (
+    segment.type === 'link' &&
+    parseHttpUrl(segment.url)?.toString() === normalizedTargetUrl
+  ));
+};
+
+export const isMessageUrlInsideSpoiler = (text: string, targetUrl: string): boolean => {
+  if (!parseHttpUrl(targetUrl)) {
+    return false;
+  }
+
+  let cursor = 0;
+  while (cursor < text.length) {
+    const spoilerStart = text.indexOf('||', cursor);
+    if (spoilerStart === -1) {
+      return false;
+    }
+
+    const contentStart = spoilerStart + 2;
+    const spoilerEnd = text.indexOf('||', contentStart);
+    if (spoilerEnd === -1) {
+      return false;
+    }
+
+    const spoilerContent = text.slice(contentStart, spoilerEnd);
+    if (messageTextContainsUrl(spoilerContent, targetUrl)) {
+      return true;
+    }
+
+    cursor = spoilerEnd + 2;
+  }
+
+  return false;
 };

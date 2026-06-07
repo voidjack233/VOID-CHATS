@@ -1,10 +1,23 @@
 // src/components/Chat/MessageInput.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Send, Plus, X, Pencil, CornerUpRight, Loader2, Image, FileText, TimerReset } from 'lucide-react';
+import {
+  Send,
+  Plus,
+  X,
+  Pencil,
+  CornerUpRight,
+  Loader2,
+  Image,
+  FileText,
+  TimerReset,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
 import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
 import AttachmentLimitModal from './AttachmentLimitModal';
+import AttachmentOptionsSheet from './AttachmentOptionsSheet';
 import MessagePreviewText from './MessagePreviewText';
 import UserAvatar from '../common/UserAvatar';
 
@@ -109,6 +122,7 @@ const MessageInput = (props: MessageInputProps) => {
     openFilePicker,
     handleFileChange,
     removeAttachment,
+    toggleAttachmentSpoiler,
     retryAttachment,
     dismissAttachmentAlert,
   } = useMessageInput(props);
@@ -127,6 +141,7 @@ const MessageInput = (props: MessageInputProps) => {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [activeMentionQuery, setActiveMentionQuery] = useState<MentionQueryState | null>(null);
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
+  const [mobileAttachmentMenuId, setMobileAttachmentMenuId] = useState<string | null>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
 
   const groupMembers = useMemo(() => {
@@ -192,6 +207,9 @@ const MessageInput = (props: MessageInputProps) => {
     Boolean(activeMentionQuery) &&
     mentionSuggestions.length > 0 &&
     !inputDisabled;
+  const mobileAttachmentMenu = attachments.find(
+    (attachment) => attachment.id === mobileAttachmentMenuId,
+  ) ?? null;
 
   useEffect(() => {
     const input = inputRef.current;
@@ -295,6 +313,12 @@ const MessageInput = (props: MessageInputProps) => {
         title={attachmentAlert?.title}
         message={attachmentAlert?.message || ''}
       />
+      <AttachmentOptionsSheet
+        attachment={mobileAttachmentMenu}
+        onClose={() => setMobileAttachmentMenuId(null)}
+        onToggleSpoiler={toggleAttachmentSpoiler}
+        onRemove={removeAttachment}
+      />
       <div
         data-chat-message-input="true"
         className="sticky bottom-0 z-20 shrink-0 border-t border-void-bg-hover/80 bg-void-bg-sec/95 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] supports-[backdrop-filter]:backdrop-blur md:static md:border-t-0 md:bg-transparent md:pb-4"
@@ -346,16 +370,34 @@ const MessageInput = (props: MessageInputProps) => {
 
       {/* Attachment preview strip */}
       {hasAttachments && (
-        <div className={`flex gap-2 px-3 pt-3 pb-2 bg-void-bg-hover flex-wrap ${hasBanner ? '' : 'rounded-t-lg'}`}>
+        <div className={`flex gap-3 px-3 pt-3 pb-2 bg-void-bg-hover flex-wrap ${hasBanner ? '' : 'rounded-t-lg'}`}>
           {attachments.map((a) => (
             <div
               key={a.id}
               className={`relative overflow-hidden rounded-lg bg-void-bg-main shrink-0 ${
-                a.preview ? 'w-16 h-16' : 'flex w-40 h-16 items-center gap-2 px-3'
+                a.preview
+                  ? 'h-20 w-20 md:h-40 md:w-40'
+                  : 'flex h-16 w-40 items-center gap-2 px-3 md:h-20 md:w-52'
               }`}
             >
               {a.preview ? (
-                <img src={a.preview} alt="" className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => setMobileAttachmentMenuId((current) => (
+                    current === a.id ? null : a.id
+                  ))}
+                  className="block h-full w-full touch-manipulation md:pointer-events-none"
+                  aria-label={`Options for ${a.name}`}
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
+                >
+                  <img
+                    src={a.preview}
+                    alt=""
+                    className={`h-full w-full object-cover transition ${
+                      a.spoiler ? 'scale-105 blur-xl brightness-50' : ''
+                    }`}
+                  />
+                </button>
               ) : (
                 <>
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-void-bg-hover">
@@ -388,11 +430,37 @@ const MessageInput = (props: MessageInputProps) => {
                   </button>
                 </div>
               )}
+              {a.preview && !a.uploading && !a.error ? (
+                <button
+                  type="button"
+                  onClick={() => toggleAttachmentSpoiler(a.id)}
+                  className={`absolute bottom-2 left-2 hidden h-8 w-8 items-center justify-center rounded-full border text-white shadow-lg transition md:flex ${
+                    a.spoiler
+                      ? 'border-void-accent/60 bg-void-accent'
+                      : 'border-white/15 bg-black/70 hover:bg-black/90'
+                  }`}
+                  aria-label={a.spoiler ? 'Remove spoiler' : 'Mark as spoiler'}
+                  title={a.spoiler ? 'Remove spoiler' : 'Mark as spoiler'}
+                >
+                  {a.spoiler ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              ) : null}
+              {a.preview && a.spoiler ? (
+                <div className="pointer-events-none absolute left-1 top-1 md:left-2 md:top-2">
+                  <span className="rounded bg-black/70 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">
+                    Spoiler
+                  </span>
+                </div>
+              ) : null}
               <button
+                type="button"
                 onClick={() => removeAttachment(a.id)}
-                className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/70 hover:bg-black/90 rounded-full flex items-center justify-center text-white"
+                className={`absolute right-1 top-1 h-6 w-6 items-center justify-center rounded-full bg-black/70 text-white hover:bg-black/90 ${
+                  a.preview ? 'hidden md:flex' : 'flex'
+                }`}
+                aria-label="Remove attachment"
               >
-                <X className="w-2.5 h-2.5" />
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
           ))}

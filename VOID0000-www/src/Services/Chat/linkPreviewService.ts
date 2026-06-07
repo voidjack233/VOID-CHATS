@@ -1,7 +1,7 @@
 import { fetchWithAuth } from '../Auth/authServiceApi';
 import type { LinkPreviewMetadata } from './chatTypes';
 
-const URL_REGEX = /https?:\/\/[^\s<>"']+/gi;
+const URL_REGEX = /https?:\/\/[^\s<>"'|]+/gi;
 const LINK_PREVIEW_CACHE_TTL_MS = 10 * 60 * 1000;
 const LINK_PREVIEW_TIMEOUT_MS = 3_500;
 

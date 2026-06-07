@@ -12,6 +12,11 @@ interface FormattedMessageTextProps {
   content: string;
   linkClassName: string;
   onOpenLink?: (url: string) => void;
+  onSpoilerVisibilityChange?: (
+    spoilerId: string,
+    content: string,
+    revealed: boolean,
+  ) => void;
   interactiveSpoilers?: boolean;
   codeBlockVariant?: 'message' | 'composer';
   authoringMode?: boolean;
@@ -234,17 +239,51 @@ function parseContentBlocks(content: string): ContentBlock[] {
 
 function SpoilerText({
   children,
+  spoilerId,
+  rawContent,
+  onVisibilityChange,
   interactive = true,
   authoringMode = false,
   block = false,
 }: {
   children: ReactNode;
+  spoilerId: string;
+  rawContent: string;
+  onVisibilityChange?: (spoilerId: string, content: string, revealed: boolean) => void;
   interactive?: boolean;
   authoringMode?: boolean;
   block?: boolean;
 }) {
   const [revealed, setRevealed] = useState(false);
-  const hiddenBlockContentClassName = 'pointer-events-none select-none blur-[0.32rem]';
+  const revealedRef = useRef(false);
+  const hiddenContentClassName = 'pointer-events-none select-none opacity-0';
+  const toggleRevealed = useCallback(() => {
+    const nextRevealed = !revealedRef.current;
+    revealedRef.current = nextRevealed;
+    setRevealed(nextRevealed);
+    onVisibilityChange?.(spoilerId, rawContent, nextRevealed);
+  }, [onVisibilityChange, rawContent, spoilerId]);
+  const handleClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement;
+    if (revealed && target.closest('a, button')) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    toggleRevealed();
+  }, [revealed, toggleRevealed]);
+  const handleHiddenTouchStart = useCallback((event: React.TouchEvent<HTMLElement>) => {
+    if (revealed) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, [revealed]);
+  const handleHiddenTouchEnd = useCallback((event: React.TouchEvent<HTMLElement>) => {
+    if (revealed) return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleRevealed();
+  }, [revealed, toggleRevealed]);
 
   if (block) {
     if (!interactive) {
@@ -254,7 +293,7 @@ function SpoilerText({
             authoringMode ? 'bg-black/15 text-inherit' : 'bg-black/35'
           }`}
         >
-          <div className={authoringMode ? '' : hiddenBlockContentClassName}>
+          <div className={authoringMode ? '' : hiddenContentClassName}>
             {children}
           </div>
         </div>
@@ -266,14 +305,17 @@ function SpoilerText({
         role="button"
         tabIndex={0}
         data-allow-message-gesture="true"
-        onClick={() => setRevealed((value) => !value)}
+        onClick={handleClick}
+        onTouchStart={handleHiddenTouchStart}
+        onTouchEnd={handleHiddenTouchEnd}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            setRevealed((value) => !value);
+            event.stopPropagation();
+            toggleRevealed();
           }
         }}
-        className={`my-1 block max-w-full overflow-hidden rounded-lg transition-colors ${
+        className={`my-1 block max-w-full touch-manipulation overflow-hidden rounded-lg transition-colors ${
           revealed
             ? 'bg-black/10'
             : 'bg-black/35 hover:bg-black/45'
@@ -281,7 +323,7 @@ function SpoilerText({
         aria-label={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
         title={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
       >
-        <div className={revealed ? '' : hiddenBlockContentClassName}>
+        <div className={revealed ? '' : hiddenContentClassName}>
           {children}
         </div>
       </div>
@@ -303,11 +345,21 @@ function SpoilerText({
   }
 
   return (
-    <button
-      type="button"
+    <span
+      role="button"
+      tabIndex={0}
       data-allow-message-gesture="true"
-      onClick={() => setRevealed((value) => !value)}
-      className={`inline rounded px-1 py-0.5 align-baseline transition-colors ${
+      onClick={handleClick}
+      onTouchStart={handleHiddenTouchStart}
+      onTouchEnd={handleHiddenTouchEnd}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleRevealed();
+        }
+      }}
+      className={`inline touch-manipulation rounded px-1 py-0.5 align-baseline transition-colors ${
         revealed
           ? 'bg-black/10 text-inherit'
           : 'bg-black/35 text-transparent hover:bg-black/45'
@@ -315,8 +367,8 @@ function SpoilerText({
       aria-label={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
       title={revealed ? 'Hide spoiler' : 'Reveal spoiler'}
     >
-      <span className={revealed ? '' : 'select-none'}>{children}</span>
-    </button>
+      <span className={revealed ? '' : hiddenContentClassName}>{children}</span>
+    </span>
   );
 }
 
@@ -445,6 +497,11 @@ function renderNodes(
   onOpenLink?: (url: string) => void,
   interactiveSpoilers: boolean = true,
   authoringMode: boolean = false,
+  onSpoilerVisibilityChange?: (
+    spoilerId: string,
+    content: string,
+    revealed: boolean,
+  ) => void,
   renderNestedSpoilerContent?: (content: string, key: string) => ReactNode,
   enableMentions: boolean = false,
   mentionUsernames?: string[],
@@ -475,6 +532,7 @@ function renderNodes(
       onOpenLink,
       interactiveSpoilers,
       authoringMode,
+      onSpoilerVisibilityChange,
       renderNestedSpoilerContent,
       enableMentions,
       mentionUsernames,
@@ -519,6 +577,9 @@ function renderNodes(
     return (
       <SpoilerText
         key={nodeKey}
+        spoilerId={nodeKey}
+        rawContent={node.raw}
+        onVisibilityChange={onSpoilerVisibilityChange}
         interactive={interactiveSpoilers}
         authoringMode={authoringMode}
         block={shouldRenderNestedSpoilerContent}
@@ -559,6 +620,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
   content,
   linkClassName,
   onOpenLink,
+  onSpoilerVisibilityChange,
   interactiveSpoilers = true,
   codeBlockVariant = 'message',
   authoringMode = false,
@@ -601,6 +663,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
       content={nestedContent}
       linkClassName={nestedContentClassName}
       onOpenLink={onOpenLink}
+      onSpoilerVisibilityChange={onSpoilerVisibilityChange}
       interactiveSpoilers={interactiveSpoilers}
       codeBlockVariant={codeBlockVariant}
       authoringMode={authoringMode}
@@ -615,6 +678,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
     mentionUsernames,
     nestedContentClassName,
     onOpenLink,
+    onSpoilerVisibilityChange,
   ]);
 
   return (
@@ -704,6 +768,7 @@ const FormattedMessageText = memo(function FormattedMessageText({
               onOpenLink,
               interactiveSpoilers,
               authoringMode,
+              onSpoilerVisibilityChange,
               renderNestedSpoilerContent,
               enableMentions,
               mentionUsernames,
