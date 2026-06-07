@@ -1,4 +1,6 @@
 import dns from 'dns/promises';
+import http from 'http';
+import https from 'https';
 import net from 'net';
 import express from 'express';
 
@@ -74,6 +76,27 @@ function parseCandidateUrl(value) {
   }
 }
 
+function getNormalizedHostname(parsedUrl) {
+  const hostname = parsedUrl.hostname.toLowerCase();
+  return hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+function getRequestPort(parsedUrl) {
+  const port = parsedUrl.port
+    ? Number(parsedUrl.port)
+    : parsedUrl.protocol === 'https:'
+      ? 443
+      : 80;
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw Object.assign(new Error('Blocked preview URL'), { status: 400 });
+  }
+
+  return port;
+}
+
 function isPrivateIPv4(address) {
   const octets = address.split('.').map((part) => Number(part));
   if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
@@ -129,7 +152,7 @@ async function assertPublicHttpUrl(parsedUrl) {
     throw Object.assign(new Error('Blocked preview URL'), { status: 400 });
   }
 
-  const hostname = parsedUrl.hostname.toLowerCase();
+  const hostname = getNormalizedHostname(parsedUrl);
 
   if (
     hostname === 'localhost' ||
@@ -150,34 +173,85 @@ async function assertPublicHttpUrl(parsedUrl) {
   if (addresses.length === 0 || addresses.some(({ address }) => isPrivateAddress(address))) {
     throw Object.assign(new Error('Blocked preview host'), { status: 400 });
   }
+
+  return {
+    address: addresses[0].address,
+    family: net.isIP(addresses[0].address) || undefined,
+    hostname,
+    port: getRequestPort(parsedUrl),
+  };
+}
+
+function getHeaderValue(headers, name) {
+  const value = headers[String(name).toLowerCase()];
+  if (Array.isArray(value)) return value.join(', ');
+  return typeof value === 'string' ? value : null;
+}
+
+function destroyResponseBody(response) {
+  response?.body?.destroy?.();
+}
+
+async function fetchPinnedResponse(url, options = {}) {
+  const target = await assertPublicHttpUrl(url);
+  const client = url.protocol === 'https:' ? https : http;
+  const requestHeaders = {
+    ...(options.headers || {}),
+    Host: url.host,
+  };
+  const requestOptions = {
+    hostname: target.address,
+    family: target.family,
+    port: target.port,
+    method: options.method || 'GET',
+    path: `${url.pathname || '/'}${url.search || ''}`,
+    headers: requestHeaders,
+  };
+
+  if (url.protocol === 'https:' && !net.isIP(target.hostname)) {
+    // Connect to the validated IP, but keep the original hostname for SNI and
+    // certificate verification. This closes the DNS rebinding window between
+    // validation and the actual outbound request.
+    requestOptions.servername = target.hostname;
+  }
+
+  return new Promise((resolve, reject) => {
+    const req = client.request(requestOptions, (res) => {
+      const status = res.statusCode || 0;
+      resolve({
+        status,
+        ok: status >= 200 && status < 300,
+        headers: {
+          get: (name) => getHeaderValue(res.headers, name),
+        },
+        body: res,
+      });
+    });
+
+    req.setTimeout(PREVIEW_TIMEOUT_MS, () => {
+      const timeoutError = Object.assign(new Error('Preview request timed out'), { name: 'AbortError' });
+      req.destroy(timeoutError);
+    });
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 async function fetchHtmlWithRedirects(initialUrl) {
   let currentUrl = initialUrl;
 
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
-    await assertPublicHttpUrl(currentUrl);
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
-
-    let response;
-    try {
-      response = await fetch(currentUrl.toString(), {
-        method: 'GET',
-        redirect: 'manual',
-        signal: controller.signal,
-        headers: {
-          Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.2',
-          'User-Agent': 'VOID0000-LinkPreview/1.0',
-        },
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+    const response = await fetchPinnedResponse(currentUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.2',
+        'User-Agent': 'VOID0000-LinkPreview/1.0',
+      },
+    });
 
     if (REDIRECT_STATUSES.has(response.status)) {
       const location = response.headers.get('location');
+      destroyResponseBody(response);
       if (!location) {
         throw Object.assign(new Error('Preview redirect missing destination'), { status: 422 });
       }
@@ -189,11 +263,13 @@ async function fetchHtmlWithRedirects(initialUrl) {
     }
 
     if (!response.ok) {
+      destroyResponseBody(response);
       throw Object.assign(new Error('Preview target did not respond successfully'), { status: 422 });
     }
 
     const contentType = response.headers.get('content-type') || '';
     if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+      destroyResponseBody(response);
       throw Object.assign(new Error('Preview target is not an HTML page'), {
         status: 415,
         finalUrl: currentUrl.toString(),
@@ -210,25 +286,40 @@ async function fetchHtmlWithRedirects(initialUrl) {
   throw Object.assign(new Error('Preview target redirected too many times'), { status: 422 });
 }
 
-async function readLimitedResponseBuffer(response, maxBytes) {
-  if (!response.body) return Buffer.alloc(0);
+async function readLimitedResponseBuffer(response, maxBytes, options = {}) {
+  const stream = response.body || response;
+  if (!stream) return Buffer.alloc(0);
 
-  const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
-  let finished = false;
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        finished = true;
-        break;
-      }
-
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      stream.off('data', handleData);
+      stream.off('end', finish);
+      stream.off('error', handleError);
+      resolve(Buffer.concat(chunks));
+    };
+    const stopReading = () => {
+      finish();
+      stream.destroy?.();
+    };
+    const handleError = (error) => {
+      if (settled) return;
+      settled = true;
+      stream.off('data', handleData);
+      stream.off('end', finish);
+      stream.off('error', handleError);
+      reject(error);
+    };
+    const handleData = (value) => {
       const remaining = maxBytes - total;
       if (remaining <= 0) {
-        break;
+        stopReading();
+        return;
       }
 
       const chunk = Buffer.from(value);
@@ -236,28 +327,26 @@ async function readLimitedResponseBuffer(response, maxBytes) {
       chunks.push(nextChunk);
       total += nextChunk.byteLength;
 
-      const previewText = Buffer.concat(chunks).toString('utf8');
-      if (/<\/head\s*>/i.test(previewText)) {
-        break;
+      const previewText = options.stopAtHead === false
+        ? ''
+        : Buffer.concat(chunks).toString('utf8');
+      if (
+        (options.stopAtHead !== false && /<\/head\s*>/i.test(previewText)) ||
+        total >= maxBytes ||
+        chunk.byteLength > remaining
+      ) {
+        stopReading();
       }
+    };
 
-      if (chunk.byteLength > remaining) {
-        break;
-      }
-    }
-  } finally {
-    if (!finished) {
-      await reader.cancel().catch(() => {});
-    } else {
-      reader.releaseLock();
-    }
-  }
-
-  return Buffer.concat(chunks);
+    stream.on('data', handleData);
+    stream.on('end', finish);
+    stream.on('error', handleError);
+  });
 }
 
 async function readLimitedResponseText(response, contentType) {
-  const buffer = await readLimitedResponseBuffer(response, MAX_HTML_BYTES);
+  const buffer = await readLimitedResponseBuffer(response, MAX_HTML_BYTES, { stopAtHead: true });
   const charset = contentType.match(/charset=([^;\s]+)/i)?.[1] || 'utf-8';
   try {
     return new TextDecoder(charset).decode(buffer);
@@ -267,15 +356,9 @@ async function readLimitedResponseText(response, contentType) {
 }
 
 async function fetchJsonWithLimit(url) {
-  await assertPublicHttpUrl(url);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PREVIEW_TIMEOUT_MS);
-
   try {
-    const response = await fetch(url.toString(), {
+    const response = await fetchPinnedResponse(url, {
       method: 'GET',
-      redirect: 'manual',
-      signal: controller.signal,
       headers: {
         Accept: 'application/json,*/*;q=0.2',
         'User-Agent': 'VOID0000-LinkPreview/1.0',
@@ -283,15 +366,14 @@ async function fetchJsonWithLimit(url) {
     });
 
     if (!response.ok) {
+      destroyResponseBody(response);
       return null;
     }
 
-    const buffer = await readLimitedResponseBuffer(response, MAX_OEMBED_BYTES);
+    const buffer = await readLimitedResponseBuffer(response, MAX_OEMBED_BYTES, { stopAtHead: false });
     return JSON.parse(new TextDecoder('utf-8').decode(buffer));
   } catch {
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

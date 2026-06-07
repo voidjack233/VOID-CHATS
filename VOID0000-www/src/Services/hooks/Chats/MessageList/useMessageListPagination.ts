@@ -781,10 +781,6 @@ const useMessageListPagination = ({
       const latestLocalMessages = await persistFetchedMessagesSafely(latestServerResult.messages);
       const visibleLatestMessages = filterMessagesByHistoryFence(latestLocalMessages, historyAccessFence);
       const latestUI = sortMessages(visibleLatestMessages.map(toUIMessage));
-      const visibleMessageIds = new Set(messagesRef.current.map((message) => String(message.message_id)));
-      const latestPageTouchesCurrentWindow = latestUI.some(
-        (message) => visibleMessageIds.has(String(message.message_id))
-      );
 
       if (latestUI.length > 0 && isAtPresentRef.current) {
         mergeVisibleMessages({
@@ -798,11 +794,6 @@ const useMessageListPagination = ({
         return;
       }
 
-      if (latestUI.length > 0 && latestPageTouchesCurrentWindow) {
-        setHasNewer(true);
-        setIsAtPresent(false);
-      }
-
       const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
         after: newestMessage.message_id,
         limit: FETCH_SIZE,
@@ -812,6 +803,7 @@ const useMessageListPagination = ({
       });
 
       if (serverResult.messages.length === 0) {
+        clearNewerHistoryRange();
         return;
       }
 
@@ -845,6 +837,7 @@ const useMessageListPagination = ({
       console.error('Failed to reconcile missed messages after reconnect:', error);
     }
   }, [
+    clearNewerHistoryRange,
     conversationId,
     currentKeyVersionRef,
     decryptionConversation,
