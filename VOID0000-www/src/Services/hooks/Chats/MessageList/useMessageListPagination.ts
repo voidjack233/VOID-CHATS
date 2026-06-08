@@ -9,7 +9,6 @@ import {
 import { debugLog } from '../../../utils/debugLog';
 import {
   MESSAGE_PAGE_SIZE,
-  MESSAGE_PREFETCH_SIZE,
   MESSAGE_WINDOW_TRIM_TARGET,
   MESSAGE_WINDOW_TRIM_TRIGGER,
 } from '../../../Chat/chatConstants';
@@ -119,6 +118,51 @@ const ESTIMATED_MESSAGE_HEIGHT = 72;
 const PASSIVE_RECONCILE_TTL_MS = 15_000;
 const recentReconcileAtByConversation = new Map<string, number>();
 
+const getHistoryPaginationErrorMessage = (error: unknown) => (
+  error instanceof Error && error.message
+    ? error.message
+    : String(error || 'Request failed')
+);
+
+const isOfflineHistoryFallbackError = (error: unknown) => {
+  if (isRateLimitError(error)) {
+    return false;
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return true;
+  }
+
+  const payload = error && typeof error === 'object'
+    ? error as Record<string, unknown>
+    : {};
+  const status = Number(payload.status ?? payload.statusCode);
+  if (Number.isFinite(status) && status > 0) {
+    return false;
+  }
+
+  const code = String(payload.code || '');
+  const name = String(payload.name || '');
+  const message = getHistoryPaginationErrorMessage(error).toLowerCase();
+
+  return (
+    code === 'REQUEST_TIMEOUT' ||
+    name === 'NetworkError' ||
+    (
+      error instanceof TypeError &&
+      (
+        message.includes('fetch') ||
+        message.includes('network') ||
+        message.includes('load failed')
+      )
+    ) ||
+    message.includes('failed to fetch') ||
+    message.includes('network') ||
+    message.includes('load failed') ||
+    message.includes('timed out')
+  );
+};
+
 const sumMessageHeights = (
   messages: Message[],
   getMessageHeight?: (message: Message) => number,
@@ -171,21 +215,7 @@ const useMessageListPagination = ({
   isAtPresentRef.current = isAtPresent;
   const firstItemIndexRef = useRef(firstItemIndex);
   firstItemIndexRef.current = firstItemIndex;
-  const olderServerPrefetchInFlightRef = useRef<Set<string>>(new Set());
-  const olderServerPrefetchedAnchorsRef = useRef<Set<string>>(new Set());
   const historyRequestGenerationRef = useRef(0);
-
-  const getOlderServerPrefetchState = useCallback((anchorMessageId: string | null) => {
-    if (!anchorMessageId) {
-      return null;
-    }
-
-    return {
-      anchorMessageId,
-      inFlight: olderServerPrefetchInFlightRef.current.has(anchorMessageId),
-      prefetched: olderServerPrefetchedAnchorsRef.current.has(anchorMessageId),
-    };
-  }, []);
 
   const notifyHistoryRateLimit = useCallback((error: unknown) => {
     if (!isRateLimitError(error)) {
@@ -198,8 +228,6 @@ const useMessageListPagination = ({
 
   useEffect(() => {
     historyRequestGenerationRef.current += 1;
-    olderServerPrefetchInFlightRef.current.clear();
-    olderServerPrefetchedAnchorsRef.current.clear();
     replaceWindow({
       messages: [],
       firstItemIndex: messageListBaseIndex,
@@ -211,107 +239,6 @@ const useMessageListPagination = ({
       isAtPresent: true,
     });
   }, [conversationId, messageListBaseIndex, replaceWindow]);
-
-  const warmOlderServerHistory = useCallback(async (nextOldestMessageId: string) => {
-    if (!encryptionKeyRef.current) {
-      return;
-    }
-
-    const prefetchStateBefore = getOlderServerPrefetchState(nextOldestMessageId);
-    if (
-      olderServerPrefetchInFlightRef.current.has(nextOldestMessageId) ||
-      olderServerPrefetchedAnchorsRef.current.has(nextOldestMessageId)
-    ) {
-      const payload = {
-        conversationId,
-        anchorMessageId: nextOldestMessageId,
-        action: 'skip_already_known',
-        prefetchStateBefore,
-      };
-      rawDebugMessageList('older_server_prefetch_state', payload);
-      debugMessageList('older_server_prefetch_state', payload);
-      return;
-    }
-
-    const localProbe = await messageSync.readLocal(conversationId, {
-      before: nextOldestMessageId,
-      limit: FETCH_SIZE,
-    });
-    const localProbeHadUndecryptable = hasUndecryptableMessage(localProbe.messages);
-
-    const isNearLocalOlderSeam =
-      localProbe.messages.length < FETCH_SIZE ||
-      !localProbe.has_more ||
-      localProbeHadUndecryptable;
-
-    if (!isNearLocalOlderSeam) {
-      const payload = {
-        conversationId,
-        anchorMessageId: nextOldestMessageId,
-        action: 'skip_not_near_seam',
-        localProbeCount: localProbe.messages.length,
-        localProbeHasMore: localProbe.has_more,
-        localProbeHadUndecryptable,
-        localHistoryExhaustedBeforeServer: localProbe.messages.length < FETCH_SIZE || !localProbe.has_more,
-        prefetchStateBefore,
-      };
-      rawDebugMessageList('older_server_prefetch_state', payload);
-      debugMessageList('older_server_prefetch_state', payload);
-      return;
-    }
-
-    olderServerPrefetchInFlightRef.current.add(nextOldestMessageId);
-    const startPayload = {
-      conversationId,
-      anchorMessageId: nextOldestMessageId,
-      action: 'start',
-      localProbeCount: localProbe.messages.length,
-      localProbeHasMore: localProbe.has_more,
-      localProbeHadUndecryptable,
-      localHistoryExhaustedBeforeServer: localProbe.messages.length < FETCH_SIZE || !localProbe.has_more,
-      prefetchStateBefore,
-      prefetchStateAfterStart: getOlderServerPrefetchState(nextOldestMessageId),
-    };
-    rawDebugMessageList('older_server_prefetch_state', startPayload);
-    debugMessageList('older_server_prefetch_state', startPayload);
-
-    try {
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current, {
-        before: nextOldestMessageId,
-        limit: MESSAGE_PREFETCH_SIZE,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
-      });
-
-      await persistFetchedMessagesSafely(serverResult.messages);
-      olderServerPrefetchedAnchorsRef.current.add(nextOldestMessageId);
-      const successPayload = {
-        conversationId,
-        anchorMessageId: nextOldestMessageId,
-        action: 'success',
-        serverCount: serverResult.messages.length,
-        serverHasMore: serverResult.has_more,
-        prefetchStateAfterSuccess: getOlderServerPrefetchState(nextOldestMessageId),
-      };
-      rawDebugMessageList('older_server_prefetch_state', successPayload);
-      debugMessageList('older_server_prefetch_state', successPayload);
-    } catch (error) {
-      notifyHistoryRateLimit(error);
-      const errorPayload = {
-        conversationId,
-        anchorMessageId: nextOldestMessageId,
-        action: 'error',
-        error: error instanceof Error ? error.message : String(error),
-        prefetchStateAtError: getOlderServerPrefetchState(nextOldestMessageId),
-      };
-      rawDebugMessageList('older_server_prefetch_state', errorPayload);
-      debugMessageList('older_server_prefetch_state', errorPayload);
-      console.error('Failed to prefetch older server history:', error);
-    } finally {
-      olderServerPrefetchInFlightRef.current.delete(nextOldestMessageId);
-    }
-  }, [conversationId, currentKeyVersionRef, decryptionConversation, encryptionKeyRef, getOlderServerPrefetchState, notifyHistoryRateLimit, userId]);
 
   const applyOlderMessages = useCallback((olderMessages: Message[], seamBreakBeforeId: string) => {
     if (olderMessages.length === 0) return null;
@@ -464,94 +391,81 @@ const useMessageListPagination = ({
     });
   }, [applyAppendedWindow, messagesRef]);
 
-  const fetchOlderMessages = useCallback(async (oldestMessageId: string, options?: { forceServer?: boolean }) => {
-    const forceServer = options?.forceServer === true;
+  const fetchOlderMessages = useCallback(async (oldestMessageId: string) => {
     let result: { messages: LocalMessage[]; has_more: boolean };
     let localCount = 0;
     let localHasMore = false;
     let localHadUndecryptable = false;
-    let serverRequested = false;
     let serverCount = 0;
     let serverHasMore: boolean | null = null;
+    let usedLocalFallback = false;
+    let localFallbackReason: string | null = null;
 
-    if (forceServer) {
+    try {
+      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
+        before: oldestMessageId,
+        limit: FETCH_SIZE,
+        conversation: decryptionConversation,
+        userId,
+        currentKeyVersion: currentKeyVersionRef.current,
+      });
+      serverCount = serverResult.messages.length;
+      serverHasMore = serverResult.has_more;
+      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
+      result = {
+        messages: localMessages,
+        has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+      };
+    } catch (error) {
+      if (!isOfflineHistoryFallbackError(error)) {
+        throw error;
+      }
+
+      localFallbackReason = getHistoryPaginationErrorMessage(error);
       const localResult = await messageSync.readLocal(conversationId, {
         before: oldestMessageId,
         limit: FETCH_SIZE,
       });
+
+      usedLocalFallback = true;
       localCount = localResult.messages.length;
       localHasMore = localResult.has_more;
       localHadUndecryptable = hasUndecryptableMessage(localResult.messages);
-
-      serverRequested = true;
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
-        before: oldestMessageId,
-        limit: FETCH_SIZE,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
+      result = localResult;
+      debugMessageList('older_fetch_local_fallback', {
+        conversationId,
+        oldestMessageId,
+        localCount,
+        localHasMore,
+        localHadUndecryptable,
+        reason: localFallbackReason,
       });
-      serverCount = serverResult.messages.length;
-      serverHasMore = serverResult.has_more;
-      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
-      result = {
-        messages: localMessages,
-        has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
-      };
-    } else {
-      result = await messageSync.readLocal(conversationId, {
-        before: oldestMessageId,
-        limit: FETCH_SIZE,
-      });
-      localCount = result.messages.length;
-      localHasMore = result.has_more;
-      localHadUndecryptable = hasUndecryptableMessage(result.messages);
-
-      // Local older pages can be structurally complete but have stale reaction maps.
-      // Validate the page with the server before rendering so old cached messages
-      // do not disagree with a fresh browser.
-      serverRequested = true;
-      const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
-        before: oldestMessageId,
-        limit: FETCH_SIZE,
-        conversation: decryptionConversation,
-        userId,
-        currentKeyVersion: currentKeyVersionRef.current,
-      });
-      serverCount = serverResult.messages.length;
-      serverHasMore = serverResult.has_more;
-      const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
-      result = {
-        messages: localMessages,
-        has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
-      };
     }
 
     const visibleOlderMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
     const olderUI = sortMessages(visibleOlderMessages.map(toUIMessage));
     return {
       olderUI,
-      hasMore: result.has_more,
+      hasMore: usedLocalFallback ? true : result.has_more,
       debug: {
         requestedOlderCount: FETCH_SIZE,
-        forceServer,
         localCount,
         localHasMore,
         localHadUndecryptable,
-        localHistoryExhaustedBeforeServer: localCount < FETCH_SIZE || !localHasMore,
-        serverRequested,
+        localHistoryExhausted: usedLocalFallback && (localCount < FETCH_SIZE || !localHasMore),
+        serverRequested: true,
         serverCount,
         serverHasMore,
         mergedCount: result.messages.length,
         mergedHasMore: result.has_more,
         visibleReturnedCount: olderUI.length,
+        usedLocalFallback,
+        localFallbackReason,
       },
     };
   }, [conversationId, decryptionConversation, encryptionKeyRef, historyAccessFence, userId, currentKeyVersionRef]);
 
-  const loadOlderPage = useCallback(async (options?: { silent?: boolean; forceServer?: boolean }) => {
-    const forceServer = options?.forceServer === true;
-
+  const loadOlderPage = useCallback(async () => {
     if (
       !encryptionKeyRef.current ||
       loadingOlder ||
@@ -566,7 +480,6 @@ const useMessageListPagination = ({
       oldestMessageId: messagesRef.current[0]?.message_id || null,
       currentCount: messagesRef.current.length,
       firstItemIndex: firstItemIndexRef.current,
-      forceServer,
       hasOlder,
       loadingOlder,
     });
@@ -578,7 +491,7 @@ const useMessageListPagination = ({
       if (!oldestMessage) return false;
 
       const seamBreakBeforeId = oldestMessage.message_id;
-      const { olderUI, hasMore, debug } = await fetchOlderMessages(oldestMessage.message_id, { forceServer });
+      const { olderUI, hasMore, debug } = await fetchOlderMessages(oldestMessage.message_id);
       if (requestGeneration !== historyRequestGenerationRef.current) {
         debugMessageList('older_fetch_stale_skip', {
           conversationId,
@@ -595,11 +508,6 @@ const useMessageListPagination = ({
       if (olderUI.length > 0) {
         applySummary = applyOlderMessages(olderUI, seamBreakBeforeId);
         setHasOlder(hasMore);
-        if (!forceServer) {
-          if (nextOldestLoadedMessageId) {
-            void warmOlderServerHistory(nextOldestLoadedMessageId);
-          }
-        }
         debugMessageList('older_fetch_success', {
           conversationId,
           fetchedCount: olderUI.length,
@@ -607,8 +515,10 @@ const useMessageListPagination = ({
           seamBreakBeforeId,
           firstItemIndex: firstItemIndexRef.current,
         });
-      } else {
+      } else if (!debug.usedLocalFallback) {
         setHasOlder(false);
+      } else {
+        return false;
       }
 
       if (olderUI.length < FETCH_SIZE || !hasMore) {
@@ -620,7 +530,7 @@ const useMessageListPagination = ({
           hasOlderAfter: olderUI.length > 0 ? hasMore : false,
           oldestMessageIdBefore: oldestMessage.message_id,
           oldestMessageIdAfter: nextOldestLoadedMessageId,
-          localHistoryExhaustedBeforeServer: debug.localHistoryExhaustedBeforeServer,
+          localHistoryExhausted: debug.localHistoryExhausted,
           localCount: debug.localCount,
           localHasMore: debug.localHasMore,
           localHadUndecryptable: debug.localHadUndecryptable,
@@ -629,13 +539,12 @@ const useMessageListPagination = ({
           serverHasMore: debug.serverHasMore,
           mergedCount: debug.mergedCount,
           visibleReturnedCount: debug.visibleReturnedCount,
-          currentAnchorPrefetchState: getOlderServerPrefetchState(oldestMessage.message_id),
-          nextAnchorPrefetchState: getOlderServerPrefetchState(nextOldestLoadedMessageId),
           trimmedVisibleCount: applySummary?.trimmedVisibleCount ?? 0,
           prevVisibleCount: applySummary?.prevCount ?? messagesRef.current.length,
           nextVisibleCount: applySummary?.nextCount ?? messagesRef.current.length,
           prependedCount: applySummary?.prependedCount ?? 0,
-          forceServer,
+          usedLocalFallback: debug.usedLocalFallback,
+          localFallbackReason: debug.localFallbackReason,
           exhaustionStateCommitStrategy: 'immediate',
         };
         rawDebugMessageList('older_fetch_boundary', boundaryPayload);
@@ -653,12 +562,10 @@ const useMessageListPagination = ({
   }, [
     applyOlderMessages,
     fetchOlderMessages,
-    getOlderServerPrefetchState,
     hasOlder,
     loadingOlder,
     messagesRef,
     setHasOlder,
-    warmOlderServerHistory,
     notifyHistoryRateLimit,
   ]);
 
@@ -676,12 +583,11 @@ const useMessageListPagination = ({
       const newestMessage = getNewestServerBackedMessage(messages);
       if (!newestMessage) return false;
 
-      let result = await messageSync.readLocal(conversationId, {
-        after: newestMessage.message_id,
-        limit: FETCH_SIZE,
-      });
+      let result: { messages: LocalMessage[]; has_more: boolean };
+      let usedLocalFallback = false;
+      let localFallbackReason: string | null = null;
 
-      if (result.messages.length < FETCH_SIZE || !result.has_more || hasUndecryptableMessage(result.messages)) {
+      try {
         const serverResult = await getMessages(conversationId, encryptionKeyRef.current!, {
           after: newestMessage.message_id,
           limit: FETCH_SIZE,
@@ -697,6 +603,25 @@ const useMessageListPagination = ({
           messages: localMessages,
           has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
         };
+      } catch (error) {
+        if (!isOfflineHistoryFallbackError(error)) {
+          throw error;
+        }
+
+        localFallbackReason = getHistoryPaginationErrorMessage(error);
+        result = await messageSync.readLocal(conversationId, {
+          after: newestMessage.message_id,
+          limit: FETCH_SIZE,
+        });
+        usedLocalFallback = true;
+        debugMessageList('newer_fetch_local_fallback', {
+          conversationId,
+          newestMessageId: newestMessage.message_id,
+          localCount: result.messages.length,
+          localHasMore: result.has_more,
+          localHadUndecryptable: hasUndecryptableMessage(result.messages),
+          reason: localFallbackReason,
+        });
       }
 
       const visibleNewerMessages = filterMessagesByHistoryFence(result.messages, historyAccessFence);
@@ -712,8 +637,15 @@ const useMessageListPagination = ({
       }
 
       if (newerUI.length > 0) {
-        const reachedPresentBoundary = result.messages.length < FETCH_SIZE || !result.has_more;
-        const hasNewerAfterMerge = reachedPresentBoundary ? false : result.has_more;
+        // A local fallback is not authoritative about the server boundary.
+        // Keep the newer range open so reconnect can resume server pagination.
+        const reachedPresentBoundary = !usedLocalFallback &&
+          (result.messages.length < FETCH_SIZE || !result.has_more);
+        const hasNewerAfterMerge = usedLocalFallback
+          ? true
+          : reachedPresentBoundary
+            ? false
+            : result.has_more;
         const isAtPresentAfterMerge = !hasNewerAfterMerge;
 
         if (!initialHydrationSettled) {
@@ -728,8 +660,10 @@ const useMessageListPagination = ({
             hasNewerAfterMerge,
           });
         }
-      } else {
+      } else if (!usedLocalFallback) {
         clearNewerHistoryRange();
+      } else {
+        return false;
       }
       return true;
     } catch (error) {

@@ -168,8 +168,28 @@ export const useMessageTimelineVirtualizer = ({
       };
     }
 
-    const scrollSignal = lastScrollDirectionSignalRef.current;
+    let scrollSignal = lastScrollDirectionSignalRef.current;
     const retainedScrollSignal = retainedScrollSignalRef.current;
+    if (preferredDirection) {
+      if (
+        retainedScrollSignal?.direction === preferredDirection &&
+        retainedScrollSignal.at > consumedScrollSignalAtRef.current[preferredDirection]
+      ) {
+        scrollSignal = retainedScrollSignal;
+      } else if (
+        !scrollSignal ||
+        scrollSignal.direction !== preferredDirection ||
+        scrollSignal.at <= consumedScrollSignalAtRef.current[preferredDirection] ||
+        now - scrollSignal.at > SCROLL_DIRECTION_SIGNAL_TTL_MS
+      ) {
+        scrollSignal = {
+          direction: preferredDirection,
+          at: now,
+        };
+        lastScrollDirectionSignalRef.current = scrollSignal;
+      }
+    }
+
     const isRetainedSignal = Boolean(
       retainedScrollSignal &&
       retainedScrollSignal.direction === scrollSignal?.direction &&
@@ -177,7 +197,7 @@ export const useMessageTimelineVirtualizer = ({
     );
     if (
       !scrollSignal ||
-      (!isRetainedSignal && now - scrollSignal.at > SCROLL_DIRECTION_SIGNAL_TTL_MS) ||
+      (!preferredDirection && !isRetainedSignal && now - scrollSignal.at > SCROLL_DIRECTION_SIGNAL_TTL_MS) ||
       scrollSignal.at <= consumedScrollSignalAtRef.current[scrollSignal.direction] ||
       (preferredDirection && scrollSignal.direction !== preferredDirection)
     ) {
@@ -267,7 +287,8 @@ export const useMessageTimelineVirtualizer = ({
   ]);
 
   retryHistoryLoadRef.current = () => {
-    void maybeStartBestHistoryLoad();
+    const retained = retainedScrollSignalRef.current;
+    void maybeStartBestHistoryLoad(retained?.direction);
   };
 
   useEffect(() => {

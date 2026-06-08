@@ -14,8 +14,6 @@ export const MAX_ACTIVE_CONVERSATIONS = 8;
 export const FALLBACK_MESSAGE_HEIGHT = 72;
 export const MESSAGE_WINDOW_TRIM_TRIGGER = MAX_RENDERED_MESSAGES;
 export const MESSAGE_WINDOW_TRIM_TARGET = TRIM_TO_MESSAGES;
-// Larger page for silent background prefetch — fills the local cache ahead of user scroll
-export const MESSAGE_PREFETCH_SIZE = SCROLL_PAGE_SIZE;
 
 // Viewport-informed initial open constants — used only for the first local-read
 // window when opening a conversation, NOT for sync or pagination.

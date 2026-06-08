@@ -251,8 +251,8 @@ export const RATE_LIMIT_POLICIES = Object.freeze({
 
   messagesFetch: userTokenBucket({
     keyPrefix: 'messages:fetch',
-    refillWindowSec: 60,
-    bucketSize: 360,
+    refillWindowSec: 10,
+    bucketSize: 120,
   }),
 
   messagesSend: userTokenBucket({

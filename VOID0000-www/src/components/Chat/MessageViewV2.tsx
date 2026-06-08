@@ -380,7 +380,9 @@ const MessageViewV2 = memo(function MessageViewV2({
   const pendingNewerLoadScrollSnapshotRef = useRef<NewerHistoryLoadScrollSnapshot | null>(null);
   const pendingMessageJumpTargetRef = useRef<string | null>(null);
   const hasOlderRef = useRef(false);
+  const hasNewerRef = useRef(false);
   const loadingOlderStateRef = useRef(false);
+  const loadingNewerStateRef = useRef(false);
   const loadingOlderRequestInFlightRef = useRef(false);
   const loadingNewerRequestInFlightRef = useRef(false);
   const autofillOlderRequestInFlightRef = useRef(false);
@@ -418,6 +420,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     historyLogicalSlotHeight,
   );
   const olderTopScrollLockThreshold = 2;
+  const newerBottomScrollLockThreshold = 2;
   const newerBottomLoadThreshold = NEWER_HISTORY_PREFETCH_DISTANCE[density];
   const { friends } = useFriends();
   const { isOnline, gatewayState } = useConnectionStatus();
@@ -494,7 +497,9 @@ const MessageViewV2 = memo(function MessageViewV2({
   ownSendJumpRequestRef.current = ownSendJumpRequest;
   onOwnSendHistoryModeChangeRef.current = onOwnSendHistoryModeChange;
   hasOlderRef.current = hasOlder;
+  hasNewerRef.current = hasNewer;
   loadingOlderStateRef.current = loadingOlder;
+  loadingNewerStateRef.current = loadingNewer;
 
   const { reactions, handleToggleReaction, initReactionsFromMessages } =
     useReactions(conversation.id, gateway, user?.id, isAtPresent);
@@ -722,7 +727,10 @@ const MessageViewV2 = memo(function MessageViewV2({
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
     pendingMessageJumpTargetRef.current = null;
+    hasOlderRef.current = false;
+    hasNewerRef.current = false;
     loadingOlderStateRef.current = false;
+    loadingNewerStateRef.current = false;
     loadingOlderRequestInFlightRef.current = false;
     loadingNewerRequestInFlightRef.current = false;
     autofillOlderRequestInFlightRef.current = false;
@@ -1339,17 +1347,51 @@ const MessageViewV2 = memo(function MessageViewV2({
     if (!scroller) return;
 
     let lastTouchY: number | null = null;
+    const getNewerBoundaryScrollTop = () => Math.max(
+      0,
+      scroller.scrollHeight - renderedBottomSpacerHeight - scroller.clientHeight,
+    );
     const shouldLockOlderBoundary = () => (
       (loadingOlderRequestInFlightRef.current ||
         loadingOlderStateRef.current ||
         pendingOlderLoadScrollSnapshotRef.current !== null) &&
       scroller.scrollTop <= olderTopScrollLockThreshold
     );
+    const shouldGateNewerBoundary = (projectedScrollDelta = 0) => (
+      hasNewerRef.current &&
+      renderedBottomSpacerHeight > 1 &&
+      getNewerBoundaryDistance(scroller) - Math.max(0, projectedScrollDelta) <= newerBottomScrollLockThreshold
+    );
+    const clampToNewerBoundary = () => {
+      scroller.scrollTop = getNewerBoundaryScrollTop();
+    };
+    const requestNewerBoundaryLoad = () => {
+      clampToNewerBoundary();
+      maybeStartBestHistoryLoad('newer');
+    };
+    const getWheelDeltaYPixels = (event: WheelEvent) => {
+      if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+        return event.deltaY * 16;
+      }
+
+      if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+        return event.deltaY * scroller.clientHeight;
+      }
+
+      return event.deltaY;
+    };
 
     const handleWheelBoundaryLock = (event: WheelEvent) => {
       if (event.deltaY < 0 && shouldLockOlderBoundary()) {
         event.preventDefault();
         scroller.scrollTop = Math.max(0, scroller.scrollTop);
+        return;
+      }
+
+      const wheelDeltaY = getWheelDeltaYPixels(event);
+      if (wheelDeltaY > 0 && shouldGateNewerBoundary(wheelDeltaY)) {
+        event.preventDefault();
+        requestNewerBoundaryLoad();
       }
     };
 
@@ -1365,8 +1407,15 @@ const MessageViewV2 = memo(function MessageViewV2({
       }
 
       const isPullingTowardOlderHistory = nextY > lastTouchY;
+      const isPushingTowardNewerHistory = nextY < lastTouchY;
       if (isPullingTowardOlderHistory && shouldLockOlderBoundary()) {
         event.preventDefault();
+      } else if (
+        isPushingTowardNewerHistory &&
+        shouldGateNewerBoundary(lastTouchY - nextY)
+      ) {
+        event.preventDefault();
+        requestNewerBoundaryLoad();
       }
       lastTouchY = nextY;
     };
@@ -1388,7 +1437,14 @@ const MessageViewV2 = memo(function MessageViewV2({
       scroller.removeEventListener('touchend', clearTouchBoundaryLock);
       scroller.removeEventListener('touchcancel', clearTouchBoundaryLock);
     };
-  }, [conversation.id, olderTopScrollLockThreshold]);
+  }, [
+    conversation.id,
+    getNewerBoundaryDistance,
+    maybeStartBestHistoryLoad,
+    newerBottomScrollLockThreshold,
+    olderTopScrollLockThreshold,
+    renderedBottomSpacerHeight,
+  ]);
 
   const keepPresentPinnedToBottom = useCallback(() => {
     const scroller = scrollerRef.current;
