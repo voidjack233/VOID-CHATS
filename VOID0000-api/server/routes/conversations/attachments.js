@@ -52,11 +52,7 @@ async function streamAttachmentObject(res, objectKey) {
   }
 
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Cache-Control', 'private, no-store, max-age=0');
-  res.setHeader('CDN-Cache-Control', 'no-store');
-  res.setHeader('Surrogate-Control', 'no-store');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader('Cache-Control', 'private, max-age=300');
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
   objectStream.on('error', (err) => {

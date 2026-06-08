@@ -29,8 +29,6 @@ const DECRYPTED_ATTACHMENT_URL_TTL_MS = 60_000;
 const ENCRYPTED_ATTACHMENT_BLOB_TTL_MS = 5 * 60_000;
 const MAX_ENCRYPTED_ATTACHMENT_CACHE_BYTES = 50 * 1024 * 1024;
 const LEGACY_ATTACHMENT_BUCKET_PATH = '/chat-attachments/';
-const PRIVATE_ATTACHMENT_PATH_PATTERN = /\/api\/conversations\/[^/?]+\/attachments\//;
-const ATTACHMENT_REQUEST_SESSION_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 let attachmentCacheGeneration = 0;
 
 interface EncryptedBlobCacheEntry {
@@ -227,15 +225,6 @@ function shouldUseAuthenticatedFetch(url: string): boolean {
   }
 }
 
-function preventPrivateAttachmentCacheReuse(url: string): string {
-  if (!PRIVATE_ATTACHMENT_PATH_PATTERN.test(url)) {
-    return url;
-  }
-
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}attachment_session=${encodeURIComponent(ATTACHMENT_REQUEST_SESSION_ID)}`;
-}
-
 function clearResolvedUrlExpiry(cacheKey: string): void {
   const existingTimer = resolvedUrlExpiryTimers.get(cacheKey);
   if (existingTimer != null) {
@@ -386,14 +375,13 @@ async function downloadAttachmentBlob(url: string): Promise<Blob> {
   const controller = new AbortController();
   const token = Symbol(url);
   const trackedPromise = (async () => {
-    const downloadUrl = preventPrivateAttachmentCacheReuse(url);
     const requestOptions: RequestInit = {
-      cache: 'no-store',
+      cache: 'force-cache',
       signal: controller.signal,
     };
-    const response = shouldUseAuthenticatedFetch(downloadUrl)
-      ? await fetchWithAuth(downloadUrl, requestOptions)
-      : await fetch(downloadUrl, requestOptions);
+    const response = shouldUseAuthenticatedFetch(url)
+      ? await fetchWithAuth(url, requestOptions)
+      : await fetch(url, requestOptions);
 
     if (!response.ok) {
       throw new Error(`Attachment download failed with status ${response.status}`);
