@@ -4,7 +4,7 @@ export type HistoryRangeStatus = 'idle' | 'loading' | 'loaded' | 'error';
 
 interface ScrollGeometryInput {
   scrollerRef?: { current: HTMLElement | null };
-  topCompensationBlockerRef?: { current: unknown };
+  scrollCompensationBlockerRef?: { current: unknown };
   resetKey?: string;
   topSpacerHeight: number;
   bottomSpacerHeight: number;
@@ -31,7 +31,7 @@ interface ScrollState {
 
 export const useMessageScrollGeometry = ({
   scrollerRef,
-  topCompensationBlockerRef,
+  scrollCompensationBlockerRef,
   resetKey,
   topSpacerHeight,
   bottomSpacerHeight,
@@ -92,7 +92,7 @@ export const useMessageScrollGeometry = ({
       !enablePhysicalSpacerWindowing ||
       previousRenderedTopSpacerHeight === null ||
       (previousTopOriginOffset <= 0 && topOriginOffset <= 0) ||
-      topCompensationBlockerRef?.current
+      scrollCompensationBlockerRef?.current
     ) {
       return;
     }
@@ -113,7 +113,7 @@ export const useMessageScrollGeometry = ({
     renderedTopSpacerHeight,
     resetKey,
     scrollerRef,
-    topCompensationBlockerRef,
+    scrollCompensationBlockerRef,
     topOriginOffset,
   ]);
 

@@ -1,6 +1,7 @@
 import {
   FALLBACK_MESSAGE_HEIGHT,
   MAX_ACTIVE_CONVERSATIONS,
+  MAX_RUNTIME_MEASURED_HEIGHTS_PER_CONVERSATION,
   MAX_RUNTIME_MESSAGES_PER_CONVERSATION,
   MESSAGE_WINDOW_TRIM_TARGET,
   MESSAGE_WINDOW_TRIM_TRIGGER,
@@ -126,7 +127,6 @@ const stripMessageIdsFromRuntime = (runtime: ConversationRuntime, ids: Set<strin
 
   ids.forEach((id) => {
     runtime.messageById.delete(id);
-    runtime.heightByMessageId.delete(id);
   });
 
   runtime.pendingLiveIds = runtime.pendingLiveIds.filter((id) => !ids.has(id));
@@ -178,6 +178,22 @@ const makePage = (
   loadedAt: Date.now(),
 });
 
+const pruneMeasuredHeightCache = (runtime: ConversationRuntime) => {
+  if (runtime.heightByMessageId.size <= MAX_RUNTIME_MEASURED_HEIGHTS_PER_CONVERSATION) {
+    return;
+  }
+
+  const protectedIds = new Set(runtime.renderedIds);
+  for (const messageId of runtime.heightByMessageId.keys()) {
+    if (runtime.heightByMessageId.size <= MAX_RUNTIME_MEASURED_HEIGHTS_PER_CONVERSATION) {
+      break;
+    }
+    if (!protectedIds.has(messageId)) {
+      runtime.heightByMessageId.delete(messageId);
+    }
+  }
+};
+
 const pruneRuntimeCache = (runtime: ConversationRuntime) => {
   if (runtime.messageById.size <= MAX_RUNTIME_MESSAGES_PER_CONVERSATION) {
     return;
@@ -206,6 +222,35 @@ const pruneRuntimeCache = (runtime: ConversationRuntime) => {
   const excessCount = runtime.messageById.size - MAX_RUNTIME_MESSAGES_PER_CONVERSATION;
   const evictIds = candidateIds.slice(0, Math.max(0, excessCount));
   stripMessageIdsFromRuntime(runtime, new Set(evictIds));
+  pruneMeasuredHeightCache(runtime);
+};
+
+const recordMeasuredMessageHeights = (
+  currentRuntime: ConversationRuntime,
+  measurements: Array<{ messageId: string; height: number }>,
+) => {
+  const changedMeasurements = measurements.filter(({ messageId, height }) => {
+    if (!messageId || !Number.isFinite(height) || height <= 0) {
+      return false;
+    }
+
+    const currentHeight = currentRuntime.heightByMessageId.get(String(messageId));
+    return typeof currentHeight !== 'number' || Math.abs(currentHeight - height) > 0.5;
+  });
+
+  if (changedMeasurements.length === 0) {
+    return currentRuntime;
+  }
+
+  const runtime = cloneRuntime(currentRuntime);
+  changedMeasurements.forEach(({ messageId, height }) => {
+    const normalizedId = String(messageId);
+    runtime.heightByMessageId.delete(normalizedId);
+    runtime.heightByMessageId.set(normalizedId, height);
+  });
+  pruneMeasuredHeightCache(runtime);
+  saveConversationRuntime(runtime);
+  return runtime;
 };
 
 const saveConversationRuntime = (runtime: ConversationRuntime) => {
@@ -465,6 +510,7 @@ export {
   getSavedConversationRuntime,
   mergeIntoRenderedWindow,
   queueLiveMessages,
+  recordMeasuredMessageHeights,
   recordRuntimePage,
   resetRuntime,
   saveConversationRuntime,

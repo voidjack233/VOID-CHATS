@@ -28,6 +28,7 @@ import {
   getRenderedMessages,
   getRuntimeStats,
   queueLiveMessages,
+  recordMeasuredMessageHeights,
   recordRuntimePage,
   resetRuntime,
   saveConversationRuntime,
@@ -136,6 +137,10 @@ type MessageWindowAction =
   | { type: 'set_has_older'; value: SetStateAction<boolean> }
   | { type: 'set_has_newer'; value: SetStateAction<boolean> }
   | { type: 'set_is_at_present'; value: SetStateAction<boolean> }
+  | {
+      type: 'record_measured_heights';
+      measurements: Array<{ messageId: string; height: number }>;
+    }
   | {
       type: 'apply_prepended_window';
       messages: Message[];
@@ -437,6 +442,15 @@ const messageWindowReducer = (
         ...state,
         isAtPresent: resolveStateAction(state.isAtPresent, action.value),
       };
+    case 'record_measured_heights': {
+      const nextRuntime = recordMeasuredMessageHeights(state.runtime, action.measurements);
+      return nextRuntime === state.runtime
+        ? state
+        : {
+            ...state,
+            runtime: nextRuntime,
+          };
+    }
     case 'apply_prepended_window': {
       const nextBreaks = new Set(state.groupBreakBeforeIds);
       nextBreaks.add(action.seamBreakBeforeId);
@@ -672,6 +686,15 @@ export const useMessageList = (
 
   const setIsAtPresent = useCallback((value: SetStateAction<boolean>) => {
     dispatchWindowState({ type: 'set_is_at_present', value });
+  }, []);
+
+  const recordMessageHeights = useCallback((
+    measurements: Array<{ messageId: string; height: number }>,
+  ) => {
+    if (measurements.length === 0) {
+      return;
+    }
+    dispatchWindowState({ type: 'record_measured_heights', measurements });
   }, []);
 
   const applyPrependedWindow = useCallback((params: {
@@ -924,6 +947,7 @@ export const useMessageList = (
     bottomSpacerHeight,
     groupBreakBeforeIds,
     setIsAtPresent,
+    recordMessageHeights,
     handleDelete,
     getReplyParent,
     isReplyParentLoading,

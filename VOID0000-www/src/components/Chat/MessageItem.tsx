@@ -37,6 +37,11 @@ import {
   isMessageUrlInsideSpoiler,
   messageTextContainsUrl,
 } from './messageLinks';
+import {
+  getSingleAttachmentReservedPresentation,
+  looksLikeImageAttachment,
+  MULTI_ATTACHMENT_MAX_WIDTH,
+} from './messageAttachmentLayout';
 
 const DENSITY: Record<Density, {
   consecutiveGap: number;
@@ -60,15 +65,6 @@ const SWIPE_START_THRESHOLD = 12;
 const SWIPE_START_THRESHOLD_ATTACHMENT = 18;
 const SWIPE_ACTION_THRESHOLD = 68;
 const SWIPE_ACTION_THRESHOLD_ATTACHMENT = 84;
-const SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH = 550;
-const SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH = 320;
-const SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH = 440;
-const SINGLE_ATTACHMENT_MAX_HEIGHT = 520;
-const SINGLE_ATTACHMENT_MIN_WIDTH = 160;
-const SINGLE_ATTACHMENT_FALLBACK_WIDTH = 360;
-const MULTI_ATTACHMENT_MAX_WIDTH = 440;
-const LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD = 1.2;
-const PORTRAIT_ATTACHMENT_RATIO_THRESHOLD = 0.9;
 const UNAVAILABLE_REPLY_CONTENT = '[deleted or unavailable]';
 const replyPreviewAttachmentUrlCache = new Map<string, string>();
 const replyPreviewAttachmentUrlPromises = new Map<string, Promise<string>>();
@@ -117,46 +113,6 @@ interface MessageItemProps {
   isHighlighted?: boolean;
 }
 
-function getSingleAttachmentPresentation(attachment: {
-  width?: number;
-  height?: number;
-}): { width: number; aspectRatio: string } | null {
-  const width = attachment.width;
-  const height = attachment.height;
-
-  if (
-    typeof width !== 'number' ||
-    typeof height !== 'number' ||
-    !Number.isFinite(width) ||
-    !Number.isFinite(height) ||
-    width <= 0 ||
-    height <= 0
-  ) {
-    return null;
-  }
-
-  const aspectRatio = width / height;
-  const maxWidth = aspectRatio >= LANDSCAPE_ATTACHMENT_RATIO_THRESHOLD
-    ? SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH
-    : aspectRatio <= PORTRAIT_ATTACHMENT_RATIO_THRESHOLD
-      ? SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH
-      : SINGLE_ATTACHMENT_MAX_SQUARE_WIDTH;
-
-  const fitScale = Math.min(
-    maxWidth / width,
-    SINGLE_ATTACHMENT_MAX_HEIGHT / height,
-  );
-  const naturalScale = Math.min(1, fitScale);
-  const minimumWidthScale = Math.min(SINGLE_ATTACHMENT_MIN_WIDTH / width, fitScale);
-  const displayScale = Math.max(naturalScale, minimumWidthScale);
-  const displayWidth = width * displayScale;
-
-  return {
-    width: Math.round(displayWidth),
-    aspectRatio: `${width} / ${height}`,
-  };
-}
-
 function getMultiAttachmentGridClass(attachmentCount: number): string {
   if (attachmentCount <= 1) {
     return 'flex';
@@ -183,29 +139,6 @@ function getMultiAttachmentTileClass(attachmentCount: number, index: number): st
 
 function getAttachmentLayoutKey(attachment: { url: string; name?: string }, index: number): string {
   return `${attachment.url}::${attachment.name || 'attachment'}::${index}`;
-}
-
-function looksLikeImageAttachment(attachment: {
-  url: string;
-  mime?: string;
-  blurhash?: string;
-  width?: number;
-  height?: number;
-}): boolean {
-  if (attachment.mime?.startsWith('image/')) {
-    return true;
-  }
-
-  if (attachment.blurhash || attachment.width || attachment.height) {
-    return true;
-  }
-
-  try {
-    const pathname = new URL(attachment.url, window.location.origin).pathname.toLowerCase();
-    return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(pathname);
-  } catch {
-    return false;
-  }
 }
 
 function isUnavailableReplyPlaceholder(message: Message): boolean {
@@ -328,11 +261,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
     cacheKey: firstAttachmentCacheKey,
     url: cachedThumbnailUrl,
   });
-  const [resolvedImageDimensions, setResolvedImageDimensions] = useState<{
-    cacheKey: string | null;
-    width: number;
-    height: number;
-  } | null>(null);
   const additionalAttachmentCount = Math.max(0, replyAttachments.length - 1);
   const replyAuthorName = isOwn ? 'You' : getSenderName(message.sender_id);
   const targetName = replyParent?.sender_id
@@ -345,25 +273,15 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
       ? resolvedThumbnail.url
       : null
   ) || cachedThumbnailUrl : null;
-  const replyImageDimensions = resolvedImageDimensions?.cacheKey === firstAttachmentCacheKey
-    ? resolvedImageDimensions
-    : null;
   const replyImagePresentation = firstAttachment && firstAttachmentIsImage
-    ? getSingleAttachmentPresentation({
-        ...firstAttachment,
-        width: firstAttachment.width ?? replyImageDimensions?.width,
-        height: firstAttachment.height ?? replyImageDimensions?.height,
-      })
+    ? getSingleAttachmentReservedPresentation(firstAttachment)
     : null;
   const replyImageStyle: CSSProperties = replyImagePresentation
     ? {
         width: `${replyImagePresentation.width}px`,
         aspectRatio: replyImagePresentation.aspectRatio,
       }
-    : {
-        width: `${SINGLE_ATTACHMENT_FALLBACK_WIDTH}px`,
-        aspectRatio: '1 / 1',
-      };
+    : {};
   const textShellClass = isCompact
     ? 'min-h-[34px] max-h-11 px-2 py-1'
     : 'min-h-[40px] max-h-14 px-2.5 py-1.5';
@@ -525,16 +443,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                   alt=""
                   className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
                   loading="lazy"
-                  onLoad={(event) => {
-                    if (!firstAttachmentCacheKey) return;
-                    const image = event.currentTarget;
-                    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
-                    setResolvedImageDimensions({
-                      cacheKey: firstAttachmentCacheKey,
-                      width: image.naturalWidth,
-                      height: image.naturalHeight,
-                    });
-                  }}
                 />
               ) : firstAttachmentIsImage ? (
                 <Image className="h-4 w-4" />
@@ -590,16 +498,6 @@ const CompactReplyPreview = memo(function CompactReplyPreview({
                     alt=""
                     className="h-full w-full object-cover opacity-70 saturate-75 brightness-75 transition-opacity group-hover:opacity-85"
                     loading="lazy"
-                    onLoad={(event) => {
-                      if (!firstAttachmentCacheKey) return;
-                      const image = event.currentTarget;
-                      if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
-                      setResolvedImageDimensions({
-                        cacheKey: firstAttachmentCacheKey,
-                        width: image.naturalWidth,
-                        height: image.naturalHeight,
-                      });
-                    }}
                   />
                 ) : firstAttachmentIsImage ? (
                   <Image className="h-4 w-4" />
@@ -691,7 +589,6 @@ const MessageItem = memo(function MessageItem({
     spoilerIds: new Set(),
     coverRevealed: false,
   }));
-  const [attachmentDimensions, setAttachmentDimensions] = useState<Record<string, { width: number; height: number }>>({});
   const [revealedSpoilerAttachments, setRevealedSpoilerAttachments] = useState<Set<string>>(
     () => new Set(),
   );
@@ -760,19 +657,15 @@ const MessageItem = memo(function MessageItem({
     [attachmentEntries],
   );
   const singleImageEntry = imageAttachmentEntries.length === 1 ? imageAttachmentEntries[0] : null;
-  const singleImageLayoutKey = singleImageEntry
-    ? getAttachmentLayoutKey(singleImageEntry.attachment, singleImageEntry.originalIndex)
-    : null;
-  const singleImageResolvedDimensions = singleImageLayoutKey
-    ? attachmentDimensions[singleImageLayoutKey]
-    : undefined;
   const singleImagePresentation = singleImageEntry
-    ? getSingleAttachmentPresentation({
-        ...singleImageEntry.attachment,
-        width: singleImageEntry.attachment.width ?? singleImageResolvedDimensions?.width,
-        height: singleImageEntry.attachment.height ?? singleImageResolvedDimensions?.height,
-      })
+    ? getSingleAttachmentReservedPresentation(singleImageEntry.attachment)
     : null;
+  const singleImageStyle: CSSProperties | undefined = singleImagePresentation
+    ? {
+        width: `${singleImagePresentation.width}px`,
+        aspectRatio: singleImagePresentation.aspectRatio,
+      }
+    : undefined;
 
   const clearLongPressTimer = useCallback(() => {
     if (longPressTimerRef.current !== null) {
@@ -822,7 +715,6 @@ const MessageItem = memo(function MessageItem({
   }, [clearLongPressTimer]);
 
   useEffect(() => {
-    setAttachmentDimensions({});
     setRevealedSpoilerAttachments(new Set());
   }, [message.message_id]);
 
@@ -1475,7 +1367,6 @@ const MessageItem = memo(function MessageItem({
 
             const imageSection = imageEntries.length > 0
               ? (() => {
-                  const singleAttachmentPresentation = imageEntries.length === 1 ? singleImagePresentation : null;
                   const visibleImages = imageEntries.length > 3 ? imageEntries.slice(0, 3) : imageEntries;
                   const hiddenImageCount = Math.max(0, imageEntries.length - visibleImages.length);
                   const viewerRawAttachments = imageEntries.map(({ raw }) => raw);
@@ -1513,20 +1404,11 @@ const MessageItem = memo(function MessageItem({
                             data-message-gesture-target="attachment"
                             disabled={isPending || openingImageViewer}
                             className={`relative block rounded-xl overflow-hidden bg-void-bg-hover focus:outline-none ${
-                              imageEntries.length === 1 && singleAttachmentPresentation
+                              imageEntries.length === 1
                                 ? 'max-w-full'
                                 : getMultiAttachmentTileClass(visibleImages.length, index)
                             } ${isPending ? 'cursor-not-allowed' : ''}`}
-                            style={imageEntries.length === 1 && singleAttachmentPresentation
-                              ? {
-                                  width: `${singleAttachmentPresentation.width}px`,
-                                  aspectRatio: singleAttachmentPresentation.aspectRatio,
-                                }
-                              : imageEntries.length === 1
-                                ? {
-                                    width: `${SINGLE_ATTACHMENT_FALLBACK_WIDTH}px`,
-                                  }
-                                : undefined}
+                            style={imageEntries.length === 1 ? singleImageStyle : undefined}
                           >
                             <AttachmentImage
                               attachment={attachment}
@@ -1534,25 +1416,6 @@ const MessageItem = memo(function MessageItem({
                               alt="attachment"
                               className="w-full h-full object-cover hover:opacity-90"
                               onLoad={onAttachmentLoad}
-                              onDimensionsResolved={(dimensions) => {
-                                if (imageEntries.length !== 1) return;
-                                const layoutKey = getAttachmentLayoutKey(attachment, originalIndex);
-                                setAttachmentDimensions((current) => {
-                                  const existing = current[layoutKey];
-                                  if (
-                                    existing &&
-                                    existing.width === dimensions.width &&
-                                    existing.height === dimensions.height
-                                  ) {
-                                    return current;
-                                  }
-
-                                  return {
-                                    ...current,
-                                    [layoutKey]: dimensions,
-                                  };
-                                });
-                              }}
                               canLoad={canLoadAttachments}
                             />
                             {isSpoilerCovered ? (

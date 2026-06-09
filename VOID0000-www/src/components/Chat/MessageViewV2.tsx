@@ -5,7 +5,6 @@ import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay'
 import { useReactions } from '../../Services/hooks/Chats/useReactions';
 import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
 import {
-  parseAttachments,
   sendImageOnlyMessage,
   sendMessage,
 } from '../../Services/Chat/chatService';
@@ -33,6 +32,10 @@ import { useMessageActions } from './useMessageActions';
 import { useMessageLayout } from './useMessageLayout';
 import { useMessageScrollGeometry } from './useMessageScrollGeometry';
 import { useMessageTimelineVirtualizer } from './useMessageTimelineVirtualizer';
+import {
+  estimateHistoryLogicalRowHeight,
+  estimateMessageRowHeight,
+} from './messageRowHeight';
 import { useNearViewportMessages } from './useNearViewportMessages';
 import type {
   MessageDelete,
@@ -72,6 +75,7 @@ interface HistoryLoadScrollSnapshot {
   scrollTop: number;
   anchorMessageId: string | null;
   anchorOffsetTop: number | null;
+  readyToRestore: boolean;
 }
 
 interface MessageAnchorSnapshot {
@@ -81,6 +85,7 @@ interface MessageAnchorSnapshot {
 
 interface NewerHistoryLoadScrollSnapshot extends HistoryLoadScrollSnapshot {
   fallbackAnchors: MessageAnchorSnapshot[];
+  distanceFromBottom: number;
 }
 
 const normalizeText = (value?: string | null) => {
@@ -194,6 +199,7 @@ const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
 const HISTORY_RATE_LIMIT_FALLBACK_MS = 6_000;
 const HISTORY_RATE_LIMIT_MAX_MS = 30_000;
+const MAX_MEASURED_MESSAGE_HEIGHTS = 360;
 const ENABLE_SCROLL_GEOMETRY_COMPACTION = true;
 const MAX_PHYSICAL_HISTORY_SPACER_HEIGHT = 4_000;
 const OLDER_HISTORY_LOADER_SLOT_HEIGHT: Record<Density, number> = {
@@ -207,14 +213,6 @@ const OLDER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
 const NEWER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
   compact: 720,
   comfortable: 640,
-};
-const HISTORY_LOGICAL_ROW_ESTIMATE: Record<Density, number> = {
-  compact: 56,
-  comfortable: 76,
-};
-const ESTIMATED_MESSAGE_ROW_HEIGHT: Record<Density, number> = {
-  compact: 56,
-  comfortable: 76,
 };
 const MAX_VISIBLE_SKELETON_ROWS = 16;
 
@@ -324,25 +322,6 @@ const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
   );
 });
 
-const estimateMessageRowHeight = (message: Message, density: Density): number => {
-  if (message.message_type === 'system') {
-    return density === 'comfortable' ? 44 : 36;
-  }
-
-  const baseHeight = ESTIMATED_MESSAGE_ROW_HEIGHT[density];
-  const content = typeof message.content === 'string' ? message.content : '';
-  const approxCharsPerLine = density === 'comfortable' ? 44 : 52;
-  const approxLines = Math.max(1, Math.ceil(content.length / approxCharsPerLine));
-  const textHeight = Math.min(180, approxLines * (density === 'comfortable' ? 22 : 19));
-  const attachmentHeight = parseAttachments(message.attachments).length > 0
-    ? (density === 'comfortable' ? 240 : 200)
-    : 0;
-  const replyHeight = message.reply_to ? 38 : 0;
-  const forwardedHeight = message.forwarded ? 24 : 0;
-
-  return Math.max(baseHeight, baseHeight + textHeight + attachmentHeight + replyHeight + forwardedHeight);
-};
-
 const MessageViewV2 = memo(function MessageViewV2({
   conversation,
   encryptionKey,
@@ -378,6 +357,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const lastOwnSendJumpRequestRef = useRef(ownSendJumpRequest);
   const pendingOlderLoadScrollSnapshotRef = useRef<HistoryLoadScrollSnapshot | null>(null);
   const pendingNewerLoadScrollSnapshotRef = useRef<NewerHistoryLoadScrollSnapshot | null>(null);
+  const historyScrollTransactionActiveRef = useRef(false);
   const pendingMessageJumpTargetRef = useRef<string | null>(null);
   const hasOlderRef = useRef(false);
   const hasNewerRef = useRef(false);
@@ -410,15 +390,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
   const olderHistoryLoaderSlotHeight = OLDER_HISTORY_LOADER_SLOT_HEIGHT[density];
   const olderTopLoadThreshold = OLDER_HISTORY_PREFETCH_DISTANCE[density];
-  const historyLogicalRowEstimate = HISTORY_LOGICAL_ROW_ESTIMATE[density];
-  const historyLogicalSlotHeight = Math.max(
-    olderHistoryLoaderSlotHeight,
-    MESSAGE_PAGE_SIZE * historyLogicalRowEstimate,
-  );
-  const maxPhysicalBottomSpacerHeight = Math.min(
-    MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
-    historyLogicalSlotHeight,
-  );
   const olderTopScrollLockThreshold = 2;
   const newerBottomScrollLockThreshold = 2;
   const newerBottomLoadThreshold = NEWER_HISTORY_PREFETCH_DISTANCE[density];
@@ -470,6 +441,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     bottomSpacerHeight,
     groupBreakBeforeIds,
     setIsAtPresent,
+    recordMessageHeights,
     handleDelete,
     getReplyParent,
     isReplyParentLoading,
@@ -507,6 +479,18 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  const historyLogicalRowEstimate = useMemo(
+    () => estimateHistoryLogicalRowHeight(visualMessages, density),
+    [density, visualMessages],
+  );
+  const historyLogicalSlotHeight = Math.max(
+    olderHistoryLoaderSlotHeight,
+    MESSAGE_PAGE_SIZE * historyLogicalRowEstimate,
+  );
+  const maxPhysicalBottomSpacerHeight = Math.min(
+    MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
+    historyLogicalSlotHeight,
+  );
   const nearViewportMessageIds = useNearViewportMessages(scrollerElement, conversation.id);
   const firstVisualMessageId = visualMessages[0]?.message_id;
   const lastVisualMessageId = visualMessages[visualMessages.length - 1]?.message_id;
@@ -577,7 +561,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     getLoadedScrollHeight,
   } = useMessageScrollGeometry({
     scrollerRef,
-    topCompensationBlockerRef: pendingOlderLoadScrollSnapshotRef,
+    scrollCompensationBlockerRef: historyScrollTransactionActiveRef,
     resetKey: conversation.id,
     topSpacerHeight,
     bottomSpacerHeight,
@@ -726,6 +710,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     lastFollowedMessageEventSequenceRef.current = 0;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
+    historyScrollTransactionActiveRef.current = false;
     pendingMessageJumpTargetRef.current = null;
     hasOlderRef.current = false;
     hasNewerRef.current = false;
@@ -928,20 +913,59 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     const elements = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'));
+    const pendingMeasurements = new Map<string, number>();
+    let measurementFrame: number | null = null;
+    const flushMeasurements = () => {
+      measurementFrame = null;
+      if (pendingMeasurements.size === 0) {
+        return;
+      }
+
+      recordMessageHeights(
+        Array.from(pendingMeasurements, ([messageId, height]) => ({ messageId, height })),
+      );
+      pendingMeasurements.clear();
+    };
+    const scheduleMeasurementFlush = () => {
+      if (measurementFrame !== null) {
+        return;
+      }
+      measurementFrame = window.requestAnimationFrame(flushMeasurements);
+    };
     const measureElement = (element: HTMLElement) => {
       const messageId = element.dataset.messageId;
       if (!messageId) return;
 
       const measuredHeight = element.getBoundingClientRect().height;
       if (Number.isFinite(measuredHeight) && measuredHeight > 0) {
-        messageHeightCacheRef.current.set(String(messageId), measuredHeight);
+        const normalizedMessageId = String(messageId);
+        const previousHeight = messageHeightCacheRef.current.get(normalizedMessageId);
+        if (typeof previousHeight === 'number' && Math.abs(previousHeight - measuredHeight) <= 0.5) {
+          return;
+        }
+
+        messageHeightCacheRef.current.delete(normalizedMessageId);
+        messageHeightCacheRef.current.set(normalizedMessageId, measuredHeight);
+        while (messageHeightCacheRef.current.size > MAX_MEASURED_MESSAGE_HEIGHTS) {
+          const oldestMessageId = messageHeightCacheRef.current.keys().next().value;
+          if (typeof oldestMessageId !== 'string') {
+            break;
+          }
+          messageHeightCacheRef.current.delete(oldestMessageId);
+        }
+        pendingMeasurements.set(normalizedMessageId, measuredHeight);
+        scheduleMeasurementFlush();
       }
     };
 
     elements.forEach(measureElement);
 
     if (typeof ResizeObserver === 'undefined') {
-      return undefined;
+      return () => {
+        if (measurementFrame !== null) {
+          window.cancelAnimationFrame(measurementFrame);
+        }
+      };
     }
 
     const observer = new ResizeObserver((entries) => {
@@ -953,9 +977,15 @@ const MessageViewV2 = memo(function MessageViewV2({
     });
 
     elements.forEach((element) => observer.observe(element));
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (measurementFrame !== null) {
+        window.cancelAnimationFrame(measurementFrame);
+      }
+    };
   }, [
     density,
+    recordMessageHeights,
     visualMessages.length,
     firstVisualMessageId,
     lastVisualMessageId,
@@ -1031,8 +1061,10 @@ const MessageViewV2 = memo(function MessageViewV2({
       scrollTop: scroller.scrollTop,
       anchorMessageId: anchor?.messageId ?? null,
       anchorOffsetTop: anchor?.offsetTop ?? null,
+      readyToRestore: false,
     };
     pendingOlderLoadScrollSnapshotRef.current = snapshot;
+    historyScrollTransactionActiveRef.current = true;
     return snapshot;
   }, []);
 
@@ -1047,9 +1079,12 @@ const MessageViewV2 = memo(function MessageViewV2({
       scrollTop: scroller.scrollTop,
       anchorMessageId: anchor?.messageId ?? null,
       anchorOffsetTop: anchor?.offsetTop ?? null,
+      readyToRestore: false,
       fallbackAnchors: anchors.slice(1),
+      distanceFromBottom: scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight),
     };
     pendingNewerLoadScrollSnapshotRef.current = snapshot;
+    historyScrollTransactionActiveRef.current = true;
     return snapshot;
   }, []);
 
@@ -1062,10 +1097,43 @@ const MessageViewV2 = memo(function MessageViewV2({
       pendingOlderSnapshot &&
       Math.abs(scroller.scrollHeight - pendingOlderSnapshot.scrollHeight) <= OLDER_LOAD_SCROLL_UPDATE_THRESHOLD
     ) {
+      const scrollDelta = scroller.scrollTop - pendingOlderSnapshot.scrollTop;
       pendingOlderSnapshot.scrollTop = scroller.scrollTop;
       const anchor = getFirstVisibleMessageAnchor(scroller);
-      pendingOlderSnapshot.anchorMessageId = anchor?.messageId ?? null;
-      pendingOlderSnapshot.anchorOffsetTop = anchor?.offsetTop ?? null;
+      if (anchor) {
+        pendingOlderSnapshot.anchorMessageId = anchor.messageId;
+        pendingOlderSnapshot.anchorOffsetTop = anchor.offsetTop;
+      } else if (pendingOlderSnapshot.anchorOffsetTop !== null) {
+        pendingOlderSnapshot.anchorOffsetTop -= scrollDelta;
+      }
+    }
+
+    const pendingNewerSnapshot = pendingNewerLoadScrollSnapshotRef.current;
+    if (
+      pendingNewerSnapshot &&
+      Math.abs(scroller.scrollHeight - pendingNewerSnapshot.scrollHeight) <= OLDER_LOAD_SCROLL_UPDATE_THRESHOLD
+    ) {
+      const scrollDelta = scroller.scrollTop - pendingNewerSnapshot.scrollTop;
+      pendingNewerSnapshot.scrollTop = scroller.scrollTop;
+      pendingNewerSnapshot.distanceFromBottom =
+        scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
+      const anchors = getMessageAnchorsAroundViewport(scroller);
+      const anchor = anchors[0];
+      if (anchor) {
+        pendingNewerSnapshot.anchorMessageId = anchor.messageId;
+        pendingNewerSnapshot.anchorOffsetTop = anchor.offsetTop;
+        pendingNewerSnapshot.fallbackAnchors = anchors.slice(1);
+      } else {
+        if (pendingNewerSnapshot.anchorOffsetTop !== null) {
+          pendingNewerSnapshot.anchorOffsetTop -= scrollDelta;
+        }
+        pendingNewerSnapshot.fallbackAnchors = pendingNewerSnapshot.fallbackAnchors.map(
+          (fallbackAnchor) => ({
+            ...fallbackAnchor,
+            offsetTop: fallbackAnchor.offsetTop - scrollDelta,
+          }),
+        );
+      }
     }
 
     const scrollState = getScrollState(scroller);
@@ -1133,6 +1201,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     pendingMessageJumpTargetRef.current = targetMessageId;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
+    historyScrollTransactionActiveRef.current = false;
     forceFollowOutputRef.current = false;
     setOlderRangeError(false);
     setNewerRangeError(false);
@@ -1209,14 +1278,19 @@ const MessageViewV2 = memo(function MessageViewV2({
         scrollTop: snapshot.scrollTop,
         anchorMessageId: anchor.messageId,
         anchorOffsetTop: anchor.offsetTop,
+        readyToRestore: true,
       })) {
         syncScrollState();
         return true;
       }
     }
 
+    scroller.scrollTop = Math.max(
+      0,
+      scroller.scrollHeight - scroller.clientHeight - snapshot.distanceFromBottom,
+    );
     syncScrollState();
-    return false;
+    return true;
   }, [syncScrollState]);
 
   useEffect(() => {
@@ -1246,36 +1320,30 @@ const MessageViewV2 = memo(function MessageViewV2({
     const didLoad = await loadOlder();
     const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
     setOlderRangeError(didLoad === false && !isHistoryPaused);
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!snapshot || pendingOlderLoadScrollSnapshotRef.current !== snapshot) {
-          return;
-        }
-
-        restoreHistoryLoadScrollSnapshot(snapshot);
-        pendingOlderLoadScrollSnapshotRef.current = null;
-      });
-    });
-  }, [captureHistoryLoadScrollSnapshot, loadOlder, restoreHistoryLoadScrollSnapshot]);
+    if (didLoad && snapshot && pendingOlderLoadScrollSnapshotRef.current === snapshot) {
+      snapshot.readyToRestore = true;
+    } else if (!didLoad && snapshot && pendingOlderLoadScrollSnapshotRef.current === snapshot) {
+      pendingOlderLoadScrollSnapshotRef.current = null;
+      if (!pendingNewerLoadScrollSnapshotRef.current) {
+        historyScrollTransactionActiveRef.current = false;
+      }
+    }
+  }, [captureHistoryLoadScrollSnapshot, loadOlder]);
 
   const loadNewerPreservingViewport = useCallback(async () => {
     const snapshot = captureNewerHistoryLoadScrollSnapshot();
     const didLoad = await loadNewer();
     const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
     setNewerRangeError(didLoad === false && !isHistoryPaused);
-
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!snapshot || pendingNewerLoadScrollSnapshotRef.current !== snapshot) {
-          return;
-        }
-
-        restoreNewerHistoryLoadScrollSnapshot(snapshot);
-        pendingNewerLoadScrollSnapshotRef.current = null;
-      });
-    });
-  }, [captureNewerHistoryLoadScrollSnapshot, loadNewer, restoreNewerHistoryLoadScrollSnapshot]);
+    if (didLoad && snapshot && pendingNewerLoadScrollSnapshotRef.current === snapshot) {
+      snapshot.readyToRestore = true;
+    } else if (!didLoad && snapshot && pendingNewerLoadScrollSnapshotRef.current === snapshot) {
+      pendingNewerLoadScrollSnapshotRef.current = null;
+      if (!pendingOlderLoadScrollSnapshotRef.current) {
+        historyScrollTransactionActiveRef.current = false;
+      }
+    }
+  }, [captureNewerHistoryLoadScrollSnapshot, loadNewer]);
 
   useLayoutEffect(() => {
     const targetMessageId = pendingMessageJumpTargetRef.current;
@@ -1559,6 +1627,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     forceFollowOutputRef.current = true;
     pendingOlderLoadScrollSnapshotRef.current = null;
     pendingNewerLoadScrollSnapshotRef.current = null;
+    historyScrollTransactionActiveRef.current = false;
     pendingMessageJumpTargetRef.current = null;
     setOlderRangeError(false);
     setNewerRangeError(false);
@@ -1705,19 +1774,39 @@ const MessageViewV2 = memo(function MessageViewV2({
   ]);
 
   useLayoutEffect(() => {
-    const snapshot = pendingOlderLoadScrollSnapshotRef.current;
     const scroller = scrollerRef.current;
-    if (!snapshot || !scroller) {
+    if (!scroller) {
       return;
     }
 
-    restoreHistoryLoadScrollSnapshot(snapshot);
-    pendingOlderLoadScrollSnapshotRef.current = null;
+    const olderSnapshot = pendingOlderLoadScrollSnapshotRef.current;
+    if (olderSnapshot?.readyToRestore) {
+      restoreHistoryLoadScrollSnapshot(olderSnapshot);
+      pendingOlderLoadScrollSnapshotRef.current = null;
+    }
+
+    const newerSnapshot = pendingNewerLoadScrollSnapshotRef.current;
+    if (newerSnapshot?.readyToRestore) {
+      restoreNewerHistoryLoadScrollSnapshot(newerSnapshot);
+      pendingNewerLoadScrollSnapshotRef.current = null;
+    }
+
+    if (
+      !pendingOlderLoadScrollSnapshotRef.current &&
+      !pendingNewerLoadScrollSnapshotRef.current
+    ) {
+      historyScrollTransactionActiveRef.current = false;
+    }
   }, [
+    bottomSpacerHeight,
     hasOlder,
+    hasNewer,
+    restoreNewerHistoryLoadScrollSnapshot,
     restoreHistoryLoadScrollSnapshot,
+    topSpacerHeight,
     visualMessages.length,
     firstVisualMessageId,
+    lastVisualMessageId,
   ]);
 
   useEffect(() => {
@@ -1879,7 +1968,7 @@ const MessageViewV2 = memo(function MessageViewV2({
         ref={setScrollerRef}
         onScroll={handleScroll}
         className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
-        style={{ overflowAnchor: 'auto', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}
+        style={{ overflowAnchor: 'none', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}
       >
         {/* Older logical range: lets fast scroll enter unloaded history while the real batch is fetched. */}
         {topLogicalRangeHeight > 1 && (
