@@ -1,6 +1,11 @@
 // src/Services/Auth/UserContext.tsx
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
-import { authService, fetchWithAuth } from './authServiceApi';
+import {
+  authService,
+  fetchWithAuth,
+  isAuthSessionUnavailableError,
+  AuthSessionUnavailableError,
+} from './authServiceApi';
 import { clearAppBootstrap, fetchAppBootstrap } from '../bootstrap';
 import { gateway } from '../Gateway/gateway';
 import { keyManager } from '../Crypto/keyManager';
@@ -72,11 +77,17 @@ export function UserProvider({ children }: { children: ReactNode }) {
     reason: null,
   });
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
+  const [authRetrying, setAuthRetrying] = useState(false);
 
   const loginPasswordRef = useRef<string | null>(null);
   const loginPasswordClearTimerRef = useRef<number | null>(null);
   const liveConversationKeyVersionsRef = useRef<Record<string, number>>({});
   const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
+  const authRetryingRef = useRef(false);
+  const verifySessionRef = useRef<() => Promise<'authenticated' | 'invalid' | 'unavailable'>>(
+    async () => 'unavailable',
+  );
 
   const clearLoginPassword = () => {
     loginPasswordRef.current = null;
@@ -239,12 +250,21 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
 
       const authResponse = await fetchWithAuth('/api/me');
-      if (!authResponse.ok) return null;
+      if (!authResponse.ok) {
+        if (authResponse.status === 401) {
+          return null;
+        }
+        throw new AuthSessionUnavailableError();
+      }
       const authData = await authResponse.json();
-      if (!authData.success) return null;
+      if (!authData.success || !authData.user) {
+        throw new AuthSessionUnavailableError();
+      }
 
       const accountResponse = await fetchWithAuth('/api/users/account');
-      if (!accountResponse.ok) return null;
+      if (!accountResponse.ok) {
+        throw new AuthSessionUnavailableError();
+      }
       const accountData = await accountResponse.json();
 
       if (accountData.success && accountData.account) {
@@ -252,6 +272,9 @@ export function UserProvider({ children }: { children: ReactNode }) {
       }
       return authData.user;
     } catch (err) {
+      if (isAuthSessionUnavailableError(err)) {
+        throw err;
+      }
       console.error('Failed to fetch user:', err);
       return null;
     }
@@ -260,9 +283,60 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const refreshUser = async () => {
     try {
       const freshUser = await fetchFullUser(true);
-      if (freshUser) setUser(freshUser as User);
+      if (freshUser) {
+        setUser(freshUser as User);
+        setAuthUnavailable(false);
+      }
     } catch (err) {
+      if (isAuthSessionUnavailableError(err)) {
+        setAuthUnavailable(true);
+        return;
+      }
       console.error('Failed to refresh user:', err);
+    }
+  };
+
+  const clearLocalAuthState = () => {
+    setUser(null);
+    Object.keys(localStorage).forEach((key) => {
+      if (key.startsWith('void_')) localStorage.removeItem(key);
+    });
+  };
+
+  const verifySession = async (): Promise<'authenticated' | 'invalid' | 'unavailable'> => {
+    try {
+      const freshUser = await fetchFullUser(true);
+      if (freshUser?.username) {
+        setUser(freshUser as User);
+        setAuthUnavailable(false);
+        return 'authenticated';
+      }
+
+      setAuthUnavailable(false);
+      clearLocalAuthState();
+      return 'invalid';
+    } catch (error) {
+      if (isAuthSessionUnavailableError(error)) {
+        setAuthUnavailable(true);
+        return 'unavailable';
+      }
+
+      console.error('Session verification failed:', error);
+      setAuthUnavailable(true);
+      return 'unavailable';
+    }
+  };
+  verifySessionRef.current = verifySession;
+
+  const retryAuth = async () => {
+    if (authRetryingRef.current) return;
+    authRetryingRef.current = true;
+    setAuthRetrying(true);
+    try {
+      await verifySessionRef.current();
+    } finally {
+      authRetryingRef.current = false;
+      setAuthRetrying(false);
     }
   };
 
@@ -484,23 +558,14 @@ export function UserProvider({ children }: { children: ReactNode }) {
     const init = async () => {
       const stored = localStorage.getItem(USER_STORAGE_KEY);
       if (stored) {
-        const freshUser = await fetchFullUser();
-        if (freshUser && freshUser.username) {
-          setUser(freshUser as User);
-        } else {
-          setUser(null);
-          Object.keys(localStorage).forEach((key) => {
-            if (key.startsWith('void_')) localStorage.removeItem(key);
-          });
-        }
+        await verifySessionRef.current();
       } else {
         setLoading(true);
-        const freshUser = await fetchFullUser();
-        if (freshUser && freshUser.username) setUser(freshUser as User);
+        await verifySessionRef.current();
         setLoading(false);
       }
     };
-    init();
+    void init();
   }, []);
 
   // Gateway connection
@@ -965,6 +1030,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
     <UserContext.Provider value={{
       user,
       loading,
+      authUnavailable,
+      authRetrying,
       keyStatus,
       recoveryBackupStatus,
       keyStatusLoading,
@@ -972,6 +1039,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
       isLoggingOut,
       setUser,
       refreshUser,
+      verifySession,
+      retryAuth,
       refreshKeyStatus,
       logout,
       setLoginPassword,

@@ -95,15 +95,26 @@ function logLimitHit(req, logAction) {
 }
 
 function sendLockoutResponse(res, policy, result) {
-  res.set('Retry-After', String(result.retrySeconds));
+  const now = Date.now();
+  const cooldownUntil = Math.max(
+    now + (result.retrySeconds * 1000),
+    Number(result.resetTime) || 0,
+  );
+  const retryAfterMs = Math.max(1_000, cooldownUntil - now);
+  const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+
+  res.set('Retry-After', String(retryAfterSeconds));
 
   return res.status(429).json({
     success: false,
     message: policy.message,
     code: policy.code,
-    retryAfter: `${result.retrySeconds} seconds`,
-    retryAfterSeconds: result.retrySeconds,
-    resetTime: result.resetTime,
+    retryAfterMs,
+    cooldownUntil,
+    // Keep the legacy fields during rollout for older clients.
+    retryAfter: `${retryAfterSeconds} seconds`,
+    retryAfterSeconds,
+    resetTime: cooldownUntil,
   });
 }
 

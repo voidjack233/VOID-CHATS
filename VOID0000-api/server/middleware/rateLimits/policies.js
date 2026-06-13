@@ -33,6 +33,8 @@ function multiBucket(policy) {
 export const RATE_LIMIT_POLICIES = Object.freeze({
   authDevice: authLockout({
     keyPrefix: 'auth:login',
+    code: 'LOGIN_RATE_LIMITED',
+    message: 'Too many attempts. Try again later.',
     subjectFields: ['identifier'],
     dimensions: [
       {

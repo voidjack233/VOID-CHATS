@@ -9,6 +9,38 @@ interface LoginForm {
 }
 
 const PENDING_INVITE_PATH_KEY = 'void_pending_invite_path';
+const LOGIN_COOLDOWN_STORAGE_KEY = 'void_login_cooldown_until';
+const LEGACY_LOGIN_COOLDOWN_STORAGE_KEY = 'loginCooldown';
+const LOGIN_RATE_LIMIT_MESSAGE = 'Too many attempts. Try again later.';
+
+const getCooldownUntil = (error: unknown): number | null => {
+  if (!error || typeof error !== 'object') {
+    return null;
+  }
+
+  const payload = error as {
+    code?: string;
+    cooldownUntil?: number;
+    retryAfterMs?: number;
+    resetTime?: number;
+  };
+  if (
+    payload.code !== 'LOGIN_RATE_LIMITED' &&
+    payload.code !== 'LOGIN_RATE_LIMIT_EXCEEDED'
+  ) {
+    return null;
+  }
+
+  const cooldownUntil = Number(payload.cooldownUntil ?? payload.resetTime);
+  if (Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()) {
+    return cooldownUntil;
+  }
+
+  const retryAfterMs = Number(payload.retryAfterMs);
+  return Number.isFinite(retryAfterMs) && retryAfterMs > 0
+    ? Date.now() + retryAfterMs
+    : null;
+};
 
 function getPostLoginDestination() {
   const pendingInvitePath = sessionStorage.getItem(PENDING_INVITE_PATH_KEY);
@@ -26,6 +58,7 @@ export function useLogin() {
   const [formData, setFormData] = useState<LoginForm>({ identifier: '', password: '' });
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const [cooldown, setCooldown] = useState<number | null>(null);
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [showCaptcha, setShowCaptcha] = useState(false);
@@ -47,13 +80,20 @@ export function useLogin() {
     const { name, value } = e.target;
     const sanitized = value.replace(/ /g, '');
     setFormData(prev => ({ ...prev, [name]: sanitized }));
-    setErrorMessage('');
+    if (cooldown === null) {
+      setErrorMessage('');
+    }
     setUnverifiedEmail(null);
   };
 
   // Step 1: Validate form
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (cooldownUntil && cooldownUntil > Date.now()) {
+      setErrorMessage(LOGIN_RATE_LIMIT_MESSAGE);
+      return;
+    }
 
     if (!formData.identifier.trim() || !formData.password.trim()) {
       setErrorMessage('Please enter both email/username and password');
@@ -78,6 +118,11 @@ export function useLogin() {
 
   // Actual login logic
   const doLogin = async (captchaId?: string, captchaAnswer?: string) => {
+    if (cooldownUntil && cooldownUntil > Date.now()) {
+      setErrorMessage(LOGIN_RATE_LIMIT_MESSAGE);
+      return;
+    }
+
     setIsLoading(true);
     setErrorMessage('');
     setUnverifiedEmail(null);
@@ -130,14 +175,13 @@ export function useLogin() {
         return;
       }
 
-      if (err?.code === 'LOGIN_RATE_LIMIT_EXCEEDED' && err?.resetTime) {
-        const now = Date.now();
-        const remainingSeconds = Math.floor((err.resetTime - now) / 1000);
-        if (remainingSeconds > 0) {
-          setCooldown(remainingSeconds);
-          localStorage.setItem('loginCooldown', err.resetTime.toString());
-        }
-        errorMsg = err.message || 'Too many login attempts. Please wait.';
+      const nextCooldownUntil = getCooldownUntil(err);
+      if (nextCooldownUntil) {
+        setCooldownUntil(nextCooldownUntil);
+        setCooldown(Math.max(1, Math.ceil((nextCooldownUntil - Date.now()) / 1000)));
+        localStorage.setItem(LOGIN_COOLDOWN_STORAGE_KEY, String(nextCooldownUntil));
+        localStorage.removeItem(LEGACY_LOGIN_COOLDOWN_STORAGE_KEY);
+        errorMsg = LOGIN_RATE_LIMIT_MESSAGE;
       } else if (err?.code === 'CAPTCHA_WRONG' || err?.code === 'CAPTCHA_EXPIRED' || err?.code === 'CAPTCHA_INVALID' || err?.code === 'CAPTCHA_MAX_ATTEMPTS') {
         errorMsg = err.message || 'Captcha verification failed.';
       } else if (err instanceof Error) {
@@ -192,28 +236,45 @@ export function useLogin() {
   };
 
   useEffect(() => {
-    const stored = localStorage.getItem('loginCooldown');
+    const stored =
+      localStorage.getItem(LOGIN_COOLDOWN_STORAGE_KEY) ||
+      localStorage.getItem(LEGACY_LOGIN_COOLDOWN_STORAGE_KEY);
     if (stored) {
-      const remaining = Math.floor((+stored - Date.now()) / 1000);
-      if (remaining > 0) setCooldown(remaining);
-      else localStorage.removeItem('loginCooldown');
+      const storedUntil = Number(stored);
+      const remaining = Math.ceil((storedUntil - Date.now()) / 1000);
+      if (remaining > 0) {
+        setCooldownUntil(storedUntil);
+        setCooldown(remaining);
+        setErrorMessage(LOGIN_RATE_LIMIT_MESSAGE);
+        localStorage.setItem(LOGIN_COOLDOWN_STORAGE_KEY, String(storedUntil));
+      } else {
+        localStorage.removeItem(LOGIN_COOLDOWN_STORAGE_KEY);
+      }
+      localStorage.removeItem(LEGACY_LOGIN_COOLDOWN_STORAGE_KEY);
     }
   }, []);
 
   useEffect(() => {
-    if (cooldown === null) return;
+    if (cooldownUntil === null) {
+      setCooldown(null);
+      return;
+    }
 
-    const timer = setInterval(() => {
-      setCooldown(prev => {
-        if (prev === null) return null;
-        if (prev > 1) return prev - 1;
-        localStorage.removeItem('loginCooldown');
+    const updateCooldown = () => {
+      const remaining = Math.ceil((cooldownUntil - Date.now()) / 1000);
+      if (remaining <= 0) {
+        localStorage.removeItem(LOGIN_COOLDOWN_STORAGE_KEY);
+        setCooldownUntil(null);
         return null;
-      });
-    }, 1000);
+      }
+      setCooldown(remaining);
+      return remaining;
+    };
 
+    updateCooldown();
+    const timer = window.setInterval(updateCooldown, 250);
     return () => clearInterval(timer);
-  }, [cooldown]);
+  }, [cooldownUntil]);
 
   return {
     formData,

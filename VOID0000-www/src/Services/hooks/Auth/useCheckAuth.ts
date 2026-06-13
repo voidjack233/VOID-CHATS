@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { authService } from '../../Auth/authServiceApi';
 import { gateway } from '../../Gateway/gateway';
+import { useUser } from '../../Auth/UserContext';
+
+const AUTH_CHECK_COOLDOWN_MS = 5 * 60 * 1000;
 
 /**
  * Re-check authentication when the browser tab becomes visible.
@@ -11,11 +13,13 @@ import { gateway } from '../../Gateway/gateway';
  */
 export const useCheckAuth = () => {
   const navigate = useNavigate();
+  const { verifySession } = useUser();
 
   const isCheckingRef = useRef(false);
   const isMountedRef = useRef(false);
   const lastCheckRef = useRef(0);
-  const COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+  const verifySessionRef = useRef(verifySession);
+  verifySessionRef.current = verifySession;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -24,7 +28,7 @@ export const useCheckAuth = () => {
       if (document.visibilityState !== 'visible') return;
 
       const now = Date.now();
-      if (now - lastCheckRef.current < COOLDOWN_MS) return;
+      if (now - lastCheckRef.current < AUTH_CHECK_COOLDOWN_MS) return;
       lastCheckRef.current = now;
 
       // Reconnect gateway if disconnected (user came back to tab)
@@ -34,13 +38,11 @@ export const useCheckAuth = () => {
       isCheckingRef.current = true;
 
       try {
-        const { authenticated, networkError } = await authService.verifyAuthWithRefresh();
+        const status = await verifySessionRef.current();
 
         if (!isMountedRef.current) return;
 
-        if (networkError) return;
-
-        if (!authenticated) {
+        if (status === 'invalid') {
           navigate('/auth', { replace: true });
         }
       } catch (error) {

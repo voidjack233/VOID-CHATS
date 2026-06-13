@@ -23,6 +23,8 @@ export interface MlsRecoveryGateState {
 export interface UserContextType {
   user: User | null;
   loading: boolean;
+  authUnavailable: boolean;
+  authRetrying: boolean;
   keyStatus: KeyStatus;
   recoveryBackupStatus: RecoveryBackupStatus;
   keyStatusLoading: boolean;
@@ -30,6 +32,8 @@ export interface UserContextType {
   isLoggingOut: boolean;
   setUser: (user: User | null) => void;
   refreshUser: () => Promise<void>;
+  verifySession: () => Promise<'authenticated' | 'invalid' | 'unavailable'>;
+  retryAuth: () => Promise<void>;
   refreshKeyStatus: () => Promise<KeyStatus>;
   logout: () => Promise<void>;
   setLoginPassword: (password: string) => void;

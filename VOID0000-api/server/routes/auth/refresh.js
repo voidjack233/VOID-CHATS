@@ -41,7 +41,7 @@ router.post('/', async (req, res) => {
       console.error('Invalid JWT payload:', decoded);
       return res.status(403).json({
         success: false,
-        code: 'INVALID_TOKEN_STRUCTURE',
+        code: 'TOKEN_INVALID',
         message: 'Malformed token'
       });
     }
@@ -49,7 +49,7 @@ router.post('/', async (req, res) => {
     if (decoded.type !== 'refresh') {
       return res.status(403).json({
         success: false,
-        code: 'INVALID_TOKEN_TYPE',
+        code: 'TOKEN_INVALID',
         message: 'Wrong token type'
       });
     }
