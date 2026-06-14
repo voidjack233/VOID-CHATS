@@ -367,7 +367,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const pendingNewerLoadScrollSnapshotRef = useRef<NewerHistoryLoadScrollSnapshot | null>(null);
   const historyScrollTransactionActiveRef = useRef(false);
   const viewportAnchorLockRef = useRef<ViewportAnchorLock | null>(null);
-  const viewportAnchorRestoreFrameRef = useRef<number | null>(null);
   const viewportAnchorRestoreInProgressRef = useRef(false);
   const showJumpToPresentRef = useRef(false);
   const pendingMessageJumpTargetRef = useRef<string | null>(null);
@@ -722,10 +721,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     viewportAnchorLockRef.current = null;
     viewportAnchorRestoreInProgressRef.current = false;
     showJumpToPresentRef.current = false;
-    if (viewportAnchorRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportAnchorRestoreFrameRef.current);
-      viewportAnchorRestoreFrameRef.current = null;
-    }
     pendingMessageJumpTargetRef.current = null;
     hasOlderRef.current = false;
     hasNewerRef.current = false;
@@ -943,52 +938,20 @@ const MessageViewV2 = memo(function MessageViewV2({
     }
 
     viewportAnchorRestoreInProgressRef.current = true;
-    for (const anchor of lock.anchors) {
-      if (restoreVisibleMessageAnchor(scroller, {
-        anchorMessageId: anchor.messageId,
-        anchorOffsetTop: anchor.offsetTop,
-      })) {
-        return true;
+    try {
+      for (const anchor of lock.anchors) {
+        if (restoreVisibleMessageAnchor(scroller, {
+          anchorMessageId: anchor.messageId,
+          anchorOffsetTop: anchor.offsetTop,
+        })) {
+          return true;
+        }
       }
+    } finally {
+      viewportAnchorRestoreInProgressRef.current = false;
     }
 
     return false;
-  }, []);
-
-  const scheduleViewportAnchorRestores = useCallback((frameCount = 3) => {
-    if (viewportAnchorRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportAnchorRestoreFrameRef.current);
-    }
-
-    let remainingFrames = Math.max(1, frameCount);
-    const restoreNextFrame = () => {
-      viewportAnchorRestoreFrameRef.current = window.requestAnimationFrame(() => {
-        viewportAnchorRestoreFrameRef.current = null;
-        restoreViewportAnchorLock();
-        remainingFrames -= 1;
-
-        if (remainingFrames > 0) {
-          restoreNextFrame();
-          return;
-        }
-
-        viewportAnchorRestoreInProgressRef.current = false;
-        if (
-          !pendingOlderLoadScrollSnapshotRef.current &&
-          !pendingNewerLoadScrollSnapshotRef.current
-        ) {
-          historyScrollTransactionActiveRef.current = false;
-        }
-      });
-    };
-
-    restoreNextFrame();
-  }, [restoreViewportAnchorLock]);
-
-  useEffect(() => () => {
-    if (viewportAnchorRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportAnchorRestoreFrameRef.current);
-    }
   }, []);
 
   // ── Row measurements for logical scroll spacers ──
@@ -1074,7 +1037,6 @@ const MessageViewV2 = memo(function MessageViewV2({
         )
       ) {
         restoreViewportAnchorLock();
-        scheduleViewportAnchorRestores(3);
       }
     });
 
@@ -1089,7 +1051,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     density,
     recordMessageHeights,
     restoreViewportAnchorLock,
-    scheduleViewportAnchorRestores,
     visualMessages.length,
     firstVisualMessageId,
     lastVisualMessageId,
@@ -1395,10 +1356,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     historyScrollTransactionActiveRef.current = false;
     viewportAnchorLockRef.current = null;
     viewportAnchorRestoreInProgressRef.current = false;
-    if (viewportAnchorRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportAnchorRestoreFrameRef.current);
-      viewportAnchorRestoreFrameRef.current = null;
-    }
     forceFollowOutputRef.current = false;
     setOlderRangeError(false);
     setNewerRangeError(false);
@@ -1920,10 +1877,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     historyScrollTransactionActiveRef.current = false;
     viewportAnchorLockRef.current = null;
     viewportAnchorRestoreInProgressRef.current = false;
-    if (viewportAnchorRestoreFrameRef.current !== null) {
-      window.cancelAnimationFrame(viewportAnchorRestoreFrameRef.current);
-      viewportAnchorRestoreFrameRef.current = null;
-    }
     pendingMessageJumpTargetRef.current = null;
     setOlderRangeError(false);
     setNewerRangeError(false);
@@ -1961,7 +1914,6 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     if (!atBottomRef.current && !forceFollowOutputRef.current) {
       restoreViewportAnchorLock();
-      scheduleViewportAnchorRestores(3);
       return;
     }
 
@@ -1972,7 +1924,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [
     highlightedMessageId,
     restoreViewportAnchorLock,
-    scheduleViewportAnchorRestores,
     scrollToBottom,
     scrollToMessageById,
   ]);
@@ -2109,7 +2060,12 @@ const MessageViewV2 = memo(function MessageViewV2({
 
     if (restoredHistoryViewport) {
       captureViewportAnchorLock(scroller);
-      scheduleViewportAnchorRestores(3);
+      if (
+        !pendingOlderLoadScrollSnapshotRef.current &&
+        !pendingNewerLoadScrollSnapshotRef.current
+      ) {
+        historyScrollTransactionActiveRef.current = false;
+      }
       return;
     }
 
@@ -2128,7 +2084,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     historyRestoreRevision,
     restoreNewerHistoryLoadScrollSnapshot,
     restoreHistoryLoadScrollSnapshot,
-    scheduleViewportAnchorRestores,
     topSpacerHeight,
     visualMessages.length,
     firstVisualMessageId,
@@ -2155,7 +2110,6 @@ const MessageViewV2 = memo(function MessageViewV2({
         showJumpToPresentRef.current
       ) {
         restoreViewportAnchorLock();
-        scheduleViewportAnchorRestores(3);
       }
       syncScrollState();
     });
@@ -2168,7 +2122,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     attemptInitialBottomRestore,
     maybeAutofillOlder,
     restoreViewportAnchorLock,
-    scheduleViewportAnchorRestores,
     syncScrollState,
   ]);
 
