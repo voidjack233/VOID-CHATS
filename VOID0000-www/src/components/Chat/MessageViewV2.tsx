@@ -86,8 +86,19 @@ interface HistoryRangeReplacementSnapshot {
   seamMessageId: string;
   sourceStart: number;
   sourceEnd: number;
-  progress: number;
-  viewportOffset: number;
+  rowHeight: number;
+  anchor:
+    | {
+        kind: 'row';
+        rowIndex: number;
+        offsetTop: number;
+      }
+    | {
+        kind: 'start' | 'end';
+        offsetTop: number;
+      };
+  rangeStartOffsetTop: number;
+  rangeEndOffsetTop: number;
   mapped: boolean;
 }
 
@@ -211,13 +222,83 @@ const updateHistoryRangeReplacementPosition = (
     return;
   }
 
-  const viewportCenter = scroller.scrollTop + (scroller.clientHeight / 2);
-  const sourceAnchor = Math.min(
-    replacement.sourceEnd,
-    Math.max(replacement.sourceStart, viewportCenter),
+  const viewportStart = scroller.scrollTop;
+  const viewportEnd = viewportStart + scroller.clientHeight;
+  replacement.rangeStartOffsetTop = replacement.sourceStart - viewportStart;
+  replacement.rangeEndOffsetTop = replacement.sourceEnd - viewportStart;
+
+  if (viewportEnd <= replacement.sourceStart) {
+    replacement.anchor = {
+      kind: 'start',
+      offsetTop: replacement.rangeStartOffsetTop,
+    };
+    return;
+  }
+
+  if (viewportStart >= replacement.sourceEnd) {
+    replacement.anchor = {
+      kind: 'end',
+      offsetTop: replacement.rangeEndOffsetTop,
+    };
+    return;
+  }
+
+  const firstVisibleSourcePoint = Math.max(viewportStart, replacement.sourceStart);
+  const availableRowCount = Math.max(1, Math.ceil(sourceHeight / replacement.rowHeight));
+  const rowIndex = Math.min(
+    availableRowCount - 1,
+    Math.max(0, Math.floor(
+      (firstVisibleSourcePoint - replacement.sourceStart) / replacement.rowHeight,
+    )),
   );
-  replacement.progress = (sourceAnchor - replacement.sourceStart) / sourceHeight;
-  replacement.viewportOffset = sourceAnchor - scroller.scrollTop;
+  const rowTop = replacement.sourceStart + (rowIndex * replacement.rowHeight);
+  replacement.anchor = {
+    kind: 'row',
+    rowIndex,
+    offsetTop: rowTop - viewportStart,
+  };
+};
+
+const restoreHistoryRangeReplacementAnchor = ({
+  scroller,
+  replacement,
+  insertedElements,
+  rangeStartOffsetTop,
+  rangeEndOffsetTop,
+}: {
+  scroller: HTMLElement;
+  replacement: HistoryRangeReplacementSnapshot;
+  insertedElements: HTMLElement[];
+  rangeStartOffsetTop: number;
+  rangeEndOffsetTop: number;
+}) => {
+  const anchor = replacement.anchor;
+  let currentOffsetTop: number;
+  let targetOffsetTop: number;
+
+  if (anchor.kind === 'row' && anchor.rowIndex < insertedElements.length) {
+    const targetElement = insertedElements[anchor.rowIndex]!;
+    const scrollerRect = scroller.getBoundingClientRect();
+    currentOffsetTop = targetElement.getBoundingClientRect().top - scrollerRect.top;
+    targetOffsetTop = anchor.offsetTop;
+  } else if (anchor.kind === 'start') {
+    currentOffsetTop = rangeStartOffsetTop;
+    targetOffsetTop = anchor.offsetTop;
+  } else {
+    currentOffsetTop = rangeEndOffsetTop;
+    targetOffsetTop = anchor.kind === 'end'
+      ? anchor.offsetTop
+      : replacement.rangeEndOffsetTop;
+  }
+
+  const offsetDelta = currentOffsetTop - targetOffsetTop;
+  const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  scroller.scrollTop = Math.min(
+    maxScrollTop,
+    Math.max(0, scroller.scrollTop + offsetDelta),
+  );
+  replacement.mapped = true;
+  return true;
 };
 
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
@@ -1129,8 +1210,13 @@ const MessageViewV2 = memo(function MessageViewV2({
           seamMessageId: firstVisualMessageId!,
           sourceStart: Math.max(0, renderedTopSpacerHeight - historyLogicalSlotHeight),
           sourceEnd: renderedTopSpacerHeight,
-          progress: 0,
-          viewportOffset: 0,
+          rowHeight: historySkeletonRowHeight,
+          anchor: {
+            kind: 'start',
+            offsetTop: 0,
+          },
+          rangeStartOffsetTop: 0,
+          rangeEndOffsetTop: 0,
           mapped: false,
         }
       : null;
@@ -1159,6 +1245,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     captureViewportAnchorLock,
     firstVisualMessageId,
     historyLogicalSlotHeight,
+    historySkeletonRowHeight,
     isOlderRangeVisible,
     renderedTopSpacerHeight,
   ]);
@@ -1181,8 +1268,13 @@ const MessageViewV2 = memo(function MessageViewV2({
             scroller.scrollHeight,
             bottomRangeStart + historyLogicalSlotHeight,
           ),
-          progress: 0,
-          viewportOffset: 0,
+          rowHeight: historySkeletonRowHeight,
+          anchor: {
+            kind: 'start',
+            offsetTop: 0,
+          },
+          rangeStartOffsetTop: 0,
+          rangeEndOffsetTop: 0,
           mapped: false,
         }
       : null;
@@ -1213,6 +1305,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [
     captureViewportAnchorLock,
     historyLogicalSlotHeight,
+    historySkeletonRowHeight,
     isNewerRangeVisible,
     lastVisualMessageId,
     renderedBottomSpacerHeight,
@@ -1403,28 +1496,19 @@ const MessageViewV2 = memo(function MessageViewV2({
         );
 
         if (seamIndex > 0) {
-          const firstInsertedElement = messageElements[0]!;
+          const insertedElements = messageElements.slice(0, seamIndex);
+          const firstInsertedElement = insertedElements[0]!;
           const seamElement = messageElements[seamIndex]!;
           const scrollerRect = scroller.getBoundingClientRect();
-          const insertedStart =
-            scroller.scrollTop +
-            firstInsertedElement.getBoundingClientRect().top -
-            scrollerRect.top;
-          const insertedEnd =
-            scroller.scrollTop +
-            seamElement.getBoundingClientRect().top -
-            scrollerRect.top;
-          const insertedHeight = insertedEnd - insertedStart;
-
-          if (insertedHeight > 0.5) {
-            const targetAnchor = insertedStart + (insertedHeight * replacement.progress);
-            const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-            scroller.scrollTop = Math.min(
-              maxScrollTop,
-              Math.max(0, targetAnchor - replacement.viewportOffset),
-            );
-            replacement.mapped = true;
-          }
+          restoreHistoryRangeReplacementAnchor({
+            scroller,
+            replacement,
+            insertedElements,
+            rangeStartOffsetTop:
+              firstInsertedElement.getBoundingClientRect().top - scrollerRect.top,
+            rangeEndOffsetTop:
+              seamElement.getBoundingClientRect().top - scrollerRect.top,
+          });
         } else if (snapshot.readyToRestore && !hasOlderRef.current) {
           scroller.scrollTop = 0;
           replacement.mapped = true;
@@ -1479,27 +1563,18 @@ const MessageViewV2 = memo(function MessageViewV2({
 
         if (seamIndex >= 0 && seamIndex < messageElements.length - 1) {
           const seamElement = messageElements[seamIndex]!;
-          const lastInsertedElement = messageElements[messageElements.length - 1]!;
+          const insertedElements = messageElements.slice(seamIndex + 1);
+          const lastInsertedElement = insertedElements[insertedElements.length - 1]!;
           const scrollerRect = scroller.getBoundingClientRect();
-          const insertedStart =
-            scroller.scrollTop +
-            seamElement.getBoundingClientRect().bottom -
-            scrollerRect.top;
-          const insertedEnd =
-            scroller.scrollTop +
-            lastInsertedElement.getBoundingClientRect().bottom -
-            scrollerRect.top;
-          const insertedHeight = insertedEnd - insertedStart;
-
-          if (insertedHeight > 0.5) {
-            const targetAnchor = insertedStart + (insertedHeight * replacement.progress);
-            const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-            scroller.scrollTop = Math.min(
-              maxScrollTop,
-              Math.max(0, targetAnchor - replacement.viewportOffset),
-            );
-            replacement.mapped = true;
-          }
+          restoreHistoryRangeReplacementAnchor({
+            scroller,
+            replacement,
+            insertedElements,
+            rangeStartOffsetTop:
+              seamElement.getBoundingClientRect().bottom - scrollerRect.top,
+            rangeEndOffsetTop:
+              lastInsertedElement.getBoundingClientRect().bottom - scrollerRect.top,
+          });
         } else if (snapshot.readyToRestore && !hasNewerRef.current) {
           scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
           replacement.mapped = true;
@@ -1993,43 +2068,37 @@ const MessageViewV2 = memo(function MessageViewV2({
     // without its captured viewport anchor.
     let restoredHistoryViewport = false;
     const olderSnapshot = pendingOlderLoadScrollSnapshotRef.current;
-    if (olderSnapshot) {
-      viewportAnchorRestoreInProgressRef.current = true;
-      restoredHistoryViewport =
-        restoreHistoryLoadScrollSnapshot(olderSnapshot) || restoredHistoryViewport;
-      if (olderSnapshot.readyToRestore) {
-        pendingOlderLoadScrollSnapshotRef.current = null;
-      }
-    }
-
     const newerSnapshot = pendingNewerLoadScrollSnapshotRef.current;
-    if (newerSnapshot) {
-      viewportAnchorRestoreInProgressRef.current = true;
-      restoredHistoryViewport =
-        restoreNewerHistoryLoadScrollSnapshot(newerSnapshot) || restoredHistoryViewport;
-      if (newerSnapshot.readyToRestore) {
-        pendingNewerLoadScrollSnapshotRef.current = null;
+    viewportAnchorRestoreInProgressRef.current = Boolean(olderSnapshot || newerSnapshot);
+
+    try {
+      if (olderSnapshot) {
+        const restoredOlderViewport = restoreHistoryLoadScrollSnapshot(olderSnapshot);
+        restoredHistoryViewport = restoredOlderViewport || restoredHistoryViewport;
+        if (olderSnapshot.readyToRestore && restoredOlderViewport) {
+          pendingOlderLoadScrollSnapshotRef.current = null;
+        }
       }
+
+      if (newerSnapshot) {
+        const restoredNewerViewport = restoreNewerHistoryLoadScrollSnapshot(newerSnapshot);
+        restoredHistoryViewport = restoredNewerViewport || restoredHistoryViewport;
+        if (newerSnapshot.readyToRestore && restoredNewerViewport) {
+          pendingNewerLoadScrollSnapshotRef.current = null;
+        }
+      }
+    } finally {
+      viewportAnchorRestoreInProgressRef.current = false;
     }
 
     if (restoredHistoryViewport) {
       captureViewportAnchorLock(scroller);
-      if (
-        !pendingOlderLoadScrollSnapshotRef.current &&
-        !pendingNewerLoadScrollSnapshotRef.current
-      ) {
-        historyScrollTransactionActiveRef.current = false;
-      }
-      return;
     }
 
-    if (
-      !pendingOlderLoadScrollSnapshotRef.current &&
-      !pendingNewerLoadScrollSnapshotRef.current
-    ) {
-      viewportAnchorRestoreInProgressRef.current = false;
-      historyScrollTransactionActiveRef.current = false;
-    }
+    historyScrollTransactionActiveRef.current = Boolean(
+      pendingOlderLoadScrollSnapshotRef.current ||
+      pendingNewerLoadScrollSnapshotRef.current
+    );
   }, [
     bottomSpacerHeight,
     captureViewportAnchorLock,
