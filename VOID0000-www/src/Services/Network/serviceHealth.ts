@@ -59,11 +59,32 @@ function getServiceName(url: string): string {
 }
 
 function buildMessage(service: string, status?: number): string {
+  if (status === 401) {
+    return `${service} rejected the request (401). Your session may need to be refreshed.`;
+  }
+
+  if (status === 403) {
+    return `${service} rejected the request (403). You may not have access to that action.`;
+  }
+
+  if (status === 429) {
+    return `${service} is receiving too many requests (429). Please wait and try again.`;
+  }
+
   if (status) {
     return `${service} returned ${status}. Some actions may fail until it recovers.`;
   }
 
   return `${service} is unreachable. Retrying when it comes back.`;
+}
+
+function shouldReportStatus(status: number): boolean {
+  return status === 401 ||
+    status === 403 ||
+    status === 408 ||
+    status === 425 ||
+    status === 429 ||
+    status >= 500;
 }
 
 function publish() {
@@ -91,7 +112,7 @@ export function subscribeServiceHealth(listener: Listener): () => void {
 export function reportApiResponse(url: string, status: number): void {
   const service = getServiceName(url);
 
-  if (status >= 500) {
+  if (shouldReportStatus(status)) {
     issues.set(service, {
       service,
       url,

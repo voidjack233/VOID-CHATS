@@ -182,7 +182,6 @@ const ChatDashboard = () => {
   const [convRefresh, setConvRefresh] = useState(0);
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
-  const sendNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ownSendNeedsPresentJumpRef = useRef(false);
   const ownSendJumpResolversRef = useRef<Array<() => void>>([]);
   const [ownSendJumpRequest, setOwnSendJumpRequest] = useState(0);
@@ -220,19 +219,7 @@ const ChatDashboard = () => {
   } = useChatManager(user);
 
   const showSendNotice = useCallback((message: string | null) => {
-    if (sendNoticeTimerRef.current) {
-      clearTimeout(sendNoticeTimerRef.current);
-      sendNoticeTimerRef.current = null;
-    }
-
     setSendNotice(message);
-
-    if (message) {
-      sendNoticeTimerRef.current = setTimeout(() => {
-        setSendNotice(null);
-        sendNoticeTimerRef.current = null;
-      }, 4500);
-    }
   }, []);
   const handleOwnSendHistoryModeChange = useCallback((shouldJumpToPresent: boolean) => {
     ownSendNeedsPresentJumpRef.current = shouldJumpToPresent;
@@ -250,9 +237,6 @@ const ChatDashboard = () => {
   }, []);
 
   useEffect(() => () => {
-    if (sendNoticeTimerRef.current) {
-      clearTimeout(sendNoticeTimerRef.current);
-    }
     const resolvers = ownSendJumpResolversRef.current;
     ownSendJumpResolversRef.current = [];
     resolvers.forEach((resolve) => resolve());
@@ -801,10 +785,10 @@ const ChatDashboard = () => {
       }}
     >
       <ChatStatusBanners
-        isOnline={isOnline}
-        showReconnectBanner={showReconnectBanner}
         serviceIssue={serviceIssue}
         serviceIssueCount={serviceHealth.issues.length}
+        notice={sendNotice}
+        onDismissNotice={() => setSendNotice(null)}
       />
       {showBackgroundSecureKeyBanner && (
         <div className="border-b border-blue-400/10 bg-blue-500/8 px-4 py-1.5 text-center text-[11px] font-medium text-blue-100/80">
@@ -942,7 +926,6 @@ const ChatDashboard = () => {
                   keyVersion={keyVersion}
                   encryptionError={encryptionError}
                   conversationSecurityState={conversationSecurityState}
-                  sendNotice={sendNotice}
                   onSendNotice={showSendNotice}
                   members={messageDisplayMembers}
                   typingParticipants={typingParticipants}

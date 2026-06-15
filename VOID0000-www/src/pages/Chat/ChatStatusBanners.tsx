@@ -1,41 +1,74 @@
-import { ShieldAlert } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, X } from 'lucide-react';
 
 interface ServiceIssue {
+  service: string;
+  status?: number;
   message: string;
 }
 
 interface ChatStatusBannersProps {
-  isOnline: boolean;
-  showReconnectBanner: boolean;
   serviceIssue: ServiceIssue | null;
   serviceIssueCount: number;
+  notice?: string | null;
+  onDismissNotice?: () => void;
 }
 
+let alertsDismissedForPage = false;
+
 export default function ChatStatusBanners({
-  isOnline,
-  showReconnectBanner,
   serviceIssue,
   serviceIssueCount,
+  notice,
+  onDismissNotice,
 }: ChatStatusBannersProps) {
+  const [, setDismissRevision] = useState(0);
+  const alert = notice
+    ? {
+        message: notice,
+        additionalCount: 0,
+        isNotice: true,
+      }
+    : serviceIssue
+      ? {
+          message: serviceIssue.message,
+          additionalCount: Math.max(0, serviceIssueCount - 1),
+          isNotice: false,
+        }
+      : null;
+
+  if (!alert || alertsDismissedForPage) {
+    return null;
+  }
+
+  const dismiss = () => {
+    alertsDismissedForPage = true;
+    if (alert.isNotice) {
+      onDismissNotice?.();
+    }
+    setDismissRevision((revision) => revision + 1);
+  };
+
   return (
-    <>
-      {showReconnectBanner && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-white/8 bg-neutral-900/95 px-4 py-2 text-xs text-white/65">
-          <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/25 border-t-white/60" />
-          {isOnline
-            ? 'Reconnecting\u2026'
-            : 'You\u2019re offline \u2014 reconnecting when network returns'}
-        </div>
-      )}
-      {isOnline && serviceIssue && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-amber-400/15 bg-amber-500/10 px-4 py-2 text-xs text-amber-100/85">
-          <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-amber-200/90" />
-          <span className="min-w-0 truncate">
-            {serviceIssue.message}
-            {serviceIssueCount > 1 ? ` +${serviceIssueCount - 1} more` : ''}
-          </span>
-        </div>
-      )}
-    </>
+    <div className="pointer-events-none fixed inset-x-0 top-4 z-[100] flex justify-center px-4">
+      <div
+        role="alert"
+        className="pointer-events-auto flex w-full max-w-xl items-start gap-3 rounded-xl border border-amber-300/20 bg-neutral-950/95 px-4 py-3 text-sm text-amber-50 shadow-2xl shadow-black/40 supports-[backdrop-filter]:backdrop-blur-xl"
+      >
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+        <span className="min-w-0 flex-1">
+          {alert.message}
+          {alert.additionalCount > 0 ? ` +${alert.additionalCount} more` : ''}
+        </span>
+        <button
+          type="button"
+          onClick={dismiss}
+          aria-label="Dismiss error"
+          className="-mr-1 -mt-1 rounded-md p-1 text-amber-100/60 transition-colors hover:bg-white/10 hover:text-amber-50"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
   );
 }

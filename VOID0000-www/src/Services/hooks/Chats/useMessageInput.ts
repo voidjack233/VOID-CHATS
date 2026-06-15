@@ -241,7 +241,10 @@ export const useMessageInput = ({
       : attachmentAccess.required === 'admins'
         ? 'Admins'
         : 'Owner';
-  const messageServiceDegraded = serviceHealth.issues.some((issue) => issue.service === 'Message service');
+  const messageServiceDegraded = serviceHealth.issues.some((issue) => (
+    issue.service === 'Message service' &&
+    (issue.status === undefined || issue.status >= 500)
+  ));
 
   // Changed to HTMLTextAreaElement
   const inputRef = useRef<HTMLTextAreaElement>(null);

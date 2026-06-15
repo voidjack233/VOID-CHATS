@@ -255,7 +255,6 @@ async function fetchWithAuth(
         credentials: 'include',
         headers,
       });
-      reportApiResponse(fullUrl, response.status);
       return response;
     } catch (err) {
       reportApiNetworkFailure(fullUrl);
@@ -292,6 +291,7 @@ async function fetchWithAuth(
     }
   }
 
+  reportApiResponse(fullUrl, response.status);
   return response;
 }
 
