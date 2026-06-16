@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CheckCircle2, ExternalLink, Link2, Loader2, Users } from 'lucide-react';
-import { useUser } from '../../Services/Auth/UserContext';
-import type { InvitePreview } from '../../Services/Chat/chatTypes';
+import { useUser } from '../../../Services/Auth/UserContext';
+import type { InvitePreview } from '../../../Services/Chat/chatTypes';
 import {
   getInvitePreview,
   getInviteRequestStatus,
   requestJoinByInviteCode,
-} from '../../Services/Chat/inviteService';
+} from '../../../Services/Chat/inviteService';
 
 interface InviteEmbedProps {
   inviteCode: string;

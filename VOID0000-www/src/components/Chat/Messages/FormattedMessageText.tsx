@@ -1,7 +1,7 @@
 import { Check, Copy } from 'lucide-react';
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { MESSAGE_MENTION_PATTERN } from '../../Services/Chat/messageMentions';
+import { MESSAGE_MENTION_PATTERN } from '../../../Services/Chat/messageMentions';
 import { extractMessageTextSegments } from './messageLinks';
 
 type FormatNode =

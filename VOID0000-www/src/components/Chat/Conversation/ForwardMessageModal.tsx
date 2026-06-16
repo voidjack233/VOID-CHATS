@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader2, Search, Send, X } from 'lucide-react';
-import { Conversation, Message, getConversations } from '../../Services/Chat/chatService';
-import UserAvatar from '../common/UserAvatar';
-import MessagePreviewText from './MessagePreviewText';
+import { Conversation, Message, getConversations } from '../../../Services/Chat/chatService';
+import UserAvatar from '../../common/UserAvatar';
+import MessagePreviewText from '../Messages/MessagePreviewText';
 
 interface ForwardMessageModalProps {
   isOpen: boolean;

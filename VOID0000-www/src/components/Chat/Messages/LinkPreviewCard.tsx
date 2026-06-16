@@ -1,5 +1,5 @@
 import { ExternalLink, Link2, X } from 'lucide-react';
-import type { LinkPreviewMetadata } from '../../Services/Chat/chatService';
+import type { LinkPreviewMetadata } from '../../../Services/Chat/chatService';
 
 interface LinkPreviewCardProps {
   preview: LinkPreviewMetadata;

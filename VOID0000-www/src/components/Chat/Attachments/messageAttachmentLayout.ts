@@ -1,4 +1,4 @@
-import type { Attachment } from '../../Services/Chat/chatTypes';
+import type { Attachment } from '../../../Services/Chat/chatTypes';
 
 export const SINGLE_ATTACHMENT_MAX_LANDSCAPE_WIDTH = 550;
 export const SINGLE_ATTACHMENT_MAX_PORTRAIT_WIDTH = 320;

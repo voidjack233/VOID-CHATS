@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Message, ConversationMember } from '../../Services/Chat/chatService';
-import type { Friend } from '../../Services/hooks/Friends/useFriends';
+import type { Message, ConversationMember } from '../../../Services/Chat/chatService';
+import type { Friend } from '../../../Services/hooks/Friends/useFriends';
 
 export interface ContextMenuState {
   msg: Message;

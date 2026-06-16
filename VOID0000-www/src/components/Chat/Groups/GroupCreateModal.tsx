@@ -1,4 +1,4 @@
-// src/components/Chat/GroupCreateModal.tsx
+// src/components/Chat/Groups/GroupCreateModal.tsx
 import { useState, useRef } from 'react';
 import { X, Camera } from 'lucide-react';
 import { createSecureGroup, uploadConversationIcon } from '../../../Services/Chat/chatService';

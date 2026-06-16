@@ -14,11 +14,11 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { Message } from '../../Services/Chat/chatService';
-import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../Services/Chat/reactionLimits';
-import type { Friend } from '../../Services/hooks/Friends/useFriends';
-import FriendProfile from '../common/Friends/FriendProfile';
-import UserProfileModal from '../common/Profile/UserProfileModal';
+import type { Message } from '../../../Services/Chat/chatService';
+import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount, hasActiveReactionEntry } from '../../../Services/Chat/reactionLimits';
+import type { Friend } from '../../../Services/hooks/Friends/useFriends';
+import FriendProfile from '../../common/Friends/FriendProfile';
+import UserProfileModal from '../../common/Profile/UserProfileModal';
 import EmojiGlyph from './EmojiGlyph';
 import type {
   ContextMenuState,

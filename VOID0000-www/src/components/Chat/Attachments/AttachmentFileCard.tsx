@@ -8,8 +8,8 @@ import {
   FileVideo,
   Loader2,
 } from 'lucide-react';
-import type { Attachment } from '../../Services/Chat/chatTypes';
-import { resolveAttachmentObjectUrl } from '../../Services/Crypto/attachmentEncryption';
+import type { Attachment } from '../../../Services/Chat/chatTypes';
+import { resolveAttachmentObjectUrl } from '../../../Services/Crypto/attachmentEncryption';
 
 interface AttachmentFileCardProps {
   attachment: Attachment;

@@ -1,8 +1,8 @@
-// src/components/Chat/ConversationList.tsx
+// src/components/Chat/Conversation/ConversationList.tsx
 import { useEffect, useRef, useState, type SetStateAction } from 'react';
 import { MessageCircle, Users, Plus, Search } from 'lucide-react';
 import { Virtuoso } from 'react-virtuoso';
-import { Conversation, getConversations, markAsRead, closeDM, muteDM } from '../../Services/Chat/chatService';
+import { Conversation, getConversations, markAsRead, closeDM, muteDM } from '../../../Services/Chat/chatService';
 import {
   applyLiveMessageDeletePreview,
   applyLiveMessageEditPreview,
@@ -10,18 +10,18 @@ import {
   getConversationPreview,
   hydrateConversationPreviewsFromStore,
   subscribeConversationPreviewCache,
-} from '../../Services/Chat/conversationPreviewCache';
+} from '../../../Services/Chat/conversationPreviewCache';
 import {
   playIncomingMessageSound,
   primeIncomingMessageSound,
-} from '../../Services/Chat/messageNotificationSound';
-import { debugLog } from '../../Services/utils/debugLog';
-import { usePresence } from '../../Services/hooks/Friends/usePresence';
-import PresenceDot from '../common/PresenceDot';
-import { gateway } from '../../Services/Gateway/gateway';
-import { ConversationItemSkeleton } from '../common/Skeleton';
-import UserAvatar from '../common/UserAvatar';
-import MessagePreviewText from './MessagePreviewText';
+} from '../../../Services/Chat/messageNotificationSound';
+import { debugLog } from '../../../Services/utils/debugLog';
+import { usePresence } from '../../../Services/hooks/Friends/usePresence';
+import PresenceDot from '../../common/PresenceDot';
+import { gateway } from '../../../Services/Gateway/gateway';
+import { ConversationItemSkeleton } from '../../common/Skeleton';
+import UserAvatar from '../../common/UserAvatar';
+import MessagePreviewText from '../Messages/MessagePreviewText';
 
 interface ConversationListProps {
   activeId: string | null;

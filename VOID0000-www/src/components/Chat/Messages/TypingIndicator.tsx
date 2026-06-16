@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import UserAvatar from '../common/UserAvatar';
+import UserAvatar from '../../common/UserAvatar';
 
 export interface TypingParticipant {
   userId: string;

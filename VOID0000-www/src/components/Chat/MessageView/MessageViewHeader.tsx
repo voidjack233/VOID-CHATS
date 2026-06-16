@@ -1,7 +1,7 @@
 import { memo } from 'react';
-import type { Conversation, ConversationMember } from '../../Services/Chat/chatService';
-import type { Friend } from '../../Services/hooks/Friends/useFriends';
-import UserAvatar from '../common/UserAvatar';
+import type { Conversation, ConversationMember } from '../../../Services/Chat/chatService';
+import type { Friend } from '../../../Services/hooks/Friends/useFriends';
+import UserAvatar from '../../common/UserAvatar';
 
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';

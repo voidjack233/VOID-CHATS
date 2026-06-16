@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { ImageOff, Loader2 } from 'lucide-react';
-import type { Attachment } from '../../Services/Chat/chatTypes';
+import type { Attachment } from '../../../Services/Chat/chatTypes';
 import {
   getCachedAttachmentObjectUrl,
   isEncryptedAttachment,
   resolveAttachmentObjectUrl,
-} from '../../Services/Crypto/attachmentEncryption';
-import BlurImage, { BlurhashPlaceholder } from '../common/BlurImage';
+} from '../../../Services/Crypto/attachmentEncryption';
+import BlurImage, { BlurhashPlaceholder } from '../../common/BlurImage';
 
 interface AttachmentImageProps {
   attachment: Attachment;

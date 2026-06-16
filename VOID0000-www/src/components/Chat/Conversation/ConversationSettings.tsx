@@ -2,9 +2,9 @@ import type {
   Conversation,
   ConversationMember,
   Message,
-} from '../../Services/Chat/chatService';
+} from '../../../Services/Chat/chatService';
 import DirectConversationSettings from './DirectConversationSettings';
-import GroupConversationSettings from './groups/GroupConversationSettings';
+import GroupConversationSettings from '../Groups/GroupConversationSettings';
 
 export interface ConversationSettingsProps {
   conversation: Conversation;

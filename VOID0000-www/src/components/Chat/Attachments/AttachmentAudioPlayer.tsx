@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Download, FileAudio, Loader2 } from 'lucide-react';
-import type { Attachment } from '../../Services/Chat/chatTypes';
-import { resolveAttachmentBlob } from '../../Services/Crypto/attachmentEncryption';
+import type { Attachment } from '../../../Services/Chat/chatTypes';
+import { resolveAttachmentBlob } from '../../../Services/Crypto/attachmentEncryption';
 
 interface AttachmentAudioPlayerProps {
   attachment: Attachment;

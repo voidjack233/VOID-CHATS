@@ -1,7 +1,7 @@
-import { parseAttachments } from '../../Services/Chat/messageAttachments';
-import type { Message } from '../../Services/Chat/chatTypes';
-import type { Density } from '../../Services/hooks/Settings/useTheme';
-import { estimateAttachmentLayoutHeight } from './messageAttachmentLayout';
+import { parseAttachments } from '../../../Services/Chat/messageAttachments';
+import type { Message } from '../../../Services/Chat/chatTypes';
+import type { Density } from '../../../Services/hooks/Settings/useTheme';
+import { estimateAttachmentLayoutHeight } from '../Attachments/messageAttachmentLayout';
 
 const ESTIMATED_MESSAGE_ROW_HEIGHT: Record<Density, number> = {
   compact: 56,

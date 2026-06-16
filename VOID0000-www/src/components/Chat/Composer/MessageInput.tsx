@@ -1,4 +1,4 @@
-// src/components/Chat/MessageInput.tsx
+// src/components/Chat/Composer/MessageInput.tsx
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Send,
@@ -13,13 +13,13 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react';
-import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
-import { useMessageInput } from '../../Services/hooks/Chats/useMessageInput';
-import { Message, Conversation, ConversationMember } from '../../Services/Chat/chatService';
-import AttachmentLimitModal from './AttachmentLimitModal';
-import AttachmentOptionsSheet from './AttachmentOptionsSheet';
-import MessagePreviewText from './MessagePreviewText';
-import UserAvatar from '../common/UserAvatar';
+import type { ConversationSecurityState } from '../../../Services/Chat/conversationSecurityState';
+import { useMessageInput } from '../../../Services/hooks/Chats/useMessageInput';
+import { Message, Conversation, ConversationMember } from '../../../Services/Chat/chatService';
+import AttachmentLimitModal from '../Attachments/AttachmentLimitModal';
+import AttachmentOptionsSheet from '../Attachments/AttachmentOptionsSheet';
+import MessagePreviewText from '../Messages/MessagePreviewText';
+import UserAvatar from '../../common/UserAvatar';
 
 interface MessageInputProps {
   currentUserId?: string;

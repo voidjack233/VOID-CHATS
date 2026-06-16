@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Eye, EyeOff, Trash2, X } from 'lucide-react';
-import type { PendingAttachment } from '../../Services/hooks/Chats/useMessageInput';
+import type { PendingAttachment } from '../../../Services/hooks/Chats/useMessageInput';
 
 interface AttachmentOptionsSheetProps {
   attachment: PendingAttachment | null;

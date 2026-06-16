@@ -1,42 +1,62 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ArrowDown, Loader2 } from 'lucide-react';
-import { useMessageList } from '../../Services/hooks/Chats/useMessageList';
-import { useMessageDisplay } from '../../Services/hooks/Chats/useMessageDisplay';
-import { useReactions } from '../../Services/hooks/Chats/useReactions';
-import type { ConversationSecurityState } from '../../Services/Chat/conversationSecurityState';
+import { useMessageList } from '../../../Services/hooks/Chats/useMessageList';
+import { useMessageDisplay } from '../../../Services/hooks/Chats/useMessageDisplay';
+import { useReactions } from '../../../Services/hooks/Chats/useReactions';
+import type { ConversationSecurityState } from '../../../Services/Chat/conversationSecurityState';
 import {
   sendImageOnlyMessage,
   sendMessage,
-} from '../../Services/Chat/chatService';
-import { MESSAGE_PAGE_SIZE } from '../../Services/Chat/chatConstants';
-import { type Conversation, type ConversationMember, type Message } from '../../Services/Chat/chatService';
-import { useUser } from '../../Services/Auth/UserContext';
-import { debugLog } from '../../Services/utils/debugLog';
-import { useFriends } from '../../Services/hooks/Friends/useFriends';
-import { useProfileRecord } from '../../Services/hooks/profile/useProfileRecord';
-import { useTheme, type Density } from '../../Services/hooks/Settings/useTheme';
-import { formatConversationPreview, setConversationPreview } from '../../Services/Chat/conversationPreviewCache';
-import { MessageViewSkeleton, Skeleton } from '../common/Skeleton';
-import MessageItem from './MessageItem';
-import MessageOverlays from './MessageOverlays';
+} from '../../../Services/Chat/chatService';
+import { type Conversation, type ConversationMember, type Message } from '../../../Services/Chat/chatService';
+import { useUser } from '../../../Services/Auth/UserContext';
+import { debugLog } from '../../../Services/utils/debugLog';
+import { useFriends } from '../../../Services/hooks/Friends/useFriends';
+import { useProfileRecord } from '../../../Services/hooks/profile/useProfileRecord';
+import { useTheme, type Density } from '../../../Services/hooks/Settings/useTheme';
+import { MessageViewSkeleton } from '../../common/Skeleton';
+import MessageItem from '../Messages/MessageItem';
+import MessageOverlays from '../Messages/MessageOverlays';
 import MessageViewHeader, { buildMessageViewHeaderIdentity } from './MessageViewHeader';
 import {
   getMessageLinkHostname,
   isTrustedMessageUrl,
-} from './messageLinks';
-import ExternalLinkModal from './MessageViewParts/ExternalLinkModal';
-import TypingIndicator, { type TypingParticipant } from './TypingIndicator';
-import { useMessageActions } from './useMessageActions';
-import { useMessageLayout } from './useMessageLayout';
+} from '../Messages/messageLinks';
+import ExternalLinkModal from './ExternalLinkModal';
+import TypingIndicator, { type TypingParticipant } from '../Messages/TypingIndicator';
+import { useMessageActions } from '../Messages/useMessageActions';
+import { useMessageLayout } from '../Messages/useMessageLayout';
 import { useMessageScrollGeometry } from './useMessageScrollGeometry';
 import { useMessageTimelineVirtualizer } from './useMessageTimelineVirtualizer';
-import { estimateMessageRowHeight } from './messageRowHeight';
-import { useNearViewportMessages } from './useNearViewportMessages';
+import { estimateMessageRowHeight } from '../Messages/messageRowHeight';
+import { useNearViewportMessages } from '../Messages/useNearViewportMessages';
+import EmptyMessageTimelineState from './EmptyMessageTimelineState';
+import JumpToPresentButton from './JumpToPresentButton';
+import MessageJumpNotice from './MessageJumpNotice';
+import MessageTimelineViewport from './MessageTimelineViewport';
+import {
+  HISTORY_PAGE_PLACEHOLDER_HEIGHT,
+  HISTORY_SKELETON_ROW_HEIGHT,
+} from './historySkeletonConstants';
+import { useConversationPreviewCache } from './useConversationPreviewCache';
+import { useMobileKeyboardOpen } from './useMobileKeyboardOpen';
+import { useMessageRowMeasurements } from './useMessageRowMeasurements';
+import {
+  getFirstVisibleMessageAnchor,
+  getMessageAnchorsAroundViewport,
+  getMessageElementById,
+  restoreHistoryRangeReplacementAnchor,
+  restoreVisibleMessageAnchor,
+  updateHistoryRangeReplacementPosition,
+  type HistoryLoadScrollSnapshot,
+  type HistoryRangeReplacementSnapshot,
+  type NewerHistoryLoadScrollSnapshot,
+  type ViewportAnchorLock,
+} from './historyScrollAnchors';
 import type {
   MessageDelete,
   MessageStreamEvent,
   MessageUpdate,
-} from '../../Services/hooks/Chats/MessageList/messageListTypes';
+} from '../../../Services/hooks/Chats/MessageList/messageListTypes';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -64,260 +84,21 @@ type MessageListItem =
   | { kind: 'message'; message: Message }
   | { kind: 'typing'; id: 'typing-indicator' };
 
-interface HistoryLoadScrollSnapshot {
-  scrollHeight: number;
-  scrollTop: number;
-  anchorMessageId: string | null;
-  anchorOffsetTop: number | null;
-  rangeReplacement: HistoryRangeReplacementSnapshot | null;
-  readyToRestore: boolean;
-}
-
-interface MessageAnchorSnapshot {
-  messageId: string;
-  offsetTop: number;
-}
-
-interface HistoryRangeReplacementSnapshot {
-  direction: 'older' | 'newer';
-  seamMessageId: string;
-  sourceStart: number;
-  sourceEnd: number;
-  rowHeight: number;
-  anchor:
-    | {
-        kind: 'row';
-        rowIndex: number;
-        offsetTop: number;
-      }
-    | {
-        kind: 'start' | 'end';
-        offsetTop: number;
-      };
-  rangeStartOffsetTop: number;
-  rangeEndOffsetTop: number;
-  mapped: boolean;
-}
-
-interface NewerHistoryLoadScrollSnapshot extends HistoryLoadScrollSnapshot {
-  fallbackAnchors: MessageAnchorSnapshot[];
-  distanceFromBottom: number;
-}
-
-interface ViewportAnchorLock {
-  anchors: MessageAnchorSnapshot[];
-}
-
 const normalizeText = (value?: string | null) => {
   const trimmed = typeof value === 'string' ? value.trim() : '';
   return trimmed.length > 0 ? trimmed : null;
-};
-
-const getVisibleMessageAnchors = (scroller: HTMLElement): MessageAnchorSnapshot[] => {
-  const scrollerRect = scroller.getBoundingClientRect();
-  const elements = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'));
-  const anchors: MessageAnchorSnapshot[] = [];
-
-  for (const element of elements) {
-    const messageId = element.dataset.messageId;
-    if (!messageId) continue;
-
-    const rect = element.getBoundingClientRect();
-    if (rect.bottom <= scrollerRect.top || rect.top >= scrollerRect.bottom) {
-      continue;
-    }
-
-    anchors.push({
-      messageId,
-      offsetTop: rect.top - scrollerRect.top,
-    });
-  }
-
-  return anchors;
-};
-
-const getMessageAnchorsAroundViewport = (scroller: HTMLElement): MessageAnchorSnapshot[] => {
-  const visibleAnchors = getVisibleMessageAnchors(scroller);
-  if (visibleAnchors.length > 0) {
-    return visibleAnchors;
-  }
-
-  const scrollerRect = scroller.getBoundingClientRect();
-  const elements = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'));
-  let closestBefore: MessageAnchorSnapshot | null = null;
-  let closestAfter: MessageAnchorSnapshot | null = null;
-
-  for (const element of elements) {
-    const messageId = element.dataset.messageId;
-    if (!messageId) continue;
-
-    const rect = element.getBoundingClientRect();
-    const anchor = {
-      messageId,
-      offsetTop: rect.top - scrollerRect.top,
-    };
-
-    if (rect.bottom <= scrollerRect.top) {
-      closestBefore = anchor;
-      continue;
-    }
-
-    if (rect.top >= scrollerRect.bottom && !closestAfter) {
-      closestAfter = anchor;
-    }
-  }
-
-  return [closestBefore, closestAfter].filter((anchor): anchor is MessageAnchorSnapshot => Boolean(anchor));
-};
-
-const getFirstVisibleMessageAnchor = (scroller: HTMLElement) => {
-  return getVisibleMessageAnchors(scroller)[0] ?? null;
-};
-
-const escapeMessageIdSelector = (messageId: string) => {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
-    return CSS.escape(messageId);
-  }
-
-  return messageId.replace(/["\\]/g, '\\$&');
-};
-
-const getMessageElementById = (scroller: HTMLElement, messageId: string) => (
-  scroller.querySelector<HTMLElement>(`[data-message-id="${escapeMessageIdSelector(messageId)}"]`)
-);
-
-const restoreVisibleMessageAnchor = (
-  scroller: HTMLElement,
-  snapshot: Pick<HistoryLoadScrollSnapshot, 'anchorMessageId' | 'anchorOffsetTop'>,
-) => {
-  if (!snapshot.anchorMessageId || snapshot.anchorOffsetTop === null) {
-    return false;
-  }
-
-  const anchorElement = getMessageElementById(scroller, snapshot.anchorMessageId);
-  if (!anchorElement) {
-    return false;
-  }
-
-  const scrollerRect = scroller.getBoundingClientRect();
-  const nextOffsetTop = anchorElement.getBoundingClientRect().top - scrollerRect.top;
-  const offsetDelta = nextOffsetTop - snapshot.anchorOffsetTop;
-  if (Math.abs(offsetDelta) <= 0.5) {
-    return true;
-  }
-
-  scroller.scrollTop = Math.max(0, scroller.scrollTop + offsetDelta);
-  return true;
-};
-
-const updateHistoryRangeReplacementPosition = (
-  scroller: HTMLElement,
-  replacement: HistoryRangeReplacementSnapshot,
-) => {
-  const sourceHeight = replacement.sourceEnd - replacement.sourceStart;
-  if (sourceHeight <= 0) {
-    return;
-  }
-
-  const viewportStart = scroller.scrollTop;
-  const viewportEnd = viewportStart + scroller.clientHeight;
-  replacement.rangeStartOffsetTop = replacement.sourceStart - viewportStart;
-  replacement.rangeEndOffsetTop = replacement.sourceEnd - viewportStart;
-
-  if (viewportEnd <= replacement.sourceStart) {
-    replacement.anchor = {
-      kind: 'start',
-      offsetTop: replacement.rangeStartOffsetTop,
-    };
-    return;
-  }
-
-  if (viewportStart >= replacement.sourceEnd) {
-    replacement.anchor = {
-      kind: 'end',
-      offsetTop: replacement.rangeEndOffsetTop,
-    };
-    return;
-  }
-
-  const firstVisibleSourcePoint = Math.max(viewportStart, replacement.sourceStart);
-  const availableRowCount = Math.max(1, Math.ceil(sourceHeight / replacement.rowHeight));
-  const rowIndex = Math.min(
-    availableRowCount - 1,
-    Math.max(0, Math.floor(
-      (firstVisibleSourcePoint - replacement.sourceStart) / replacement.rowHeight,
-    )),
-  );
-  const rowTop = replacement.sourceStart + (rowIndex * replacement.rowHeight);
-  replacement.anchor = {
-    kind: 'row',
-    rowIndex,
-    offsetTop: rowTop - viewportStart,
-  };
-};
-
-const restoreHistoryRangeReplacementAnchor = ({
-  scroller,
-  replacement,
-  insertedElements,
-  rangeStartOffsetTop,
-  rangeEndOffsetTop,
-}: {
-  scroller: HTMLElement;
-  replacement: HistoryRangeReplacementSnapshot;
-  insertedElements: HTMLElement[];
-  rangeStartOffsetTop: number;
-  rangeEndOffsetTop: number;
-}) => {
-  const anchor = replacement.anchor;
-  let currentOffsetTop: number;
-  let targetOffsetTop: number;
-
-  if (anchor.kind === 'row' && anchor.rowIndex < insertedElements.length) {
-    const targetElement = insertedElements[anchor.rowIndex]!;
-    const scrollerRect = scroller.getBoundingClientRect();
-    currentOffsetTop = targetElement.getBoundingClientRect().top - scrollerRect.top;
-    targetOffsetTop = anchor.offsetTop;
-  } else if (anchor.kind === 'start') {
-    currentOffsetTop = rangeStartOffsetTop;
-    targetOffsetTop = anchor.offsetTop;
-  } else {
-    currentOffsetTop = rangeEndOffsetTop;
-    targetOffsetTop = anchor.kind === 'end'
-      ? anchor.offsetTop
-      : replacement.rangeEndOffsetTop;
-  }
-
-  const offsetDelta = currentOffsetTop - targetOffsetTop;
-  const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  scroller.scrollTop = Math.min(
-    maxScrollTop,
-    Math.max(0, scroller.scrollTop + offsetDelta),
-  );
-  replacement.mapped = true;
-  return true;
 };
 
 const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator: false });
 const emptyReactions: Record<string, unknown> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
 const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
-const MOBILE_KEYBOARD_HEIGHT_THRESHOLD = 120;
 const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
 const HISTORY_RATE_LIMIT_FALLBACK_MS = 6_000;
 const HISTORY_RATE_LIMIT_MAX_MS = 30_000;
-const MAX_MEASURED_MESSAGE_HEIGHTS = 360;
 const ENABLE_SCROLL_GEOMETRY_COMPACTION = true;
 const MAX_PHYSICAL_HISTORY_SPACER_HEIGHT = 4_000;
-const HISTORY_SKELETON_ROW_HEIGHT: Record<Density, number> = {
-  compact: 75,
-  comfortable: 98,
-};
-const HISTORY_PAGE_PLACEHOLDER_HEIGHT: Record<Density, number> = {
-  compact: MESSAGE_PAGE_SIZE * HISTORY_SKELETON_ROW_HEIGHT.compact,
-  comfortable: MESSAGE_PAGE_SIZE * HISTORY_SKELETON_ROW_HEIGHT.comfortable,
-};
 const OLDER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
   compact: 720,
   comfortable: 640,
@@ -331,82 +112,6 @@ const NEWER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
 // starts history fetches earlier so fast scrolling is less likely to hit a
 // temporary loading wall at either edge of the active message window.
 const OLDER_SENTINEL_ROOT_MARGIN = '0px 0px 0px 0px';
-
-const OLDER_SKELETON_BUBBLE_WIDTHS = [
-  'w-[54%] sm:w-[42%]',
-  'w-[72%] sm:w-[56%]',
-  'w-[46%] sm:w-[36%]',
-  'w-[82%] sm:w-[64%]',
-  'w-[62%] sm:w-[48%]',
-  'w-[38%] sm:w-[30%]',
-];
-
-const OLDER_SKELETON_META_WIDTHS = [
-  'w-16',
-  'w-20',
-  'w-24',
-  'w-14',
-];
-
-const OlderHistorySkeleton = memo(function OlderHistorySkeleton({
-  density,
-  rowCount,
-  active = false,
-  anchorEdge = 'start',
-}: {
-  density: Density;
-  rowCount: number;
-  active?: boolean;
-  anchorEdge?: 'start' | 'end';
-}) {
-  const rows = Array.from({ length: rowCount }, (_, index) => index);
-  const rowHeight = HISTORY_SKELETON_ROW_HEIGHT[density];
-
-  return (
-    <div className={`pointer-events-none flex h-full w-full flex-col overflow-hidden px-2 transition-opacity ${active ? 'opacity-100' : 'opacity-75'} ${anchorEdge === 'end' ? 'justify-end' : 'justify-start'}`}>
-      {rows.map((rowIndex) => {
-        const patternIndex = anchorEdge === 'end'
-          ? rowCount - rowIndex - 1
-          : rowIndex;
-        const isOutgoing = density === 'comfortable' && patternIndex % 5 === 3;
-        const contentMaxWidth = density === 'comfortable'
-          ? 'max-w-[80%] md:max-w-[70%]'
-          : 'max-w-[88%] md:max-w-[85%]';
-        const bubbleHeight = density === 'comfortable' ? 'h-10' : 'h-8';
-        const avatarSize = 'h-8 w-8';
-        const bubbleWidth =
-          OLDER_SKELETON_BUBBLE_WIDTHS[patternIndex % OLDER_SKELETON_BUBBLE_WIDTHS.length];
-        const metaWidth =
-          OLDER_SKELETON_META_WIDTHS[patternIndex % OLDER_SKELETON_META_WIDTHS.length];
-
-        return (
-          <div
-            key={rowIndex}
-            className={`flex w-full max-w-full shrink-0 items-center ${isOutgoing ? 'justify-end' : 'justify-start'}`}
-            style={{ height: `${rowHeight}px` }}
-          >
-            <div className={`flex w-full ${contentMaxWidth} items-start gap-2 ${isOutgoing ? 'flex-row-reverse' : 'flex-row'}`}>
-              {!isOutgoing && (
-                <Skeleton className={avatarSize} rounded="full" />
-              )}
-              <div className={`flex min-w-0 flex-1 flex-col gap-1.5 ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                {!isOutgoing && (
-                  <Skeleton
-                    className={`h-3 ${metaWidth}`}
-                  />
-                )}
-                <Skeleton
-                  className={`${bubbleHeight} ${bubbleWidth} max-w-full`}
-                  rounded="2xl"
-                />
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-});
 
 const MessageViewV2 = memo(function MessageViewV2({
   conversation,
@@ -465,11 +170,11 @@ const MessageViewV2 = memo(function MessageViewV2({
   const [showJumpToPresent, setShowJumpToPresent] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [messageJumpNotice, setMessageJumpNotice] = useState<string | null>(null);
-  const [isMobileKeyboardOpen, setIsMobileKeyboardOpen] = useState(false);
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
   const [historyLoadPausedUntil, setHistoryLoadPausedUntil] = useState(0);
   const [historyRestoreRevision, setHistoryRestoreRevision] = useState(0);
+  const isMobileKeyboardOpen = useMobileKeyboardOpen();
   const setScrollerRef = useCallback((element: HTMLDivElement | null) => {
     scrollerRef.current = element;
     setScrollerElement(element);
@@ -930,34 +635,13 @@ const MessageViewV2 = memo(function MessageViewV2({
     !encryptionError &&
     conversationSecurityState?.status !== 'blocked';
 
-  // ── Preview cache ──
-  useEffect(() => {
-    // A trimmed history window is not authoritative for the conversation's
-    // latest-message preview. Live events and the local store own that state
-    // until this view reaches the present again.
-    if (hasNewer || bottomSpacerHeight > 1) {
-      return;
-    }
-
-    const latestMessage = [...messages].reverse().find((message) =>
-      String(message.conversation_id || conversation.id) === String(conversation.id)
-    ) || null;
-    if (!latestMessage) {
-      return;
-    }
-
-    setConversationPreview(
-      [conversation.id, conversation.public_id],
-      formatConversationPreview(latestMessage, user?.id),
-    );
-  }, [
-    bottomSpacerHeight,
-    conversation.id,
-    conversation.public_id,
-    hasNewer,
+  useConversationPreviewCache({
+    conversation,
     messages,
-    user?.id,
-  ]);
+    currentUserId: user?.id,
+    hasNewer,
+    bottomSpacerHeight,
+  });
 
   const captureViewportAnchorLock = useCallback((scroller = scrollerRef.current) => {
     if (!scroller) {
@@ -997,107 +681,19 @@ const MessageViewV2 = memo(function MessageViewV2({
     return false;
   }, []);
 
-  // ── Row measurements for logical scroll spacers ──
-  useLayoutEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) {
-      return undefined;
-    }
-
-    const elements = Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'));
-    const pendingMeasurements = new Map<string, number>();
-    let measurementFrame: number | null = null;
-    const flushMeasurements = () => {
-      measurementFrame = null;
-      if (pendingMeasurements.size === 0) {
-        return;
-      }
-
-      recordMessageHeights(
-        Array.from(pendingMeasurements, ([messageId, height]) => ({ messageId, height })),
-      );
-      pendingMeasurements.clear();
-    };
-    const scheduleMeasurementFlush = () => {
-      if (measurementFrame !== null) {
-        return;
-      }
-      measurementFrame = window.requestAnimationFrame(flushMeasurements);
-    };
-    const measureElement = (element: HTMLElement) => {
-      const messageId = element.dataset.messageId;
-      if (!messageId) return false;
-
-      const measuredHeight = element.getBoundingClientRect().height;
-      if (Number.isFinite(measuredHeight) && measuredHeight > 0) {
-        const normalizedMessageId = String(messageId);
-        const previousHeight = messageHeightCacheRef.current.get(normalizedMessageId);
-        if (typeof previousHeight === 'number' && Math.abs(previousHeight - measuredHeight) <= 0.5) {
-          return false;
-        }
-
-        messageHeightCacheRef.current.delete(normalizedMessageId);
-        messageHeightCacheRef.current.set(normalizedMessageId, measuredHeight);
-        while (messageHeightCacheRef.current.size > MAX_MEASURED_MESSAGE_HEIGHTS) {
-          const oldestMessageId = messageHeightCacheRef.current.keys().next().value;
-          if (typeof oldestMessageId !== 'string') {
-            break;
-          }
-          messageHeightCacheRef.current.delete(oldestMessageId);
-        }
-        pendingMeasurements.set(normalizedMessageId, measuredHeight);
-        scheduleMeasurementFlush();
-        return true;
-      }
-
-      return false;
-    };
-
-    elements.forEach(measureElement);
-
-    if (typeof ResizeObserver === 'undefined') {
-      return () => {
-        if (measurementFrame !== null) {
-          window.cancelAnimationFrame(measurementFrame);
-        }
-      };
-    }
-
-    const observer = new ResizeObserver((entries) => {
-      let rowHeightChanged = false;
-      entries.forEach((entry) => {
-        if (entry.target instanceof HTMLElement) {
-          rowHeightChanged = measureElement(entry.target) || rowHeightChanged;
-        }
-      });
-
-      if (
-        rowHeightChanged &&
-        (
-          historyScrollTransactionActiveRef.current ||
-          !atBottomRef.current ||
-          showJumpToPresentRef.current
-        )
-      ) {
-        restoreViewportAnchorLock();
-      }
-    });
-
-    elements.forEach((element) => observer.observe(element));
-    return () => {
-      observer.disconnect();
-      if (measurementFrame !== null) {
-        window.cancelAnimationFrame(measurementFrame);
-      }
-    };
-  }, [
+  useMessageRowMeasurements({
+    scrollerRef,
     density,
     recordMessageHeights,
     restoreViewportAnchorLock,
-    visualMessages.length,
+    visualMessagesLength: visualMessages.length,
     firstVisualMessageId,
     lastVisualMessageId,
-  ]);
+    messageHeightCacheRef,
+    historyScrollTransactionActiveRef,
+    atBottomRef,
+    showJumpToPresentRef,
+  });
 
   useEffect(() => {
     const scroller = scrollerRef.current;
@@ -1574,28 +1170,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     syncScrollState();
     return true;
   }, [syncScrollState]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.visualViewport) {
-      return;
-    }
-
-    const viewport = window.visualViewport;
-    const updateKeyboardState = () => {
-      const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
-      const hiddenViewportHeight = window.innerHeight - viewport.height - viewport.offsetTop;
-      setIsMobileKeyboardOpen(coarsePointer && hiddenViewportHeight > MOBILE_KEYBOARD_HEIGHT_THRESHOLD);
-    };
-
-    updateKeyboardState();
-    viewport.addEventListener('resize', updateKeyboardState);
-    viewport.addEventListener('scroll', updateKeyboardState);
-
-    return () => {
-      viewport.removeEventListener('resize', updateKeyboardState);
-      viewport.removeEventListener('scroll', updateKeyboardState);
-    };
-  }, []);
 
   const loadOlderPreservingViewport = useCallback(async () => {
     const snapshot = captureHistoryLoadScrollSnapshot();
@@ -2203,68 +1777,40 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   return (
     <div className="flex-1 min-h-0 flex flex-col relative">
-      {messageJumpNotice ? (
-        <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4">
-          <div className="inline-flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-full border border-orange-400/25 bg-void-bg-main/95 px-3 py-1.5 text-xs font-medium text-orange-200 shadow-lg shadow-black/20 supports-[backdrop-filter]:backdrop-blur">
-            <AlertCircle className="h-3.5 w-3.5 shrink-0 text-orange-300" />
-            <span className="truncate">{messageJumpNotice}</span>
-          </div>
-        </div>
-      ) : null}
-      <div
-        ref={setScrollerRef}
+      <MessageJumpNotice message={messageJumpNotice} />
+      <MessageTimelineViewport
+        setScrollerRef={setScrollerRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 overflow-y-auto overscroll-contain"
-        style={{ overflowAnchor: 'none', opacity: initialLatestRestoreDoneRef.current ? 1 : 0 }}
-      >
-        {/* Older logical range: lets fast scroll enter unloaded history while the real batch is fetched. */}
-        {topLogicalRangeHeight > 1 && (
-          <div
-            className="relative flex w-full items-start justify-center"
-            style={{ height: `${renderedTopSpacerHeight}px` }}
-          >
-            <div className="absolute inset-0 w-full">
-              <OlderHistorySkeleton
-                density={density}
-                rowCount={topHistorySkeletonRowCount}
-                active={olderRangeStatus === 'loading'}
-                anchorEdge="end"
-              />
-            </div>
-            {hasOlder && <div ref={olderSentinelRef} className="absolute inset-x-0 bottom-0 h-px w-full" />}
-          </div>
-        )}
-
-        {!hasOlder && topLogicalRangeHeight <= 1 && (
+        initialRestoreDone={initialLatestRestoreDoneRef.current}
+        topLogicalRangeHeight={topLogicalRangeHeight}
+        renderedTopSpacerHeight={renderedTopSpacerHeight}
+        topHistorySkeletonRowCount={topHistorySkeletonRowCount}
+        olderRangeStatus={olderRangeStatus}
+        hasOlder={hasOlder}
+        olderSentinelRef={olderSentinelRef}
+        showHeader={!hasOlder && topLogicalRangeHeight <= 1}
+        header={(
           <MessageViewHeader
             conversation={conversation}
             headerIdentity={headerIdentity}
             onProfileClick={handleProfileClick}
           />
         )}
-
+        bottomLogicalRangeHeight={bottomLogicalRangeHeight}
+        renderedBottomSpacerHeight={renderedBottomSpacerHeight}
+        bottomHistorySkeletonRowCount={bottomHistorySkeletonRowCount}
+        newerRangeStatus={newerRangeStatus}
+        hasNewer={hasNewer}
+        loadingNewer={loadingNewer}
+        newerSentinelRef={newerSentinelRef}
+        density={density}
+      >
         {listItems.length === 0 ? (
-          isSecureChatPreparing ? (
-            <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full border border-blue-400/25 bg-blue-500/10">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-300" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-void-text">
-                  Preparing secure chat...
-                </p>
-                <p className="mt-1 text-xs text-void-text-muted">
-                  Waiting for encryption keys before messages can load.
-                </p>
-              </div>
-            </div>
-          ) : (
-          <p className="text-center text-void-text-muted text-sm py-8">
-            {showCachedHistoryFallback
-              ? conversationSecurityState?.detail || 'Cached history will appear here after the latest conversation keys are restored.'
-              : 'No messages yet. Say something!'}
-          </p>
-          )
+          <EmptyMessageTimelineState
+            isSecureChatPreparing={isSecureChatPreparing}
+            showCachedHistoryFallback={showCachedHistoryFallback}
+            conversationSecurityState={conversationSecurityState}
+          />
         ) : (
           listItems.map((item) => (
             <Fragment key={item.kind === 'message' ? item.message.message_id : item.id}>
@@ -2272,38 +1818,13 @@ const MessageViewV2 = memo(function MessageViewV2({
             </Fragment>
           ))
         )}
+      </MessageTimelineViewport>
 
-        {/* Newer logical range: real newer rows replace this skeleton area when available. */}
-        {bottomLogicalRangeHeight > 1 && (hasNewer || loadingNewer) && (
-          <div
-            className="relative flex w-full items-start justify-center"
-            style={{ height: `${renderedBottomSpacerHeight}px` }}
-          >
-            {hasNewer && <div ref={newerSentinelRef} className="absolute inset-x-0 top-0 h-px w-full" />}
-            <div
-              className="absolute inset-0 w-full"
-            >
-              <OlderHistorySkeleton
-                density={density}
-                rowCount={bottomHistorySkeletonRowCount}
-                active={newerRangeStatus === 'loading'}
-              />
-            </div>
-          </div>
-        )}
-      </div>
-
-      {showJumpToPresent && !isMobileKeyboardOpen && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-4 sm:bottom-4">
-          <button
-            onClick={handleJumpToPresent}
-            className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-void-accent px-4 py-2 text-xs font-bold text-white shadow-lg transition-colors hover:bg-void-accent-hover"
-          >
-            <ArrowDown className="h-3.5 w-3.5" />
-            Jump to Present
-          </button>
-        </div>
-      )}
+      <JumpToPresentButton
+        visible={showJumpToPresent}
+        disabledByKeyboard={isMobileKeyboardOpen}
+        onJump={handleJumpToPresent}
+      />
 
       <ExternalLinkModal
         pendingExternalLink={pendingExternalLink}

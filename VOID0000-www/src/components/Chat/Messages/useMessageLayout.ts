@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { Message } from '../../Services/Chat/chatService';
+import type { Message } from '../../../Services/Chat/chatService';
 
 export const GROUP_TIME_WINDOW_MS = 5 * 60 * 1000;
 

@@ -7,14 +7,14 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
-import UserAvatar from '../common/UserAvatar';
+import UserAvatar from '../../common/UserAvatar';
 import {
   sendSystemEvent,
   updateConversationNickname,
   type Conversation,
   type ConversationMember,
   type Message,
-} from '../../Services/Chat/chatService';
+} from '../../../Services/Chat/chatService';
 
 interface DirectConversationSettingsProps {
   conversation: Conversation;

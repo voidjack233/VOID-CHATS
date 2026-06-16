@@ -10,26 +10,26 @@ import {
   Smile,
   Trash2,
 } from 'lucide-react';
-import type { Message } from '../../Services/Chat/chatService';
-import type { Attachment } from '../../Services/Chat/chatTypes';
-import type { Density } from '../../Services/hooks/Settings/useTheme';
+import type { Message } from '../../../Services/Chat/chatService';
+import type { Attachment } from '../../../Services/Chat/chatTypes';
+import type { Density } from '../../../Services/hooks/Settings/useTheme';
 import ReactionBar from './ReactionBar';
-import AttachmentImage from './AttachmentImage';
-import AttachmentAudioPlayer, { isAudioAttachment } from './AttachmentAudioPlayer';
-import AttachmentFileCard from './AttachmentFileCard';
+import AttachmentImage from '../Attachments/AttachmentImage';
+import AttachmentAudioPlayer, { isAudioAttachment } from '../Attachments/AttachmentAudioPlayer';
+import AttachmentFileCard from '../Attachments/AttachmentFileCard';
 import FormattedMessageText from './FormattedMessageText';
 import InviteEmbed from './InviteEmbed';
 import LinkPreviewCard from './LinkPreviewCard';
 import MessagePreviewText from './MessagePreviewText';
-import UserAvatar from '../common/UserAvatar';
-import { parseAttachment, parseAttachments } from '../../Services/Chat/chatService';
-import { CHAT_FORWARDED_MLS_MESSAGE_TYPE } from '../../Services/Chat/chatUtils';
-import { getMentionUsernames } from '../../Services/Chat/messageMentions';
-import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../Services/Chat/reactionLimits';
+import UserAvatar from '../../common/UserAvatar';
+import { parseAttachment, parseAttachments } from '../../../Services/Chat/chatService';
+import { CHAT_FORWARDED_MLS_MESSAGE_TYPE } from '../../../Services/Chat/chatUtils';
+import { getMentionUsernames } from '../../../Services/Chat/messageMentions';
+import { MAX_UNIQUE_REACTIONS_PER_MESSAGE, getUniqueReactionCount } from '../../../Services/Chat/reactionLimits';
 import {
   getCachedAttachmentObjectUrl,
   resolveAttachmentObjectUrl,
-} from '../../Services/Crypto/attachmentEncryption';
+} from '../../../Services/Crypto/attachmentEncryption';
 import { getMessageDateLabel } from './useMessageLayout';
 import {
   extractMessageTextSegments,
@@ -41,7 +41,7 @@ import {
   getSingleAttachmentReservedPresentation,
   looksLikeImageAttachment,
   MULTI_ATTACHMENT_MAX_WIDTH,
-} from './messageAttachmentLayout';
+} from '../Attachments/messageAttachmentLayout';
 
 const DENSITY: Record<Density, {
   consecutiveGap: number;
