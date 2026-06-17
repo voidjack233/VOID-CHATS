@@ -27,24 +27,25 @@ import { useMessageActions } from '../Messages/useMessageActions';
 import { useMessageLayout } from '../Messages/useMessageLayout';
 import { useMessageScrollGeometry } from './useMessageScrollGeometry';
 import { useMessageTimelineVirtualizer } from './useMessageTimelineVirtualizer';
-import { estimateMessageRowHeight } from '../Messages/messageRowHeight';
+import { estimateHistoryLogicalRowHeight, estimateMessageRowHeight } from '../Messages/messageRowHeight';
 import { useNearViewportMessages } from '../Messages/useNearViewportMessages';
 import EmptyMessageTimelineState from './EmptyMessageTimelineState';
 import JumpToPresentButton from './JumpToPresentButton';
 import MessageJumpNotice from './MessageJumpNotice';
 import MessageTimelineViewport from './MessageTimelineViewport';
-import {
-  HISTORY_PAGE_PLACEHOLDER_HEIGHT,
-  HISTORY_SKELETON_ROW_HEIGHT,
-} from './historySkeletonConstants';
+import { HISTORY_SKELETON_ROW_HEIGHT } from './historySkeletonConstants';
+import { MESSAGE_PAGE_SIZE } from '../../../Services/Chat/chatConstants';
 import { useConversationPreviewCache } from './useConversationPreviewCache';
 import { useMobileKeyboardOpen } from './useMobileKeyboardOpen';
 import { useMessageRowMeasurements } from './useMessageRowMeasurements';
 import {
   getFirstVisibleMessageAnchor,
   getMessageAnchorsAroundViewport,
+  getMessageElementEdgeOffset,
   getMessageElementById,
+  moveHistoryRangeReplacementSeamAnchor,
   restoreHistoryRangeReplacementAnchor,
+  restoreHistoryRangeReplacementSeamAnchor,
   restoreVisibleMessageAnchor,
   updateHistoryRangeReplacementPosition,
   type HistoryLoadScrollSnapshot,
@@ -182,7 +183,6 @@ const MessageViewV2 = memo(function MessageViewV2({
 
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
-  const historyLogicalSlotHeight = HISTORY_PAGE_PLACEHOLDER_HEIGHT[density];
   const historySkeletonRowHeight = HISTORY_SKELETON_ROW_HEIGHT[density];
   const olderTopLoadThreshold = OLDER_HISTORY_PREFETCH_DISTANCE[density];
   const olderTopScrollLockThreshold = 2;
@@ -271,6 +271,9 @@ const MessageViewV2 = memo(function MessageViewV2({
 
   const { formatTime, getSenderName, getSenderAvatarUrl } = useMessageDisplay(members, userAvatar);
   const visualMessages = messages;
+  const historyLogicalSlotHeight = useMemo(() => (
+    MESSAGE_PAGE_SIZE * estimateHistoryLogicalRowHeight(visualMessages, density)
+  ), [density, visualMessages]);
   const maxPhysicalBottomSpacerHeight = Math.min(
     MAX_PHYSICAL_HISTORY_SPACER_HEIGHT,
     historyLogicalSlotHeight,
@@ -767,6 +770,10 @@ const MessageViewV2 = memo(function MessageViewV2({
       ? {
           direction: 'older',
           seamMessageId: firstVisualMessageId!,
+          seamAnchor: (() => {
+            const offset = getMessageElementEdgeOffset(scroller, firstVisualMessageId!, 'top');
+            return offset === null ? null : { edge: 'top', offset };
+          })(),
           sourceStart: Math.max(0, renderedTopSpacerHeight - historyLogicalSlotHeight),
           sourceEnd: renderedTopSpacerHeight,
           rowHeight: historySkeletonRowHeight,
@@ -822,6 +829,10 @@ const MessageViewV2 = memo(function MessageViewV2({
       ? {
           direction: 'newer',
           seamMessageId: lastVisualMessageId!,
+          seamAnchor: (() => {
+            const offset = getMessageElementEdgeOffset(scroller, lastVisualMessageId!, 'bottom');
+            return offset === null ? null : { edge: 'bottom', offset };
+          })(),
           sourceStart: bottomRangeStart,
           sourceEnd: Math.min(
             scroller.scrollHeight,
@@ -882,6 +893,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       const scrollDelta = scroller.scrollTop - pendingOlderSnapshot.scrollTop;
       pendingOlderSnapshot.scrollTop = scroller.scrollTop;
       if (pendingOlderSnapshot.rangeReplacement) {
+        moveHistoryRangeReplacementSeamAnchor(pendingOlderSnapshot.rangeReplacement, scrollDelta);
         updateHistoryRangeReplacementPosition(scroller, pendingOlderSnapshot.rangeReplacement);
       } else {
         const anchor = getFirstVisibleMessageAnchor(scroller);
@@ -904,6 +916,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       pendingNewerSnapshot.distanceFromBottom =
         scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
       if (pendingNewerSnapshot.rangeReplacement) {
+        moveHistoryRangeReplacementSeamAnchor(pendingNewerSnapshot.rangeReplacement, scrollDelta);
         updateHistoryRangeReplacementPosition(scroller, pendingNewerSnapshot.rangeReplacement);
       } else {
         const anchors = getMessageAnchorsAroundViewport(scroller);
@@ -1059,15 +1072,17 @@ const MessageViewV2 = memo(function MessageViewV2({
           const firstInsertedElement = insertedElements[0]!;
           const seamElement = messageElements[seamIndex]!;
           const scrollerRect = scroller.getBoundingClientRect();
-          restoreHistoryRangeReplacementAnchor({
-            scroller,
-            replacement,
-            insertedElements,
-            rangeStartOffsetTop:
-              firstInsertedElement.getBoundingClientRect().top - scrollerRect.top,
-            rangeEndOffsetTop:
-              seamElement.getBoundingClientRect().top - scrollerRect.top,
-          });
+          if (!restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)) {
+            restoreHistoryRangeReplacementAnchor({
+              scroller,
+              replacement,
+              insertedElements,
+              rangeStartOffsetTop:
+                firstInsertedElement.getBoundingClientRect().top - scrollerRect.top,
+              rangeEndOffsetTop:
+                seamElement.getBoundingClientRect().top - scrollerRect.top,
+            });
+          }
         } else if (snapshot.readyToRestore && !hasOlderRef.current) {
           scroller.scrollTop = 0;
           replacement.mapped = true;
@@ -1125,15 +1140,17 @@ const MessageViewV2 = memo(function MessageViewV2({
           const insertedElements = messageElements.slice(seamIndex + 1);
           const lastInsertedElement = insertedElements[insertedElements.length - 1]!;
           const scrollerRect = scroller.getBoundingClientRect();
-          restoreHistoryRangeReplacementAnchor({
-            scroller,
-            replacement,
-            insertedElements,
-            rangeStartOffsetTop:
-              seamElement.getBoundingClientRect().bottom - scrollerRect.top,
-            rangeEndOffsetTop:
-              lastInsertedElement.getBoundingClientRect().bottom - scrollerRect.top,
-          });
+          if (!restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)) {
+            restoreHistoryRangeReplacementAnchor({
+              scroller,
+              replacement,
+              insertedElements,
+              rangeStartOffsetTop:
+                seamElement.getBoundingClientRect().bottom - scrollerRect.top,
+              rangeEndOffsetTop:
+                lastInsertedElement.getBoundingClientRect().bottom - scrollerRect.top,
+            });
+          }
         } else if (snapshot.readyToRestore && !hasNewerRef.current) {
           scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
           replacement.mapped = true;

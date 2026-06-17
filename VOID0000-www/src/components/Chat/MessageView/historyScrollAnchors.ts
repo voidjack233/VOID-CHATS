@@ -15,6 +15,10 @@ export interface MessageAnchorSnapshot {
 export interface HistoryRangeReplacementSnapshot {
   direction: 'older' | 'newer';
   seamMessageId: string;
+  seamAnchor: {
+    edge: 'top' | 'bottom';
+    offset: number;
+  } | null;
   sourceStart: number;
   sourceEnd: number;
   rowHeight: number;
@@ -115,6 +119,27 @@ export const getMessageElementById = (scroller: HTMLElement, messageId: string) 
   scroller.querySelector<HTMLElement>(`[data-message-id="${escapeMessageIdSelector(messageId)}"]`)
 );
 
+const getElementEdgeOffset = (
+  scroller: HTMLElement,
+  element: HTMLElement,
+  edge: 'top' | 'bottom',
+) => {
+  const scrollerRect = scroller.getBoundingClientRect();
+  const rect = element.getBoundingClientRect();
+  return edge === 'bottom'
+    ? rect.bottom - scrollerRect.top
+    : rect.top - scrollerRect.top;
+};
+
+export const getMessageElementEdgeOffset = (
+  scroller: HTMLElement,
+  messageId: string,
+  edge: 'top' | 'bottom',
+) => {
+  const element = getMessageElementById(scroller, messageId);
+  return element ? getElementEdgeOffset(scroller, element, edge) : null;
+};
+
 export const restoreVisibleMessageAnchor = (
   scroller: HTMLElement,
   snapshot: Pick<HistoryLoadScrollSnapshot, 'anchorMessageId' | 'anchorOffsetTop'>,
@@ -183,6 +208,45 @@ export const updateHistoryRangeReplacementPosition = (
     rowIndex,
     offsetTop: rowTop - viewportStart,
   };
+};
+
+export const moveHistoryRangeReplacementSeamAnchor = (
+  replacement: HistoryRangeReplacementSnapshot,
+  scrollDelta: number,
+) => {
+  if (!replacement.seamAnchor) {
+    return;
+  }
+
+  replacement.seamAnchor.offset -= scrollDelta;
+};
+
+export const restoreHistoryRangeReplacementSeamAnchor = (
+  scroller: HTMLElement,
+  replacement: HistoryRangeReplacementSnapshot,
+) => {
+  const seamAnchor = replacement.seamAnchor;
+  if (!seamAnchor) {
+    return false;
+  }
+
+  const seamElement = getMessageElementById(scroller, replacement.seamMessageId);
+  if (!seamElement) {
+    return false;
+  }
+
+  const currentOffset = getElementEdgeOffset(scroller, seamElement, seamAnchor.edge);
+  const offsetDelta = currentOffset - seamAnchor.offset;
+  if (Math.abs(offsetDelta) > 0.5) {
+    const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTop = Math.min(
+      maxScrollTop,
+      Math.max(0, scroller.scrollTop + offsetDelta),
+    );
+  }
+
+  replacement.mapped = true;
+  return true;
 };
 
 export const restoreHistoryRangeReplacementAnchor = ({
