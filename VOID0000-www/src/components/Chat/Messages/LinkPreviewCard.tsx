@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { ExternalLink, Link2, X } from 'lucide-react';
 import type { LinkPreviewMetadata } from '../../../Services/Chat/chatService';
 
@@ -17,6 +18,43 @@ function getHostname(value: string): string {
   }
 }
 
+function shouldSkipDirectPreviewAsset(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+
+    // These CDN URLs are commonly signed/hotlink-protected. Loading them
+    // directly from the browser creates noisy 403s, so keep the card stable
+    // with a placeholder unless the backend later proxies/caches the asset.
+    return (
+      hostname === 'fbcdn.net' ||
+      hostname.endsWith('.fbcdn.net') ||
+      hostname === 'cdninstagram.com' ||
+      hostname.endsWith('.cdninstagram.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
+const failedPreviewImageUrls = new Set<string>();
+const failedPreviewFaviconUrls = new Set<string>();
+const MAX_FAILED_PREVIEW_ASSET_URLS = 240;
+
+function rememberFailedPreviewAsset(cache: Set<string>, url: string) {
+  if (cache.has(url)) {
+    return;
+  }
+
+  cache.add(url);
+  while (cache.size > MAX_FAILED_PREVIEW_ASSET_URLS) {
+    const oldestUrl = cache.values().next().value;
+    if (typeof oldestUrl !== 'string') {
+      break;
+    }
+    cache.delete(oldestUrl);
+  }
+}
+
 const LinkPreviewCard = ({
   preview,
   onOpenLink,
@@ -26,6 +64,26 @@ const LinkPreviewCard = ({
 }: LinkPreviewCardProps) => {
   const hostname = getHostname(preview.url);
   const siteName = preview.site_name || hostname;
+  const imageUrl = preview.image || null;
+  const faviconUrl = preview.favicon || null;
+  const directImageUrl = imageUrl && !shouldSkipDirectPreviewAsset(imageUrl) ? imageUrl : null;
+  const directFaviconUrl = faviconUrl && !shouldSkipDirectPreviewAsset(faviconUrl) ? faviconUrl : null;
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(() => (
+    directImageUrl && failedPreviewImageUrls.has(directImageUrl) ? directImageUrl : null
+  ));
+  const [failedFaviconUrl, setFailedFaviconUrl] = useState<string | null>(() => (
+    directFaviconUrl && failedPreviewFaviconUrls.has(directFaviconUrl) ? directFaviconUrl : null
+  ));
+  const showPreviewImage = Boolean(directImageUrl && failedImageUrl !== directImageUrl);
+  const showFavicon = Boolean(directFaviconUrl && failedFaviconUrl !== directFaviconUrl);
+
+  useEffect(() => {
+    setFailedImageUrl(directImageUrl && failedPreviewImageUrls.has(directImageUrl) ? directImageUrl : null);
+  }, [directImageUrl]);
+
+  useEffect(() => {
+    setFailedFaviconUrl(directFaviconUrl && failedPreviewFaviconUrls.has(directFaviconUrl) ? directFaviconUrl : null);
+  }, [directFaviconUrl]);
 
   const openPreview = () => {
     if (loading) return;
@@ -34,6 +92,22 @@ const LinkPreviewCard = ({
       return;
     }
     window.open(preview.url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleImageError = () => {
+    if (directImageUrl) {
+      rememberFailedPreviewAsset(failedPreviewImageUrls, directImageUrl);
+      setFailedImageUrl(directImageUrl);
+    }
+    onMediaLoad?.();
+  };
+
+  const handleFaviconError = () => {
+    if (directFaviconUrl) {
+      rememberFailedPreviewAsset(failedPreviewFaviconUrls, directFaviconUrl);
+      setFailedFaviconUrl(directFaviconUrl);
+    }
+    onMediaLoad?.();
   };
 
   return (
@@ -59,18 +133,26 @@ const LinkPreviewCard = ({
         disabled={loading}
         className="block w-full text-left disabled:cursor-default"
       >
-        {preview.image ? (
+        {showPreviewImage ? (
           <div className="h-36 w-full overflow-hidden bg-void-bg-hover">
             <img
-              src={preview.image}
+              src={directImageUrl!}
               alt=""
               loading="lazy"
               referrerPolicy="no-referrer"
               onLoad={onMediaLoad}
+              onError={handleImageError}
               className={`h-full w-full object-cover transition-transform duration-300 ${
                 loading ? 'opacity-55 grayscale' : 'group-hover/linkpreview:scale-[1.02]'
               }`}
             />
+          </div>
+        ) : imageUrl ? (
+          <div className="flex h-36 flex-col items-center justify-center gap-2 bg-void-bg-hover/55 text-void-text-muted">
+            <Link2 className="h-6 w-6" />
+            <span className="text-[11px] font-medium uppercase tracking-[0.16em]">
+              Preview unavailable
+            </span>
           </div>
         ) : (
           <div className="flex h-16 items-center justify-center bg-void-bg-hover/55 text-void-text-muted">
@@ -80,13 +162,14 @@ const LinkPreviewCard = ({
 
         <div className="space-y-1.5 p-3">
           <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-void-text-muted">
-            {preview.favicon ? (
+            {showFavicon ? (
               <img
-                src={preview.favicon}
+                src={directFaviconUrl!}
                 alt=""
                 loading="lazy"
                 referrerPolicy="no-referrer"
                 onLoad={onMediaLoad}
+                onError={handleFaviconError}
                 className="h-3.5 w-3.5 rounded-sm"
               />
             ) : (
