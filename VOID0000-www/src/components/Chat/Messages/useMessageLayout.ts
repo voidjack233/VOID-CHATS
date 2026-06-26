@@ -43,7 +43,7 @@ export function getMessageDateLabel(dateStr: string): string {
 export function useMessageLayout(
   visualMessages: Message[],
   groupBreakBeforeIds: Set<string>,
-  _hasOlder: boolean,
+  hasOlder: boolean,
 ): Record<string, MessageLayoutTraits> {
   return useMemo(() => {
     const next: Record<string, MessageLayoutTraits> = {};
@@ -54,8 +54,9 @@ export function useMessageLayout(
 
       const prev = i > 0 ? visualMessages[i - 1] : null;
       const hasPaginationBreak = groupBreakBeforeIds.has(msg.message_id);
+      const isWindowStartWithUnknownHistory = !prev && hasOlder;
       const showDateSeparator =
-        !prev ||
+        (!prev && !isWindowStartWithUnknownHistory) ||
         (!!prev && !isSameDay(msg.created_at, prev.created_at));
       const timeDiff = prev
         ? new Date(msg.created_at).getTime() - new Date(prev.created_at).getTime()
@@ -75,5 +76,5 @@ export function useMessageLayout(
     }
 
     return next;
-  }, [groupBreakBeforeIds, visualMessages]);
+  }, [groupBreakBeforeIds, hasOlder, visualMessages]);
 }
