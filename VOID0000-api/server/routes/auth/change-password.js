@@ -13,14 +13,11 @@ import {
   activateBackedUpMlsKeyPackages,
   normalizeBackedUpMlsKeyPackageRefs,
 } from '../../utils/mlsKeyPackageBackupActivation.js';
+import { getTwoFactorCodeSecret } from '../../utils/authSecrets.js';
+import { validateAccountPassword } from '../../utils/passwordPolicy.js';
 
 const router = Router();
 const CHANGE_PASSWORD_EMAIL_ACTION = 'change_password';
-const ACTION_EMAIL_CODE_SECRET =
-  process.env.TWO_FACTOR_CODE_SECRET ||
-  process.env.REFRESH_SECRET ||
-  process.env.ACCESS_SECRET ||
-  'void-dev-action-email-code-secret';
 
 function getActionEmailKey(userId, action) {
   return `auth:2fa:action-email:${userId}:${action}`;
@@ -28,7 +25,7 @@ function getActionEmailKey(userId, action) {
 
 function hashActionEmailCode(userId, action, code) {
   return crypto
-    .createHmac('sha256', ACTION_EMAIL_CODE_SECRET)
+    .createHmac('sha256', getTwoFactorCodeSecret())
     .update(`${userId}:${action}:${String(code).trim()}`)
     .digest('hex');
 }
@@ -51,10 +48,11 @@ router.post('/', authenticateUser, encryptedCSRFProtection, async (req, res) => 
     });
   }
 
-  if (newPassword.length < 8) {
+  const passwordError = validateAccountPassword(newPassword);
+  if (passwordError) {
     return res.status(400).json({
       success: false,
-      message: 'New password must be at least 8 characters'
+      message: passwordError
     });
   }
 

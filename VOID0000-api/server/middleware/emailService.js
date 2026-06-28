@@ -4,6 +4,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { debugLog } from '../utils/debugLog.js';
+import { hashEmailVerificationCode } from '../utils/emailVerificationSecurity.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,11 +33,14 @@ const loadTemplate = (templateName, variables) => {
 };
 
 // Send Verification Email
-export async function sendVerificationEmail(email, code) {
+export async function sendVerificationEmail(email, code, verificationUrl = '') {
   const transporter = createTransporter();
   
   const html = loadTemplate('verificationEmail', {
     CODE: code,
+    VERIFICATION_LINK: verificationUrl
+      ? `<p style="margin: 24px 0 0; text-align: center;"><a href="${verificationUrl}" style="display: inline-block; padding: 12px 18px; background: #2563eb; color: #ffffff; border-radius: 10px; text-decoration: none; font-weight: 600;">Open Verification Page</a></p>`
+      : '',
     YEAR: new Date().getFullYear()
   });
 
@@ -44,7 +48,7 @@ export async function sendVerificationEmail(email, code) {
     from: `"Void App" <no-reply@void0000.online>`,
     to: email,
     subject: 'Your Verification Code - Void App',
-    text: `Your verification code is: ${code}\n\nIt will expire in 15 minutes.\n\nIf you didn't request this code, please ignore this email.`,
+    text: `Your verification code is: ${code}${verificationUrl ? `\n\nOpen the verification page:\n${verificationUrl}` : ''}\n\nIt will expire in 15 minutes.\n\nIf you didn't request this code, please ignore this email.`,
     html
   });
   
@@ -88,8 +92,8 @@ export function getCodeExpiration() {
 
 // Verification Service Class
 export class VerificationService {
-  static async sendVerificationEmail(email, code) {
-    return await sendVerificationEmail(email, code);
+  static async sendVerificationEmail(email, code, verificationUrl = '') {
+    return await sendVerificationEmail(email, code, verificationUrl);
   }
 
   static async createVerificationCode(client, user_id, email) {
@@ -101,7 +105,7 @@ export class VerificationService {
     await client.query(
       `INSERT INTO email_verifications (user_id, code, expires_at)
        VALUES ($1, $2, $3)`,
-      [user_id, code, expires_at]
+      [user_id, hashEmailVerificationCode(user_id, code), expires_at]
     );
 
     debugLog(`Verification code ${code} inserted for user_id ${user_id}`);

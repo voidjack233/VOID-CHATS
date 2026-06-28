@@ -1,5 +1,5 @@
 // Cookie maxAge constants
-const ACCESS_COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000;  // 30 days (same as refresh — JWT expiresIn handles actual expiry)
+const ACCESS_COOKIE_MAX_AGE = 15 * 60 * 1000;             // 15 minutes, aligned with access JWT expiry
 const REFRESH_COOKIE_MAX_AGE = 30 * 24 * 60 * 60 * 1000;  // 30 days
 const DEVICE_COOKIE_MAX_AGE = 365 * 24 * 60 * 60 * 1000;  // 1 year
 const PRODUCTION_COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || '.void0000.online';

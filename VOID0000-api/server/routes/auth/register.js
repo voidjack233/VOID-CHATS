@@ -6,6 +6,8 @@ import { generateVerificationToken, getCodeExpiration } from '../../middleware/e
 import { DeviceFingerprint } from '../../utils/deviceFingerprint.js';
 import { recordAccountCreation } from '../../middleware/captcha/trustScore.js';
 import { profileSnowflake } from '../../utils/snowflake.js';
+import { hashToken } from '../../utils/hashToken.js';
+import { validateAccountPassword } from '../../utils/passwordPolicy.js';
 
 const router = Router();
 
@@ -17,6 +19,15 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ 
       success: false, 
       message: 'All fields are required' 
+    });
+  }
+
+  const passwordError = validateAccountPassword(password);
+  if (passwordError) {
+    await IPSecurity.logIPActivity(req, 'REGISTER_FAILURE_WEAK_PASSWORD');
+    return res.status(400).json({
+      success: false,
+      message: passwordError,
     });
   }
 
@@ -39,7 +50,7 @@ router.post('/', async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(409).json({ 
           success: false, 
-          message: 'Email already registered' 
+          message: 'Unable to create an account with those details'
         });
       }
       
@@ -48,7 +59,7 @@ router.post('/', async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(409).json({ 
           success: false, 
-          message: 'Username already taken' 
+          message: 'Unable to create an account with those details'
         });
       }
     }
@@ -86,12 +97,13 @@ router.post('/', async (req, res) => {
     await DeviceManager.registerDevice(user_id, req, client);
 
     const verificationToken = generateVerificationToken();
+    const verificationTokenHash = hashToken(verificationToken);
     const expiresAt = getCodeExpiration();
 
     await client.query(
       `INSERT INTO email_verifications (user_id, token, expires_at)
        VALUES ($1, $2, $3)`,
-      [user_id, verificationToken, expiresAt]
+      [user_id, verificationTokenHash, expiresAt]
     );
 
     await IPSecurity.logIPActivity(req, 'REGISTER_SUCCESS', user_id, client);

@@ -6,11 +6,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer } from 'http';
 import { securityMiddleware } from '../middleware/xss/index.js';
+import { validateAuthSecrets } from '../utils/authSecrets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
+validateAuthSecrets();
 
 const { encryptedCSRFProtection } = await import('../middleware/encryptedCSRF.js');
 const { authenticateUser } = await import('../middleware/jwt.js');

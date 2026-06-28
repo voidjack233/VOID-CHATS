@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import { hashToken } from '../../utils/hashToken.js';
 
 const router = Router();
 
@@ -20,12 +21,13 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    const tokenHash = hashToken(token);
     const result = await pool.query(
       `SELECT ev.expires_at, ev.code, u.email, u.is_verified
        FROM email_verifications ev
        JOIN users u ON u.id = ev.user_id
        WHERE ev.token = $1`,
-      [token]
+      [tokenHash]
     );
 
     if (result.rows.length === 0) {

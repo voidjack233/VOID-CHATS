@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { pool } from '../../db.js';
 import crypto from 'crypto';
 import { VerificationService } from '../../middleware/emailService.js';
+import { hashToken } from '../../utils/hashToken.js';
+import { hashEmailVerificationCode } from '../../utils/emailVerificationSecurity.js';
 
 const router = Router();
 
@@ -16,13 +18,14 @@ router.post('/', async (req, res) => {
 
   try {
     await client.query('BEGIN');
+    const tokenHash = hashToken(token);
 
     const result = await client.query(
       `SELECT ev.user_id, ev.expires_at, ev.code, u.email, u.is_verified
        FROM email_verifications ev
        JOIN users u ON u.id = ev.user_id
        WHERE ev.token = $1`,
-      [token]
+      [tokenHash]
     );
 
     if (result.rows.length === 0) {
@@ -64,9 +67,9 @@ router.post('/', async (req, res) => {
 
     await client.query(
       `UPDATE email_verifications 
-       SET code = $1, expires_at = $2 
-       WHERE token = $3`,
-      [code, newExpiresAt, token]
+       SET code = $1, expires_at = $2, token = $3
+       WHERE user_id = $4`,
+      [hashEmailVerificationCode(record.user_id, code), newExpiresAt, tokenHash, record.user_id]
     );
 
     await VerificationService.sendVerificationEmail(record.email, code);

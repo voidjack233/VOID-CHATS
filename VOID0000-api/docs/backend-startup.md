@@ -424,7 +424,7 @@ You generally need both.
 Account/control API:
 
 ```bash
-curl http://127.0.0.1:3001/api/debug/ws-stats
+curl http://127.0.0.1:3001/health
 curl http://127.0.0.1:3001/ready
 ```
 

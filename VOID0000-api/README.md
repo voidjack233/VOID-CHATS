@@ -113,7 +113,7 @@ Important groups:
 - Valkey: `VALKEY_HOST`, `VALKEY_PORT`
 - MinIO: `MINIO_ENDPOINT`, `MINIO_PORT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, bucket names
 - Auth: `ACCESS_SECRET`, `REFRESH_SECRET`
-- CSRF and 2FA: `CSRF_ENCRYPTION_KEY`, `TOTP_ENCRYPTION_KEY`
+- CSRF and 2FA: `CSRF_ENCRYPTION_KEY`, `TOTP_ENCRYPTION_KEY`, `TWO_FACTOR_CODE_SECRET`
 - Email: `EMAIL_USER`, `EMAIL_PASS`
 - Frontend/API: `FRONT_URL`, `VITE_API_URL`, `PORT`, `MESSAGE_SERVICE_PORT`, `SOCIAL_SERVICE_PORT`, `CONVERSATION_SERVICE_PORT`
 - Phoenix gateway: `GATEWAY_PORT`, `PHX_SECRET_KEY_BASE`
@@ -139,7 +139,6 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 - `/api/users` - profile reads, profile updates, avatar upload, preferences, sessions, account data, and search.
 - `/api/friends` - friend requests, lists, presence, actions, and removal.
 - `/api/conversations` - DMs, conversation metadata, members, permissions, keys, MLS, invites, messages, reactions, and attachments.
-- `/api/debug/ws-stats` - reports that the Node API is running in Phoenix gateway mode.
 
 ## Security Notes
 
@@ -148,7 +147,7 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 - Refresh tokens are stored as SHA-256 hashes because the raw tokens are already high-entropy JWTs.
 - JWTs are delivered through cookies.
 - Sensitive state-changing routes use encrypted CSRF protection.
-- Captcha, trust scoring, device tracking, and Redis-backed rate limits protect auth and profile flows.
+- Captcha challenges, trust scoring, device tracking, and rate limits are backed by Valkey for auth/profile protection across service processes.
 - Image uploads are processed through Sharp to remove metadata.
 - DOMPurify, JSDOM, CSP, and security headers are used for XSS hardening.
 
@@ -179,10 +178,11 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 
 ## Health Checks
 
-API gateway mode:
+Account/control API:
 
 ```bash
-curl http://127.0.0.1:3001/api/debug/ws-stats
+curl http://127.0.0.1:3001/health
+curl http://127.0.0.1:3001/ready
 ```
 
 Readiness checks:

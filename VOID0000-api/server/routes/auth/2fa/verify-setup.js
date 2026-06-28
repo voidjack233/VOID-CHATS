@@ -4,17 +4,13 @@ import { totp } from '../../../middleware/2fa/totp.js';
 import { decrypt } from './setup-totp.js';
 import crypto from 'crypto';
 import argon2 from 'argon2';
+import { getTwoFactorCodeSecret } from '../../../utils/authSecrets.js';
 
 const router = Router();
-const EMAIL_SETUP_CODE_SECRET =
-  process.env.TWO_FACTOR_CODE_SECRET ||
-  process.env.REFRESH_SECRET ||
-  process.env.ACCESS_SECRET ||
-  'void-dev-email-setup-code-secret';
 
 function hashSetupEmailCode(userId, code) {
   return crypto
-    .createHmac('sha256', EMAIL_SETUP_CODE_SECRET)
+    .createHmac('sha256', getTwoFactorCodeSecret())
     .update(`${userId}:setup_email:${String(code).trim()}`)
     .digest('hex');
 }

@@ -8,10 +8,9 @@ import { hashToken } from '../../utils/hashToken.js';
 import { sessionStore } from '../../middleware/sessionStore.js';
 import { syncLiveTokenExpiry } from '../../gateway/control.js';
 import { debugLog } from '../../utils/debugLog.js';
+import { getAccessSecret, getRefreshSecret } from '../../utils/authSecrets.js';
 
 const router = Router();
-const ACCESS_SECRET = process.env.ACCESS_SECRET;
-const REFRESH_SECRET = process.env.REFRESH_SECRET;
 
 const normalizeIP = (ip) => {
   if (!ip) return null;
@@ -35,7 +34,7 @@ router.post('/', async (req, res) => {
 
   try {
     // 1. VERIFY JWT STRUCTURE
-    const decoded = jwt.verify(refreshToken, REFRESH_SECRET);
+    const decoded = jwt.verify(refreshToken, getRefreshSecret());
 
     if (!decoded.id || !decoded.profile_id || !decoded.jti || !decoded.device_id) {
       console.error('Invalid JWT payload:', decoded);
@@ -97,7 +96,7 @@ router.post('/', async (req, res) => {
             jti: uuidv4(),
             type: 'access'
           },
-          ACCESS_SECRET,
+          getAccessSecret(),
           { expiresIn: '15m' }
         );
 
@@ -174,14 +173,14 @@ router.post('/', async (req, res) => {
 
     const newAccessToken = jwt.sign(
       { ...tokenPayload, jti: newJtiAccess, type: 'access' },
-      ACCESS_SECRET,
+      getAccessSecret(),
       { expiresIn: '15m' }
     );
     const newAccessDecoded = jwt.decode(newAccessToken);
 
     const newRefreshToken = jwt.sign(
       { ...tokenPayload, jti: newJtiRefresh, type: 'refresh' },
-      REFRESH_SECRET,
+      getRefreshSecret(),
       { expiresIn: '30d' }
     );
 

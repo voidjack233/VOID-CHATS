@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../../db.js';
+import { hashToken } from '../../utils/hashToken.js';
+import { verifyEmailVerificationCode } from '../../utils/emailVerificationSecurity.js';
 
 const router = Router();
 
@@ -25,16 +27,18 @@ router.post('/', async (req, res) => {
 
   try {
     await client.query('BEGIN');
+    const tokenHash = hashToken(token);
 
-    // Find verification by BOTH token AND code
+    // Find by token first, then compare the code using constant-time hash checks.
     const result = await client.query(
-      `SELECT user_id, expires_at 
+      `SELECT user_id, expires_at, code
        FROM email_verifications 
-       WHERE token = $1 AND code = $2`,
-      [token, code]
+       WHERE token = $1`,
+      [tokenHash]
     );
 
-    if (result.rows.length === 0) {
+    const record = result.rows[0];
+    if (!record || !verifyEmailVerificationCode(record.user_id, code, record.code)) {
       await client.query('ROLLBACK');
       return res.status(400).json({ 
         success: false, 
@@ -42,7 +46,7 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const { user_id, expires_at } = result.rows[0];
+    const { user_id, expires_at } = record;
 
     // Check if expired
     if (new Date() > new Date(expires_at)) {

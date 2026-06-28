@@ -10,10 +10,9 @@ import { updateTrustScore } from '../../middleware/captcha/trustScore.js';
 import { DeviceFingerprint } from '../../utils/deviceFingerprint.js';
 import { create2FASession } from './2fa/verify-login.js';
 import { sessionStore } from '../../middleware/sessionStore.js';
+import { getAccessSecret, getRefreshSecret } from '../../utils/authSecrets.js';
 
 const router = Router();
-const ACCESS_SECRET = process.env.ACCESS_SECRET;
-const REFRESH_SECRET = process.env.REFRESH_SECRET;
 
 const normalizeIP = (ip) => {
   if (!ip) return null;
@@ -26,7 +25,7 @@ router.post('/', async (req, res) => {
   let { identifier, password } = req.body;
 
   if (typeof identifier !== 'string' || identifier.length > 255 ||
-    typeof password !== 'string' || password.length > 100) {
+    typeof password !== 'string' || password.length > 128) {
     await IPSecurity.logIPActivity(req, 'LOGIN_FAILURE_BAD_INPUT');
     return res.status(400).json({ success: false, message: "Invalid credentials format" });
   }
@@ -127,13 +126,13 @@ router.post('/', async (req, res) => {
 
     const accessToken = jwt.sign(
       { ...tokenPayload, jti: jtiAccess, type: 'access' },
-      ACCESS_SECRET,
+      getAccessSecret(),
       { expiresIn: '15m' }
     );
 
     const refreshToken = jwt.sign(
       { ...tokenPayload, jti: jtiRefresh, type: 'refresh' },
-      REFRESH_SECRET,
+      getRefreshSecret(),
       { expiresIn: '30d' }
     );
 

@@ -2,9 +2,9 @@ import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { pool } from '../db.js';
 import { sessionStore } from './sessionStore.js';
+import { getAccessSecret } from '../utils/authSecrets.js';
 
 const router = Router();
-const ACCESS_SECRET = process.env.ACCESS_SECRET;
 
 async function verifyRequestSession(req) {
   const token = req.cookies.accessToken;
@@ -14,7 +14,7 @@ async function verifyRequestSession(req) {
   }
 
   try {
-    const decoded = jwt.verify(token, ACCESS_SECRET);
+    const decoded = jwt.verify(token, getAccessSecret());
     if (!decoded.id || !decoded.device_id) {
       return { ok: false, status: 401, body: { error: 'Token invalid or expired' } };
     }

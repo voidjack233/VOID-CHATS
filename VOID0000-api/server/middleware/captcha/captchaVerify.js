@@ -1,5 +1,9 @@
-import { getCaptchaStore } from '../../routes/captcha/generate.js';
 import { getTrustScore, updateTrustScore, TRUST_THRESHOLD, shouldRequireCaptchaForRegistration } from './trustScore.js';
+import {
+  deleteCaptchaChallenge,
+  getCaptchaChallenge,
+  updateCaptchaChallenge,
+} from '../../utils/captchaStore.js';
 
 export async function verifyCaptcha(req, res, next) {
   try {
@@ -42,8 +46,7 @@ async function verifyCaptchaAnswer(req, res, next) {
     });
   }
 
-  const store = getCaptchaStore();
-  const captchaData = store.get(captchaId);
+  const captchaData = await getCaptchaChallenge(captchaId);
 
   if (!captchaData) {
     return res.status(400).json({
@@ -53,17 +56,8 @@ async function verifyCaptchaAnswer(req, res, next) {
     });
   }
 
-  if (Date.now() > captchaData.expiresAt) {
-    store.delete(captchaId);
-    return res.status(400).json({
-      success: false,
-      message: 'Captcha expired. Please refresh.',
-      code: 'CAPTCHA_EXPIRED'
-    });
-  }
-
   if (captchaData.attempts >= 3) {
-    store.delete(captchaId);
+    await deleteCaptchaChallenge(captchaId);
     const trust = await getTrustScore(req);
     await updateTrustScore(trust.deviceId, 'CAPTCHA_FAILED', req);
     return res.status(400).json({
@@ -74,19 +68,25 @@ async function verifyCaptchaAnswer(req, res, next) {
   }
 
   captchaData.attempts++;
+  await updateCaptchaChallenge(captchaId, captchaData);
 
   if (captchaAnswer.toUpperCase().trim() !== captchaData.solution) {
     const trust = await getTrustScore(req);
     await updateTrustScore(trust.deviceId, 'CAPTCHA_FAILED', req);
+    if (captchaData.attempts >= 3) {
+      await deleteCaptchaChallenge(captchaId);
+    }
     return res.status(400).json({
       success: false,
-      message: 'Incorrect captcha. Please try again.',
-      code: 'CAPTCHA_WRONG',
+      message: captchaData.attempts >= 3
+        ? 'Too many failed attempts. Please refresh captcha.'
+        : 'Incorrect captcha. Please try again.',
+      code: captchaData.attempts >= 3 ? 'CAPTCHA_MAX_ATTEMPTS' : 'CAPTCHA_WRONG',
       attemptsLeft: 3 - captchaData.attempts
     });
   }
 
-  store.delete(captchaId);
+  await deleteCaptchaChallenge(captchaId);
   const trust = await getTrustScore(req);
   await updateTrustScore(trust.deviceId, 'CAPTCHA_PASSED', req);
   next();

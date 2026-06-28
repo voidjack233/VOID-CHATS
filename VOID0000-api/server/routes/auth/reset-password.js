@@ -5,6 +5,7 @@ import { IPSecurity } from '../../utils/securityUtils.js';
 import { hashToken } from '../../utils/hashToken.js';
 import { sessionStore } from '../../middleware/sessionStore.js';
 import { disconnectLiveSession } from '../../gateway/control.js';
+import { validateAccountPassword } from '../../utils/passwordPolicy.js';
 
 const router = Router();
 
@@ -14,6 +15,11 @@ router.post('/', async (req, res) => {
 
   if (!token || !newPassword) {
     return res.status(400).json({ success: false, message: 'Token and new password required' });
+  }
+
+  const passwordError = validateAccountPassword(newPassword);
+  if (passwordError) {
+    return res.status(400).json({ success: false, message: passwordError });
   }
 
   try {

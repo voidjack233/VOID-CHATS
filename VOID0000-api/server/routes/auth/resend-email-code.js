@@ -7,6 +7,8 @@ import {
   generateVerificationToken,
   getCodeExpiration 
 } from '../../middleware/emailService.js';
+import { hashToken } from '../../utils/hashToken.js';
+import { hashEmailVerificationCode } from '../../utils/emailVerificationSecurity.js';
 
 const router = Router();
 
@@ -33,9 +35,9 @@ router.post('/', async (req, res) => {
 
     if (userResult.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Email not found' 
+      return res.json({
+        success: true,
+        message: 'If that email needs verification, a new code has been sent.'
       });
     }
 
@@ -45,27 +47,18 @@ router.post('/', async (req, res) => {
     // 2. Check if already verified
     if (user.is_verified) {
       await client.query('ROLLBACK');
-      return res.json({ 
-        success: false, 
-        message: 'Email is already verified' 
+      return res.json({
+        success: true,
+        message: 'If that email needs verification, a new code has been sent.'
       });
     }
 
-    // 3. Check for existing token
     const existingTokenResult = await client.query(
-      'SELECT token FROM email_verifications WHERE user_id = $1',
+      'SELECT 1 FROM email_verifications WHERE user_id = $1',
       [userId]
     );
-
-    let verificationToken;
-    
-    if (existingTokenResult.rows.length > 0) {
-      // 4A. REUSE existing token
-      verificationToken = existingTokenResult.rows[0].token;
-    } else {
-      // 4B. CREATE new token (old one expired)
-      verificationToken = generateVerificationToken();
-    }
+    const verificationToken = generateVerificationToken();
+    const verificationTokenHash = hashToken(verificationToken);
 
     // 5. Generate new code using emailService
     const code = generateVerificationCode();
@@ -77,18 +70,26 @@ router.post('/', async (req, res) => {
         `UPDATE email_verifications 
          SET code = $1, expires_at = $2 
          WHERE user_id = $3`,
-        [code, expiresAt, userId]
+        [hashEmailVerificationCode(userId, code), expiresAt, userId]
+      );
+      await client.query(
+        `UPDATE email_verifications
+         SET token = $1
+         WHERE user_id = $2`,
+        [verificationTokenHash, userId]
       );
     } else {
       await client.query(
         `INSERT INTO email_verifications (user_id, code, token, expires_at)
          VALUES ($1, $2, $3, $4)`,
-        [userId, code, verificationToken, expiresAt]
+        [userId, hashEmailVerificationCode(userId, code), verificationTokenHash, expiresAt]
       );
     }
 
     // 7. Send email
-    await VerificationService.sendVerificationEmail(email, code);
+    const frontUrl = process.env.FRONT_URL || 'https://void0000.online';
+    const verificationUrl = `${frontUrl}/auth?view=email-verification&vtoken=${verificationToken}`;
+    await VerificationService.sendVerificationEmail(email, code, verificationUrl);
 
     await client.query('COMMIT');
 
@@ -97,8 +98,7 @@ router.post('/', async (req, res) => {
     // 8. Return token
     res.json({
       success: true,
-      message: 'Verification code resent',
-      verificationToken
+      message: 'If that email needs verification, a new code has been sent.'
     });
 
   } catch (err) {

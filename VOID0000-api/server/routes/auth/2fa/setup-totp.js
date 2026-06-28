@@ -4,14 +4,13 @@ import { totp } from '../../../middleware/2fa/totp.js';
 import QRCode from 'qrcode';
 import crypto from 'crypto';
 import argon2 from 'argon2';
+import { getTotpEncryptionKey } from '../../../utils/authSecrets.js';
 
 const router = Router();
 
-const ENCRYPTION_KEY = process.env.TOTP_ENCRYPTION_KEY;
-
 function encrypt(text) {
   const iv = crypto.randomBytes(16);
-  const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+  const key = getTotpEncryptionKey();
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
 
   let encrypted = cipher.update(text, 'utf8', 'hex');
@@ -26,7 +25,7 @@ function decrypt(encryptedText) {
   const [ivHex, authTagHex, encrypted] = encryptedText.split(':');
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
-  const key = Buffer.from(ENCRYPTION_KEY, 'hex');
+  const key = getTotpEncryptionKey();
 
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(authTag);

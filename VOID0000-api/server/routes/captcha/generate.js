@@ -1,25 +1,13 @@
 import { Router } from 'express';
 import { createCanvas } from 'canvas';
 import crypto from 'crypto';
+import { saveCaptchaChallenge } from '../../utils/captchaStore.js';
 
 const router = Router();
 
-// In-memory store for captcha solutions (use Redis in production for scale)
-const captchaStore = new Map();
-
-// Clean up expired captchas every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, data] of captchaStore.entries()) {
-    if (now > data.expiresAt) {
-      captchaStore.delete(id);
-    }
-  }
-}, 5 * 60 * 1000);
-
 // Helper: random int
 function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+  return crypto.randomInt(min, max + 1);
 }
 
 // Helper: random color
@@ -27,11 +15,7 @@ function randomColor(min = 50, max = 150) {
   return `rgb(${randomInt(min, max)}, ${randomInt(min, max)}, ${randomInt(min, max)})`;
 }
 
-export function getCaptchaStore() {
-  return captchaStore;
-}
-
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const width = 300;
     const height = 80;
@@ -93,12 +77,7 @@ router.get('/', (req, res) => {
 
     // Generate captcha ID and store solution
     const captchaId = crypto.randomBytes(16).toString('hex');
-
-    captchaStore.set(captchaId, {
-      solution: text.toUpperCase(),
-      expiresAt: Date.now() + 5 * 60 * 1000, // 5 minutes
-      attempts: 0
-    });
+    await saveCaptchaChallenge(captchaId, text.toUpperCase());
 
     // Convert canvas to base64 PNG
     const imageData = canvas.toDataURL('image/png');

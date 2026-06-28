@@ -1,11 +1,11 @@
 import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
+import { getCsrfEncryptionKey } from '../utils/authSecrets.js';
 
 const ALGORITHM = 'aes-256-gcm';
-const KEY = Buffer.from(process.env.CSRF_ENCRYPTION_KEY, 'base64');
 
 export const generateEncryptedCSRFToken = () => {
   const iv = randomBytes(16);
-  const cipher = createCipheriv(ALGORITHM, KEY, iv);
+  const cipher = createCipheriv(ALGORITHM, getCsrfEncryptionKey(), iv);
   
   const plainToken = randomBytes(32).toString('base64url');
   
@@ -37,7 +37,7 @@ export const verifyEncryptedCSRFToken = (encryptedToken) => {
 
     const [iv, encrypted, authTag] = parts;
 
-    const decipher = createDecipheriv(ALGORITHM, KEY, Buffer.from(iv, 'base64url'));
+    const decipher = createDecipheriv(ALGORITHM, getCsrfEncryptionKey(), Buffer.from(iv, 'base64url'));
     decipher.setAuthTag(Buffer.from(authTag, 'base64url'));
 
     let decrypted = decipher.update(encrypted, 'base64url', 'utf8');
@@ -64,7 +64,6 @@ export const encryptedCSRFProtection = (req, res, next) => {
     '/api/auth/verify-email',
     '/api/auth/resend-email-code',
     '/api/auth/reset-password',
-    '/api/auth/logout',
     '/api/auth/check-reset-token',
     '/api/auth/validate-token',
     '/api/auth/send-code',

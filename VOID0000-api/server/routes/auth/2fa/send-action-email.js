@@ -4,15 +4,11 @@ import { sendVerificationEmail } from '../../../middleware/emailService.js';
 import { encryptedCSRFProtection } from '../../../middleware/encryptedCSRF.js';
 import valkey from '../../../valkey.js';
 import crypto from 'crypto';
+import { getTwoFactorCodeSecret } from '../../../utils/authSecrets.js';
 
 const router = Router();
 const ACTION_WINDOW_SEC = 10 * 60;
 const ACTION_MAX_SENDS = 3;
-const ACTION_EMAIL_CODE_SECRET =
-  process.env.TWO_FACTOR_CODE_SECRET ||
-  process.env.REFRESH_SECRET ||
-  process.env.ACCESS_SECRET ||
-  'void-dev-action-email-code-secret';
 
 function getActionEmailKey(userId, action) {
   return `auth:2fa:action-email:${userId}:${action}`;
@@ -28,7 +24,7 @@ function generateEmailCode() {
 
 function hashActionEmailCode(userId, action, code) {
   return crypto
-    .createHmac('sha256', ACTION_EMAIL_CODE_SECRET)
+    .createHmac('sha256', getTwoFactorCodeSecret())
     .update(`${userId}:${action}:${String(code).trim()}`)
     .digest('hex');
 }

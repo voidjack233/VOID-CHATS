@@ -10,11 +10,13 @@ import captchaRouter from '../routes/captcha/index.js';
 import { pool } from '../db.js';
 import valkey from '../valkey.js';
 import { createReadinessHandler } from '../health/readiness.js';
+import { validateAuthSecrets } from '../utils/authSecrets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 dotenv.config({ path: path.resolve(__dirname, '..', '..', '.env') });
+validateAuthSecrets();
 
 // ================== APP SETUP ==================
 
@@ -103,21 +105,6 @@ app.get('/ready', createReadinessHandler({
     valkey: () => valkey.ping(),
   },
 }));
-
-app.get('/api/debug/ws-stats', (req, res) => {
-  res.json({
-    mode: 'phoenix',
-    pid: process.pid,
-    note: 'Stats available on external gateway',
-  });
-});
-
-app.get('/api/clear-stale', (req, res) => {
-  const names = ['accessToken', 'refreshToken', '_csrf'];
-  names.forEach(n => res.clearCookie(n, { path: '/' }));
-  names.forEach(n => res.clearCookie(n, { path: '/', domain: '.void0000.online' }));
-  res.json({ success: true, message: 'All cookies cleared. Please log in again.' });
-});
 
 // Clear any stale cookies on login attempts
 app.use('/api/auth/login', (req, res, next) => {

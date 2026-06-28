@@ -13,20 +13,18 @@ import { sessionStore } from '../../../middleware/sessionStore.js';
 import valkey from '../../../valkey.js';
 import crypto from 'crypto';
 import { DeviceFingerprint } from '../../../utils/deviceFingerprint.js';
+import {
+  getAccessSecret,
+  getRefreshSecret,
+  getTwoFactorCodeSecret,
+} from '../../../utils/authSecrets.js';
 
 const router = Router();
-const ACCESS_SECRET = process.env.ACCESS_SECRET;
-const REFRESH_SECRET = process.env.REFRESH_SECRET;
 const TWO_FACTOR_VERIFY_WINDOW_SEC = 5 * 60;
 const TWO_FACTOR_VERIFY_MAX_ATTEMPTS = 5;
 const TWO_FACTOR_EMAIL_WINDOW_SEC = 10 * 60;
 const TWO_FACTOR_EMAIL_MAX_SENDS = 3;
 const TWO_FACTOR_SESSION_WINDOW_SEC = 5 * 60;
-const TWO_FACTOR_CODE_SECRET =
-  process.env.TWO_FACTOR_CODE_SECRET ||
-  process.env.REFRESH_SECRET ||
-  process.env.ACCESS_SECRET ||
-  'void-dev-two-factor-code-secret';
 
 const normalizeIP = (ip) => {
   if (!ip) return null;
@@ -60,7 +58,7 @@ function generateEmailCode() {
 
 function hashEmailCode(twoFactorToken, code) {
   return crypto
-    .createHmac('sha256', TWO_FACTOR_CODE_SECRET)
+    .createHmac('sha256', getTwoFactorCodeSecret())
     .update(`${twoFactorToken}:${String(code).trim()}`)
     .digest('hex');
 }
@@ -384,13 +382,13 @@ router.post('/', async (req, res) => {
 
     const accessToken = jwt.sign(
       { ...tokenPayload, jti: jtiAccess, type: 'access' },
-      ACCESS_SECRET,
+      getAccessSecret(),
       { expiresIn: '15m' }
     );
 
     const refreshToken = jwt.sign(
       { ...tokenPayload, jti: jtiRefresh, type: 'refresh' },
-      REFRESH_SECRET,
+      getRefreshSecret(),
       { expiresIn: '30d' }
     );
 

@@ -6,9 +6,9 @@ import { clearCookieOptions } from '../../utils/cookieConfig.js';
 import { hashToken } from '../../utils/hashToken.js';
 import { sessionStore } from '../../middleware/sessionStore.js';
 import { disconnectLiveSession } from '../../gateway/control.js';
+import { getRefreshSecret } from '../../utils/authSecrets.js';
 
 const router = Router();
-const REFRESH_SECRET = process.env.REFRESH_SECRET;
 
 // Clear cookies on both domains to kill stale duplicates
 function clearAllCookies(req, res) {
@@ -33,7 +33,7 @@ router.post('/', async (req, res) => {
   try {
     if (refreshToken) {
       try {
-        const decoded = jwt.verify(refreshToken, REFRESH_SECRET);
+        const decoded = jwt.verify(refreshToken, getRefreshSecret());
         userId = decoded.id;
         deviceId = decoded.device_id || null;
 
