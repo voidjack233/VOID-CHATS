@@ -122,11 +122,14 @@ Not included:
 - a polished custom role builder
 - a separate group access-control page
 - voice calls and video calls
+- self-service account deletion
 - a formal security or cryptography audit
 
 Group permissions use simple built-in roles like owner, admin, and member. There is no custom role-builder UI in this repo.
 
 Calls are outside the repo on purpose. Reliable voice/video usually means WebRTC plus STUN/TURN and UDP-reachable infrastructure. Without a stable network edge or static IP, that quickly pushes the app toward hosted relay services. I would rather keep VOID focused on messaging than add another hard dependency on third-party realtime media infrastructure.
+
+Self-service account deletion is also outside the repo scope. This deployment is tiny, roughly 1 to 3 users with limited service usage, so account removal is treated as an operator/admin task instead of a polished public self-delete flow. If this becomes a broader public service, build a real deletion and data-retention flow first, including Postgres rows, Scylla messages, MinIO media, sessions, backups, and encrypted-chat recovery data.
 
 ## Security Reality
 
