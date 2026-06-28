@@ -13,6 +13,7 @@ export interface ConversationSettingsProps {
   onMessageCreated?: (message: Message) => void;
   onConversationUpdated?: (conversation: Conversation) => Promise<void> | void;
   onMembershipChanged?: () => Promise<void> | void;
+  onConversationLeft?: () => void;
   onClose: () => void;
 }
 

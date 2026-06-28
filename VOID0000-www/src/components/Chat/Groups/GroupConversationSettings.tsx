@@ -24,6 +24,7 @@ interface GroupConversationSettingsProps {
   onMessageCreated?: (message: Message) => void;
   onConversationUpdated?: (conversation: Conversation) => Promise<void> | void;
   onMembershipChanged?: () => Promise<void> | void;
+  onConversationLeft?: () => void;
   onClose: () => void;
 }
 
@@ -34,6 +35,7 @@ const GroupConversationSettings = ({
   onMessageCreated,
   onConversationUpdated,
   onMembershipChanged,
+  onConversationLeft,
   onClose,
 }: GroupConversationSettingsProps) => {
   useScrollLock();
@@ -49,6 +51,10 @@ const GroupConversationSettings = ({
     onMessageCreated,
     onConversationUpdated,
     onMembershipChanged,
+    onLeaveCompleted: () => {
+      onClose();
+      onConversationLeft?.();
+    },
   });
 
   const { memberList, sortedMembers, permissions, profile, invites, members: membersSection } = settings;
@@ -103,13 +109,18 @@ const GroupConversationSettings = ({
           expandedRoleEditorUserId={membersSection.expandedRoleEditorUserId}
           busyMemberAction={membersSection.busyMemberAction}
           leaveBlockedReason={permissions.leaveBlockedReason}
+          leaveButtonLabel={permissions.leaveButtonLabel}
           isOwner={permissions.isOwner}
+          canLeaveGroup={permissions.canLeaveGroup}
+          canTransferOwnership={permissions.canTransferOwnership}
           onToggleMemberMenu={membersSection.onToggleMemberMenu}
           onToggleRoleEditor={membersSection.onToggleRoleEditor}
           onCloseRoleEditor={membersSection.onCloseRoleEditor}
           onRequestKickMember={membersSection.onRequestKickMember}
+          onRequestTransferOwnership={membersSection.onRequestTransferOwnership}
           onChangeMemberRole={membersSection.onChangeMemberRole}
           onUpdateNickname={membersSection.onUpdateNickname}
+          onRequestLeaveGroup={membersSection.onRequestLeaveGroup}
         />
       );
     }
@@ -385,6 +396,47 @@ const GroupConversationSettings = ({
             }
             onCancel={membersSection.onCancelKickMember}
             onConfirm={() => membersSection.onConfirmKickMember(membersSection.kickConfirmMember!)}
+          />
+        )}
+
+        {membersSection.leaveConfirmMode && (
+          <ConfirmDialog
+            title={membersSection.leaveConfirmMode === 'delete' ? 'Delete Group' : 'Leave Group'}
+            description={
+              membersSection.leaveConfirmMode === 'delete'
+                ? 'You are the only member left. Leaving will permanently delete this group.'
+                : 'Leave this group now?'
+            }
+            detail={
+              membersSection.leaveConfirmMode === 'delete'
+                ? 'This cannot be undone.'
+                : 'You will lose access to future encrypted messages.'
+            }
+            confirmLabel={membersSection.leaveConfirmMode === 'delete' ? 'Delete and Leave' : 'Leave Group'}
+            confirmVariant="danger"
+            busy={membersSection.busyMemberAction?.action === 'leave'}
+            onCancel={membersSection.onCancelLeaveGroup}
+            onConfirm={membersSection.onConfirmLeaveGroup}
+          />
+        )}
+
+        {membersSection.transferConfirmMember && (
+          <ConfirmDialog
+            title="Transfer Ownership"
+            description={
+              <>
+                Transfer ownership to <span className="font-semibold text-void-text">{getMemberLabel(membersSection.transferConfirmMember)}</span>?
+              </>
+            }
+            detail="You will become an admin after the transfer. Only the new owner can transfer ownership again or delete the group."
+            confirmLabel="Transfer Ownership"
+            confirmVariant="danger"
+            busy={
+              membersSection.busyMemberAction?.action === 'transfer' &&
+              membersSection.busyMemberAction.userId === membersSection.transferConfirmMember.user_id
+            }
+            onCancel={membersSection.onCancelTransferOwnership}
+            onConfirm={() => membersSection.onConfirmTransferOwnership(membersSection.transferConfirmMember!)}
           />
         )}
 

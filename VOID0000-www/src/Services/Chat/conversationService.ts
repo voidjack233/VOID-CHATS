@@ -511,6 +511,19 @@ export async function updateMemberRole(
   if (!data.success) throw new Error(data.error);
 }
 
+export async function transferConversationOwnership(
+  conversationId: string,
+  targetUserId: string,
+): Promise<{ conversation: Conversation }> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/members/transfer-ownership`, {
+    method: 'POST',
+    body: JSON.stringify({ target_user_id: targetUserId }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return { conversation: data.conversation };
+}
+
 export async function updateConversationNickname(
   conversationId: string,
   userId: string,

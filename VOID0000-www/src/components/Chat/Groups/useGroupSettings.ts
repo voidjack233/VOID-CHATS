@@ -7,12 +7,14 @@ import {
   ConversationMember,
   Message,
   createConversationInviteLink,
+  deleteConversation,
   declineConversationJoinRequest,
   getConversationInvites,
   removeConversationIcon,
   rotateRemoveMember,
   revokeConversationInviteLink,
   sendSystemEvent,
+  transferConversationOwnership,
   updateConversation,
   updateConversationNickname,
   updateMemberRole,
@@ -68,6 +70,7 @@ interface UseGroupSettingsInput {
   onMessageCreated?: (message: Message) => void;
   onConversationUpdated?: (conversation: Conversation) => Promise<void> | void;
   onMembershipChanged?: () => Promise<void> | void;
+  onLeaveCompleted?: () => void;
 }
 
 export function useGroupSettings({
@@ -78,6 +81,7 @@ export function useGroupSettings({
   onMessageCreated,
   onConversationUpdated,
   onMembershipChanged,
+  onLeaveCompleted,
 }: UseGroupSettingsInput) {
   // ── member list ──────────────────────────────────────────────────────────
   const [memberList, setMemberList] = useState<ConversationMember[]>(members);
@@ -114,9 +118,11 @@ export function useGroupSettings({
   const [memberMenuUserId, setMemberMenuUserId] = useState<string | null>(null);
   const [expandedRoleEditorUserId, setExpandedRoleEditorUserId] = useState<string | null>(null);
   const [kickConfirmMember, setKickConfirmMember] = useState<ConversationMember | null>(null);
+  const [transferConfirmMember, setTransferConfirmMember] = useState<ConversationMember | null>(null);
+  const [leaveConfirmMode, setLeaveConfirmMode] = useState<'leave' | 'delete' | null>(null);
   const [busyMemberAction, setBusyMemberAction] = useState<{
     userId: string;
-    action: 'role' | 'kick' | 'nickname';
+    action: 'role' | 'kick' | 'nickname' | 'leave' | 'transfer';
   } | null>(null);
 
   // ── derived ───────────────────────────────────────────────────────────────
@@ -127,9 +133,19 @@ export function useGroupSettings({
     (isOwner ? 'owner' : null);
   const canManageInvites = isOwner;
   const canManageProfile = isOwner || currentUserRole === 'admin';
+  const isSoloOwner = isOwner && memberList.length <= 1;
+  const canLeaveGroup = isSoloOwner;
+  const canTransferOwnership = isOwner && memberList.length > 1;
   const leaveBlockedReason = isOwner
-    ? 'Transfer ownership before leaving this group.'
-    : 'Secure leave is not available yet. Ask the group owner to remove you from this group.';
+    ? isSoloOwner
+      ? 'You are the only member. Leaving will permanently delete this group.'
+      : 'Transfer ownership before leaving this group.'
+    : 'Secure self-leave is not available yet. Ask the group owner to remove you from this group.';
+  const leaveButtonLabel = isOwner
+    ? isSoloOwner
+      ? 'Delete Group and Leave'
+      : 'Transfer Ownership First'
+    : 'Owner Removal Required';
   const canChangeMemberRoles = isOwner || currentUserRole === 'admin';
   const canKickMembers =
     isOwner ||
@@ -180,6 +196,8 @@ export function useGroupSettings({
     setMemberMenuUserId(null);
     setExpandedRoleEditorUserId(null);
     setKickConfirmMember(null);
+    setTransferConfirmMember(null);
+    setLeaveConfirmMode(null);
     setMemberActionError('');
   }, [conversation.id]);
 
@@ -293,6 +311,12 @@ export function useGroupSettings({
     return nextRole === 'admin'
       ? `${actorLabel} made ${targetLabel} an admin.`
       : `${actorLabel} removed ${targetLabel}'s admin role.`;
+  };
+
+  const buildTransferOwnershipSystemMessage = (targetMember: ConversationMember) => {
+    const actorLabel = getActorLabel();
+    const targetLabel = getMemberLabel(targetMember);
+    return `${actorLabel} transferred group ownership to ${targetLabel}.`;
   };
 
   // ── invite handlers ───────────────────────────────────────────────────────
@@ -699,6 +723,133 @@ export function useGroupSettings({
     }
   };
 
+  const handleTransferOwnership = async (targetMember: ConversationMember) => {
+    if (!canTransferOwnership) {
+      setMemberActionError('Only the current owner can transfer ownership.');
+      return;
+    }
+
+    if (targetMember.user_id === currentUserId) {
+      setMemberActionError('Choose a different member to transfer ownership to.');
+      return;
+    }
+
+    try {
+      setBusyMemberAction({ userId: targetMember.user_id, action: 'transfer' });
+      setMemberActionError('');
+
+      const { conversation: updatedConversation } = await transferConversationOwnership(
+        conversation.id,
+        targetMember.user_id
+      );
+
+      setMemberList((current) =>
+        current.map((member) => {
+          if (member.user_id === targetMember.user_id) {
+            return { ...member, role: 'owner' };
+          }
+          if (member.user_id === currentUserId) {
+            return { ...member, role: 'admin' };
+          }
+          return member;
+        })
+      );
+      setExpandedRoleEditorUserId(null);
+      setMemberMenuUserId(null);
+      setTransferConfirmMember(null);
+
+      await onConversationUpdated?.(updatedConversation);
+      void postMembershipSystemMessage(
+        buildTransferOwnershipSystemMessage(targetMember),
+        currentKeyVersion
+      );
+      void onMembershipChanged?.();
+    } catch (error) {
+      console.error('Failed to transfer ownership:', error);
+      setMemberActionError(
+        error instanceof Error ? error.message : 'Failed to transfer ownership'
+      );
+    } finally {
+      setBusyMemberAction(null);
+    }
+  };
+
+  const handleRequestLeaveGroup = () => {
+    if (!canLeaveGroup || (!isOwner && MEMBER_REMOVAL_PAUSED)) {
+      return;
+    }
+
+    setMemberActionError('');
+    setMemberMenuUserId(null);
+    setExpandedRoleEditorUserId(null);
+    setKickConfirmMember(null);
+    setLeaveConfirmMode(isSoloOwner ? 'delete' : 'leave');
+  };
+
+  const handleLeaveGroup = async () => {
+    if (!canLeaveGroup) {
+      setMemberActionError('Transfer ownership before leaving this group.');
+      return;
+    }
+
+    if (!isOwner && MEMBER_REMOVAL_PAUSED) {
+      setMemberActionError(
+        'Secure leave is temporarily paused while we stabilize encrypted key delivery.'
+      );
+      return;
+    }
+
+    const currentMember = memberList.find((member) => member.user_id === currentUserId);
+    if (!currentMember) {
+      setMemberActionError('Could not find your group membership. Refresh and try again.');
+      return;
+    }
+
+    try {
+      setBusyMemberAction({ userId: currentUserId, action: 'leave' });
+      setMemberActionError('');
+
+      if (isSoloOwner) {
+        await deleteConversation(conversation.id);
+      } else {
+        const remainingMemberIds = memberList
+          .filter((member) => member.user_id !== currentUserId)
+          .map((member) => member.user_id);
+
+        const result = await rotateRemoveMember(
+          { ...conversation, current_key_version: currentKeyVersion },
+          currentUserId,
+          remainingMemberIds,
+          currentUserId
+        );
+
+        setCurrentKeyVersion(result.key_version);
+        setMemberList((current) =>
+          current.filter((member) => member.user_id !== currentUserId)
+        );
+      }
+
+      setExpandedRoleEditorUserId(null);
+      setMemberMenuUserId(null);
+      setLeaveConfirmMode(null);
+
+      try {
+        await onMembershipChanged?.();
+      } catch (error) {
+        console.warn('Group leave succeeded but membership refresh failed:', error);
+      }
+
+      onLeaveCompleted?.();
+    } catch (error) {
+      console.error('Failed to leave group:', error);
+      setMemberActionError(
+        error instanceof Error ? error.message : 'Failed to leave group'
+      );
+    } finally {
+      setBusyMemberAction(null);
+    }
+  };
+
   // ── return ────────────────────────────────────────────────────────────────
   return {
     memberList,
@@ -710,7 +861,10 @@ export function useGroupSettings({
       canManageProfile,
       canChangeMemberRoles,
       canKickMembers,
+      canLeaveGroup,
+      canTransferOwnership,
       leaveBlockedReason,
+      leaveButtonLabel,
     },
 
     profile: {
@@ -770,6 +924,8 @@ export function useGroupSettings({
       memberMenuUserId,
       expandedRoleEditorUserId,
       kickConfirmMember,
+      transferConfirmMember,
+      leaveConfirmMode,
       busyMemberAction,
       memberRemovalPaused: MEMBER_REMOVAL_PAUSED,
       onToggleMemberMenu: (userId: string) =>
@@ -783,11 +939,22 @@ export function useGroupSettings({
         setMemberMenuUserId(null);
         setKickConfirmMember(member);
       },
+      onRequestTransferOwnership: (member: ConversationMember) => {
+        setMemberMenuUserId(null);
+        setExpandedRoleEditorUserId(null);
+        setKickConfirmMember(null);
+        setTransferConfirmMember(member);
+      },
       onChangeMemberRole: (member: ConversationMember, nextRole: 'admin' | 'member') =>
         void handleChangeMemberRole(member, nextRole),
       onUpdateNickname: handleUpdateNickname,
       onConfirmKickMember: (member: ConversationMember) => void handleKickMember(member),
       onCancelKickMember: () => setKickConfirmMember(null),
+      onConfirmTransferOwnership: (member: ConversationMember) => void handleTransferOwnership(member),
+      onCancelTransferOwnership: () => setTransferConfirmMember(null),
+      onRequestLeaveGroup: handleRequestLeaveGroup,
+      onConfirmLeaveGroup: () => void handleLeaveGroup(),
+      onCancelLeaveGroup: () => setLeaveConfirmMode(null),
     },
   };
 }

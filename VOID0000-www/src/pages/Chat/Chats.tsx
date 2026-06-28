@@ -825,6 +825,12 @@ const ChatDashboard = () => {
           onMembershipChanged={() => {
             setConvRefresh((n) => n + 1);
           }}
+          onConversationLeft={() => {
+            setShowConvSettings(false);
+            handleBackToMe();
+            navigate('/chats', { replace: true });
+            setConvRefresh((n) => n + 1);
+          }}
           onClose={() => setShowConvSettings(false)}
         />
       )}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Loader2, LogOut, MoreHorizontal, Pencil, Users } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Crown, Loader2, LogOut, MoreHorizontal, Pencil, Users } from 'lucide-react';
 import UserAvatar from '../../../common/UserAvatar';
 import type { ConversationMember } from '../../../../Services/Chat/chatService';
 import {
@@ -11,7 +11,7 @@ import {
 
 interface BusyMemberAction {
   userId: string;
-  action: 'role' | 'kick' | 'nickname';
+  action: 'role' | 'kick' | 'nickname' | 'leave' | 'transfer';
 }
 
 interface MembersTabProps {
@@ -25,13 +25,18 @@ interface MembersTabProps {
   expandedRoleEditorUserId: string | null;
   busyMemberAction: BusyMemberAction | null;
   leaveBlockedReason: string;
+  leaveButtonLabel: string;
   isOwner: boolean;
+  canLeaveGroup: boolean;
+  canTransferOwnership: boolean;
   onToggleMemberMenu: (userId: string) => void;
   onToggleRoleEditor: (userId: string) => void;
   onCloseRoleEditor: () => void;
   onRequestKickMember: (member: ConversationMember) => void;
+  onRequestTransferOwnership: (member: ConversationMember) => void;
   onChangeMemberRole: (member: ConversationMember, nextRole: 'admin' | 'member') => void;
   onUpdateNickname: (member: ConversationMember, nickname: string | null) => Promise<boolean>;
+  onRequestLeaveGroup: () => void;
 }
 
 export default function MembersTab({
@@ -45,13 +50,18 @@ export default function MembersTab({
   expandedRoleEditorUserId,
   busyMemberAction,
   leaveBlockedReason,
+  leaveButtonLabel,
   isOwner,
+  canLeaveGroup,
+  canTransferOwnership,
   onToggleMemberMenu,
   onToggleRoleEditor,
   onCloseRoleEditor,
   onRequestKickMember,
+  onRequestTransferOwnership,
   onChangeMemberRole,
   onUpdateNickname,
+  onRequestLeaveGroup,
 }: MembersTabProps) {
   const [nicknameEditorUserId, setNicknameEditorUserId] = useState<string | null>(null);
   const [nicknameInput, setNicknameInput] = useState('');
@@ -59,6 +69,7 @@ export default function MembersTab({
     nicknameEditorUserId
       ? sortedMembers.find((member) => member.user_id === nicknameEditorUserId) || null
       : null;
+  const isLeavingGroup = busyMemberAction?.action === 'leave';
 
   const openNicknameEditor = (member: ConversationMember) => {
     setNicknameEditorUserId(member.user_id);
@@ -120,7 +131,14 @@ export default function MembersTab({
               const isKickBusy =
                 busyMemberAction?.userId === member.user_id &&
                 busyMemberAction.action === 'kick';
+              const isTransferBusy =
+                busyMemberAction?.userId === member.user_id &&
+                busyMemberAction.action === 'transfer';
               const isRegularMember = member.role === 'member' || member.role === 'viewer';
+              const canTransferToThisMember =
+                canTransferOwnership &&
+                member.user_id !== currentUserId &&
+                member.role !== 'owner';
               const canChangeThisMemberRole =
                 canChangeMemberRoles &&
                 member.user_id !== currentUserId &&
@@ -131,7 +149,7 @@ export default function MembersTab({
                 member.user_id !== currentUserId &&
                 member.role !== 'owner' &&
                 (isOwner || isRegularMember);
-              const hasModActions = canChangeThisMemberRole || canKickThisMember;
+              const hasModActions = canTransferToThisMember || canChangeThisMemberRole || canKickThisMember;
 
               const primaryLabel = member.nickname || getMemberLabel(member);
               const secondaryLabel = member.nickname
@@ -207,6 +225,23 @@ export default function MembersTab({
 
                             {hasModActions && (
                               <div className="my-2 h-px bg-void-bg-hover" />
+                            )}
+
+                            {canTransferToThisMember && (
+                              <button
+                                type="button"
+                                onClick={() => onRequestTransferOwnership(member)}
+                                disabled={isTransferBusy}
+                                className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-amber-200 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <span className="inline-flex items-center gap-2">
+                                  <Crown className="h-3.5 w-3.5" />
+                                  Transfer Ownership
+                                </span>
+                                {isTransferBusy ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : null}
+                              </button>
                             )}
 
                             {canChangeThisMemberRole && (
@@ -374,11 +409,20 @@ export default function MembersTab({
 
         <button
           type="button"
-          disabled
-          className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-red-500/5 px-4 py-3 text-sm font-medium text-red-400/70 ring-1 ring-red-500/10 disabled:cursor-not-allowed md:w-auto"
+          onClick={onRequestLeaveGroup}
+          disabled={!canLeaveGroup || isLeavingGroup || (!isOwner && memberRemovalPaused)}
+          className={`mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium ring-1 transition-colors disabled:cursor-not-allowed disabled:opacity-60 md:w-auto ${
+            canLeaveGroup
+              ? 'bg-red-500/10 text-red-300 ring-red-500/20 hover:bg-red-500/15'
+              : 'bg-red-500/5 text-red-400/70 ring-red-500/10'
+          }`}
         >
-          <LogOut className="h-4 w-4" />
-          {isOwner ? 'Transfer Ownership First' : 'Owner Removal Required'}
+          {isLeavingGroup ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <LogOut className="h-4 w-4" />
+          )}
+          {leaveButtonLabel}
         </button>
       </section>
     </div>
