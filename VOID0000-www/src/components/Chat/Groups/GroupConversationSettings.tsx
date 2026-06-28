@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ChevronRight, Lock, Shield, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Lock, X } from 'lucide-react';
 import { Conversation, ConversationMember, Message } from '../../../Services/Chat/chatService';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 import ConfirmDialog from './ConversationSettings/ConfirmDialog';
@@ -125,48 +125,6 @@ const GroupConversationSettings = ({
       );
     }
 
-    if (activeTab === 'roles') {
-      return (
-        <div className="space-y-6">
-          <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-void-accent/15 text-void-accent">
-                <Shield className="h-5 w-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-void-text">Ranked Roles</h3>
-                <p className="mt-1 text-sm leading-relaxed text-void-text-muted">
-                  This screen is the next step after member controls. It will let the owner
-                  define ranked roles and choose which powers each role can exercise.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
-              <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
-                <p className="text-sm font-semibold text-void-text">Hierarchy</p>
-                <p className="mt-2 text-sm text-void-text-muted">
-                  Roles will depend on rank, not just labels, so higher roles can manage lower ones cleanly.
-                </p>
-              </div>
-              <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
-                <p className="text-sm font-semibold text-void-text">Permissions</p>
-                <p className="mt-2 text-sm text-void-text-muted">
-                  The owner will be able to decide which role can manage members and future history sharing.
-                </p>
-              </div>
-              <div className="rounded-xl border border-void-bg-hover bg-void-bg-sec/60 p-4">
-                <p className="text-sm font-semibold text-void-text">Owner-Only Powers</p>
-                <p className="mt-2 text-sm text-void-text-muted">
-                  Ownership transfer and the highest-rank powers will stay non-delegable.
-                </p>
-              </div>
-            </div>
-          </section>
-        </div>
-      );
-    }
-
     if (activeTab === 'invites') {
       return (
         <InvitesTab
@@ -197,20 +155,7 @@ const GroupConversationSettings = ({
       return <PermissionsTab isOwner={permissions.isOwner} conversationId={conversation.id} />;
     }
 
-    return (
-      <section className="rounded-2xl border border-dashed border-void-bg-hover bg-void-bg-main/30 p-6 text-center">
-        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-void-bg-hover text-void-text-muted">
-          <Lock className="h-5 w-5" />
-        </div>
-        <h3 className="mt-4 text-base font-semibold text-void-text">
-          Access Disabled For Now
-        </h3>
-        <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-void-text-muted">
-          This section is intentionally visible so the group settings structure is in place, but the controls
-          stay disabled until the member and role flows are fully settled.
-        </p>
-      </section>
-    );
+    return null;
   };
 
   return (

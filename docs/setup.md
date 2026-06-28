@@ -146,9 +146,15 @@ Important values include:
 - JWT secrets
 - CSRF encryption key
 - TOTP encryption key
+- email 2FA code signing secret
 - MinIO credentials
+- Valkey connection info
 - Phoenix secret key base
 - frontend origin
+
+The auth secrets are not decorative. If `ACCESS_SECRET`, `REFRESH_SECRET`, `CSRF_ENCRYPTION_KEY`, `TOTP_ENCRYPTION_KEY`, or `TWO_FACTOR_CODE_SECRET` are missing or still look like placeholders, the account service should fail during startup. That is intentional.
+
+Valkey is part of the account-security path. Captcha challenges, trust scoring, rate limits, sessions/cache pieces, and realtime coordination all depend on it, so do not treat it as optional local fluff.
 
 ## 3. Frontend Env
 
@@ -474,13 +480,13 @@ The path split roughly follows the Vite dev proxy:
 
 ### Frontend Build Deployment
 
-The current machine serves the frontend from:
+A simple production frontend path is:
 
 - `/var/www/void0000-www`
 
-If you deploy this somewhere else, use your own frontend build path instead.
+Use a different path if your server layout is different.
 
-The usual update flow is:
+Build and copy the frontend like this:
 
 ```bash
 cd /path/to/VOIDAPP/VOID0000-www
@@ -500,7 +506,7 @@ service to match your machine.
 
 ### Matching Env Values
 
-For the current live shape, the important values look roughly like this:
+For the split-service production shape, the important values look roughly like this:
 
 Backend `.env`:
 
@@ -528,7 +534,7 @@ In production, the frontend still points at one API hostname. Your reverse proxy
 
 ### Backend Process Startup
 
-The current machine has both of these process-management layers:
+A PM2/systemd deployment can use these process-management layers:
 
 - PM2 app config: `VOID0000-api/ecosystem.config.cjs`
 - gateway launcher: `VOID0000-api/startup/run-phoenix-gateway.sh`
@@ -536,7 +542,7 @@ The current machine has both of these process-management layers:
 - backend wrapper systemd unit: `voidapp-backend.service`
 - cloudflared systemd unit: `cloudflared.service`
 
-Current process names under PM2:
+Process names under PM2:
 
 - `voidapp-api`
 - `voidapp-message-service`
@@ -545,7 +551,7 @@ Current process names under PM2:
 - `voidapp-gateway-phoenix`
 - `voidapp-worker-service`
 
-That means the practical restart path on this machine is closer to:
+With the wrapper unit, the practical restart path is:
 
 ```bash
 sudo systemctl restart voidapp-backend.service
@@ -564,7 +570,7 @@ pm2 restart voidapp-gateway-phoenix
 pm2 restart voidapp-worker-service
 ```
 
-### Current Domain Assumptions
+### Domain Assumptions
 
 This repo still has project-domain assumptions baked into code.
 
@@ -575,20 +581,20 @@ Important files:
 - `docs/nginx-frontend-only.example.conf`
   redirects the `www` host to the apex host and sets frontend security headers
 - `VOID0000-api/server/utils/cookieConfig.js`
-  currently sets a project-specific cookie domain in production
+  sets a project-specific cookie domain in production
 - `VOID0000-api/server/middleware/xss/csp.js`
-  currently includes project-specific API/CDN hosts in CSP defaults
+  includes project-specific API/CDN hosts in CSP defaults
 
 So the honest answer is:
 
 - yes, this project can be deployed elsewhere
 - no, it is not domain-agnostic yet
-- if you fork it under another domain, patch those files before calling the setup done
+- if you fork it under another domain, change those files before calling the setup done
 
 ## Known Setup Notes
 
 - The MLS / encrypted-chat path depends on `ts-mls`, which upstream says is not formally audited.
-- Recovery keys now exist, but users still need to save the key. Forgot-password recovery without an existing recovery key can still be painful on a fresh device.
+- Recovery keys are available, but users still need to save the key. Forgot-password recovery without an existing recovery key can still be painful on a fresh device.
 - Presence and full friend-list traffic use separate endpoints and separate rate-limit buckets.
 
 If you want the higher-level explanation of how the project fits together, read:

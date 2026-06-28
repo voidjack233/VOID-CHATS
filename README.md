@@ -2,9 +2,9 @@
 
 This is my chat app hobby project.
 
-It works, but it is still a personal project and not a polished product.
+It works, but it is still a personal project and not a polished product. Expect rough edges, unfinished ideas, and setup steps that assume you are comfortable running local infrastructure.
 
-Read the next few sections before trying to set it up.
+Read the next few sections before trying to set it up. They explain the service layout, database pieces, and security caveats without pretending the repo is simpler than it is.
 
 ## Before You Clone
 
@@ -30,9 +30,9 @@ Read the next few sections before trying to set it up.
 
 ## About The Docs
 
-The docs in this repo were written with AI. because im lazy.
+These docs are meant to be useful first, pretty second.
 
-So if a page sounds a little uneven, a little too structured, or a little more formal than the rest of the repo, that is probably why.
+Some pages are more detailed than others because different parts of the app need different amounts of explanation. The goal is simple: make the repo understandable without turning it into a fake corporate product page.
 
 ## Setup
 
@@ -41,7 +41,7 @@ Short version:
 1. Use Linux.
 2. Install Node 20+, npm, PostgreSQL, ScyllaDB, Valkey, MinIO, Elixir, and Erlang.
 3. Create `VOID0000-api/.env`.
-4. Run PostgreSQL migrations.
+4. Run the database migrations.
 5. Start the account, message, social, conversation, worker, gateway, and frontend services.
 
 or
@@ -100,30 +100,52 @@ It also shows the Nginx + Cloudflared layout used for deployment.
 
 ## The Story
 
-I work full-time as a store clerk (now endo) and built VOID as a hobby project.
+I work full-time as a store clerk and built VOID as a hobby project.
 
 I used AI tools while building it. They helped with implementation, debugging, comparing approaches, and checking edge cases. I still handled the direction, tradeoffs, QA, and decisions.
 
-The stack of the project sounds ambitious.. cant help, i always thinking "what if i have millions of users" (i only have 3 to 4 users atmost)
+The stack sounds ambitious, which is kind of the joke and kind of the point. I keep thinking, "what if this had millions of users?" while realistically building for a tiny app. That tension is why the repo has both serious infrastructure and hobby-project fingerprints.
+
+## App Shape
+
+VOID has:
+
+- account auth with short-lived access cookies, refresh-token rotation, CSRF protection, captcha, trust scoring, and 2FA flows
+- friends, profiles, sessions, presence, and realtime gateway plumbing
+- DMs and group conversations
+- group owners, admins, members, invites, ownership transfer, and self-leave
+- a simple group settings UI with `Profile`, `Members`, `Invites`, and `Permissions`
+- encrypted chat/media work built around the MLS path
+
+Not included:
+
+- a polished custom role builder
+- a separate group access-control page
+- voice calls and video calls
+- a formal security or cryptography audit
+
+Group permissions use simple built-in roles like owner, admin, and member. There is no custom role-builder UI in this repo.
+
+Calls are outside the repo on purpose. Reliable voice/video usually means WebRTC plus STUN/TURN and UDP-reachable infrastructure. Without a stable network edge or static IP, that quickly pushes the app toward hosted relay services. I would rather keep VOID focused on messaging than add another hard dependency on third-party realtime media infrastructure.
 
 ## Security Reality
 
-VOID currently includes:
+VOID includes:
 
 - MLS-backed encrypted chat work
 - encrypted media
 - durable MLS sync
-- auth, sessions, presence, and realtime chat infrastructure
+- auth, sessions, presence, captcha/trust protection, and realtime chat infrastructure
 
-VOID does **not** currently have:
+VOID does **not** have:
 
 - a formal end-to-end cryptography audit
 - a formal third-party security review of the whole stack
 - a guarantee that there are no hidden vulnerabilities
 
-The biggest explicit crypto caveat right now is `ts-mls`.
+The biggest explicit crypto caveat is `ts-mls`.
 
-This project currently uses a vendored copy of:
+This project uses a vendored copy of:
 
 - [`ts-mls`](https://github.com/LukaJCB/ts-mls) `1.6.2`, stored in [`VOID0000-www/vendor/ts-mls`](VOID0000-www/vendor/ts-mls)
 
@@ -131,7 +153,7 @@ Credit to:
 
 - [`LukaJCB`](https://github.com/LukaJCB), the upstream maintainer of `ts-mls`
 
-Upstream already warns that `ts-mls` has **not** undergone a formal security audit yet, so I do not want this repo to pretend otherwise.
+Upstream states that `ts-mls` has **not** undergone a formal security audit yet, so I do not want this repo to pretend otherwise.
 The package is vendored so future upstream or npm updates do not silently change the MLS code used by this project.
 
 What that means:
@@ -141,12 +163,20 @@ What that means:
 
 One more implementation note:
 
-- the newer recovery path uses a user-created recovery key so fresh devices do not have to depend only on the old account password
+- the recovery path uses a user-created recovery key so fresh devices do not have to depend only on the account password
 - during login or legacy password-based encrypted-chat recovery, the frontend may keep the raw account password in browser memory briefly so it can finish password-derived key restore / backup work
 - that password is not meant to persist in `localStorage`, `sessionStorage`, or IndexedDB
-- current target behavior is short-lived retention only: usually just for the immediate bootstrap pass, with a fallback max window of about 2 minutes before it is cleared
-- the current device may store the recovery key locally in an encrypted browser record so it can refresh recovery-key backups later
-- this is still a tradeoff in the current recovery design, not something I consider perfect forever
+- target behavior is short-lived retention only: usually just for the immediate bootstrap pass, with a fallback max window of about 2 minutes before it is cleared
+- the device may store the recovery key locally in an encrypted browser record so it can refresh recovery-key backups
+- this is a tradeoff in the recovery design, not something I consider perfect forever
+
+Account-security note:
+
+- access cookies are intentionally short-lived
+- refresh tokens are rotated and stored server-side only as hashes
+- auth secrets are validated at startup so placeholder secrets fail loudly instead of silently weakening the app
+- captcha challenges and trust/rate-limit state live in Valkey so split services do not each invent their own memory-only truth
+- `/api/clear-stale` only clears cookies in the browser that calls it; it does not wipe everyone else's session from the server
 
 Related notes:
 
@@ -229,7 +259,7 @@ VOIDAPP/
 
 ## A Few Final Honest Notes
 
-- This repo was built around Linux infra first, but there is now a local Docker Compose setup for testing.
+- This repo targets Linux infra first, but Docker Compose exists for local testing.
 - If you are on Windows or macOS without Docker, you are outside the setup path I actually used.
 - If you deploy this publicly, do your own security review.
 - Keep raw backend, gateway, and MinIO ports loopback-only. Let Nginx or your tunnel be the public door.
@@ -248,4 +278,4 @@ Backup notes live here:
 If you guys have alot of time and the Setup step is not working... (figure it out by yourself) XD
 
 
-One last note: if you see the root `package.json`, `package-lock.json`, or `server.js`, they are remnants from the early development setup. The current setup uses `VOID0000-www`, split services inside `VOID0000-api`, and `VOID0000-api/void_gateway`, so those root files are not part of the normal run path.
+One last note: if you see the root `package.json`, `package-lock.json`, or `server.js`, treat them as legacy root files. The normal run path uses `VOID0000-www`, split services inside `VOID0000-api`, and `VOID0000-api/void_gateway`.

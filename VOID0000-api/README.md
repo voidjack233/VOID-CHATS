@@ -1,6 +1,6 @@
 # VOID0000 API
 
-Backend services for VOID0000. This package owns authentication, user profiles, friendships, conversations, messages, media uploads, security middleware, database migrations, and background workers.
+Backend services for VOID0000. This package owns the parts of the app that should not live in the browser: authentication, user profiles, friendships, conversations, messages, media uploads, security middleware, database migrations, and background workers.
 
 Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. The Node services publish realtime events through Valkey.
 
@@ -18,7 +18,7 @@ Realtime websocket traffic is handled by the Phoenix gateway in `void_gateway`. 
 - `docs/backend-startup.md` - detailed startup notes.
 - `docs/database-migrations.md` - migration behavior and limitations.
 
-The app processes are separate from the infrastructure services. PM2 starts the split Node services, worker, and Phoenix gateway, but Postgres, Valkey, ScyllaDB, and MinIO must already be running.
+The app processes are separate from the infrastructure services. PM2 starts the split Node services, worker, and Phoenix gateway, but Postgres, Valkey, ScyllaDB, and MinIO must already be running. If one of those is down, the backend may start grumbling in ways that look unrelated at first.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ The app processes are separate from the infrastructure services. PM2 starts the 
 - MinIO
 - Erlang/Elixir, if running the Phoenix gateway locally or through PM2
 
-The Dockerfile currently uses `node:24-bookworm-slim`.
+The Dockerfile uses `node:24-bookworm-slim`.
 
 ## Quick Start
 
@@ -106,6 +106,8 @@ Expected PM2 apps:
 
 Start from `.env.example` and fill in real values for the target machine.
 
+Do not leave placeholder auth secrets in `.env`. The account service validates the important auth/2FA/CSRF secrets during startup and fails loudly if they are missing, too short, or still look like examples. Annoying at boot time, much better than finding out during a login attempt.
+
 Important groups:
 
 - Postgres: `PGHOST`, `PGUSER`, `PGDATABASE`, `PGPASSWORD`, `PGPORT`
@@ -124,7 +126,7 @@ Important groups:
 | --- | --- |
 | Postgres | Users, auth, sessions, profiles, friends, conversation metadata, MLS metadata. |
 | ScyllaDB | High-volume message storage, edits, reactions, and reaction counts. |
-| Valkey | Realtime pub/sub, rate-limit state, presence fanout, gateway coordination, session resume buffers. |
+| Valkey | Realtime pub/sub, captcha challenges, trust/rate-limit state, presence fanout, gateway coordination, session resume buffers. |
 | MinIO | Avatars, group avatars, and encrypted chat attachments. |
 
 Run `npm run migrate` before starting a fresh environment. Migrations create schema only; they do not copy existing users, conversations, messages, or media.
@@ -138,7 +140,7 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 - `/api/me` - authenticated user lookup.
 - `/api/users` - profile reads, profile updates, avatar upload, preferences, sessions, account data, and search.
 - `/api/friends` - friend requests, lists, presence, actions, and removal.
-- `/api/conversations` - DMs, conversation metadata, members, permissions, keys, MLS, invites, messages, reactions, and attachments.
+- `/api/conversations` - DMs, conversation metadata, group members, ownership transfer, self-leave, permissions, keys, MLS, invites, messages, reactions, and attachments.
 
 ## Security Notes
 
@@ -146,8 +148,10 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 - Login verifies the stored Argon2 hash and can rehash it when the configured Argon2 parameters change.
 - Refresh tokens are stored as SHA-256 hashes because the raw tokens are already high-entropy JWTs.
 - JWTs are delivered through cookies.
+- Access cookies are intentionally short-lived, so refresh-token health matters for normal UX.
 - Sensitive state-changing routes use encrypted CSRF protection.
 - Captcha challenges, trust scoring, device tracking, and rate limits are backed by Valkey for auth/profile protection across service processes.
+- TOTP secrets and email-2FA verification codes use separate server-side secrets. The TOTP encryption key protects stored authenticator secrets; `TWO_FACTOR_CODE_SECRET` protects temporary email-code verification state.
 - Image uploads are processed through Sharp to remove metadata.
 - DOMPurify, JSDOM, CSP, and security headers are used for XSS hardening.
 
@@ -156,7 +160,7 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 | Dependency | Role |
 | --- | --- |
 | `argon2` | Password hashing and verification, plus 2FA backup code hashing. |
-| `bcryptjs` | Currently listed but not used by the API code. Keep only if you plan to support legacy bcrypt hash migration; otherwise it can be removed. |
+| `bcryptjs` | Reserved for possible legacy bcrypt hash migration. Remove it if that compatibility path is not needed. |
 | `blurhash` | Compact placeholders for image attachments. |
 | `bullmq` | Background queue for image/profile processing work. |
 | `canvas` | Captcha image generation. |

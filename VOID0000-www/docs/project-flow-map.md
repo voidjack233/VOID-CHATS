@@ -1,6 +1,6 @@
 # Project Flow Map
 
-This is the current high-level map of the whole project so we do not need to keep the system in our heads.
+This is the high-level map of the whole project so we do not need to keep the system in our heads.
 
 ## 0. Master Connected Flow
 
@@ -179,8 +179,8 @@ flowchart TD
 ```
 
 Notes:
-- `deviceId` is stable and no longer tied to current IP.
-- Active Sessions is device-based now, not IP-churn-based.
+- `deviceId` is stable instead of being tied to the current IP.
+- Active Sessions is device-based, not IP-churn-based.
 - Session list route: [sessions.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/user/sessions.js)
 
 ## 4. Profile / Account / Settings Flow
@@ -218,7 +218,7 @@ flowchart TD
 ```
 
 Notes:
-- full list and presence are now separate routes
+- full list and presence use separate routes
 - presence uses its own rate-limit bucket
 - friend requests live separately from the accepted-friends cache
 
@@ -264,6 +264,14 @@ Relevant routes:
 - [dm.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/dm.js)
 - [root index](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/root/index.js)
 - [members.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/members.js)
+- [ownership.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/members/ownership.js)
+- [leave.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/routes/conversations/members/leave.js)
+
+Group settings note:
+- the UI exposes Profile, Members, Invites, and Permissions
+- ownership can be transferred before the owner leaves
+- a solo owner leaving is treated as deleting the group
+- custom role-builder and access-control screens are not part of this repo
 
 ## 8. Chat Open / Handshake Flow
 
@@ -314,10 +322,10 @@ MLS frontend services:
 - [chatCryptoProtocolService.ts](/home/void0000/Desktop/VOIDAPP/VOID0000-www/src/Services/Crypto/protocols/chatCryptoProtocolService.ts)
 
 Notes:
-- current protocol lane is MLS-based account-scope chat
+- protocol lane is MLS-based account-scope chat
 - durable catch-up comes from synced welcomes, commits, group states, and archived keys
 - commit receipts are per user, which matches the account-scope model
-- the current MLS implementation depends on `ts-mls`, which upstream has explicitly said is not formally audited yet
+- the MLS implementation depends on `ts-mls`, which upstream has explicitly said is not formally audited yet
 
 ## 10. Message History + Live Stream
 
@@ -374,7 +382,7 @@ Reaction consistency notes:
 - reaction writes live in Scylla reaction tables
 - live reaction fanout is micro-batched through the gateway path
 - the frontend coalesces rapid taps from the same user before sending the final desired state
-- old cached pages are validated against the server before rendering so stale IndexedDB reaction maps do not disagree with a fresh browser
+- cached pages are validated against the server before rendering so stale IndexedDB reaction maps do not disagree with a fresh browser
 
 ## 13. Encrypted Attachment Flow
 
@@ -435,7 +443,7 @@ Gateway files:
 Main limiter exports live in [rate_limit.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/middleware/rate_limit.js).
 Policy definitions live in [policies.js](/home/void0000/Desktop/VOIDAPP/VOID0000-api/server/middleware/rateLimits/policies.js).
 
-Important current buckets:
+Important buckets:
 - auth login
 - forgot/reset/register
 - auth refresh/check
@@ -470,9 +478,8 @@ Notes:
 - forgot-password on a fresh device can still fail if the user never saved a recovery key
 - full limitation doc: [secure-chat-recovery-limitations.md](./secure-chat-recovery-limitations.md)
 
-## 18. Current Known Limits
+## 18. Known Limits
 
 - encrypted chat recovery after forgot-password is still limited on fresh devices without a saved recovery key
-- the current `ts-mls` dependency has no formal upstream security audit yet
-- some flows are durable, but edge-case testing still matters after auth/session/MLS changes
-- this doc is meant to be updated when auth, sessions, friends, conversations, MLS, or recovery behavior changes
+- the `ts-mls` dependency has no formal upstream security audit yet
+- some flows are durable, but edge-case testing still matters for auth, sessions, friends, conversations, MLS, and recovery behavior

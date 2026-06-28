@@ -1,6 +1,6 @@
 # Database Migrations
 
-This repo now has a canonical migration path for the current Postgres and ScyllaDB schema used by the app.
+This repo has a canonical migration path for the Postgres and ScyllaDB schema used by the app.
 
 ## Commands
 
@@ -16,9 +16,9 @@ Check status without applying anything:
 npm run migrate:status
 ```
 
-## What this covers today
+## What This Covers
 
-Current canonical migrations cover:
+Canonical migrations cover:
 
 - core user / auth / security tables
   - `users`
@@ -65,27 +65,32 @@ Migration order matters:
 - `0014_membership_rotation_reservations.sql`
 - `0015_mls_claimable_key_packages.sql`
 - `0016_account_mls_backups.sql`
+- `0017_trust_scores.sql`
 - `db/scylla-migrations/0000_message_storage.cql`
+- `db/scylla-migrations/0001_message_metadata.cql`
+- `db/scylla-migrations/0002_message_link_preview.cql`
 
 The `0000` prefix is intentional because later conversation migrations reference `users(id)`.
 
-## Membership rotation rollout
+## Membership Rotation
 
-`0014_membership_rotation_reservations.sql` switches group member add, invite approval, and member removal onto one serialized MLS reservation lane. Deploy the updated API and web client together after applying this migration because finalize and rollback requests now include `operation_id`.
+`0014_membership_rotation_reservations.sql` puts group member add, invite approval, and member removal on one serialized MLS reservation lane. The API and web client are expected to agree on `operation_id` for finalize and rollback requests.
 
-Applying this migration clears only unfinished legacy `pending_add_*`, `pending_remove_*`, and `pending_approve_*` intents. A user who had one of those changes prepared but not finalized will need to retry it.
+This migration clears only unfinished `pending_add_*`, `pending_remove_*`, and `pending_approve_*` intents. A user who had one of those changes prepared but not finalized will need to retry it.
 
-## KeyPackage backup gate rollout
+## KeyPackage Backup Gate
 
 `0015_mls_claimable_key_packages.sql` quarantines public MLS KeyPackages until the owning authenticated client includes their matching private KeyPackages in a freshly uploaded encrypted MLS-state backup.
 
-Existing unconsumed KeyPackages are intentionally not claimable after this migration until that account next opens the app and refreshes its encrypted MLS backup.
+Unconsumed KeyPackages are intentionally not claimable until the account opens the app and refreshes its encrypted MLS backup.
 
-Deploy the API and web client together with this migration: older clients can stage KeyPackages but cannot include the backed-up private KeyPackage refs needed to activate them.
+The API and web client should be deployed together for this schema because clients must include the backed-up private KeyPackage refs needed to activate staged KeyPackages.
 
 `0016_account_mls_backups.sql` stores a separate MLS snapshot encrypted by the already-unlocked account identity. It lets an active account replenish and activate KeyPackages automatically after login without retaining the password or requiring a manual backup action. Password and recovery backups remain responsible for restoring that account identity on a new browser.
 
-## Current limitation
+`0017_trust_scores.sql` adds durable account trust-score state. That state helps the auth/security layer treat repeated weird login/captcha behavior as a pattern instead of forgetting everything on every process restart.
+
+## Limitations
 
 This covers the relational Postgres schema and the canonical ScyllaDB message storage schema.
 
@@ -97,7 +102,7 @@ It does **not** manage:
 
 ## Runtime behavior
 
-MLS routes should no longer be responsible for creating or altering tables at runtime.
+MLS routes are not responsible for creating or altering tables at runtime.
 The server should verify that the Postgres and Scylla schema are already present.
 
 If MLS schema pieces are missing, run:
@@ -106,11 +111,11 @@ If MLS schema pieces are missing, run:
 npm run migrate
 ```
 
-That same command now also creates the Scylla keyspace and message-storage tables used by the conversation routes.
+That same command also creates the Scylla keyspace and message-storage tables used by the conversation routes.
 
 ## Multi-instance safety
 
-`npm run migrate` now takes a global PostgreSQL advisory lock before applying migrations.
+`npm run migrate` takes a global PostgreSQL advisory lock before applying migrations.
 
 That means if two app instances or deploy hooks try to run migrations at the same time:
 
@@ -133,12 +138,12 @@ It does **not** clone your existing live data such as:
 
 If you want existing rows copied into a new environment, that is a database export/import or backfill task, not a schema migration task.
 
-## Legacy one-off scripts
+## Compatibility Scripts
 
-These historical scripts are still available as compatibility aliases:
+These compatibility aliases are available for older setup notes or muscle memory:
 
 - `node scripts/add-first-message-at.js`
 - `node scripts/add-group-permissions.js`
 - `node scripts/add-conversation-unread-count.js`
 
-They now delegate to the canonical migration runner.
+They delegate to the canonical migration runner.

@@ -4,7 +4,7 @@ import type {
   ConversationMember,
 } from '../../../../Services/Chat/chatService';
 
-export type GroupSettingsTab = 'profile' | 'members' | 'roles' | 'invites' | 'access' | 'permissions';
+export type GroupSettingsTab = 'profile' | 'members' | 'invites' | 'permissions';
 
 export const ROLE_ORDER: Record<string, number> = {
   owner: 0,
@@ -50,20 +50,9 @@ export const SETTINGS_SECTIONS: Array<{
         description: 'Browse everyone currently in this group.',
       },
       {
-        id: 'roles',
-        label: 'Roles',
-        description: 'Ranked custom roles will live here next.',
-      },
-      {
         id: 'invites',
         label: 'Invites',
         description: 'Create invite links and review join requests.',
-      },
-      {
-        id: 'access',
-        label: 'Access',
-        description: 'Access controls are disabled for now.',
-        disabled: true,
       },
     ],
   },
