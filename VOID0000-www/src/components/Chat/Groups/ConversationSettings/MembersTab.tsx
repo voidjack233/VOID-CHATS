@@ -410,7 +410,7 @@ export default function MembersTab({
         <button
           type="button"
           onClick={onRequestLeaveGroup}
-          disabled={!canLeaveGroup || isLeavingGroup || (!isOwner && memberRemovalPaused)}
+          disabled={!canLeaveGroup || isLeavingGroup}
           className={`mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium ring-1 transition-colors disabled:cursor-not-allowed disabled:opacity-60 md:w-auto ${
             canLeaveGroup
               ? 'bg-red-500/10 text-red-300 ring-red-500/20 hover:bg-red-500/15'

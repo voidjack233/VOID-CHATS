@@ -163,6 +163,7 @@ export async function distributeGroupSenderKeyWithProtocol(
   participantIds: string[],
   options?: {
     allowFreshGroupBootstrap?: boolean;
+    forceFreshGroupBootstrap?: boolean;
     forceKeyVersionBump?: boolean;
     stageOnly?: boolean;
   },
@@ -179,6 +180,7 @@ export async function distributeGroupSenderKeyWithProtocol(
     conversation,
     memberUserIds: uniqueParticipants,
     allowFreshGroupBootstrap: options?.allowFreshGroupBootstrap,
+    forceFreshGroupBootstrap: options?.forceFreshGroupBootstrap,
     forceKeyVersionBump: options?.forceKeyVersionBump,
     stageOnly: options?.stageOnly,
   });

@@ -196,10 +196,17 @@ export class MlsGroupService {
     const requiredServerVersion = normalizePositiveVersion(input.conversation.current_key_version);
     const currentDmServerVersion = requiredServerVersion ?? 1;
     const forceDmVersionBump = isDmConversation && input.forceKeyVersionBump === true;
+    const forceFreshGroupBootstrap = !isDmConversation && input.forceFreshGroupBootstrap === true;
     let bumpDmVersionForFreshBootstrap = false;
 
     let missingMemberUserIds: string[] = [];
     let existingState = await mlsStorageService.loadGroupState(conversationId);
+    if (forceFreshGroupBootstrap) {
+      if (existingState) {
+        await mlsStorageService.deleteGroupState(conversationId);
+      }
+      existingState = null;
+    }
 
     debugLog('[MLS_DISTRIBUTE] start', {
       conversation_id: conversationId,
@@ -207,10 +214,11 @@ export class MlsGroupService {
       requested_member_user_ids: desiredMembers,
       required_server_version: requiredServerVersion,
       force_key_version_bump: forceDmVersionBump,
+      force_fresh_group_bootstrap: forceFreshGroupBootstrap,
       has_existing_state: Boolean(existingState),
     });
 
-    if (!isDmConversation && requiredServerVersion != null) {
+    if (!isDmConversation && requiredServerVersion != null && !forceFreshGroupBootstrap) {
       const ensureFreshLineage = async (reason: string): Promise<void> => {
         const localEpochBeforeSync = existingState ? Number(existingState.groupContext.epoch) : null;
         console.warn('[MLS_DISTRIBUTE] forcing sync before local membership distribution', {

@@ -44,6 +44,18 @@ async function rollbackFailedApproval(
   }
 }
 
+function isMlsSyncRequiredError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return (error as { code?: unknown }).code === 'MLS_DISTRIBUTE_SYNC_REQUIRED';
+  }
+
+  const message = getErrorMessage(error);
+  return (
+    message.includes('Local MLS state is behind the server') ||
+    message.includes('Local MLS state could not apply this membership change')
+  );
+}
+
 export function approveConversationJoinRequest(
   conversation: Conversation,
   currentUserId: string,
@@ -57,10 +69,22 @@ export function approveConversationJoinRequest(
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
     const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
+    if (normalizeKeyVersion(freshConversation.current_key_version, 1) > 1) {
+      await chatCryptoProtocolService.syncInbox(currentUserId, true, { forceArchiveSync: true }).catch((error) => {
+        console.warn('[APPROVE_JOIN] pre-approval MLS sync failed', {
+          conversation_id: keyConversationId,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
+    }
     const localMemberIds = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
-    if (localMemberIds?.includes(requesterUserId)) {
+    const shouldForceFreshBootstrap = localMemberIds?.includes(requesterUserId) === true;
+    if (shouldForceFreshBootstrap) {
+      console.warn('[APPROVE_JOIN] requester already present in local MLS state; forcing fresh staged bootstrap', {
+        conversation_id: keyConversationId,
+        requester_user_id: requesterUserId,
+      });
       await chatCryptoProtocolService.discardLocalGroupState(keyConversationId);
-      await chatCryptoProtocolService.syncInbox(currentUserId, true);
     }
 
     const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${keyConversationId}/invites/requests/${requestId}/approve`, {
@@ -77,18 +101,33 @@ export function approveConversationJoinRequest(
       throw new Error('Secure membership reservation was not returned by the server');
     }
 
-    let mlsKey: CryptoKey;
+    let mlsKey: CryptoKey | null = null;
     let mlsArtifacts: MlsMembershipFinalizeArtifacts | null | undefined;
     let finalizeStarted = false;
     try {
-      ({ key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
-        { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
-        currentUserId,
-        finalMemberIds,
-        { stageOnly: true },
-      ));
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          ({ key: mlsKey, membershipArtifacts: mlsArtifacts } = await distributeGroupSenderKeyWithProtocol(
+            { ...freshConversation, id: keyConversationId, current_key_version: pendingKeyVersion },
+            currentUserId,
+            finalMemberIds,
+            {
+              stageOnly: true,
+              allowFreshGroupBootstrap: shouldForceFreshBootstrap,
+              forceFreshGroupBootstrap: shouldForceFreshBootstrap,
+            },
+          ));
+          break;
+        } catch (error) {
+          if (attempt > 0 || !isMlsSyncRequiredError(error)) {
+            throw error;
+          }
 
-      if (!mlsArtifacts) {
+          await chatCryptoProtocolService.syncInbox(currentUserId, true, { forceArchiveSync: true });
+        }
+      }
+
+      if (!mlsKey || !mlsArtifacts) {
         throw new Error('Secure membership artifacts could not be prepared');
       }
 

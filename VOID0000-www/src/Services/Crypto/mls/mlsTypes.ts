@@ -104,6 +104,7 @@ export interface MlsDistributeGroupInput {
   conversation: Conversation;
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
+  forceFreshGroupBootstrap?: boolean;
   forceKeyVersionBump?: boolean;
   stageOnly?: boolean;
   _retried?: boolean;

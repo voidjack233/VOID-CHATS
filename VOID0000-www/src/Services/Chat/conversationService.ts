@@ -498,6 +498,15 @@ export async function removeMember(conversationId: string, userId: string): Prom
   if (!data.success) throw new Error(data.error);
 }
 
+export async function leaveConversation(conversationId: string): Promise<{ deleted: boolean }> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}/members/leave`, {
+    method: 'POST',
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error);
+  return { deleted: Boolean(data.deleted) };
+}
+
 export async function updateMemberRole(
   conversationId: string,
   userId: string,

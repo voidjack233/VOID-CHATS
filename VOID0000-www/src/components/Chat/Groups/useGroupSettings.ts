@@ -10,6 +10,7 @@ import {
   deleteConversation,
   declineConversationJoinRequest,
   getConversationInvites,
+  leaveConversation,
   removeConversationIcon,
   rotateRemoveMember,
   revokeConversationInviteLink,
@@ -134,18 +135,18 @@ export function useGroupSettings({
   const canManageInvites = isOwner;
   const canManageProfile = isOwner || currentUserRole === 'admin';
   const isSoloOwner = isOwner && memberList.length <= 1;
-  const canLeaveGroup = isSoloOwner;
+  const canLeaveGroup = !isOwner || isSoloOwner;
   const canTransferOwnership = isOwner && memberList.length > 1;
   const leaveBlockedReason = isOwner
     ? isSoloOwner
       ? 'You are the only member. Leaving will permanently delete this group.'
       : 'Transfer ownership before leaving this group.'
-    : 'Secure self-leave is not available yet. Ask the group owner to remove you from this group.';
+    : 'Leave this group. You will lose access to future messages.';
   const leaveButtonLabel = isOwner
     ? isSoloOwner
       ? 'Delete Group and Leave'
       : 'Transfer Ownership First'
-    : 'Owner Removal Required';
+    : 'Leave Group';
   const canChangeMemberRoles = isOwner || currentUserRole === 'admin';
   const canKickMembers =
     isOwner ||
@@ -317,6 +318,11 @@ export function useGroupSettings({
     const actorLabel = getActorLabel();
     const targetLabel = getMemberLabel(targetMember);
     return `${actorLabel} transferred group ownership to ${targetLabel}.`;
+  };
+
+  const buildLeaveGroupSystemMessage = (targetMember: ConversationMember) => {
+    const targetLabel = getMemberLabel(targetMember);
+    return `${targetLabel} left the group.`;
   };
 
   // ── invite handlers ───────────────────────────────────────────────────────
@@ -775,7 +781,7 @@ export function useGroupSettings({
   };
 
   const handleRequestLeaveGroup = () => {
-    if (!canLeaveGroup || (!isOwner && MEMBER_REMOVAL_PAUSED)) {
+    if (!canLeaveGroup) {
       return;
     }
 
@@ -792,13 +798,6 @@ export function useGroupSettings({
       return;
     }
 
-    if (!isOwner && MEMBER_REMOVAL_PAUSED) {
-      setMemberActionError(
-        'Secure leave is temporarily paused while we stabilize encrypted key delivery.'
-      );
-      return;
-    }
-
     const currentMember = memberList.find((member) => member.user_id === currentUserId);
     if (!currentMember) {
       setMemberActionError('Could not find your group membership. Refresh and try again.');
@@ -812,18 +811,11 @@ export function useGroupSettings({
       if (isSoloOwner) {
         await deleteConversation(conversation.id);
       } else {
-        const remainingMemberIds = memberList
-          .filter((member) => member.user_id !== currentUserId)
-          .map((member) => member.user_id);
-
-        const result = await rotateRemoveMember(
-          { ...conversation, current_key_version: currentKeyVersion },
-          currentUserId,
-          remainingMemberIds,
-          currentUserId
+        await postMembershipSystemMessage(
+          buildLeaveGroupSystemMessage(currentMember),
+          currentKeyVersion
         );
-
-        setCurrentKeyVersion(result.key_version);
+        await leaveConversation(conversation.id);
         setMemberList((current) =>
           current.filter((member) => member.user_id !== currentUserId)
         );
