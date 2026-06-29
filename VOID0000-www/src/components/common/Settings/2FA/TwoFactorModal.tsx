@@ -55,7 +55,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           inputMode="numeric"
           pattern="[0-9]*"
           autoComplete={index === 0 ? 'one-time-code' : 'off'}
-          className="flex-1 min-w-0 max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-void-text bg-void-bg-hover/70 border border-void-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          className="flex-1 min-w-0 max-w-[3rem] aspect-square text-xl sm:text-2xl text-center text-void-text bg-void-bg-hover/70 border border-void-border rounded-lg focus:outline-none focus:ring-2 focus:ring-void-accent transition-all"
           disabled={isLoading}
           autoFocus={index === 0}
         />
@@ -65,7 +65,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
 
   const renderStatus = () => (
     <div className="space-y-6">
-      <div className="flex items-center gap-4 bg-gray-900/50 p-4 rounded-xl border border-void-border">
+      <div className="flex items-center gap-4 bg-void-bg-main/55 p-4 rounded-xl border border-void-border">
         <div className={`p-3 rounded-full ${hasAny2FA ? 'bg-emerald-900/30 text-emerald-400' : 'bg-yellow-900/30 text-yellow-400'}`}>
           {hasAny2FA ? <ShieldCheck className="w-6 h-6" /> : <ShieldAlert className="w-6 h-6" />}
         </div>
@@ -82,9 +82,9 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
       <div className="space-y-4">
         <h4 className="text-xs font-semibold text-void-text-muted uppercase tracking-wider">Authentication Methods</h4>
 
-        <div className="flex items-center justify-between p-4 bg-gray-800 border border-void-border rounded-xl hover:border-void-border transition-colors">
+        <div className="flex items-center justify-between p-4 bg-void-bg-main/50 border border-void-border rounded-xl transition-colors hover:bg-void-bg-hover/60">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-900/20 text-blue-400 rounded-lg"><Smartphone className="w-5 h-5" /></div>
+            <div className="p-2 bg-void-accent/15 text-void-accent rounded-lg"><Smartphone className="w-5 h-5" /></div>
             <div>
               <p className="text-sm font-medium text-void-text">Authenticator App</p>
               <p className="text-xs text-void-text-muted">Use apps like Google Auth or Authy</p>
@@ -93,15 +93,15 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           <button
             onClick={() => hasTotp ? promptDisable('totp') : promptSetup('totp')}
             disabled={isLoading}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 ${hasTotp ? 'bg-blue-500' : 'bg-gray-600'}`}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 ${hasTotp ? 'bg-void-accent' : 'bg-void-bg-hover'}`}
           >
             <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${hasTotp ? 'translate-x-5' : 'translate-x-0'}`} />
           </button>
         </div>
 
-        <div className="flex items-center justify-between p-4 bg-gray-800 border border-void-border rounded-xl hover:border-void-border transition-colors">
+        <div className="flex items-center justify-between p-4 bg-void-bg-main/50 border border-void-border rounded-xl transition-colors hover:bg-void-bg-hover/60">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-900/20 text-blue-400 rounded-lg"><Mail className="w-5 h-5" /></div>
+            <div className="p-2 bg-void-accent/15 text-void-accent rounded-lg"><Mail className="w-5 h-5" /></div>
             <div>
               <p className="text-sm font-medium text-void-text">Email Authentication</p>
               <p className="text-xs text-void-text-muted">Receive verification codes via email</p>
@@ -110,7 +110,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           <button
             onClick={() => hasEmail ? promptDisable('email') : promptSetup('email')}
             disabled={isLoading}
-            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 ${hasEmail ? 'bg-blue-500' : 'bg-gray-600'}`}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 ${hasEmail ? 'bg-void-accent' : 'bg-void-bg-hover'}`}
           >
             <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition duration-200 ${hasEmail ? 'translate-x-5' : 'translate-x-0'}`} />
           </button>
@@ -119,7 +119,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
 
       {hasAny2FA && (
         <div className="pt-4 border-t border-void-border">
-          <button className="w-full flex items-center justify-between p-4 bg-gray-900/50 hover:bg-gray-900 border border-void-border rounded-xl transition-colors">
+          <button className="w-full flex items-center justify-between p-4 bg-void-bg-main/55 hover:bg-void-bg-hover border border-void-border rounded-xl transition-colors">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-yellow-900/20 text-yellow-400 rounded-lg"><KeyRound className="w-5 h-5" /></div>
               <div className="text-left">
@@ -136,7 +136,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
   const renderPasswordPrompt = () => (
     <form onSubmit={(e) => { e.preventDefault(); handlePasswordSubmit(); }} className="space-y-6">
       <div className="text-center space-y-2">
-        <div className="inline-flex p-4 rounded-full bg-blue-900/30 text-blue-400 mb-2">
+        <div className="inline-flex p-4 rounded-full bg-void-accent/15 text-void-accent mb-2">
           <Lock className="w-8 h-8" />
         </div>
         <p className="text-sm text-void-text">
@@ -151,7 +151,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Enter your password"
-          className="w-full px-4 py-3 bg-gray-900/50 border border-void-border rounded-xl text-void-text placeholder-void-text-muted focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+          className="w-full px-4 py-3 bg-void-bg-main/60 border border-void-border rounded-xl text-void-text placeholder-void-text-muted focus:outline-none focus:ring-2 focus:ring-void-accent transition-all"
           required
           autoFocus
         />
@@ -160,7 +160,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
       <button
         type="submit"
         disabled={isLoading || !password}
-        className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50"
+        className="w-full py-3 bg-void-accent hover:bg-void-accent-hover text-white rounded-xl font-medium transition-colors disabled:opacity-50"
       >
         {isLoading ? 'Verifying...' : 'Continue'}
       </button>
@@ -178,7 +178,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
         )}
         <div className="text-xs text-void-text-muted">
           <p>Or enter this code manually:</p>
-          <code className="block mt-1 p-2 bg-gray-900 rounded border border-void-border select-all text-blue-400 font-mono text-sm">{secret}</code>
+          <code className="block mt-1 p-2 bg-void-bg-main/70 rounded border border-void-border select-all text-void-accent font-mono text-sm">{secret}</code>
         </div>
       </div>
 
@@ -187,7 +187,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
         {renderOTPInputs()}
       </div>
 
-      <button type="submit" disabled={isLoading || code.join('').length < 6} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50">
+      <button type="submit" disabled={isLoading || code.join('').length < 6} className="w-full py-3 bg-void-accent hover:bg-void-accent-hover text-white rounded-xl font-medium transition-colors disabled:opacity-50">
         {isLoading ? 'Verifying...' : 'Verify and Enable'}
       </button>
     </form>
@@ -196,14 +196,14 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
   const renderSetupEmail = () => (
     <form onSubmit={(e) => { e.preventDefault(); handleVerifySetup(); }} className="space-y-6">
       <div className="text-center space-y-2 mb-6">
-        <div className="inline-flex p-4 rounded-full bg-blue-900/30 text-blue-400 mb-2"><Mail className="w-8 h-8" /></div>
+        <div className="inline-flex p-4 rounded-full bg-void-accent/15 text-void-accent mb-2"><Mail className="w-8 h-8" /></div>
         <p className="text-sm text-void-text">We've sent a 6-digit verification code to your email.</p>
       </div>
       <div className="space-y-4">
         <label className="block text-sm text-void-text text-center">Enter the code</label>
         {renderOTPInputs()}
       </div>
-      <button type="submit" disabled={isLoading || code.join('').length < 6} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50">
+      <button type="submit" disabled={isLoading || code.join('').length < 6} className="w-full py-3 bg-void-accent hover:bg-void-accent-hover text-white rounded-xl font-medium transition-colors disabled:opacity-50">
         {isLoading ? 'Verifying...' : 'Verify and Enable'}
       </button>
     </form>
@@ -218,7 +218,7 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
       </div>
       <div className="space-y-2">
         <label className="block text-sm text-void-text">Current Password</label>
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" className="w-full px-4 py-3 bg-gray-900/50 border border-void-border rounded-xl text-void-text placeholder-void-text-muted focus:outline-none focus:ring-2 focus:ring-red-500 transition-all" required autoFocus />
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Enter your password" className="w-full px-4 py-3 bg-void-bg-main/60 border border-void-border rounded-xl text-void-text placeholder-void-text-muted focus:outline-none focus:ring-2 focus:ring-red-500 transition-all" required autoFocus />
       </div>
       <button type="submit" disabled={isLoading || !password} className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-medium transition-colors disabled:opacity-50">
         {isLoading ? 'Disabling...' : 'Confirm Disable'}
@@ -232,16 +232,16 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
         <h4 className="text-yellow-400 font-medium mb-1 flex items-center gap-2"><ShieldAlert className="w-4 h-4" /> Save these backup codes!</h4>
         <p className="text-sm text-yellow-200/70">Each code can only be used once. Keep them safe.</p>
       </div>
-      <div className="grid grid-cols-2 gap-3 p-4 bg-gray-900 rounded-xl border border-void-border">
+      <div className="grid grid-cols-2 gap-3 p-4 bg-void-bg-main/70 rounded-xl border border-void-border">
         {backupCodes.map((backupCode, index) => (
-          <code key={index} className="text-center font-mono text-blue-400 tracking-wider">{backupCode}</code>
+          <code key={index} className="text-center font-mono text-void-accent tracking-wider">{backupCode}</code>
         ))}
       </div>
       <button onClick={copyBackupCodes} className="w-full flex items-center justify-center gap-2 py-3 bg-void-bg-hover hover:bg-void-bg-hover/80 text-void-text rounded-xl font-medium transition-colors">
         {copied ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
         {copied ? 'Copied to Clipboard' : 'Copy Codes'}
       </button>
-      <button onClick={confirmBackupCodesSaved} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors">
+      <button onClick={confirmBackupCodesSaved} className="w-full py-3 bg-void-accent hover:bg-void-accent-hover text-white rounded-xl font-medium transition-colors">
         I have saved them
       </button>
     </div>
@@ -249,8 +249,8 @@ export default function TwoFactorModal({ onClose }: TwoFactorModalProps) {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-gray-800 border border-void-border rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-void-border bg-gray-800/50 relative">
+      <div className="bg-void-bg-sec border border-void-border rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-void-border bg-void-bg-main/35 relative">
           {view !== 'status' && view !== 'backup-codes' && (
             <button onClick={resetAndGoBack} className="absolute left-4 p-2 rounded-full hover:bg-void-bg-hover text-void-text-muted hover:text-void-text transition-colors">
               <ArrowLeft className="w-5 h-5" />

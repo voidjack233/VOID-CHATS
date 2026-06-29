@@ -89,19 +89,19 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
   const currentSession = sessions.find(s => s.is_current);
 
   return (
-    <div className={`fixed inset-0 z-50 ${isMobile ? 'bg-gray-900' : 'flex items-center justify-center bg-black/50 backdrop-blur-sm'}`}>
+    <div className={`fixed inset-0 z-50 ${isMobile ? 'bg-void-bg-main' : 'flex items-center justify-center bg-black/50 backdrop-blur-sm'}`}>
       <div className={`${isMobile 
         ? 'h-full w-full flex flex-col' 
-        : 'bg-gray-800 rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-hidden flex flex-col'
+        : 'bg-void-bg-sec border border-void-border rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[80vh] overflow-hidden flex flex-col'
       }`}>
         
         {/* Header */}
         <div className={`${isMobile 
-          ? 'sticky top-0 z-10 bg-gray-800 border-b border-void-border px-4 py-3' 
+          ? 'sticky top-0 z-10 bg-void-bg-sec border-b border-void-border px-4 py-3'
           : 'p-6 border-b border-void-border'
         } flex items-center justify-between`}>
           <div className="flex items-start gap-3">
-            <Shield className="w-5 h-5 text-blue-400 mt-0.5" />
+            <Shield className="w-5 h-5 text-void-accent mt-0.5" />
             <div>
               <h3 className="text-lg font-semibold text-void-text">Active Sessions</h3>
               <p className="text-xs text-void-text-muted mt-1">
@@ -196,7 +196,7 @@ export default function ActiveSessionsModal({ onClose }: ActiveSessionsModalProp
               {/* Empty State */}
               {otherSessions.length === 0 && (
                 <div className="text-center py-8">
-                  <div className="inline-block p-6 bg-gray-900/50 rounded-xl">
+                  <div className="inline-block p-6 bg-void-bg-main/55 rounded-xl border border-void-border">
                     <Shield className="w-12 h-12 text-void-text-muted mx-auto mb-3" />
                     <p className="text-void-text-muted mb-2">No other active sessions</p>
                     <p className="text-xs text-void-text-muted">Only this device or browser is currently signed in.</p>
@@ -249,10 +249,10 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
     <div className={`p-4 rounded-xl border ${
       isCurrent 
         ? 'bg-green-900/20 border-green-700/50' 
-        : 'bg-gray-900 border-void-border'
+        : 'bg-void-bg-main/60 border-void-border'
     }`}>
       <div className="flex items-start gap-3">
-        <div className={`p-2 rounded-lg ${isCurrent ? 'bg-green-900/30' : 'bg-gray-800'}`}>
+        <div className={`p-2 rounded-lg ${isCurrent ? 'bg-green-900/30' : 'bg-void-bg-hover'}`}>
           <DeviceIcon className={`w-5 h-5 ${isCurrent ? 'text-green-400' : 'text-void-text-muted'}`} />
         </div>
         
@@ -267,7 +267,7 @@ function SessionCard({ session, isCurrent, isMobile, onRevoke, isRevoking, disab
               </span>
             )}
             {!isCurrent && session.is_recently_active && (
-              <span className="px-2 py-0.5 bg-blue-500/15 text-blue-300 text-xs rounded-full">
+              <span className="px-2 py-0.5 bg-void-accent/15 text-void-accent text-xs rounded-full">
                 Recent
               </span>
             )}

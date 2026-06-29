@@ -89,7 +89,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
 
   return (
     <div className="fixed inset-0 z-50 bg-void-bg-main/90 md:flex md:items-center md:justify-center md:bg-black/20 md:backdrop-blur-sm">
-      <div className="h-full w-full md:h-[600px] md:max-h-[90vh] md:max-w-4xl md:mx-4 md:rounded-2xl md:shadow-2xl bg-void-bg-sec flex flex-col md:flex-row md:overflow-hidden">
+      <div className="h-full w-full bg-void-bg-sec flex flex-col md:mx-4 md:h-[600px] md:max-h-[90vh] md:max-w-4xl md:flex-row md:overflow-hidden md:rounded-2xl md:border md:border-white/10 md:shadow-2xl">
         
         {/* Desktop Sidebar */}
         <div className="hidden md:flex md:w-64 bg-void-bg-main/50 border-r border-void-bg-hover flex-col flex-shrink-0">

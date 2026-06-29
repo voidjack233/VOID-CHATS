@@ -142,7 +142,7 @@ Run `npm run migrate` before starting a fresh environment. Migrations create sch
 - `/api/friends` - friend requests, lists, presence, actions, and removal.
 - `/api/conversations` - DMs, conversation metadata, group members, ownership transfer, self-leave, permissions, keys, MLS, invites, messages, reactions, and attachments.
 
-Self-service account deletion is not exposed as a public flow in this repo. The intended deployment is very small, roughly 1 to 3 users with limited service usage, so account removal belongs to operator/admin handling. A broader public deployment should add a deliberate deletion and retention process across Postgres, ScyllaDB, MinIO, sessions, backups, and encrypted-chat recovery data.
+Self-service account deletion is not exposed as a public flow. This setup is tiny, roughly 1 to 3 users with limited usage, so account removal is handled manually by the operator when needed.
 
 ## Security Notes
 

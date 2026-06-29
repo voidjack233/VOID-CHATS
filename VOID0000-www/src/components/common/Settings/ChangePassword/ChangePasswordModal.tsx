@@ -160,8 +160,8 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
   }, [activeMethod]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md overflow-hidden rounded-2xl border border-void-border bg-void-bg-sec shadow-2xl">
         {/* Header */}
         <div className="p-6 border-b border-void-border flex items-center justify-between">
           <h3 className="text-lg font-semibold text-void-text">Change Password</h3>
@@ -192,9 +192,9 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
               </div>
 
               {recoveryBackupStatus === 'PASSWORD_ONLY' ? (
-                <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-4">
-                  <p className="text-sm font-medium text-blue-100">Legacy secure-chat recovery is still active.</p>
-                  <p className="mt-2 text-xs text-blue-100/85">
+                <div className="rounded-xl border border-void-accent/25 bg-void-accent/10 p-4">
+                  <p className="text-sm font-medium text-void-text">Legacy secure-chat recovery is still active.</p>
+                  <p className="mt-2 text-xs text-void-text-muted">
                     Changing your password will re-wrap the older password-based backup. After this change, it is still better to create a recovery key in Account settings so future device restore does not depend on your login password.
                   </p>
                 </div>
@@ -204,7 +204,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                 <button
                   type="button"
                   onClick={handleClose}
-                  className="flex-1 rounded-lg border border-void-border bg-gray-900 px-4 py-3 text-void-text"
+                  className="flex-1 rounded-lg border border-void-border bg-void-bg-main/70 px-4 py-3 text-void-text transition-colors hover:bg-void-bg-hover"
                 >
                   Cancel
                 </button>
@@ -212,7 +212,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                   type="button"
                   onClick={() => setStep('form')}
                   disabled={requires2FA === null}
-                  className="flex-1 rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+                  className="flex-1 rounded-lg bg-void-accent px-4 py-3 font-semibold text-white transition-colors hover:bg-void-accent-hover disabled:opacity-50"
                 >
                   {requires2FA === null ? 'Checking…' : 'Continue'}
                 </button>
@@ -230,7 +230,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                     type={showCurrent ? 'text' : 'password'}
                     value={currentPassword}
                     onChange={(e) => setCurrentPassword(e.target.value)}
-                    className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 pr-12 text-void-text focus:outline-none focus:border-blue-500 transition-colors"
+                    className="w-full rounded-lg border border-void-border bg-void-bg-main/70 px-4 py-3 pr-12 text-void-text transition-colors focus:border-void-accent focus:outline-none"
                     required
                     disabled={isLoading}
                   />
@@ -254,7 +254,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                     type={showNew ? 'text' : 'password'}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 pr-12 text-void-text focus:outline-none focus:border-blue-500 transition-colors"
+                    className="w-full rounded-lg border border-void-border bg-void-bg-main/70 px-4 py-3 pr-12 text-void-text transition-colors focus:border-void-accent focus:outline-none"
                     required
                     disabled={isLoading}
                   />
@@ -278,7 +278,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                     type={showConfirm ? 'text' : 'password'}
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 pr-12 text-void-text focus:outline-none focus:border-blue-500 transition-colors"
+                    className="w-full rounded-lg border border-void-border bg-void-bg-main/70 px-4 py-3 pr-12 text-void-text transition-colors focus:border-void-accent focus:outline-none"
                     required
                     disabled={isLoading}
                   />
@@ -300,7 +300,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
               )}
 
               {requires2FA ? (
-                <div className="space-y-3 rounded-xl border border-void-border bg-gray-900/60 p-4">
+                <div className="space-y-3 rounded-xl border border-void-border bg-void-bg-main/55 p-4">
                   <div>
                     <p className="text-sm font-medium text-void-text">Two-Factor Verification</p>
                     <p className="text-xs text-void-text-muted mt-1">Enter a valid code before changing your password.</p>
@@ -308,13 +308,13 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
 
                   <div className="flex flex-wrap gap-2">
                     {twoFactorMethods.includes('totp') ? (
-                      <button type="button" onClick={() => setActiveMethod('totp')} className={`rounded-lg px-3 py-2 text-xs font-medium ${activeMethod === 'totp' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-void-text-muted'}`}>Authenticator</button>
+                      <button type="button" onClick={() => setActiveMethod('totp')} className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${activeMethod === 'totp' ? 'bg-void-accent text-white' : 'bg-void-bg-hover text-void-text-muted hover:text-void-text'}`}>Authenticator</button>
                     ) : null}
                     {twoFactorMethods.includes('email') ? (
-                      <button type="button" onClick={() => setActiveMethod('email')} className={`rounded-lg px-3 py-2 text-xs font-medium ${activeMethod === 'email' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-void-text-muted'}`}>Email</button>
+                      <button type="button" onClick={() => setActiveMethod('email')} className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${activeMethod === 'email' ? 'bg-void-accent text-white' : 'bg-void-bg-hover text-void-text-muted hover:text-void-text'}`}>Email</button>
                     ) : null}
                     {twoFactorMethods.includes('backup') ? (
-                      <button type="button" onClick={() => setActiveMethod('backup')} className={`rounded-lg px-3 py-2 text-xs font-medium ${activeMethod === 'backup' ? 'bg-blue-600 text-white' : 'bg-gray-800 text-void-text-muted'}`}>Backup code</button>
+                      <button type="button" onClick={() => setActiveMethod('backup')} className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${activeMethod === 'backup' ? 'bg-void-accent text-white' : 'bg-void-bg-hover text-void-text-muted hover:text-void-text'}`}>Backup code</button>
                     ) : null}
                   </div>
 
@@ -325,7 +325,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                           type="button"
                           onClick={sendEmailCode}
                           disabled={emailSending}
-                          className="w-full rounded-lg bg-gray-800 px-4 py-3 text-sm text-void-text"
+                          className="w-full rounded-lg bg-void-bg-hover px-4 py-3 text-sm text-void-text transition-colors hover:bg-void-bg-hover/80"
                         >
                           {emailSending ? 'Sending code...' : 'Send email code'}
                         </button>
@@ -335,7 +335,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                         value={twoFactorCode}
                         onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                         placeholder="Enter 6-digit code"
-                        className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 text-void-text"
+                        className="w-full rounded-lg border border-void-border bg-void-bg-main/70 px-4 py-3 text-void-text transition-colors focus:border-void-accent focus:outline-none"
                         disabled={isLoading}
                       />
                       {!twoFactorCodeReady && twoFactorCode.length > 0 ? (
@@ -346,7 +346,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                           type="button"
                           onClick={sendEmailCode}
                           disabled={emailSending || emailCooldown !== null}
-                          className="text-xs text-blue-400 disabled:opacity-50"
+                          className="text-xs text-void-accent disabled:opacity-50"
                         >
                           {emailCooldown !== null ? `Resend in ${emailCooldown}s` : emailSending ? 'Sending...' : 'Resend code'}
                         </button>
@@ -365,7 +365,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
                           )
                         }
                         placeholder={activeMethod === 'backup' ? 'Enter 8-character backup code' : 'Enter 6-digit code'}
-                        className="w-full bg-gray-900 border border-void-border rounded-lg px-4 py-3 text-void-text"
+                        className="w-full rounded-lg border border-void-border bg-void-bg-main/70 px-4 py-3 text-void-text transition-colors focus:border-void-accent focus:outline-none"
                         disabled={isLoading}
                       />
                       {!twoFactorCodeReady && twoFactorCode.length > 0 ? (
@@ -384,7 +384,7 @@ export default function ChangePasswordModal({ onClose }: ChangePasswordModalProp
               <button
                 type="submit"
                 disabled={isLoading || requires2FA === null || !twoFactorCodeReady}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full rounded-lg bg-void-accent py-3 font-semibold text-white transition-colors hover:bg-void-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isLoading ? 'Changing...' : 'Change Password'}
               </button>

@@ -386,7 +386,7 @@ const AccountTab = () => {
               <div className="text-left">
                 <p className="text-sm font-medium text-red-400">Delete Account</p>
                 <p className="text-xs text-red-300/70 mt-0.5 hidden sm:block">
-                  Account deletion is not available yet.
+                  Account deletion is not available in this app.
                 </p>
               </div>
               <span className="rounded-full border border-red-800/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-red-300/80">
