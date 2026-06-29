@@ -1378,7 +1378,10 @@ const MessageItem = memo(function MessageItem({
                           ? 'flex'
                           : getMultiAttachmentGridClass(visibleImages.length)
                       }`}
-                      style={imageEntries.length === 1 ? undefined : { maxWidth: `${MULTI_ATTACHMENT_MAX_WIDTH}px` }}
+                      style={imageEntries.length === 1 ? undefined : {
+                        width: `${MULTI_ATTACHMENT_MAX_WIDTH}px`,
+                        maxWidth: '100%',
+                      }}
                     >
                       {visibleImages.map(({ attachment, originalIndex }, index) => {
                         const hasHiddenAttachments = hiddenImageCount > 0 && index === visibleImages.length - 1;
