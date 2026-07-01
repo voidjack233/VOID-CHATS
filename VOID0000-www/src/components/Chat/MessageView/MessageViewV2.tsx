@@ -36,20 +36,17 @@ import MessageTimelineViewport from './MessageTimelineViewport';
 import { HISTORY_SKELETON_ROW_HEIGHT } from './historySkeletonConstants';
 import { MESSAGE_PAGE_SIZE } from '../../../Services/Chat/chatConstants';
 import { useConversationPreviewCache } from './useConversationPreviewCache';
+import { useMessageHistoryBoundaryLock } from './useMessageHistoryBoundaryLock';
+import { useMessageHistorySentinels } from './useMessageHistorySentinels';
+import { useMessageHistoryViewportRestoration } from './useMessageHistoryViewportRestoration';
 import { useMobileKeyboardOpen } from './useMobileKeyboardOpen';
 import { useMessageRowMeasurements } from './useMessageRowMeasurements';
+import { useMessageViewportResizeObserver } from './useMessageViewportResizeObserver';
 import {
-  getFirstVisibleMessageAnchor,
   getMessageAnchorsAroundViewport,
-  getMessageElementEdgeOffset,
   getMessageElementById,
-  moveHistoryRangeReplacementSeamAnchor,
-  restoreHistoryRangeReplacementAnchor,
-  restoreHistoryRangeReplacementSeamAnchor,
   restoreVisibleMessageAnchor,
-  updateHistoryRangeReplacementPosition,
   type HistoryLoadScrollSnapshot,
-  type HistoryRangeReplacementSnapshot,
   type NewerHistoryLoadScrollSnapshot,
   type ViewportAnchorLock,
 } from './historyScrollAnchors';
@@ -94,7 +91,6 @@ const defaultLayoutTraits = Object.freeze({ startsGroup: true, showDateSeparator
 const emptyReactions: Record<string, unknown> = Object.freeze({});
 const BOTTOM_THRESHOLD = 16;
 const JUMP_TO_PRESENT_REVEAL_DISTANCE = 180;
-const OLDER_LOAD_SCROLL_UPDATE_THRESHOLD = 1;
 const UNDERFILL_AUTOFILL_THRESHOLD = 48;
 const HISTORY_RATE_LIMIT_FALLBACK_MS = 6_000;
 const HISTORY_RATE_LIMIT_MAX_MS = 30_000;
@@ -108,11 +104,6 @@ const NEWER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
   compact: 720,
   comfortable: 640,
 };
-
-// IntersectionObserver catches the exact boundary. The scroll handler below
-// starts history fetches earlier so fast scrolling is less likely to hit a
-// temporary loading wall at either edge of the active message window.
-const OLDER_SENTINEL_ROOT_MARGIN = '0px 0px 0px 0px';
 
 const MessageViewV2 = memo(function MessageViewV2({
   conversation,
@@ -174,7 +165,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const [olderRangeError, setOlderRangeError] = useState(false);
   const [newerRangeError, setNewerRangeError] = useState(false);
   const [historyLoadPausedUntil, setHistoryLoadPausedUntil] = useState(0);
-  const [historyRestoreRevision, setHistoryRestoreRevision] = useState(0);
   const isMobileKeyboardOpen = useMobileKeyboardOpen();
   const setScrollerRef = useCallback((element: HTMLDivElement | null) => {
     scrollerRef.current = element;
@@ -480,7 +470,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       messageJumpFallbackTimeoutRef.current = null;
     }
     setHistoryLoadPausedUntil(0);
-    setHistoryRestoreRevision(0);
     setShowJumpToPresent(false);
     setHighlightedMessageId(null);
     setMessageJumpNotice(null);
@@ -758,218 +747,47 @@ const MessageViewV2 = memo(function MessageViewV2({
     }, 1800);
   }, []);
 
-  const captureHistoryLoadScrollSnapshot = useCallback((): HistoryLoadScrollSnapshot | null => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return null;
-    const shouldMapVisibleRange = Boolean(
-      firstVisualMessageId &&
-      renderedTopSpacerHeight > 1 &&
-      isOlderRangeVisible(scroller),
-    );
-    const rangeReplacement: HistoryRangeReplacementSnapshot | null = shouldMapVisibleRange
-      ? {
-          direction: 'older',
-          seamMessageId: firstVisualMessageId!,
-          seamAnchor: (() => {
-            const offset = getMessageElementEdgeOffset(scroller, firstVisualMessageId!, 'top');
-            return offset === null ? null : { edge: 'top', offset };
-          })(),
-          sourceStart: Math.max(0, renderedTopSpacerHeight - historyLogicalSlotHeight),
-          sourceEnd: renderedTopSpacerHeight,
-          rowHeight: historySkeletonRowHeight,
-          anchor: {
-            kind: 'start',
-            offsetTop: 0,
-          },
-          rangeStartOffsetTop: 0,
-          rangeEndOffsetTop: 0,
-          mapped: false,
-        }
-      : null;
-    if (rangeReplacement) {
-      updateHistoryRangeReplacementPosition(scroller, rangeReplacement);
-    }
-    const anchor = rangeReplacement ? null : getFirstVisibleMessageAnchor(scroller);
-
-    const snapshot = {
-      scrollHeight: scroller.scrollHeight,
-      scrollTop: scroller.scrollTop,
-      anchorMessageId: anchor?.messageId ?? null,
-      anchorOffsetTop: anchor?.offsetTop ?? null,
-      rangeReplacement,
-      readyToRestore: false,
-    };
-    pendingOlderLoadScrollSnapshotRef.current = snapshot;
-    historyScrollTransactionActiveRef.current = true;
-    if (rangeReplacement) {
-      viewportAnchorLockRef.current = null;
-    } else {
-      captureViewportAnchorLock(scroller);
-    }
-    return snapshot;
-  }, [
-    captureViewportAnchorLock,
+  const {
+    historyRestoreRevision,
+    loadOlderPreservingViewport,
+    loadNewerPreservingViewport,
+    restoreHistoryViewportAfterCommit,
+    syncScrollState,
+  } = useMessageHistoryViewportRestoration({
+    resetKey: conversation.id,
+    scrollerRef,
     firstVisualMessageId,
-    historyLogicalSlotHeight,
-    historySkeletonRowHeight,
-    isOlderRangeVisible,
-    renderedTopSpacerHeight,
-  ]);
-
-  const captureNewerHistoryLoadScrollSnapshot = useCallback((): NewerHistoryLoadScrollSnapshot | null => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return null;
-    const shouldMapVisibleRange = Boolean(
-      lastVisualMessageId &&
-      renderedBottomSpacerHeight > 1 &&
-      isNewerRangeVisible(scroller),
-    );
-    const bottomRangeStart = scroller.scrollHeight - renderedBottomSpacerHeight;
-    const rangeReplacement: HistoryRangeReplacementSnapshot | null = shouldMapVisibleRange
-      ? {
-          direction: 'newer',
-          seamMessageId: lastVisualMessageId!,
-          seamAnchor: (() => {
-            const offset = getMessageElementEdgeOffset(scroller, lastVisualMessageId!, 'bottom');
-            return offset === null ? null : { edge: 'bottom', offset };
-          })(),
-          sourceStart: bottomRangeStart,
-          sourceEnd: Math.min(
-            scroller.scrollHeight,
-            bottomRangeStart + historyLogicalSlotHeight,
-          ),
-          rowHeight: historySkeletonRowHeight,
-          anchor: {
-            kind: 'start',
-            offsetTop: 0,
-          },
-          rangeStartOffsetTop: 0,
-          rangeEndOffsetTop: 0,
-          mapped: false,
-        }
-      : null;
-    if (rangeReplacement) {
-      updateHistoryRangeReplacementPosition(scroller, rangeReplacement);
-    }
-    const anchors = rangeReplacement ? [] : getMessageAnchorsAroundViewport(scroller);
-    const anchor = anchors[0] ?? null;
-
-    const snapshot = {
-      scrollHeight: scroller.scrollHeight,
-      scrollTop: scroller.scrollTop,
-      anchorMessageId: anchor?.messageId ?? null,
-      anchorOffsetTop: anchor?.offsetTop ?? null,
-      rangeReplacement,
-      readyToRestore: false,
-      fallbackAnchors: anchors.slice(1),
-      distanceFromBottom: scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight),
-    };
-    pendingNewerLoadScrollSnapshotRef.current = snapshot;
-    historyScrollTransactionActiveRef.current = true;
-    if (rangeReplacement) {
-      viewportAnchorLockRef.current = null;
-    } else {
-      captureViewportAnchorLock(scroller);
-    }
-    return snapshot;
-  }, [
-    captureViewportAnchorLock,
-    historyLogicalSlotHeight,
-    historySkeletonRowHeight,
-    isNewerRangeVisible,
     lastVisualMessageId,
+    renderedTopSpacerHeight,
     renderedBottomSpacerHeight,
-  ]);
-
-  const syncScrollState = useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-
-    const pendingOlderSnapshot = pendingOlderLoadScrollSnapshotRef.current;
-    if (
-      pendingOlderSnapshot &&
-      Math.abs(scroller.scrollHeight - pendingOlderSnapshot.scrollHeight) <= OLDER_LOAD_SCROLL_UPDATE_THRESHOLD
-    ) {
-      const scrollDelta = scroller.scrollTop - pendingOlderSnapshot.scrollTop;
-      pendingOlderSnapshot.scrollTop = scroller.scrollTop;
-      if (pendingOlderSnapshot.rangeReplacement) {
-        moveHistoryRangeReplacementSeamAnchor(pendingOlderSnapshot.rangeReplacement, scrollDelta);
-        updateHistoryRangeReplacementPosition(scroller, pendingOlderSnapshot.rangeReplacement);
-      } else {
-        const anchor = getFirstVisibleMessageAnchor(scroller);
-        if (anchor) {
-          pendingOlderSnapshot.anchorMessageId = anchor.messageId;
-          pendingOlderSnapshot.anchorOffsetTop = anchor.offsetTop;
-        } else if (pendingOlderSnapshot.anchorOffsetTop !== null) {
-          pendingOlderSnapshot.anchorOffsetTop -= scrollDelta;
-        }
-      }
-    }
-
-    const pendingNewerSnapshot = pendingNewerLoadScrollSnapshotRef.current;
-    if (
-      pendingNewerSnapshot &&
-      Math.abs(scroller.scrollHeight - pendingNewerSnapshot.scrollHeight) <= OLDER_LOAD_SCROLL_UPDATE_THRESHOLD
-    ) {
-      const scrollDelta = scroller.scrollTop - pendingNewerSnapshot.scrollTop;
-      pendingNewerSnapshot.scrollTop = scroller.scrollTop;
-      pendingNewerSnapshot.distanceFromBottom =
-        scroller.scrollHeight - (scroller.scrollTop + scroller.clientHeight);
-      if (pendingNewerSnapshot.rangeReplacement) {
-        moveHistoryRangeReplacementSeamAnchor(pendingNewerSnapshot.rangeReplacement, scrollDelta);
-        updateHistoryRangeReplacementPosition(scroller, pendingNewerSnapshot.rangeReplacement);
-      } else {
-        const anchors = getMessageAnchorsAroundViewport(scroller);
-        const anchor = anchors[0];
-        if (anchor) {
-          pendingNewerSnapshot.anchorMessageId = anchor.messageId;
-          pendingNewerSnapshot.anchorOffsetTop = anchor.offsetTop;
-          pendingNewerSnapshot.fallbackAnchors = anchors.slice(1);
-        } else {
-          if (pendingNewerSnapshot.anchorOffsetTop !== null) {
-            pendingNewerSnapshot.anchorOffsetTop -= scrollDelta;
-          }
-          pendingNewerSnapshot.fallbackAnchors = pendingNewerSnapshot.fallbackAnchors.map(
-            (fallbackAnchor) => ({
-              ...fallbackAnchor,
-              offsetTop: fallbackAnchor.offsetTop - scrollDelta,
-            }),
-          );
-        }
-      }
-    }
-
-    const scrollState = getScrollState(scroller);
-
-    atBottomRef.current = scrollState.atBottom;
-    showJumpToPresentRef.current = scrollState.shouldShowJumpToPresent;
-    setShowJumpToPresent(scrollState.shouldShowJumpToPresent);
-    onOwnSendHistoryModeChange?.(
-      !scrollState.atBottom ||
-      scrollState.shouldShowJumpToPresent ||
-      hasNewer ||
-      !scrollState.isAtPresent ||
-      !isAtPresent
-    );
-
-    if (scrollState.atBottom) {
-      forceFollowOutputRef.current = false;
-      if (!historyScrollTransactionActiveRef.current) {
-        viewportAnchorLockRef.current = null;
-      }
-    } else if (!viewportAnchorRestoreInProgressRef.current) {
-      captureViewportAnchorLock(scroller);
-    }
-
-    setIsAtPresent(scrollState.isAtPresent);
-  }, [
-    captureViewportAnchorLock,
-    getScrollState,
+    historyLogicalSlotHeight,
+    historySkeletonRowHeight,
+    olderTopExhaustionThreshold,
     hasNewer,
     isAtPresent,
-    onOwnSendHistoryModeChange,
+    pendingOlderLoadScrollSnapshotRef,
+    pendingNewerLoadScrollSnapshotRef,
+    historyScrollTransactionActiveRef,
+    viewportAnchorLockRef,
+    viewportAnchorRestoreInProgressRef,
+    atBottomRef,
+    showJumpToPresentRef,
+    forceFollowOutputRef,
+    hasOlderRef,
+    hasNewerRef,
+    historyLoadPausedUntilRef,
+    isOlderRangeVisible,
+    isNewerRangeVisible,
+    getScrollState,
+    captureViewportAnchorLock,
+    loadOlder,
+    loadNewer,
+    setOlderRangeError,
+    setNewerRangeError,
+    setShowJumpToPresent,
     setIsAtPresent,
-  ]);
+    onOwnSendHistoryModeChange,
+  });
 
   const scrollToMessageById = useCallback((
     messageId: string,
@@ -1051,175 +869,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     showMessageJumpNotice,
   ]);
 
-  const restoreHistoryLoadScrollSnapshot = useCallback((snapshot: HistoryLoadScrollSnapshot) => {
-    const scroller = scrollerRef.current;
-    if (!scroller) {
-      return false;
-    }
-
-    const replacement = snapshot.rangeReplacement;
-    if (replacement) {
-      if (!replacement.mapped) {
-        const messageElements = Array.from(
-          scroller.querySelectorAll<HTMLElement>('[data-message-id]'),
-        );
-        const seamIndex = messageElements.findIndex(
-          (element) => element.dataset.messageId === replacement.seamMessageId,
-        );
-
-        if (seamIndex > 0) {
-          const insertedElements = messageElements.slice(0, seamIndex);
-          const firstInsertedElement = insertedElements[0]!;
-          const seamElement = messageElements[seamIndex]!;
-          const scrollerRect = scroller.getBoundingClientRect();
-          if (!restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)) {
-            restoreHistoryRangeReplacementAnchor({
-              scroller,
-              replacement,
-              insertedElements,
-              rangeStartOffsetTop:
-                firstInsertedElement.getBoundingClientRect().top - scrollerRect.top,
-              rangeEndOffsetTop:
-                seamElement.getBoundingClientRect().top - scrollerRect.top,
-            });
-          }
-        } else if (snapshot.readyToRestore && !hasOlderRef.current) {
-          scroller.scrollTop = 0;
-          replacement.mapped = true;
-        }
-      }
-
-      if (replacement.mapped) {
-        syncScrollState();
-        return true;
-      }
-
-      return false;
-    }
-
-    if (!hasOlderRef.current && snapshot.scrollTop <= olderTopExhaustionThreshold) {
-      scroller.scrollTop = 0;
-      syncScrollState();
-      return true;
-    }
-
-    if (restoreVisibleMessageAnchor(scroller, snapshot)) {
-      syncScrollState();
-      return true;
-    }
-
-    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
-    if (Math.abs(scrollHeightDelta) > 0.5) {
-      scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
-      syncScrollState();
-      return true;
-    }
-
-    syncScrollState();
-    return true;
-  }, [olderTopExhaustionThreshold, syncScrollState]);
-
-  const restoreNewerHistoryLoadScrollSnapshot = useCallback((snapshot: NewerHistoryLoadScrollSnapshot) => {
-    const scroller = scrollerRef.current;
-    if (!scroller) {
-      return false;
-    }
-
-    const replacement = snapshot.rangeReplacement;
-    if (replacement) {
-      if (!replacement.mapped) {
-        const messageElements = Array.from(
-          scroller.querySelectorAll<HTMLElement>('[data-message-id]'),
-        );
-        const seamIndex = messageElements.findIndex(
-          (element) => element.dataset.messageId === replacement.seamMessageId,
-        );
-
-        if (seamIndex >= 0 && seamIndex < messageElements.length - 1) {
-          const seamElement = messageElements[seamIndex]!;
-          const insertedElements = messageElements.slice(seamIndex + 1);
-          const lastInsertedElement = insertedElements[insertedElements.length - 1]!;
-          const scrollerRect = scroller.getBoundingClientRect();
-          if (!restoreHistoryRangeReplacementSeamAnchor(scroller, replacement)) {
-            restoreHistoryRangeReplacementAnchor({
-              scroller,
-              replacement,
-              insertedElements,
-              rangeStartOffsetTop:
-                seamElement.getBoundingClientRect().bottom - scrollerRect.top,
-              rangeEndOffsetTop:
-                lastInsertedElement.getBoundingClientRect().bottom - scrollerRect.top,
-            });
-          }
-        } else if (snapshot.readyToRestore && !hasNewerRef.current) {
-          scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-          replacement.mapped = true;
-        }
-      }
-
-      if (replacement.mapped) {
-        syncScrollState();
-        return true;
-      }
-
-      return false;
-    }
-
-    if (restoreVisibleMessageAnchor(scroller, snapshot)) {
-      syncScrollState();
-      return true;
-    }
-
-    for (const anchor of snapshot.fallbackAnchors) {
-      if (restoreVisibleMessageAnchor(scroller, {
-        anchorMessageId: anchor.messageId,
-        anchorOffsetTop: anchor.offsetTop,
-      })) {
-        syncScrollState();
-        return true;
-      }
-    }
-
-    scroller.scrollTop = Math.max(
-      0,
-      scroller.scrollHeight - scroller.clientHeight - snapshot.distanceFromBottom,
-    );
-    syncScrollState();
-    return true;
-  }, [syncScrollState]);
-
-  const loadOlderPreservingViewport = useCallback(async () => {
-    const snapshot = captureHistoryLoadScrollSnapshot();
-    const didLoad = await loadOlder();
-    const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
-    setOlderRangeError(didLoad === false && !isHistoryPaused);
-    if (didLoad && snapshot && pendingOlderLoadScrollSnapshotRef.current === snapshot) {
-      snapshot.readyToRestore = true;
-      setHistoryRestoreRevision((current) => current + 1);
-    } else if (!didLoad && snapshot && pendingOlderLoadScrollSnapshotRef.current === snapshot) {
-      pendingOlderLoadScrollSnapshotRef.current = null;
-      if (!pendingNewerLoadScrollSnapshotRef.current) {
-        historyScrollTransactionActiveRef.current = false;
-      }
-    }
-  }, [captureHistoryLoadScrollSnapshot, loadOlder]);
-
-  const loadNewerPreservingViewport = useCallback(async () => {
-    const snapshot = captureNewerHistoryLoadScrollSnapshot();
-    const didLoad = await loadNewer();
-    const isHistoryPaused = historyLoadPausedUntilRef.current > Date.now();
-    setNewerRangeError(didLoad === false && !isHistoryPaused);
-    if (didLoad && snapshot && pendingNewerLoadScrollSnapshotRef.current === snapshot) {
-      snapshot.readyToRestore = true;
-      setHistoryRestoreRevision((current) => current + 1);
-    } else if (!didLoad && snapshot && pendingNewerLoadScrollSnapshotRef.current === snapshot) {
-      pendingNewerLoadScrollSnapshotRef.current = null;
-      if (!pendingOlderLoadScrollSnapshotRef.current) {
-        historyScrollTransactionActiveRef.current = false;
-      }
-    }
-  }, [captureNewerHistoryLoadScrollSnapshot, loadNewer]);
-
   useLayoutEffect(() => {
     const targetMessageId = pendingMessageJumpTargetRef.current;
     if (!targetMessageId) {
@@ -1285,64 +934,14 @@ const MessageViewV2 = memo(function MessageViewV2({
     syncScrollState,
   });
 
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-
-    let lastTouchY: number | null = null;
-    const shouldLockOlderBoundary = () => (
-      (loadingOlderRequestInFlightRef.current ||
-        loadingOlderStateRef.current ||
-        pendingOlderLoadScrollSnapshotRef.current !== null) &&
-      scroller.scrollTop <= olderTopScrollLockThreshold
-    );
-
-    const handleWheelBoundaryLock = (event: WheelEvent) => {
-      if (event.deltaY < 0 && shouldLockOlderBoundary()) {
-        event.preventDefault();
-        scroller.scrollTop = Math.max(0, scroller.scrollTop);
-      }
-    };
-
-    const handleTouchStartBoundaryLock = (event: TouchEvent) => {
-      lastTouchY = event.touches[0]?.clientY ?? null;
-    };
-
-    const handleTouchMoveBoundaryLock = (event: TouchEvent) => {
-      const nextY = event.touches[0]?.clientY ?? null;
-      if (nextY === null || lastTouchY === null) {
-        lastTouchY = nextY;
-        return;
-      }
-
-      const isPullingTowardOlderHistory = nextY > lastTouchY;
-      if (isPullingTowardOlderHistory && shouldLockOlderBoundary()) {
-        event.preventDefault();
-      }
-      lastTouchY = nextY;
-    };
-
-    const clearTouchBoundaryLock = () => {
-      lastTouchY = null;
-    };
-
-    scroller.addEventListener('wheel', handleWheelBoundaryLock, { passive: false });
-    scroller.addEventListener('touchstart', handleTouchStartBoundaryLock, { passive: true });
-    scroller.addEventListener('touchmove', handleTouchMoveBoundaryLock, { passive: false });
-    scroller.addEventListener('touchend', clearTouchBoundaryLock);
-    scroller.addEventListener('touchcancel', clearTouchBoundaryLock);
-
-    return () => {
-      scroller.removeEventListener('wheel', handleWheelBoundaryLock);
-      scroller.removeEventListener('touchstart', handleTouchStartBoundaryLock);
-      scroller.removeEventListener('touchmove', handleTouchMoveBoundaryLock);
-      scroller.removeEventListener('touchend', clearTouchBoundaryLock);
-      scroller.removeEventListener('touchcancel', clearTouchBoundaryLock);
-    };
-  }, [
-    conversation.id,
+  useMessageHistoryBoundaryLock({
+    scrollerRef,
+    resetKey: conversation.id,
+    loadingOlderRequestInFlightRef,
+    loadingOlderStateRef,
+    pendingOlderLoadScrollSnapshotRef,
     olderTopScrollLockThreshold,
-  ]);
+  });
 
   const keepPresentPinnedToBottom = useCallback(() => {
     const scroller = scrollerRef.current;
@@ -1390,68 +989,18 @@ const MessageViewV2 = memo(function MessageViewV2({
     return true;
   }, [initialHydrationSettled, scrollToBottom, syncScrollState, visualMessages.length]);
 
-  // ── IntersectionObserver: load older messages at the top boundary ──
-  useEffect(() => {
-    const sentinel = olderSentinelRef.current;
-    const scroller = scrollerRef.current;
-    if (!sentinel || !scroller) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (!initialLatestRestoreDoneRef.current) {
-          return;
-        }
-        if (!entry?.isIntersecting) {
-          return;
-        }
-
-        maybeStartBestHistoryLoad('older');
-      },
-      {
-        root: scroller,
-        rootMargin: OLDER_SENTINEL_ROOT_MARGIN,
-        threshold: 0,
-      },
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [maybeStartBestHistoryLoad, conversation.id]);
-
-  // ── IntersectionObserver: load newer messages ──
-  useEffect(() => {
-    const sentinel = newerSentinelRef.current;
-    const scroller = scrollerRef.current;
-    if (!sentinel || !scroller || !hasNewer) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (!initialLatestRestoreDoneRef.current) {
-          return;
-        }
-        if (
-          !entry?.isIntersecting ||
-          loadingNewerRequestInFlightRef.current ||
-          !hasNewer ||
-          loadingNewer
-        ) {
-          return;
-        }
-
-        maybeStartBestHistoryLoad('newer');
-      },
-      {
-        root: scroller,
-        rootMargin: `0px 0px ${newerBottomLoadThreshold}px 0px`,
-        threshold: 0,
-      },
-    );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasNewer, loadingNewer, maybeStartBestHistoryLoad, newerBottomLoadThreshold, conversation.id]);
+  useMessageHistorySentinels({
+    scrollerRef,
+    olderSentinelRef,
+    newerSentinelRef,
+    resetKey: conversation.id,
+    initialLatestRestoreDoneRef,
+    loadingNewerRequestInFlightRef,
+    hasNewer,
+    loadingNewer,
+    newerBottomLoadThreshold,
+    maybeStartBestHistoryLoad,
+  });
 
   const jumpToPresentAndScroll = useCallback(async () => {
     forceFollowOutputRef.current = true;
@@ -1612,55 +1161,13 @@ const MessageViewV2 = memo(function MessageViewV2({
   ]);
 
   useLayoutEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) {
-      return;
-    }
-
-    // Pagination state can commit before the load promise settles. Compensate
-    // that commit immediately so the skeleton-to-message swap never paints
-    // without its captured viewport anchor.
-    let restoredHistoryViewport = false;
-    const olderSnapshot = pendingOlderLoadScrollSnapshotRef.current;
-    const newerSnapshot = pendingNewerLoadScrollSnapshotRef.current;
-    viewportAnchorRestoreInProgressRef.current = Boolean(olderSnapshot || newerSnapshot);
-
-    try {
-      if (olderSnapshot) {
-        const restoredOlderViewport = restoreHistoryLoadScrollSnapshot(olderSnapshot);
-        restoredHistoryViewport = restoredOlderViewport || restoredHistoryViewport;
-        if (olderSnapshot.readyToRestore && restoredOlderViewport) {
-          pendingOlderLoadScrollSnapshotRef.current = null;
-        }
-      }
-
-      if (newerSnapshot) {
-        const restoredNewerViewport = restoreNewerHistoryLoadScrollSnapshot(newerSnapshot);
-        restoredHistoryViewport = restoredNewerViewport || restoredHistoryViewport;
-        if (newerSnapshot.readyToRestore && restoredNewerViewport) {
-          pendingNewerLoadScrollSnapshotRef.current = null;
-        }
-      }
-    } finally {
-      viewportAnchorRestoreInProgressRef.current = false;
-    }
-
-    if (restoredHistoryViewport) {
-      captureViewportAnchorLock(scroller);
-    }
-
-    historyScrollTransactionActiveRef.current = Boolean(
-      pendingOlderLoadScrollSnapshotRef.current ||
-      pendingNewerLoadScrollSnapshotRef.current
-    );
+    restoreHistoryViewportAfterCommit();
   }, [
     bottomSpacerHeight,
-    captureViewportAnchorLock,
     hasOlder,
     hasNewer,
     historyRestoreRevision,
-    restoreNewerHistoryLoadScrollSnapshot,
-    restoreHistoryLoadScrollSnapshot,
+    restoreHistoryViewportAfterCommit,
     topSpacerHeight,
     visualMessages.length,
     firstVisualMessageId,
@@ -1671,36 +1178,16 @@ const MessageViewV2 = memo(function MessageViewV2({
     void maybeAutofillOlder();
   }, [maybeAutofillOlder, visualMessages.length]);
 
-  // ── ResizeObserver ──
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      void attemptInitialBottomRestore();
-      void maybeAutofillOlder();
-      if (
-        historyScrollTransactionActiveRef.current ||
-        !atBottomRef.current ||
-        showJumpToPresentRef.current
-      ) {
-        restoreViewportAnchorLock();
-      }
-      syncScrollState();
-    });
-
-    observer.observe(scroller);
-    return () => {
-      observer.disconnect();
-    };
-  }, [
+  useMessageViewportResizeObserver({
+    scrollerRef,
+    historyScrollTransactionActiveRef,
+    atBottomRef,
+    showJumpToPresentRef,
     attemptInitialBottomRestore,
     maybeAutofillOlder,
     restoreViewportAnchorLock,
     syncScrollState,
-  ]);
+  });
 
   // ── Render ──
   const renderListItem = useCallback((item: MessageListItem) => {
