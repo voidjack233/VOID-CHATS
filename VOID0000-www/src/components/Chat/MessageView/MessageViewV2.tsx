@@ -158,6 +158,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const messageHighlightTimeoutRef = useRef<number | null>(null);
   const messageJumpNoticeTimeoutRef = useRef<number | null>(null);
   const messageJumpFallbackTimeoutRef = useRef<number | null>(null);
+  const pendingAttachmentLoadCorrectionRef = useRef(false);
   const [pendingExternalLink, setPendingExternalLink] = useState<{ url: string; hostname: string } | null>(null);
   const [showJumpToPresent, setShowJumpToPresent] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -1037,19 +1038,24 @@ const MessageViewV2 = memo(function MessageViewV2({
   }, [jumpToPresentAndScroll]);
 
   const handleAttachmentLoad = useCallback(() => {
-    if (highlightedMessageId) {
-      requestAnimationFrame(() => {
-        scrollToMessageById(highlightedMessageId, 'auto', { highlight: false });
-      });
+    if (pendingAttachmentLoadCorrectionRef.current) {
       return;
     }
 
-    if (!atBottomRef.current && !forceFollowOutputRef.current) {
-      restoreViewportAnchorLock();
-      return;
-    }
-
+    pendingAttachmentLoadCorrectionRef.current = true;
     requestAnimationFrame(() => {
+      pendingAttachmentLoadCorrectionRef.current = false;
+
+      if (highlightedMessageId) {
+        scrollToMessageById(highlightedMessageId, 'auto', { highlight: false });
+        return;
+      }
+
+      if (!atBottomRef.current && !forceFollowOutputRef.current) {
+        restoreViewportAnchorLock();
+        return;
+      }
+
       scrollToBottom('auto');
       forceFollowOutputRef.current = false;
     });
