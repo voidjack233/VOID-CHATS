@@ -12,6 +12,7 @@ If you are trying to understand or run the project, start here first:
 Frontend-specific notes:
 
 - [docs/project-flow-map.md](docs/project-flow-map.md)
+- [docs/message-scroll-mechanism.md](docs/message-scroll-mechanism.md)
 - [docs/secure-chat-recovery-limitations.md](docs/secure-chat-recovery-limitations.md)
 
 ## Frontend Shape

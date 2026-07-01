@@ -28,5 +28,6 @@ dist-ssr
 *.sw?
 
 docs/*
+!docs/message-scroll-mechanism.md
 !docs/project-flow-map.md
 !docs/secure-chat-recovery-limitations.md
