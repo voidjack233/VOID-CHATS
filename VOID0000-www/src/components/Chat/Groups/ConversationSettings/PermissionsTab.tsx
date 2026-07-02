@@ -158,7 +158,6 @@ function toSnake(perms: CamelPermissions): Partial<GroupPermissions> {
     admin_can_edit_member_nicknames: perms.adminCanEditMemberNicknames,
     admin_can_edit_group_profile: perms.adminCanEditGroupProfile,
     admin_can_manage_invite_links: perms.adminCanManageInviteLinks,
-    members_can_set_own_nickname: perms.membersCanSetOwnNickname,
     who_can_send_attachments: perms.whoCanSendAttachments,
     who_can_create_invite_links: perms.whoCanCreateInviteLinks,
     who_can_approve_requests: perms.whoCanApproveRequests,
@@ -175,7 +174,6 @@ function fromSnake(perms: GroupPermissions) {
     adminCanEditMemberNicknames: perms.admin_can_edit_member_nicknames,
     adminCanEditGroupProfile: perms.admin_can_edit_group_profile,
     adminCanManageInviteLinks: perms.admin_can_manage_invite_links,
-    membersCanSetOwnNickname: perms.members_can_set_own_nickname,
     whoCanSendAttachments: perms.who_can_send_attachments,
     whoCanCreateInviteLinks: perms.who_can_create_invite_links,
     whoCanApproveRequests: perms.who_can_approve_requests,
@@ -191,7 +189,6 @@ interface CamelPermissions {
   adminCanEditMemberNicknames: boolean;
   adminCanEditGroupProfile: boolean;
   adminCanManageInviteLinks: boolean;
-  membersCanSetOwnNickname: boolean;
   whoCanSendAttachments: WhoOption;
   whoCanCreateInviteLinks: WhoOption;
   whoCanApproveRequests: WhoOption;
@@ -331,15 +328,6 @@ export default function PermissionsTab({
           label="Manage Invite Links?"
           value={perms.adminCanManageInviteLinks}
           onChange={(v) => set('adminCanManageInviteLinks', v)}
-        />
-      </SectionCard>
-
-      {/* Members */}
-      <SectionCard title="Members">
-        <ToggleRow
-          label="Set Own Nickname?"
-          value={perms.membersCanSetOwnNickname}
-          onChange={(v) => set('membersCanSetOwnNickname', v)}
         />
       </SectionCard>
 

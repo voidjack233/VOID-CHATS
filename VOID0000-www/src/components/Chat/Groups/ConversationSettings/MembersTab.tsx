@@ -15,7 +15,6 @@ interface BusyMemberAction {
 }
 
 interface MembersTabProps {
-  memberActionError: string;
   sortedMembers: ConversationMember[];
   memberRemovalPaused: boolean;
   currentUserId: string;
@@ -40,7 +39,6 @@ interface MembersTabProps {
 }
 
 export default function MembersTab({
-  memberActionError,
   sortedMembers,
   memberRemovalPaused,
   currentUserId,
@@ -95,12 +93,6 @@ export default function MembersTab({
 
   return (
     <div className="space-y-6">
-      {memberActionError && (
-        <p className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-          {memberActionError}
-        </p>
-      )}
-
       <section className="md:rounded-2xl md:border md:border-void-bg-hover md:bg-void-bg-main/40 md:p-5">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div>
@@ -122,7 +114,7 @@ export default function MembersTab({
             </div>
           )}
 
-          <div className="-mr-1 max-h-[min(52dvh,28rem)] space-y-3 overflow-y-auto overscroll-contain pr-1 md:mr-0 md:max-h-none md:overflow-visible md:pr-0">
+          <div className="-mr-1 max-h-[min(52dvh,28rem)] space-y-3 overflow-y-auto overscroll-contain pr-1 md:max-h-[min(44dvh,22rem)]">
             {sortedMembers.map((member) => {
               const isRoleEditorOpen = expandedRoleEditorUserId === member.user_id;
               const isRoleBusy =

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   approveConversationJoinRequest,
   Conversation,
@@ -324,6 +324,10 @@ export function useGroupSettings({
     const targetLabel = getMemberLabel(targetMember);
     return `${targetLabel} left the group.`;
   };
+
+  const clearMemberActionError = useCallback(() => {
+    setMemberActionError('');
+  }, []);
 
   // ── invite handlers ───────────────────────────────────────────────────────
   const refreshInvites = async () => {
@@ -913,6 +917,7 @@ export function useGroupSettings({
 
     members: {
       memberActionError,
+      onClearMemberActionError: clearMemberActionError,
       memberMenuUserId,
       expandedRoleEditorUserId,
       kickConfirmMember,

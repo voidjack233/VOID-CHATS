@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, ChevronRight, Lock, X } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronRight, Lock, X } from 'lucide-react';
 import { Conversation, ConversationMember, Message } from '../../../Services/Chat/chatService';
 import { useScrollLock } from '../../../Services/hooks/common/useScrollLock';
 import ConfirmDialog from './ConversationSettings/ConfirmDialog';
@@ -41,6 +41,7 @@ const GroupConversationSettings = ({
   useScrollLock();
 
   const [activeTab, setActiveTab] = useState<GroupSettingsTab>('profile');
+  const [floatingNotice, setFloatingNotice] = useState<string | null>(null);
   const { mobileView, setMobileView } = useMobileView(conversation.id);
 
   const settings = useGroupSettings({
@@ -58,10 +59,26 @@ const GroupConversationSettings = ({
   });
 
   const { memberList, sortedMembers, permissions, profile, invites, members: membersSection } = settings;
+  const { memberActionError, onClearMemberActionError } = membersSection;
 
   useEffect(() => {
     setActiveTab('profile');
   }, [conversation.id]);
+
+  useEffect(() => {
+    if (!memberActionError) {
+      setFloatingNotice(null);
+      return;
+    }
+
+    setFloatingNotice(memberActionError);
+    const timeout = window.setTimeout(() => {
+      setFloatingNotice(null);
+      onClearMemberActionError();
+    }, 3200);
+
+    return () => window.clearTimeout(timeout);
+  }, [memberActionError, onClearMemberActionError]);
 
   const openTab = (tab: GroupSettingsTab) => {
     setActiveTab(tab);
@@ -99,7 +116,6 @@ const GroupConversationSettings = ({
     if (activeTab === 'members') {
       return (
         <MembersTab
-          memberActionError={membersSection.memberActionError}
           sortedMembers={sortedMembers}
           memberRemovalPaused={membersSection.memberRemovalPaused}
           currentUserId={currentUserId}
@@ -160,6 +176,14 @@ const GroupConversationSettings = ({
 
   return (
     <div className="fixed inset-0 z-[320] bg-void-bg-main/90 md:bg-black/55 md:backdrop-blur-sm">
+      {floatingNotice && (
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-[390] flex justify-center px-4 md:top-6">
+          <div className="flex max-w-md items-start gap-3 rounded-2xl border border-red-400/25 bg-red-950/90 px-4 py-3 text-sm text-red-100 shadow-2xl shadow-black/35 backdrop-blur-md">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-300" />
+            <p className="leading-relaxed">{floatingNotice}</p>
+          </div>
+        </div>
+      )}
       <div className="flex h-full items-center justify-center p-0 md:p-4">
         <div className="flex h-full w-full flex-col overflow-hidden bg-void-bg-sec md:h-[680px] md:max-w-6xl md:flex-row md:rounded-2xl md:border md:border-void-bg-hover md:shadow-2xl">
           <aside className="hidden w-72 flex-shrink-0 border-r border-void-bg-hover bg-void-bg-main/55 md:flex md:flex-col">

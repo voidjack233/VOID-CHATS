@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Link2, Loader2, Lock, RefreshCw, Users, X } from 'lucide-react';
 import UserAvatar from '../../../common/UserAvatar';
 import type {
@@ -53,6 +54,42 @@ export default function InvitesTab({
   onCopyInvite,
   onRevokeInvite,
 }: InvitesTabProps) {
+  const [hiddenInviteLinkIds, setHiddenInviteLinkIds] = useState<Set<number>>(new Set());
+  const staleInviteLinkIds = useMemo(() => (
+    inviteLinks
+      .filter((invite) => invite.is_revoked || isInviteExpired(invite))
+      .map((invite) => invite.id)
+  ), [inviteLinks]);
+  const visibleInviteLinks = useMemo(() => (
+    inviteLinks.filter((invite) => !hiddenInviteLinkIds.has(invite.id))
+  ), [hiddenInviteLinkIds, inviteLinks]);
+  const hiddenInviteLinkCount = inviteLinks.length - visibleInviteLinks.length;
+  const visibleStaleInviteCount = visibleInviteLinks.filter(
+    (invite) => invite.is_revoked || isInviteExpired(invite),
+  ).length;
+
+  useEffect(() => {
+    setHiddenInviteLinkIds((current) => {
+      if (current.size === 0) {
+        return current;
+      }
+
+      const inviteIds = new Set(inviteLinks.map((invite) => invite.id));
+      const next = new Set(
+        [...current].filter((inviteId) => inviteIds.has(inviteId)),
+      );
+      return next.size === current.size ? current : next;
+    });
+  }, [inviteLinks]);
+
+  const hideStaleInviteLinks = () => {
+    setHiddenInviteLinkIds((current) => {
+      const next = new Set(current);
+      staleInviteLinkIds.forEach((inviteId) => next.add(inviteId));
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-6">
       <section className="rounded-2xl border border-void-bg-hover bg-void-bg-main/40 p-4 sm:p-5">
@@ -63,15 +100,6 @@ export default function InvitesTab({
 
           {canManageInvites && (
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              <button
-                type="button"
-                onClick={() => void onRefreshInvites()}
-                disabled={invitesLoading}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-4 py-3 text-sm font-medium text-void-text transition-colors hover:bg-void-bg-hover disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
-              >
-                <RefreshCw className={`h-4 w-4 ${invitesLoading ? 'animate-spin' : ''}`} />
-                Refresh
-              </button>
               <button
                 type="button"
                 onClick={() => void onCreateInvite()}
@@ -118,9 +146,20 @@ export default function InvitesTab({
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-void-text">Pending Join Requests</h3>
               </div>
-              <div className="inline-flex self-start items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text sm:self-auto">
-                <Users className="h-4 w-4 text-void-text-muted" />
-                <span>{pendingRequests.length}</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onRefreshInvites()}
+                  disabled={invitesLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-3 py-2 text-xs font-semibold text-void-text transition-colors hover:bg-void-bg-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${invitesLoading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </button>
+                <div className="inline-flex items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text">
+                  <Users className="h-4 w-4 text-void-text-muted" />
+                  <span>{pendingRequests.length}</span>
+                </div>
               </div>
             </div>
 
@@ -209,21 +248,55 @@ export default function InvitesTab({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <h3 className="text-sm font-semibold text-void-text">Recent Invite Links</h3>
+                <p className="mt-1 text-xs text-void-text-muted">
+                  Expired and revoked links can be hidden from this view when they get noisy.
+                </p>
               </div>
-              <div className="inline-flex self-start items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text sm:self-auto">
-                <Link2 className="h-4 w-4 text-void-text-muted" />
-                <span>{inviteLinks.length}</span>
+              <div className="flex flex-wrap items-center gap-2">
+                {visibleStaleInviteCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={hideStaleInviteLinks}
+                    className="inline-flex items-center justify-center rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-3 py-2 text-xs font-semibold text-void-text transition-colors hover:bg-void-bg-hover"
+                  >
+                    Hide expired
+                  </button>
+                )}
+                {hiddenInviteLinkCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setHiddenInviteLinkIds(new Set())}
+                    className="inline-flex items-center justify-center rounded-xl border border-void-bg-hover bg-void-bg-sec/70 px-3 py-2 text-xs font-semibold text-void-text-muted transition-colors hover:bg-void-bg-hover hover:text-void-text"
+                  >
+                    Show all
+                  </button>
+                )}
+                <div className="inline-flex items-center gap-2 rounded-full bg-void-bg-hover px-3 py-1 text-sm font-semibold text-void-text">
+                  <Link2 className="h-4 w-4 text-void-text-muted" />
+                  <span>
+                    {visibleInviteLinks.length}
+                    {hiddenInviteLinkCount > 0 ? ` / ${inviteLinks.length}` : ''}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <div className="mt-5 space-y-3">
-              {!invitesLoading && invitesLoaded && inviteLinks.length === 0 && (
+            {hiddenInviteLinkCount > 0 && (
+              <p className="mt-4 rounded-xl border border-void-bg-hover bg-void-bg-sec/45 px-4 py-3 text-xs leading-relaxed text-void-text-muted">
+                Hidden {hiddenInviteLinkCount} expired or revoked invite {hiddenInviteLinkCount === 1 ? 'link' : 'links'} in this view.
+              </p>
+            )}
+
+            <div className="mt-5 max-h-[min(46dvh,24rem)] space-y-3 overflow-y-auto overscroll-contain pr-1">
+              {!invitesLoading && invitesLoaded && visibleInviteLinks.length === 0 && (
                 <div className="rounded-xl border border-dashed border-void-bg-hover bg-void-bg-sec/45 px-4 py-5 text-sm text-void-text-muted">
-                  No invite links yet. Create one when you want people to request access.
+                  {inviteLinks.length === 0
+                    ? 'No invite links yet. Create one when you want people to request access.'
+                    : 'All expired or revoked invite links are hidden.'}
                 </div>
               )}
 
-              {inviteLinks.map((invite) => {
+              {visibleInviteLinks.map((invite) => {
                 const isRevoked = invite.is_revoked;
                 const isExpired = isInviteExpired(invite);
                 const isBusy = busyInviteId === invite.id;
