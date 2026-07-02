@@ -64,7 +64,7 @@ export function parseMembershipFinalizeArtifacts(
   const expectedUsers = [...new Set(expectedWelcomeUserIds.map((value) => String(value)))];
   const rawWelcomes = Array.isArray(rawArtifacts.welcomes) ? rawArtifacts.welcomes : [];
   if (rawWelcomes.length !== expectedUsers.length) {
-    return invalidArtifacts('Provide exactly one Welcome payload for each joining member');
+    return invalidArtifacts('Secure join approval could not be prepared. Ask the requester to refresh VOID, then retry approval.');
   }
 
   const welcomes = [];

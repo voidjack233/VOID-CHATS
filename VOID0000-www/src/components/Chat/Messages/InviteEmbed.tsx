@@ -168,7 +168,7 @@ export default function InviteEmbed({
     setStatusNote('');
 
     try {
-      const result = await requestJoinByInviteCode(inviteCode);
+      const result = await requestJoinByInviteCode(inviteCode, user.id);
       const next = {
         status: result.status,
         conversationPublicId: preview?.conversation_public_id || null,

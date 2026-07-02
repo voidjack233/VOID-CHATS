@@ -164,6 +164,7 @@ export async function distributeGroupSenderKeyWithProtocol(
   options?: {
     allowFreshGroupBootstrap?: boolean;
     forceFreshGroupBootstrap?: boolean;
+    forceReaddMemberUserIds?: string[];
     forceKeyVersionBump?: boolean;
     stageOnly?: boolean;
   },
@@ -181,6 +182,7 @@ export async function distributeGroupSenderKeyWithProtocol(
     memberUserIds: uniqueParticipants,
     allowFreshGroupBootstrap: options?.allowFreshGroupBootstrap,
     forceFreshGroupBootstrap: options?.forceFreshGroupBootstrap,
+    forceReaddMemberUserIds: options?.forceReaddMemberUserIds,
     forceKeyVersionBump: options?.forceKeyVersionBump,
     stageOnly: options?.stageOnly,
   });

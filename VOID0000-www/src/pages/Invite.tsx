@@ -94,7 +94,7 @@ export default function InvitePage() {
     setNotice('');
 
     try {
-      const result = await requestJoinByInviteCode(code);
+      const result = await requestJoinByInviteCode(code, user.id);
       setStatus(result.status);
       setNotice('Join request sent. The owner needs to approve it before you can enter.');
     } catch (err: any) {

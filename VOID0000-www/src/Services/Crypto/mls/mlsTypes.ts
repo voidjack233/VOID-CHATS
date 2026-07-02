@@ -105,6 +105,7 @@ export interface MlsDistributeGroupInput {
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
   forceFreshGroupBootstrap?: boolean;
+  forceReaddMemberUserIds?: string[];
   forceKeyVersionBump?: boolean;
   stageOnly?: boolean;
   _retried?: boolean;

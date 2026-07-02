@@ -300,8 +300,19 @@ export class MlsGroupService {
     // --- Existing-state branch: try membership update on current local state ---
     if (existingState) {
       const currentMembers = getMemberUserIds(existingState);
-      const toAdd = desiredMembers.filter((id) => !currentMembers.includes(id));
-      const toRemove = currentMembers.filter((id) => !desiredMembers.includes(id));
+      const forceReaddMemberIds = new Set(
+        (input.forceReaddMemberUserIds || [])
+          .filter((id) => id && id !== input.userId),
+      );
+      const forcedReaddIds = currentMembers.filter((id) => (
+        forceReaddMemberIds.has(id) && desiredMembers.includes(id)
+      ));
+      const toAdd = desiredMembers.filter((id) => (
+        !currentMembers.includes(id) || forcedReaddIds.includes(id)
+      ));
+      const toRemove = currentMembers.filter((id) => (
+        !desiredMembers.includes(id) || forcedReaddIds.includes(id)
+      ));
 
       if (isDmConversation && toAdd.length > 0) {
         // The existing DM MLS state is missing the peer — this happens when
@@ -343,13 +354,14 @@ export class MlsGroupService {
           missingMemberUserIds = addProposalResult.missingUserIds;
         }
 
-        if (toAdd.length > 0 && missingMemberUserIds.length > 0 && toRemove.length === 0) {
+        if (toAdd.length > 0 && missingMemberUserIds.length > 0) {
           console.error('[MLS_DISTRIBUTE] refusing add/re-add without claimable peer key packages', {
             conversation_id: conversationId,
             conversation_type: input.conversation.type,
             requested_add_user_ids: toAdd,
             added_member_user_ids: newMembersForWelcome,
             missing_member_user_ids: missingMemberUserIds,
+            forced_readd_user_ids: forcedReaddIds,
             server_key_version: input.conversation.current_key_version ?? null,
             mls_epoch: Number(existingState.groupContext.epoch),
           });
@@ -464,6 +476,21 @@ export class MlsGroupService {
           : { proposals: [], addedUserIds: [], missingUserIds: [] };
       const addProposals = addProposalResult.proposals;
       missingMemberUserIds = addProposalResult.missingUserIds;
+
+      if (!isDmConversation && missingMemberUserIds.length > 0) {
+        console.warn('[MLS_DISTRIBUTE] refusing fresh group bootstrap without claimable peer key packages', {
+          conversation_id: conversationId,
+          conversation_type: input.conversation.type,
+          requested_member_user_ids: otherMembers,
+          added_member_user_ids: addProposalResult.addedUserIds,
+          missing_member_user_ids: missingMemberUserIds,
+          server_key_version: input.conversation.current_key_version ?? null,
+        });
+        throw createMlsError(
+          'The joining member is not ready for secure approval yet. Ask them to refresh VOID, then retry approval.',
+          'MLS_ADD_KEY_PACKAGE_MISSING',
+        );
+      }
 
       if (isDmConversation && missingMemberUserIds.length > 0) {
         console.warn('[DM_BOOTSTRAP] peer account secure key package unavailable during initial bootstrap', {

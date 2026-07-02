@@ -10,6 +10,7 @@ export interface DistributeGroupKeyInput {
   memberUserIds: string[];
   allowFreshGroupBootstrap?: boolean;
   forceFreshGroupBootstrap?: boolean;
+  forceReaddMemberUserIds?: string[];
   forceKeyVersionBump?: boolean;
   stageOnly?: boolean;
 }
@@ -79,6 +80,7 @@ class MlsChatCryptoProtocolService implements ChatCryptoProtocolService {
       memberUserIds: input.memberUserIds,
       allowFreshGroupBootstrap: input.allowFreshGroupBootstrap,
       forceFreshGroupBootstrap: input.forceFreshGroupBootstrap,
+      forceReaddMemberUserIds: input.forceReaddMemberUserIds,
       forceKeyVersionBump: input.forceKeyVersionBump,
       stageOnly: input.stageOnly,
     });
