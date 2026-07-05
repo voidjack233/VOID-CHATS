@@ -118,17 +118,34 @@ export const useConversationSync = ({
         next_key_version: nextKeyVersion,
       });
 
-      void chatCryptoProtocolService
-        .syncInbox(user.id, true)
-        .catch((error) => {
+      void (async () => {
+        const retryDelays = [0, 750, 2_500];
+        let lastError: unknown = null;
+
+        for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+          const retryDelay = retryDelays[attempt] ?? 0;
+          if (retryDelay > 0) {
+            await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+          }
+
+          try {
+            await chatCryptoProtocolService.syncInbox(user.id, true);
+            lastError = null;
+            break;
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        if (lastError) {
           console.warn('[MLS_KEY_BUMP] proactive sync failed', {
             conversation_id: recoveryConversationId,
             next_key_version: nextKeyVersion,
-            error: error instanceof Error ? error.message : String(error || ''),
+            error: lastError instanceof Error ? lastError.message : String(lastError || ''),
           });
-        })
-        .finally(() => {
-          delete recoveringKeyVersionRef.current[recoveryConversationId];
+        }
+
+        try {
           const currentActiveConversation = activeConversationRef.current;
           const currentActiveGroup = activeGroupRef.current;
           const stillActive =
@@ -138,7 +155,10 @@ export const useConversationSync = ({
           if (stillActive) {
             retryHandshakeRef.current();
           }
-        });
+        } finally {
+          delete recoveringKeyVersionRef.current[recoveryConversationId];
+        }
+      })();
     };
 
     gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);

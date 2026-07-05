@@ -5,7 +5,6 @@ import type { MlsMembershipFinalizeArtifacts } from '../Crypto/mls/mlsTypes';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import { debugLog } from '../utils/debugLog';
 import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove } from './chatCryptoService';
-import { sendSystemEvent } from './messageService';
 import type {
   Conversation,
   ConversationMember,
@@ -34,6 +33,7 @@ export interface PendingSelfLeaveRotation {
   conversation_public_id?: string | null;
   target_user_id: string;
   target_label?: string | null;
+  survivor_role?: string | null;
   pending_key_version: number;
   current_key_version: number;
 }
@@ -604,6 +604,12 @@ export function finalizeSelfLeaveRotation(
       );
       await chatCryptoProtocolService.syncInbox(currentUserId, true, {
         forceArchiveSync: true,
+      }).catch((error) => {
+        console.warn('[SELF_LEAVE] finalized rotation inbox sync was deferred', {
+          conversation_id: rotation.conversation_id,
+          operation_id: rotation.operation_id,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
       });
       await notifyMembershipUpdate(rotation.conversation_id);
       return {
@@ -703,25 +709,18 @@ export function finalizeSelfLeaveRotation(
       );
     }
 
+    // Finalization is already durable. A temporary inbox-sync failure must
+    // not make the completed rotation look stuck to the finalizing client.
     await chatCryptoProtocolService.syncInbox(currentUserId, true, {
       forceArchiveSync: true,
+    }).catch((error) => {
+      console.warn('[SELF_LEAVE] finalized but local inbox sync was deferred', {
+        conversation_id: rotation.conversation_id,
+        operation_id: rotation.operation_id,
+        error: error instanceof Error ? error.message : String(error || ''),
+      });
     });
     await notifyMembershipUpdate(rotation.conversation_id);
-
-    if (!alreadyFinalized) {
-      const targetLabel = rotation.target_label?.trim() || 'A member';
-      await sendSystemEvent(
-        rotation.conversation_id,
-        `${targetLabel} left the group.`,
-        resolvedKeyVersion,
-      ).catch((error) => {
-        console.warn('[SELF_LEAVE] finalized but system message failed', {
-          conversation_id: rotation.conversation_id,
-          operation_id: rotation.operation_id,
-          error: error instanceof Error ? error.message : String(error || ''),
-        });
-      });
-    }
 
     return {
       removed_user_id: finalizeData.removed_user_id || rotation.target_user_id,

@@ -27,12 +27,13 @@ export const useCheckAuth = () => {
     const handleVisibilityChange = async () => {
       if (document.visibilityState !== 'visible') return;
 
+      // Browser background throttling can leave a half-dead WebSocket marked
+      // OPEN. Always probe it when the tab wakes, independent of auth checks.
+      gateway.resetReconnect();
+
       const now = Date.now();
       if (now - lastCheckRef.current < AUTH_CHECK_COOLDOWN_MS) return;
       lastCheckRef.current = now;
-
-      // Reconnect gateway if disconnected (user came back to tab)
-      gateway.resetReconnect();
 
       if (isCheckingRef.current) return;
       isCheckingRef.current = true;
@@ -52,11 +53,17 @@ export const useCheckAuth = () => {
       }
     };
 
+    const handleWindowFocus = () => {
+      gateway.resetReconnect();
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
 
     return () => {
       isMountedRef.current = false;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
     };
   }, [navigate]);
 };

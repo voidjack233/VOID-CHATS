@@ -1,4 +1,8 @@
-import { normalizeKeyVersion, uniqueUserIds } from '../../../utils/groupMembership.js';
+import {
+  ensureGroupOwner,
+  normalizeKeyVersion,
+  uniqueUserIds,
+} from '../../../utils/groupMembership.js';
 import { insertMembershipFinalizeArtifacts } from '../mls/finalizeArtifacts.js';
 
 const OPERATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -323,6 +327,8 @@ export async function finalizeMlsAddedMembers(
       [conversationId, currentKeyVersion, operation.reservedKeyVersion, actorUserId, reason, memberId],
     );
   }
+
+  await ensureGroupOwner(client, conversationId);
 
   await client.query(
     `UPDATE conversations

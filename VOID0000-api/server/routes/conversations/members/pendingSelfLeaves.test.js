@@ -30,6 +30,7 @@ test('authenticated pending self-leave recovery returns an empty rotation list',
 
   const server = app.listen(0, '127.0.0.1');
   t.after(() => new Promise((resolve, reject) => {
+    server.closeAllConnections();
     server.close((error) => (error ? reject(error) : resolve()));
   }));
   await new Promise((resolve) => server.once('listening', resolve));

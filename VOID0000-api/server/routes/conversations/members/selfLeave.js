@@ -1,5 +1,6 @@
 import { pool } from '../../../db.js';
 import valkey from '../../../valkey.js';
+import { debugLog } from '../../../utils/debugLog.js';
 import {
   emitConversationUpdate,
   getGroupMembership,
@@ -22,27 +23,73 @@ function selfLeaveClaimKey(conversationId, operationId) {
   return `mls:self_leave:claim:${conversationId}:${operationId}`;
 }
 
-export function registerMemberSelfLeaveRoutes(router) {
+async function postSelfLeaveSystemMessage({
+  conversationId,
+  finalizerUserId,
+  keyVersion,
+  operationId,
+  targetUserId,
+}) {
+  const identityResult = await pool.query(
+    `SELECT COALESCE(NULLIF(profiles.display_name, ''), users.username, 'A member') AS target_label
+     FROM users
+     LEFT JOIN user_profiles profiles ON profiles.id = users.profile_id
+     WHERE users.id = $1
+     LIMIT 1`,
+    [targetUserId],
+  );
+  const targetLabel = identityResult.rows[0]?.target_label || 'A member';
+  const { sendConversationMessage } = await import('../messages/sendMessage.js');
+
+  await sendConversationMessage({
+    userId: finalizerUserId,
+    conversationIdentifier: conversationId,
+    body: {
+      content: `${targetLabel} left the group.`,
+      key_version: keyVersion,
+      message_type: 'system',
+      client_message_id: `self-leave:${operationId}`,
+    },
+  });
+}
+
+export function registerMemberSelfLeaveRoutes(router, {
+  cache = valkey,
+  database = pool,
+  emitUpdate = emitConversationUpdate,
+  getMembership = getGroupMembership,
+  insertFinalizeArtifacts = insertMembershipFinalizeArtifacts,
+  lockRotation = lockMembershipRotation,
+  markRotationFinalized = markMembershipRotationFinalized,
+  postSystemMessage = postSelfLeaveSystemMessage,
+  resolveConversation = resolveMembershipConversation,
+} = {}) {
   router.post('/self-leave/claim', async (req, res) => {
     const claimantUserId = req.user.id;
     const { conversationId } = req.params;
 
     try {
-      const conversation = await resolveMembershipConversation(pool, conversationId);
+      const conversation = await resolveConversation(database, conversationId);
       if (!conversation) {
         return res.status(404).json({ error: 'Conversation not found' });
       }
 
-      const membership = await getGroupMembership(pool, conversation.id, claimantUserId);
+      const membership = await getMembership(database, conversation.id, claimantUserId);
       if (!membership) {
         return res.status(403).json({
           error: 'Only a remaining group member can claim this rotation',
           code: 'SELF_LEAVE_FINALIZER_NOT_MEMBER',
         });
       }
+      if (membership.role === 'member') {
+        debugLog('[SELF_LEAVE] member-role survivor requested claim', {
+          conversation_id: conversation.id,
+          user_id: claimantUserId,
+        });
+      }
 
       const operationId = getMembershipOperationId(req.body);
-      const operationResult = await pool.query(
+      const operationResult = await database.query(
         `SELECT operation_id::text AS operation_id,
                 target_user_ids,
                 reserved_key_version,
@@ -96,7 +143,7 @@ export function registerMemberSelfLeaveRoutes(router) {
         });
       }
 
-      const targetMembershipResult = await pool.query(
+      const targetMembershipResult = await database.query(
         `SELECT 1
          FROM conversation_members
          WHERE conversation_id = $1 AND user_id = $2
@@ -111,7 +158,7 @@ export function registerMemberSelfLeaveRoutes(router) {
       }
 
       const claimKey = selfLeaveClaimKey(conversation.id, operationId);
-      const claimed = await valkey.set(
+      const claimed = await cache.set(
         claimKey,
         String(claimantUserId),
         'EX',
@@ -128,11 +175,11 @@ export function registerMemberSelfLeaveRoutes(router) {
       }
 
       const [claimOwner, claimTtl] = await Promise.all([
-        valkey.get(claimKey),
-        valkey.ttl(claimKey),
+        cache.get(claimKey),
+        cache.ttl(claimKey),
       ]);
       if (claimOwner === String(claimantUserId)) {
-        await valkey.expire(claimKey, SELF_LEAVE_CLAIM_TTL_SECONDS);
+        await cache.expire(claimKey, SELF_LEAVE_CLAIM_TTL_SECONDS);
         return res.json({
           success: true,
           claimed: true,
@@ -161,16 +208,16 @@ export function registerMemberSelfLeaveRoutes(router) {
     let client;
 
     try {
-      client = await pool.connect();
+      client = await database.connect();
       await client.query('BEGIN');
 
-      const conversation = await resolveMembershipConversation(client, conversationId);
+      const conversation = await resolveConversation(client, conversationId);
       if (!conversation) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Conversation not found' });
       }
 
-      const membership = await getGroupMembership(client, conversation.id, finalizerUserId);
+      const membership = await getMembership(client, conversation.id, finalizerUserId);
       if (!membership) {
         await client.query('ROLLBACK');
         return res.status(403).json({
@@ -180,7 +227,7 @@ export function registerMemberSelfLeaveRoutes(router) {
       }
 
       const operationId = getMembershipOperationId(req.body);
-      const { operation, currentKeyVersion } = await lockMembershipRotation(client, {
+      const { operation, currentKeyVersion } = await lockRotation(client, {
         conversationId: conversation.id,
         operationId,
         actorUserId: finalizerUserId,
@@ -199,7 +246,7 @@ export function registerMemberSelfLeaveRoutes(router) {
       const targetUserId = operation.targetUserIds[0];
       if (operation.status === 'finalized') {
         await client.query('ROLLBACK');
-        await valkey.del(selfLeaveClaimKey(conversation.id, operation.operationId)).catch(() => {});
+        await cache.del(selfLeaveClaimKey(conversation.id, operation.operationId)).catch(() => {});
         return res.json({
           success: true,
           phase: 'finalized',
@@ -226,7 +273,7 @@ export function registerMemberSelfLeaveRoutes(router) {
         });
       }
 
-      const claimOwner = await valkey
+      const claimOwner = await cache
         .get(selfLeaveClaimKey(conversation.id, operation.operationId))
         .catch(() => null);
       if (claimOwner && claimOwner !== String(finalizerUserId)) {
@@ -294,7 +341,7 @@ export function registerMemberSelfLeaveRoutes(router) {
         });
       }
 
-      await insertMembershipFinalizeArtifacts(client, {
+      await insertFinalizeArtifacts(client, {
         conversationId: conversation.id,
         actorUserId: finalizerUserId,
         pendingKeyVersion: operation.reservedKeyVersion,
@@ -328,12 +375,32 @@ export function registerMemberSelfLeaveRoutes(router) {
         ],
       );
 
-      await markMembershipRotationFinalized(client, operation.operationId);
+      await markRotationFinalized(client, operation.operationId);
       await client.query('COMMIT');
-      await valkey.del(selfLeaveClaimKey(conversation.id, operation.operationId)).catch(() => {});
+      await cache.del(selfLeaveClaimKey(conversation.id, operation.operationId)).catch(() => {});
 
       try {
-        await emitConversationUpdate(
+        await postSystemMessage({
+          conversationId: conversation.id,
+          finalizerUserId,
+          keyVersion: operation.reservedKeyVersion,
+          operationId: operation.operationId,
+          targetUserId,
+        });
+      } catch (messageError) {
+        console.warn('Self-leave finalized but system message failed:', messageError);
+      }
+
+      if (membership.role === 'member') {
+        debugLog('[SELF_LEAVE] member-role survivor finalized successfully', {
+          conversation_id: conversation.id,
+          user_id: finalizerUserId,
+          key_version: operation.reservedKeyVersion,
+        });
+      }
+
+      try {
+        await emitUpdate(
           conversation,
           survivorMemberIds,
           operation.reservedKeyVersion,

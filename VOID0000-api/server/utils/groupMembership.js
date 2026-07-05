@@ -56,6 +56,73 @@ export async function getGroupMembership(db, conversationId, userId) {
   return result.rows[0] || null;
 }
 
+export async function ensureGroupOwner(db, conversationId) {
+  const conversationResult = await db.query(
+    `SELECT id, type, owner_id
+     FROM conversations
+     WHERE id = $1
+     LIMIT 1
+     FOR UPDATE`,
+    [conversationId],
+  );
+  const conversation = conversationResult.rows[0] || null;
+  if (!conversation || conversation.type !== 'group') {
+    return { repaired: false, ownerUserId: conversation?.owner_id || null };
+  }
+
+  const membersResult = await db.query(
+    `SELECT user_id::text AS user_id, role, joined_at, joined_key_version
+     FROM conversation_members
+     WHERE conversation_id = $1
+     ORDER BY joined_at ASC NULLS LAST,
+              joined_key_version ASC NULLS LAST,
+              user_id ASC`,
+    [conversationId],
+  );
+  const members = membersResult.rows;
+  if (members.length === 0) {
+    return { repaired: false, ownerUserId: null };
+  }
+
+  const configuredOwner = members.find(
+    (member) => String(member.user_id) === String(conversation.owner_id || ''),
+  );
+  const roleOwner = members.find((member) => member.role === 'owner');
+  const owner = configuredOwner || roleOwner || members[0];
+  const ownerCount = members.filter((member) => member.role === 'owner').length;
+  const isConsistent =
+    String(conversation.owner_id || '') === String(owner.user_id) &&
+    owner.role === 'owner' &&
+    ownerCount === 1;
+
+  if (isConsistent) {
+    return { repaired: false, ownerUserId: String(owner.user_id) };
+  }
+
+  const childChannelIds = await getChildChannelIds(db, conversationId);
+  const affectedConversationIds = [conversationId, ...childChannelIds];
+
+  await db.query(
+    `UPDATE conversations
+     SET owner_id = $1, updated_at = NOW()
+     WHERE id = ANY($2::uuid[])`,
+    [owner.user_id, affectedConversationIds],
+  );
+  await db.query(
+    `UPDATE conversation_members
+     SET role = CASE
+       WHEN user_id = $1 THEN 'owner'
+       WHEN role = 'owner' THEN 'admin'
+       ELSE role
+     END
+     WHERE conversation_id = ANY($2::uuid[])
+       AND (user_id = $1 OR role = 'owner')`,
+    [owner.user_id, affectedConversationIds],
+  );
+
+  return { repaired: true, ownerUserId: String(owner.user_id) };
+}
+
 export async function validateFriendships(db, requesterId, memberIds) {
   for (const memberId of memberIds) {
     const friendCheck = await db.query(

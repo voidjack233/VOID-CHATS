@@ -20,6 +20,7 @@ class Gateway {
   private ws: WebSocket | null = null;
   private heartbeatInterval: number | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatProbeTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private handlers: Map<string, EventHandler[]> = new Map();
   private userId: string | null = null;
@@ -203,6 +204,7 @@ class Gateway {
       case OP.HEARTBEAT_ACK:
         this.waitingForAck = false;
         this.missedHeartbeatAcks = 0;
+        this.clearHeartbeatProbe();
         break;
 
       case OP.RESUMED:
@@ -414,8 +416,16 @@ class Gateway {
       this.heartbeatTimer = null;
     }
 
+    this.clearHeartbeatProbe();
     this.waitingForAck = false;
     this.missedHeartbeatAcks = 0;
+  }
+
+  private clearHeartbeatProbe() {
+    if (this.heartbeatProbeTimer) {
+      clearTimeout(this.heartbeatProbeTimer);
+      this.heartbeatProbeTimer = null;
+    }
   }
 
   private scheduleReconnect() {
@@ -444,7 +454,28 @@ class Gateway {
   }
 
   resetReconnect() {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.heartbeatProbeTimer) return;
+
+      const probedSocket = this.ws;
+      debugLog('[GATEWAY] app active, probing open websocket');
+      this.waitingForAck = true;
+      this.send({ op: OP.HEARTBEAT });
+      this.heartbeatProbeTimer = setTimeout(() => {
+        this.heartbeatProbeTimer = null;
+        if (
+          this.ws !== probedSocket ||
+          probedSocket.readyState !== WebSocket.OPEN ||
+          !this.waitingForAck
+        ) {
+          return;
+        }
+
+        debugLog('[GATEWAY] wake probe timed out, reconnecting for event replay');
+        probedSocket.close();
+      }, 5_000);
+      return;
+    }
     if (this.isConnecting) return;
     if (!this.userId) return;
     if (this.isDisconnecting) return;

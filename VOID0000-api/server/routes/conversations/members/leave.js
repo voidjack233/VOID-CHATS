@@ -3,6 +3,7 @@ import { sendLiveEventToUser } from '../../../gateway/client.js';
 import { EVENTS } from '../../../gateway/protocol.js';
 import {
   emitConversationUpdate,
+  ensureGroupOwner,
   getChildChannelIds,
   getGroupMembership,
   normalizeKeyVersion,
@@ -109,6 +110,9 @@ export function registerMemberLeaveRoutes(router) {
           [affectedConversationIds],
         );
 
+        const ownerState = await ensureGroupOwner(client, conversation.id);
+        conversation.owner_id = ownerState.ownerUserId;
+
         const survivorRowsResult = await client.query(
           `SELECT user_id, role
            FROM conversation_members
@@ -145,7 +149,10 @@ export function registerMemberLeaveRoutes(router) {
           sendLiveEventToUser(
             survivorUserId,
             EVENTS.SELF_LEAVE_ROTATION_REQUIRED,
-            rotationPayload,
+            {
+              ...rotationPayload,
+              survivor_role: survivorRolesById[survivorUserId] || null,
+            },
           );
         });
 

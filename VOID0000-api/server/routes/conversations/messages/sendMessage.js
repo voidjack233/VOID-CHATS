@@ -19,6 +19,7 @@ import {
   verifyMembership,
 } from './shared.js';
 import valkey from '../../../valkey.js';
+import { hasPendingMembershipRotation } from './membershipRotationGuard.js';
 
 export class MessageSendError extends Error {
   constructor(status, body) {
@@ -191,17 +192,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
     }
 
     if (conversation.type === 'group' || conversation.type === 'channel') {
-      const pendingRotationResult = await pool.query(
-        `SELECT operation_id
-         FROM conversation_membership_rotations
-         WHERE conversation_id = $1
-           AND status = 'pending'
-           AND (expires_at IS NULL OR expires_at > NOW())
-         LIMIT 1`,
-        [membershipConversationId],
-      );
-
-      if (pendingRotationResult.rows.length > 0) {
+      if (await hasPendingMembershipRotation(pool, membershipConversationId)) {
         fail(409, {
           success: false,
           error: 'Securing group membership. Try again in a moment.',

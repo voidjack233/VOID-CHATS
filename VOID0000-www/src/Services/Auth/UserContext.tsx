@@ -87,13 +87,19 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
   const authRetryingRef = useRef(false);
 
+  const selfLeaveRecoverySkipReason = !user?.id
+    ? 'no_user'
+    : !keyInitResolved
+      ? 'key_initializing'
+      : keyStatus !== 'SECURE'
+        ? 'not_secure'
+        : mlsRecoveryGate.active
+          ? 'recovery_gate_active'
+          : null;
+
   useSelfLeaveRecovery({
-    enabled: Boolean(
-      user?.id &&
-      keyInitResolved &&
-      keyStatus === 'SECURE' &&
-      !mlsRecoveryGate.active
-    ),
+    enabled: selfLeaveRecoverySkipReason === null,
+    skipReason: selfLeaveRecoverySkipReason,
     userId: user?.id,
   });
   const verifySessionRef = useRef<() => Promise<'authenticated' | 'invalid' | 'unavailable'>>(
@@ -899,14 +905,39 @@ export function UserProvider({ children }: { children: ReactNode }) {
           ...metadata,
         });
 
-        void chatCryptoProtocolService.syncInbox(userId, true).catch((error) => {
-          console.warn('[MLS_LIVE_SYNC] forced inbox sync failed', {
-            user_id: userId,
-            reason,
-            ...metadata,
-            error: error instanceof Error ? error.message : String(error || ''),
-          });
-        });
+        void (async () => {
+          const retryDelays = [0, 1_000, 4_000];
+          for (let attempt = 0; attempt < retryDelays.length; attempt += 1) {
+            if (cancelled) return;
+            const retryDelay = retryDelays[attempt] ?? 0;
+            if (retryDelay > 0) {
+              await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+              if (cancelled) return;
+            }
+
+            try {
+              await chatCryptoProtocolService.syncInbox(userId, true);
+              return;
+            } catch (error) {
+              if (attempt < retryDelays.length - 1) {
+                debugLog('[MLS_LIVE_SYNC] retrying inbox sync after key bump', {
+                  user_id: userId,
+                  reason,
+                  attempt: attempt + 2,
+                  ...metadata,
+                });
+                continue;
+              }
+
+              console.warn('[MLS_LIVE_SYNC] forced inbox sync failed', {
+                user_id: userId,
+                reason,
+                ...metadata,
+                error: error instanceof Error ? error.message : String(error || ''),
+              });
+            }
+          }
+        })();
       }, 150);
     };
 

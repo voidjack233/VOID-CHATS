@@ -2,6 +2,7 @@ import { pool } from '../../../db.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
 import {
   emitConversationUpdate,
+  ensureGroupOwner,
   getChildChannelIds,
   getGroupMembership,
   normalizeKeyVersion,
@@ -353,6 +354,9 @@ export function registerMemberRotateRemoveRoutes(router) {
           [channelId, targetUserId]
         );
       }
+
+      const ownerState = await ensureGroupOwner(client, conversation.id);
+      conversation.owner_id = ownerState.ownerUserId;
 
       await client.query(
         `UPDATE conversations

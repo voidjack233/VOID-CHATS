@@ -19,6 +19,7 @@ const TERMINAL_ERROR_CODES = new Set([
 
 interface UseSelfLeaveRecoveryOptions {
   enabled: boolean;
+  skipReason?: string | null;
   userId?: string | null;
 }
 
@@ -51,6 +52,7 @@ function normalizeRotation(value: unknown): PendingSelfLeaveRotation | null {
         : null,
     target_user_id: targetUserId,
     target_label: typeof payload.target_label === 'string' ? payload.target_label : null,
+    survivor_role: typeof payload.survivor_role === 'string' ? payload.survivor_role : null,
     pending_key_version: pendingKeyVersion,
     current_key_version:
       Number.isInteger(currentKeyVersion) && currentKeyVersion > 0
@@ -69,9 +71,18 @@ function getRecoveryRequestSource(event: Event): string {
     : 'external_request';
 }
 
-export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOptions): void {
+export function useSelfLeaveRecovery({
+  enabled,
+  skipReason,
+  userId,
+}: UseSelfLeaveRecoveryOptions): void {
   useEffect(() => {
-    if (!enabled || !userId) return undefined;
+    if (!enabled || !userId) {
+      debugLog('[SELF_LEAVE] recovery skipped', {
+        reason: !userId ? 'no_user' : skipReason || 'disabled',
+      });
+      return undefined;
+    }
 
     let cancelled = false;
     let scanPromise: Promise<void> | null = null;
@@ -92,12 +103,28 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
       scheduledAttempt = 0,
     ): Promise<void> => {
       const rotation = normalizeRotation(value);
-      if (
-        cancelled ||
-        !rotation ||
-        rotation.target_user_id === userId ||
-        inFlightOperationIds.has(rotation.operation_id)
-      ) {
+      if (cancelled) {
+        debugLog('[SELF_LEAVE] recovery skipped', { reason: 'cancelled' });
+        return;
+      }
+      if (!rotation) {
+        debugLog('[SELF_LEAVE] recovery skipped', { reason: 'invalid_rotation' });
+        return;
+      }
+      if (rotation.target_user_id === userId) {
+        debugLog('[SELF_LEAVE] recovery skipped', {
+          reason: 'leaver_target',
+          operation_id: rotation.operation_id,
+          conversation_id: rotation.conversation_id,
+        });
+        return;
+      }
+      if (inFlightOperationIds.has(rotation.operation_id)) {
+        debugLog('[SELF_LEAVE] recovery skipped', {
+          reason: 'already_in_flight',
+          operation_id: rotation.operation_id,
+          conversation_id: rotation.conversation_id,
+        });
         return;
       }
 
@@ -108,6 +135,12 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
         operation_id: rotation.operation_id,
         conversation_id: rotation.conversation_id,
       });
+      if (rotation.survivor_role === 'member') {
+        debugLog('[SELF_LEAVE] member-role survivor starts finalization', {
+          operation_id: rotation.operation_id,
+          conversation_id: rotation.conversation_id,
+        });
+      }
 
       try {
         const result = await finalizeSelfLeaveRotation(rotation, userId);
@@ -118,6 +151,13 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
           key_version: result.key_version,
           already_finalized: result.already_finalized,
         });
+        if (rotation.survivor_role === 'member') {
+          debugLog('[SELF_LEAVE] member-role survivor finalized successfully', {
+            operation_id: rotation.operation_id,
+            conversation_id: rotation.conversation_id,
+            key_version: result.key_version,
+          });
+        }
       } catch (error) {
         const errorPayload = error && typeof error === 'object'
           ? error as Record<string, unknown>
@@ -138,6 +178,16 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
           TERMINAL_ERROR_CODES.has(errorCode) ||
           scheduledAttempt >= MAX_SCHEDULED_RETRIES
         ) {
+          debugLog('[SELF_LEAVE] recovery skipped', {
+            reason: cancelled
+              ? 'cancelled'
+              : TERMINAL_ERROR_CODES.has(errorCode)
+                ? 'terminal_error'
+                : 'retry_limit_reached',
+            code: errorCode,
+            operation_id: rotation.operation_id,
+            conversation_id: rotation.conversation_id,
+          });
           return;
         }
 
@@ -206,6 +256,17 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
     const handleOnline = () => {
       void recoverPendingRotations('browser_online');
     };
+    const handleConversationUpdate = (value: unknown) => {
+      const payload = value && typeof value === 'object'
+        ? value as Record<string, unknown>
+        : {};
+      const conversation = payload.conversation && typeof payload.conversation === 'object'
+        ? payload.conversation as Record<string, unknown>
+        : {};
+      if (conversation.type === 'group') {
+        void recoverPendingRotations('group_conversation_update');
+      }
+    };
     const handleRecoveryRequested = (event: Event) => {
       void recoverPendingRotations(getRecoveryRequestSource(event));
     };
@@ -213,6 +274,7 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
     gateway.on('SELF_LEAVE_ROTATION_REQUIRED', handleRotationRequired);
     gateway.on('READY', handleGatewayReady);
     gateway.on('RESUMED', handleGatewayResumed);
+    gateway.on('CONVERSATION_UPDATE', handleConversationUpdate);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('focus', handleFocus);
     window.addEventListener('online', handleOnline);
@@ -227,10 +289,11 @@ export function useSelfLeaveRecovery({ enabled, userId }: UseSelfLeaveRecoveryOp
       gateway.off('SELF_LEAVE_ROTATION_REQUIRED', handleRotationRequired);
       gateway.off('READY', handleGatewayReady);
       gateway.off('RESUMED', handleGatewayResumed);
+      gateway.off('CONVERSATION_UPDATE', handleConversationUpdate);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener(SELF_LEAVE_RECOVERY_REQUESTED_EVENT, handleRecoveryRequested);
     };
-  }, [enabled, userId]);
+  }, [enabled, skipReason, userId]);
 }
