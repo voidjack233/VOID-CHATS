@@ -5,6 +5,7 @@ import type { MlsMembershipFinalizeArtifacts } from '../Crypto/mls/mlsTypes';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import { debugLog } from '../utils/debugLog';
 import { distributeGroupSenderKeyWithProtocol, preflightGroupRemove } from './chatCryptoService';
+import { sendSystemEvent } from './messageService';
 import type {
   Conversation,
   ConversationMember,
@@ -24,6 +25,23 @@ import {
 } from './chatUtils';
 
 let usedBootstrapConversations = false;
+const selfLeaveFinalizationRequests = new Map<string, Promise<SelfLeaveFinalizeResult>>();
+
+export interface PendingSelfLeaveRotation {
+  operation_id: string;
+  conversation_id: string;
+  conversation_public_id?: string | null;
+  target_user_id: string;
+  target_label?: string | null;
+  pending_key_version: number;
+  current_key_version: number;
+}
+
+export interface SelfLeaveFinalizeResult {
+  removed_user_id: string;
+  key_version: number;
+  already_finalized: boolean;
+}
 
 async function rollbackFailedRotateAdd(
   keyConversationId: string,
@@ -503,8 +521,214 @@ export async function leaveConversation(conversationId: string): Promise<{ delet
     method: 'POST',
   });
   const data = await response.json();
-  if (!data.success) throw new Error(data.error);
+  if (!data.success) throw createApiError(data);
   return { deleted: Boolean(data.deleted) };
+}
+
+export async function getPendingSelfLeaveRotations(): Promise<PendingSelfLeaveRotation[]> {
+  const response = await fetchWithAuth(
+    `${CHAT_API_PREFIX}/membership-rotations/self-leaves/pending`,
+  );
+
+  const isJsonResponse = (response.headers.get('content-type') || '')
+    .toLowerCase()
+    .includes('json');
+  let data: Record<string, unknown> | null = null;
+  if (isJsonResponse) {
+    try {
+      data = await response.json() as Record<string, unknown>;
+    } catch {
+      data = null;
+    }
+  }
+
+  if (response.status === 404) {
+    console.warn('SELF_LEAVE_PENDING_ENDPOINT_NOT_FOUND', {
+      endpoint: `${CHAT_API_PREFIX}/membership-rotations/self-leaves/pending`,
+    });
+    return [];
+  }
+
+  if (!response.ok) {
+    throw createApiError(data || {
+      error: `Pending self-leave recovery request failed with status ${response.status}`,
+      code: 'SELF_LEAVE_PENDING_REQUEST_FAILED',
+    }, { status: response.status });
+  }
+
+  if (!data) {
+    throw createApiError({
+      error: 'Pending self-leave recovery returned a non-JSON response',
+      code: 'SELF_LEAVE_PENDING_RESPONSE_INVALID',
+    }, { status: response.status });
+  }
+
+  if (!data.success) throw createApiError(data);
+  return Array.isArray(data.rotations) ? data.rotations : [];
+}
+
+export function finalizeSelfLeaveRotation(
+  rotation: PendingSelfLeaveRotation,
+  currentUserId: string,
+): Promise<SelfLeaveFinalizeResult> {
+  const existingRequest = selfLeaveFinalizationRequests.get(rotation.operation_id);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = withMembershipLock(rotation.conversation_id, async () => {
+    if (!currentUserId || currentUserId === rotation.target_user_id) {
+      throw new Error('A remaining member must finalize secure self-leave');
+    }
+
+    const claimResponse = await fetchWithAuth(
+      `${CHAT_API_PREFIX}/${rotation.conversation_id}/members/self-leave/claim`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ operation_id: rotation.operation_id }),
+      },
+    );
+    const claimData = await claimResponse.json();
+    if (!claimData.success) {
+      throw createApiError(claimData);
+    }
+
+    if (claimData.already_finalized) {
+      const resolvedKeyVersion = normalizeKeyVersion(
+        claimData.key_version,
+        rotation.pending_key_version,
+      );
+      await chatCryptoProtocolService.syncInbox(currentUserId, true, {
+        forceArchiveSync: true,
+      });
+      await notifyMembershipUpdate(rotation.conversation_id);
+      return {
+        removed_user_id: claimData.removed_user_id || rotation.target_user_id,
+        key_version: resolvedKeyVersion,
+        already_finalized: true,
+      };
+    }
+
+    if (!claimData.claimed) {
+      throw createApiError({
+        error: 'Another member is securing this leave',
+        code: 'SELF_LEAVE_CLAIM_HELD',
+        retry_after_seconds: Number(claimData.retry_after_seconds) || 2,
+      });
+    }
+
+    const { conversation } = await getConversation(rotation.conversation_id);
+    const memberIds = (conversation.members || []).map((member) => member.user_id);
+    if (!memberIds.includes(currentUserId)) {
+      throw new Error('Current user is no longer a member of this group');
+    }
+    if (memberIds.includes(rotation.target_user_id)) {
+      throw new Error('Self-leave target is still listed as an active member');
+    }
+
+    let mlsKey: CryptoKey | null = null;
+    let mlsArtifacts: MlsMembershipFinalizeArtifacts | null | undefined;
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        ({ key: mlsKey, membershipArtifacts: mlsArtifacts } =
+          await distributeGroupSenderKeyWithProtocol(
+            {
+              ...conversation,
+              id: getConversationKeyId(conversation),
+              current_key_version: rotation.pending_key_version,
+            },
+            currentUserId,
+            memberIds,
+            { stageOnly: true },
+          ));
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 0) {
+          await chatCryptoProtocolService.syncInbox(currentUserId, true, {
+            forceArchiveSync: true,
+          }).catch(() => {});
+        }
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+    if (!mlsKey || !mlsArtifacts) {
+      throw new Error('Secure self-leave artifacts could not be prepared');
+    }
+    if (mlsArtifacts.welcomes.length > 0) {
+      throw new Error('Secure self-leave must not create Welcome payloads');
+    }
+
+    const finalizeResponse = await fetchWithAuth(
+      `${CHAT_API_PREFIX}/${rotation.conversation_id}/members/self-leave/finalize`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          operation_id: rotation.operation_id,
+          mls_artifacts: mlsArtifacts,
+        }),
+      },
+    );
+    const finalizeData = await finalizeResponse.json();
+    if (!finalizeData.success) {
+      throw createApiError(finalizeData);
+    }
+
+    const resolvedKeyVersion = normalizeKeyVersion(
+      finalizeData.key_version,
+      rotation.pending_key_version,
+    );
+    const alreadyFinalized = Boolean(finalizeData.already_finalized);
+
+    // A racing client must never keep its losing staged key. It syncs the
+    // winning finalizer's snapshot/commit instead.
+    if (!alreadyFinalized) {
+      await keyManager.storeGroupKey(
+        getConversationKeyId(conversation),
+        resolvedKeyVersion,
+        mlsKey,
+      );
+    }
+
+    await chatCryptoProtocolService.syncInbox(currentUserId, true, {
+      forceArchiveSync: true,
+    });
+    await notifyMembershipUpdate(rotation.conversation_id);
+
+    if (!alreadyFinalized) {
+      const targetLabel = rotation.target_label?.trim() || 'A member';
+      await sendSystemEvent(
+        rotation.conversation_id,
+        `${targetLabel} left the group.`,
+        resolvedKeyVersion,
+      ).catch((error) => {
+        console.warn('[SELF_LEAVE] finalized but system message failed', {
+          conversation_id: rotation.conversation_id,
+          operation_id: rotation.operation_id,
+          error: error instanceof Error ? error.message : String(error || ''),
+        });
+      });
+    }
+
+    return {
+      removed_user_id: finalizeData.removed_user_id || rotation.target_user_id,
+      key_version: resolvedKeyVersion,
+      already_finalized: alreadyFinalized,
+    };
+  });
+
+  selfLeaveFinalizationRequests.set(rotation.operation_id, request);
+  void request.then(
+    () => selfLeaveFinalizationRequests.delete(rotation.operation_id),
+    () => selfLeaveFinalizationRequests.delete(rotation.operation_id),
+  );
+  return request;
 }
 
 export async function updateMemberRole(

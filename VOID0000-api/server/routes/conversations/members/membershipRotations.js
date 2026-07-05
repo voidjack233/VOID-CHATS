@@ -46,6 +46,7 @@ export async function reserveMembershipRotation(
     targetUserIds,
     requestedKeyVersion,
     joinRequestId = null,
+    expiresInMs = ROTATION_TTL_MS,
   },
 ) {
   const normalizedTargets = normalizeTargetUserIds(targetUserIds);
@@ -152,7 +153,18 @@ export async function reserveMembershipRotation(
        join_request_id,
        expires_at
      )
-     VALUES ($1, $2, $3::UUID, $4::UUID[], $5, $6, NOW() + ($7 * INTERVAL '1 millisecond'))
+     VALUES (
+       $1,
+       $2,
+       $3::UUID,
+       $4::UUID[],
+       $5,
+       $6,
+       CASE
+         WHEN $7::BIGINT IS NULL THEN NULL
+         ELSE NOW() + ($7::BIGINT * INTERVAL '1 millisecond')
+       END
+     )
      RETURNING operation_id,
                kind,
                actor_user_id,
@@ -160,7 +172,15 @@ export async function reserveMembershipRotation(
                reserved_key_version,
                join_request_id,
                status`,
-    [conversationId, kind, actorUserId, normalizedTargets, reservedKeyVersion, joinRequestId, ROTATION_TTL_MS],
+    [
+      conversationId,
+      kind,
+      actorUserId,
+      normalizedTargets,
+      reservedKeyVersion,
+      joinRequestId,
+      expiresInMs,
+    ],
   );
 
   return {
@@ -178,6 +198,7 @@ export async function lockMembershipRotation(
     actorUserId,
     kind,
     joinRequestId = null,
+    allowDifferentActor = false,
   },
 ) {
   const lockedConversation = await client.query(
@@ -214,7 +235,7 @@ export async function lockMembershipRotation(
   const operation = normalizeRotation(result.rows[0]);
   if (
     operation.kind !== kind ||
-    operation.actorUserId !== String(actorUserId) ||
+    (!allowDifferentActor && operation.actorUserId !== String(actorUserId)) ||
     operation.joinRequestId !== (joinRequestId == null ? null : Number(joinRequestId))
   ) {
     throw rotationError('Membership rotation does not match this request', 'MEMBERSHIP_OPERATION_MISMATCH', 409);

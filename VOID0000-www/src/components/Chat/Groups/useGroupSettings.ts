@@ -320,11 +320,6 @@ export function useGroupSettings({
     return `${actorLabel} transferred group ownership to ${targetLabel}.`;
   };
 
-  const buildLeaveGroupSystemMessage = (targetMember: ConversationMember) => {
-    const targetLabel = getMemberLabel(targetMember);
-    return `${targetLabel} left the group.`;
-  };
-
   const clearMemberActionError = useCallback(() => {
     setMemberActionError('');
   }, []);
@@ -815,10 +810,6 @@ export function useGroupSettings({
       if (isSoloOwner) {
         await deleteConversation(conversation.id);
       } else {
-        await postMembershipSystemMessage(
-          buildLeaveGroupSystemMessage(currentMember),
-          currentKeyVersion
-        );
         await leaveConversation(conversation.id);
         setMemberList((current) =>
           current.filter((member) => member.user_id !== currentUserId)
@@ -828,12 +819,6 @@ export function useGroupSettings({
       setExpandedRoleEditorUserId(null);
       setMemberMenuUserId(null);
       setLeaveConfirmMode(null);
-
-      try {
-        await onMembershipChanged?.();
-      } catch (error) {
-        console.warn('Group leave succeeded but membership refresh failed:', error);
-      }
 
       onLeaveCompleted?.();
     } catch (error) {

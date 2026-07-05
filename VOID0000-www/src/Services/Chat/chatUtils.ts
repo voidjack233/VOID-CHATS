@@ -13,11 +13,12 @@ export function withMembershipLock<T>(conversationId: string, fn: () => Promise<
   const previous = membershipLocks.get(conversationId) ?? Promise.resolve();
   const next = previous.then(fn, fn);
   membershipLocks.set(conversationId, next);
-  next.finally(() => {
+  const cleanup = () => {
     if (membershipLocks.get(conversationId) === next) {
       membershipLocks.delete(conversationId);
     }
-  });
+  };
+  void next.then(cleanup, cleanup);
   return next;
 }
 

@@ -12,15 +12,17 @@ import membersRouter from './members.js';
 import messagesRouter from './messages.js';
 import mlsRouter from './mls.js';
 import permissionsRouter from './permissions.js';
+import pendingSelfLeavesRouter from './pendingSelfLeaves.js';
 import reactionsRouter from './reactions.js';
 import rootRouter from './root/index.js';
 
 const router = Router();
 
 router.use('/dm', authenticateUser, dmRouter);
-router.use('/:conversationId/dm-settings', authenticateUser, dmSettingsRouter);
 router.use('/mls', authenticateUser, mlsRouter);
 router.use('/invite-links', inviteLinksRouter);
+router.use('/membership-rotations', authenticateUser, pendingSelfLeavesRouter);
+router.use('/:conversationId/dm-settings', authenticateUser, dmSettingsRouter);
 router.use('/:conversationId/invites', authenticateUser, invitesRouter);
 router.use('/:conversationId/members', authenticateUser, membersRouter);
 router.use('/:conversationId/messages', authenticateUser, messagesRouter);

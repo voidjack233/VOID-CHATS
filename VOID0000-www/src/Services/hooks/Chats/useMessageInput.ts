@@ -102,6 +102,10 @@ function isDmPeerNotReadyError(error: unknown): boolean {
 }
 
 function getSendErrorNotice(error: any): string {
+  if (error?.code === 'MEMBERSHIP_ROTATION_PENDING') {
+    return 'Securing group membership. Try again in a moment.';
+  }
+
   if (typeof error?.retry_after_seconds === 'number' && error.retry_after_seconds > 0) {
     return error.error || error.message || `Slowmode is active. Try again in ${error.retry_after_seconds}s.`;
   }

@@ -27,6 +27,7 @@ const { default: invitesRouter } = await import('../routes/conversations/invites
 const { default: keysRouter } = await import('../routes/conversations/keys.js');
 const { default: membersRouter } = await import('../routes/conversations/members.js');
 const { default: mlsRouter } = await import('../routes/conversations/mls.js');
+const { default: pendingSelfLeavesRouter } = await import('../routes/conversations/pendingSelfLeaves.js');
 const { default: permissionsRouter } = await import('../routes/conversations/permissions.js');
 const { default: rootRouter } = await import('../routes/conversations/root/index.js');
 const { createReadinessHandler } = await import('../health/readiness.js');
@@ -75,6 +76,7 @@ app.get('/ready', createReadinessHandler({
 
 const conversationRouter = Router();
 
+conversationRouter.use('/membership-rotations', authenticateUser, pendingSelfLeavesRouter);
 conversationRouter.use('/dm', authenticateUser, dmRouter);
 conversationRouter.use('/:conversationId/dm-settings', authenticateUser, dmSettingsRouter);
 conversationRouter.use('/mls', authenticateUser, mlsRouter);

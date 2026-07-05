@@ -1,5 +1,6 @@
 import { pool } from '../../../db.js';
 import { sendLiveEventToUser } from '../../../gateway/client.js';
+import { EVENTS } from '../../../gateway/protocol.js';
 import {
   emitConversationUpdate,
   getChildChannelIds,
@@ -7,6 +8,7 @@ import {
   normalizeKeyVersion,
   resolveMembershipConversation,
 } from '../../../utils/groupMembership.js';
+import { reserveMembershipRotation } from './membershipRotations.js';
 
 export function registerMemberLeaveRoutes(router) {
   router.post('/leave', async (req, res) => {
@@ -19,6 +21,8 @@ export function registerMemberLeaveRoutes(router) {
     let survivorRolesById = {};
     let currentKeyVersion = 1;
     let deletedGroup = false;
+    let selfLeaveRotation = null;
+    let targetLabel = 'A member';
 
     try {
       client = await pool.connect();
@@ -58,6 +62,16 @@ export function registerMemberLeaveRoutes(router) {
       }
 
       currentKeyVersion = normalizeKeyVersion(conversation.current_key_version, 1);
+      const targetIdentityResult = await client.query(
+        `SELECT u.username, up.display_name
+         FROM users u
+         LEFT JOIN user_profiles up ON up.id = u.profile_id
+         WHERE u.id = $1
+         LIMIT 1`,
+        [userId],
+      );
+      const targetIdentity = targetIdentityResult.rows[0] || null;
+      targetLabel = targetIdentity?.display_name || targetIdentity?.username || targetLabel;
       leavePayload = {
         conversation_id: conversation.id,
         conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
@@ -68,6 +82,16 @@ export function registerMemberLeaveRoutes(router) {
         await client.query('DELETE FROM conversations WHERE id = $1', [conversation.id]);
         deletedGroup = true;
       } else {
+        const rotationResult = await reserveMembershipRotation(client, {
+          conversationId: conversation.id,
+          actorUserId: userId,
+          kind: 'self_leave',
+          targetUserIds: [userId],
+          requestedKeyVersion: currentKeyVersion + 1,
+          expiresInMs: null,
+        });
+        selfLeaveRotation = rotationResult.operation;
+
         const childChannelIds = await getChildChannelIds(client, conversation.id);
         const affectedConversationIds = [conversation.id, ...childChannelIds];
 
@@ -106,7 +130,25 @@ export function registerMemberLeaveRoutes(router) {
         console.warn('Self-leave succeeded but member leave emit failed:', emitError);
       }
 
-      if (!deletedGroup && survivorMemberIds.length > 0) {
+      if (!deletedGroup && selfLeaveRotation && survivorMemberIds.length > 0) {
+        const rotationPayload = {
+          conversation_id: conversation.id,
+          conversation_public_id: conversation.public_id ? String(conversation.public_id) : null,
+          target_user_id: userId,
+          target_label: targetLabel,
+          operation_id: selfLeaveRotation.operationId,
+          pending_key_version: selfLeaveRotation.reservedKeyVersion,
+          current_key_version: currentKeyVersion,
+        };
+
+        survivorMemberIds.forEach((survivorUserId) => {
+          sendLiveEventToUser(
+            survivorUserId,
+            EVENTS.SELF_LEAVE_ROTATION_REQUIRED,
+            rotationPayload,
+          );
+        });
+
         try {
           await emitConversationUpdate(
             conversation,
@@ -124,11 +166,23 @@ export function registerMemberLeaveRoutes(router) {
         success: true,
         deleted: deletedGroup,
         message: deletedGroup ? 'Group deleted' : 'Left group',
+        self_leave_rotation_required: Boolean(selfLeaveRotation),
+        ...(selfLeaveRotation
+          ? {
+              operation_id: selfLeaveRotation.operationId,
+              pending_key_version: selfLeaveRotation.reservedKeyVersion,
+            }
+          : {}),
       });
     } catch (err) {
       if (client && !committed) await client.query('ROLLBACK').catch(() => {});
       console.error('Member self-leave error:', err);
-      res.status(500).json({ error: 'Failed to leave group' });
+      const status = Number(err?.status) || 500;
+      res.status(status).json({
+        error: status === 500 ? 'Failed to leave group' : err.message,
+        ...(err?.code ? { code: err.code } : {}),
+        ...(err?.data || {}),
+      });
     } finally {
       client?.release();
     }

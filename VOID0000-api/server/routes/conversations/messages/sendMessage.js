@@ -166,6 +166,7 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
       conversationPublic,
       storageConversationId,
     } = resolvedConversation;
+    const membershipConversationId = conversation.parent_conversation_id || conversationId;
     const member = await verifyMembership(conversationId, userId);
     if (!member) fail(403, { error: 'Not a member of this conversation' });
     if (member.role === 'viewer') fail(403, { error: 'Viewers cannot send messages' });
@@ -186,6 +187,26 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
 
       if (existingMessage) {
         return { message: existingMessage };
+      }
+    }
+
+    if (conversation.type === 'group' || conversation.type === 'channel') {
+      const pendingRotationResult = await pool.query(
+        `SELECT operation_id
+         FROM conversation_membership_rotations
+         WHERE conversation_id = $1
+           AND status = 'pending'
+           AND (expires_at IS NULL OR expires_at > NOW())
+         LIMIT 1`,
+        [membershipConversationId],
+      );
+
+      if (pendingRotationResult.rows.length > 0) {
+        fail(409, {
+          success: false,
+          error: 'Securing group membership. Try again in a moment.',
+          code: 'MEMBERSHIP_ROTATION_PENDING',
+        });
       }
     }
 
@@ -303,7 +324,6 @@ export async function sendConversationMessage({ userId, conversationIdentifier, 
     );
     messagePersistedToScylla = true;
 
-    const membershipConversationId = conversation.parent_conversation_id || conversationId;
     const touchedConversationIds = [...new Set(
       [conversationId, storageConversationId, conversation.parent_conversation_id].filter(Boolean)
     )];

@@ -14,6 +14,7 @@
     "start:messages": "node server/entrypoints/message-server.js",
     "start:social": "node server/entrypoints/social-server.js",
     "start:workers": "node server/entrypoints/worker-server.js",
+    "test": "node --test server/routes/conversations/members/*.test.js",
     "lint": "eslint .",
     "migrate": "node scripts/migrate.js",
     "migrate:status": "node scripts/migrate.js --status",
