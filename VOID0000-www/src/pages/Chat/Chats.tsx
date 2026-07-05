@@ -10,7 +10,7 @@ import { useFriends } from '../../Services/hooks/Friends/useFriends';
 import UserProfileModal from '../../components/common/Profile/UserProfileModal';
 import SettingsModal from '../../components/common/Settings/SettingsModal';
 import ConversationList from '../../components/Chat/Conversation/ConversationList';
-import MessageView, { type MessageViewHandle } from '../../components/Chat/MessageView/MessageViewV2';
+import MessageView from '../../components/Chat/MessageView/MessageViewV2';
 import MessageInput from '../../components/Chat/Composer/MessageInput';
 import ForwardMessageModal from '../../components/Chat/Conversation/ForwardMessageModal';
 import GroupCreateModal from '../../components/Chat/Groups/GroupCreateModal';
@@ -182,7 +182,9 @@ const ChatDashboard = () => {
   const [convRefresh, setConvRefresh] = useState(0);
   const [lastSentConversationId, setLastSentConversationId] = useState<string | null>(null);
   const [sendNotice, setSendNotice] = useState<string | null>(null);
-  const messageViewRef = useRef<MessageViewHandle>(null);
+  const ownSendNeedsPresentJumpRef = useRef(false);
+  const ownSendJumpResolversRef = useRef<Array<() => void>>([]);
+  const [ownSendJumpRequest, setOwnSendJumpRequest] = useState(0);
   const [showConvSettings, setShowConvSettings] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [mlsRecoveryKey, setMlsRecoveryKey] = useState('');
@@ -218,6 +220,26 @@ const ChatDashboard = () => {
 
   const showSendNotice = useCallback((message: string | null) => {
     setSendNotice(message);
+  }, []);
+  const handleOwnSendHistoryModeChange = useCallback((shouldJumpToPresent: boolean) => {
+    ownSendNeedsPresentJumpRef.current = shouldJumpToPresent;
+  }, []);
+  const requestOwnSendJumpToPresent = useCallback(() => (
+    new Promise<void>((resolve) => {
+      ownSendJumpResolversRef.current.push(resolve);
+      setOwnSendJumpRequest((request) => request + 1);
+    })
+  ), []);
+  const handleOwnSendJumpSettled = useCallback(() => {
+    const resolvers = ownSendJumpResolversRef.current;
+    ownSendJumpResolversRef.current = [];
+    resolvers.forEach((resolve) => resolve());
+  }, []);
+
+  useEffect(() => () => {
+    const resolvers = ownSendJumpResolversRef.current;
+    ownSendJumpResolversRef.current = [];
+    resolvers.forEach((resolve) => resolve());
   }, []);
 
   useEffect(() => {
@@ -896,9 +918,14 @@ const ChatDashboard = () => {
                 onOpenSettings={() => setShowConvSettings(true)}
               />
 
-              <div className="relative flex min-h-0 flex-1">
+              <>
+                {securityBannerMessage && (
+                  <ConversationSecurityBanner
+                    message={securityBannerMessage}
+                    securityState={conversationSecurityState}
+                  />
+                )}
                 <MessageView
-                  ref={messageViewRef}
                   key={activeConversation.id}
                   conversation={activeConversation}
                   encryptionKey={encryptionKey}
@@ -916,17 +943,11 @@ const ChatDashboard = () => {
                   gateway={gateway}
                   messageUpdate={messageUpdate}
                   messageDelete={messageDelete}
+                  ownSendJumpRequest={ownSendJumpRequest}
+                  onOwnSendHistoryModeChange={handleOwnSendHistoryModeChange}
+                  onOwnSendJumpSettled={handleOwnSendJumpSettled}
                 />
-                {securityBannerMessage && (
-                  <div className="pointer-events-none absolute inset-x-0 top-0 z-20">
-                    <ConversationSecurityBanner
-                      message={securityBannerMessage}
-                      securityState={conversationSecurityState}
-                    />
-                  </div>
-                )}
-              </div>
-              <MessageInput
+                <MessageInput
                   currentUserId={user?.id}
                   conversation={activeConversation}
                   encryptionKey={encryptionKey}
@@ -937,7 +958,8 @@ const ChatDashboard = () => {
                     handleMessageSent(msg);
                     if (activeConversation?.id) setLastSentConversationId(activeConversation.id);
                   }}
-                  prepareOwnSend={() => messageViewRef.current?.prepareOwnSend() ?? false}
+                  shouldJumpToPresentAfterOwnSend={() => ownSendNeedsPresentJumpRef.current}
+                  onOwnMessageSentFromHistory={requestOwnSendJumpToPresent}
                   onSendError={showSendNotice}
                   editingMessage={editingMessage}
                   onCancelEdit={() => setEditingMessage(null)}
@@ -945,7 +967,8 @@ const ChatDashboard = () => {
                   onCancelReply={() => setReplyTo(null)}
                   onEditComplete={handleEditComplete}
                   members={Object.values(messageDisplayMembers)}
-              />
+                />
+              </>
             </div>
           </div>
         ) : (

@@ -28,7 +28,8 @@ interface MessageInputProps {
   keyVersion: number;
   conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
-  prepareOwnSend?: () => boolean;
+  shouldJumpToPresentAfterOwnSend?: () => boolean;
+  onOwnMessageSentFromHistory?: (message: Message) => Promise<void> | void;
   onSendError?: (message: string | null) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;

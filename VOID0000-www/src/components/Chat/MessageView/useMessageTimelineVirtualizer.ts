@@ -182,11 +182,6 @@ export const useMessageTimelineVirtualizer = ({
         scrollSignal.at <= consumedScrollSignalAtRef.current[preferredDirection] ||
         now - scrollSignal.at > SCROLL_DIRECTION_SIGNAL_TTL_MS
       ) {
-        // Older history is user-driven. Layout changes can intersect the top
-        // sentinel, but they must not manufacture upward scroll intent.
-        if (preferredDirection === 'older') {
-          return false;
-        }
         scrollSignal = {
           direction: preferredDirection,
           at: now,
