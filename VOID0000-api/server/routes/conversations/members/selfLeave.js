@@ -8,6 +8,7 @@ import {
 import {
   insertMembershipFinalizeArtifacts,
   parseMembershipFinalizeArtifacts,
+  resolveMembershipRepairWelcomeUserIds,
 } from '../mls/finalizeArtifacts.js';
 import {
   getMembershipOperationId,
@@ -261,10 +262,24 @@ export function registerMemberSelfLeaveRoutes(router) {
       const survivorRolesById = Object.fromEntries(
         survivorResult.rows.map((row) => [row.user_id, row.role]),
       );
+      const rawArtifacts = req.body?.mls_artifacts ?? req.body?.mlsArtifacts;
+      const welcomeResolution = resolveMembershipRepairWelcomeUserIds(
+        rawArtifacts,
+        survivorMemberIds,
+      );
+      if (welcomeResolution.error) {
+        await client.query('ROLLBACK');
+        return res.status(422).json({
+          success: false,
+          error: welcomeResolution.error,
+          code: welcomeResolution.code,
+        });
+      }
+
       const parsedArtifacts = parseMembershipFinalizeArtifacts(
-        req.body?.mls_artifacts ?? req.body?.mlsArtifacts,
+        rawArtifacts,
         {
-          expectedWelcomeUserIds: [],
+          expectedWelcomeUserIds: welcomeResolution.welcomeUserIds,
           pendingKeyVersion: operation.reservedKeyVersion,
           requireCommit: survivorMemberIds.length > 1,
         },

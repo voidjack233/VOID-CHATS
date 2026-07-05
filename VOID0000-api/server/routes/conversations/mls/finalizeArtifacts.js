@@ -21,6 +21,20 @@ function artifactReferenceConflict() {
   });
 }
 
+export function resolveMembershipRepairWelcomeUserIds(rawArtifacts, allowedUserIds) {
+  const allowedUsers = new Set(allowedUserIds.map((value) => String(value)));
+  const rawWelcomes = Array.isArray(rawArtifacts?.welcomes) ? rawArtifacts.welcomes : [];
+  const welcomeUserIds = rawWelcomes.map((welcome) => (
+    String(welcome?.user_id ?? welcome?.userId ?? '').trim()
+  ));
+
+  if (welcomeUserIds.some((userId) => !userId || !allowedUsers.has(userId))) {
+    return invalidArtifacts('Self-leave repair Welcomes may only target active remaining members');
+  }
+
+  return { welcomeUserIds };
+}
+
 function parseOptionalKeyVersion(value, pendingKeyVersion) {
   if (value == null) return true;
   return parsePositiveInt(value, -1) === pendingKeyVersion;

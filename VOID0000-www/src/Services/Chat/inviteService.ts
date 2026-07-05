@@ -3,6 +3,7 @@ import { keyManager } from '../Crypto/keyManager';
 import type { MlsMembershipFinalizeArtifacts } from '../Crypto/mls/mlsTypes';
 import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtocolService';
 import { distributeGroupSenderKeyWithProtocol } from './chatCryptoService';
+import { requestSelfLeaveRecoveryScan } from './selfLeaveRecoveryEvents';
 import type {
   Conversation,
   ConversationInviteLink,
@@ -13,6 +14,7 @@ import {
   CHAT_API_PREFIX,
   createApiError,
   ensureKeyRotationEnabled,
+  fetchActiveConversationMemberIds,
   getConversationKeyId,
   getErrorMessage,
   isRollbackableMlsAddFailure,
@@ -98,7 +100,7 @@ function hasExpectedJoinWelcome(
 export function approveConversationJoinRequest(
   conversation: Conversation,
   currentUserId: string,
-  currentMemberIds: string[],
+  _currentMemberIds: string[],
   requestId: number,
   requesterUserId: string,
 ): Promise<{ approved_user_id: string; key_version: number }> {
@@ -106,7 +108,8 @@ export function approveConversationJoinRequest(
   return withMembershipLock(keyConversationId, async () => {
     ensureKeyRotationEnabled();
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
-    const finalMemberIds = [...new Set([...currentMemberIds, requesterUserId, currentUserId])];
+    const activeMemberIds = await fetchActiveConversationMemberIds(keyConversationId);
+    const finalMemberIds = [...new Set([...activeMemberIds, requesterUserId, currentUserId])];
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
     if (normalizeKeyVersion(freshConversation.current_key_version, 1) > 1) {
       await chatCryptoProtocolService.syncInbox(currentUserId, true, { forceArchiveSync: true }).catch((error) => {
@@ -132,7 +135,12 @@ export function approveConversationJoinRequest(
       }),
     });
     const data = await response.json();
-    if (!data.success) throw createApiError(data);
+    if (!data.success) {
+      if (data?.code === 'MEMBERSHIP_ROTATION_PENDING') {
+        requestSelfLeaveRecoveryScan('invite_approval_membership_pending');
+      }
+      throw createApiError(data);
+    }
     const pendingKeyVersion = data.pending_key_version || nextKeyVersion;
     const operationId = typeof data.operation_id === 'string' ? data.operation_id : '';
     if (!operationId) {

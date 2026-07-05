@@ -13,6 +13,7 @@ import { chatCryptoProtocolService } from '../Crypto/protocols/chatCryptoProtoco
 import { clearAttachmentCaches } from '../Crypto/attachmentEncryption';
 import { debugLog } from '../utils/debugLog';
 import { mlsStorageService } from '../Crypto/mls/mlsStorageService';
+import { useSelfLeaveRecovery } from '../hooks/Chats/useSelfLeaveRecovery';
 import {
   scheduleAccountMlsMaintenance,
   uploadRecoverySecureBackups as uploadRecoverySecureBackupsNow,
@@ -21,9 +22,6 @@ import {
   uploadPublicKey,
   backupKeyToServer,
   fetchKeyBackup,
-  finalizeSelfLeaveRotation,
-  getPendingSelfLeaveRotations,
-  type PendingSelfLeaveRotation,
   type KeyBackupRecord,
 } from '../Chat/chatService';
 import {
@@ -88,6 +86,16 @@ export function UserProvider({ children }: { children: ReactNode }) {
   const liveConversationKeyVersionsRef = useRef<Record<string, number>>({});
   const pendingLiveInboxSyncTimerRef = useRef<number | null>(null);
   const authRetryingRef = useRef(false);
+
+  useSelfLeaveRecovery({
+    enabled: Boolean(
+      user?.id &&
+      keyInitResolved &&
+      keyStatus === 'SECURE' &&
+      !mlsRecoveryGate.active
+    ),
+    userId: user?.id,
+  });
   const verifySessionRef = useRef<() => Promise<'authenticated' | 'invalid' | 'unavailable'>>(
     async () => 'unavailable',
   );
@@ -1000,138 +1008,6 @@ export function UserProvider({ children }: { children: ReactNode }) {
       gateway.off('CONVERSATION_UPDATE', onConversationUpdate);
     };
   }, [keyInitResolved, keyStatus, keyStatusLoading, mlsRecoveryGate.active, user?.id]);
-
-  useEffect(() => {
-    if (
-      !user?.id ||
-      !keyInitResolved ||
-      keyStatus !== 'SECURE' ||
-      mlsRecoveryGate.active
-    ) {
-      return undefined;
-    }
-
-    let cancelled = false;
-    const currentUserId = user.id;
-    const retryTimers = new Map<string, number>();
-
-    const normalizeRotation = (value: unknown): PendingSelfLeaveRotation | null => {
-      const payload = value && typeof value === 'object'
-        ? value as Record<string, unknown>
-        : {};
-      const operationId = typeof payload.operation_id === 'string' ? payload.operation_id : '';
-      const conversationId = typeof payload.conversation_id === 'string' ? payload.conversation_id : '';
-      const targetUserId = typeof payload.target_user_id === 'string' ? payload.target_user_id : '';
-      const pendingKeyVersion = Number(payload.pending_key_version);
-      const currentKeyVersion = Number(payload.current_key_version);
-
-      if (
-        !operationId ||
-        !conversationId ||
-        !targetUserId ||
-        !Number.isInteger(pendingKeyVersion) ||
-        pendingKeyVersion <= 0
-      ) {
-        return null;
-      }
-
-      return {
-        operation_id: operationId,
-        conversation_id: conversationId,
-        conversation_public_id:
-          typeof payload.conversation_public_id === 'string'
-            ? payload.conversation_public_id
-            : null,
-        target_user_id: targetUserId,
-        target_label: typeof payload.target_label === 'string' ? payload.target_label : null,
-        pending_key_version: pendingKeyVersion,
-        current_key_version:
-          Number.isInteger(currentKeyVersion) && currentKeyVersion > 0
-            ? currentKeyVersion
-            : Math.max(1, pendingKeyVersion - 1),
-      };
-    };
-
-    const processRotation = (value: unknown) => {
-      const rotation = normalizeRotation(value);
-      if (!rotation || rotation.target_user_id === currentUserId) {
-        return;
-      }
-
-      const existingTimer = retryTimers.get(rotation.operation_id);
-      if (existingTimer) {
-        window.clearTimeout(existingTimer);
-        retryTimers.delete(rotation.operation_id);
-      }
-
-      void finalizeSelfLeaveRotation(rotation, currentUserId).catch((error: unknown) => {
-        const errorPayload = error && typeof error === 'object'
-          ? error as Record<string, unknown>
-          : {};
-        const terminalCodes = new Set([
-          'MEMBERSHIP_OPERATION_NOT_FOUND',
-          'SELF_LEAVE_FINALIZER_NOT_MEMBER',
-          'SELF_LEAVE_ROTATION_NOT_PENDING',
-          'SELF_LEAVE_ROTATION_STALE',
-        ]);
-        const errorCode = typeof errorPayload.code === 'string' ? errorPayload.code : '';
-        if (!cancelled && !terminalCodes.has(errorCode)) {
-          const retryAfterSeconds = errorCode === 'SELF_LEAVE_CLAIM_HELD'
-            ? Math.max(1, Number(errorPayload.retry_after_seconds) || 2)
-            : 65;
-          const timer = window.setTimeout(() => {
-            retryTimers.delete(rotation.operation_id);
-            if (!cancelled) processRotation(rotation);
-          }, (retryAfterSeconds * 1000) + 250);
-          retryTimers.set(rotation.operation_id, timer);
-        }
-
-        if (errorCode !== 'SELF_LEAVE_CLAIM_HELD') {
-          console.warn('[SELF_LEAVE] survivor finalization deferred', {
-            conversation_id: rotation.conversation_id,
-            operation_id: rotation.operation_id,
-            target_user_id: rotation.target_user_id,
-            error: error instanceof Error ? error.message : String(error || ''),
-          });
-        }
-      });
-    };
-
-    const recoverPendingRotations = async () => {
-      try {
-        const rotations = await getPendingSelfLeaveRotations();
-        if (cancelled) return;
-        rotations.forEach(processRotation);
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('[SELF_LEAVE] pending rotation recovery failed', {
-            error: error instanceof Error ? error.message : String(error || ''),
-          });
-        }
-      }
-    };
-
-    const handleRotationRequired = (value: unknown) => {
-      processRotation(value);
-    };
-    const handleGatewayReady = () => {
-      void recoverPendingRotations();
-    };
-
-    gateway.on('SELF_LEAVE_ROTATION_REQUIRED', handleRotationRequired);
-    gateway.on('READY', handleGatewayReady);
-    gateway.on('RESUMED', handleGatewayReady);
-    void recoverPendingRotations();
-
-    return () => {
-      cancelled = true;
-      retryTimers.forEach((timer) => window.clearTimeout(timer));
-      retryTimers.clear();
-      gateway.off('SELF_LEAVE_ROTATION_REQUIRED', handleRotationRequired);
-      gateway.off('READY', handleGatewayReady);
-      gateway.off('RESUMED', handleGatewayReady);
-    };
-  }, [keyInitResolved, keyStatus, mlsRecoveryGate.active, user?.id]);
 
   useEffect(() => {
     if (!user?.id) {

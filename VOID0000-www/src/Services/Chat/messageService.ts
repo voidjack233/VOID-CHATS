@@ -38,6 +38,7 @@ import {
   normalizeKeyVersion,
 } from './chatUtils';
 import { bootstrapDmKey } from './conversationService';
+import { requestSelfLeaveRecoveryScan } from './selfLeaveRecoveryEvents';
 
 export { parseAttachment, parseAttachments } from './messageAttachments';
 
@@ -141,6 +142,9 @@ export async function sendMessage(
     };
   });
   if (!response.ok || !data.success) {
+    if (data?.code === 'MEMBERSHIP_ROTATION_PENDING') {
+      requestSelfLeaveRecoveryScan('message_send_membership_pending');
+    }
     throw createApiError(data, {
       status: response.status,
       statusCode: response.status,
@@ -239,6 +243,9 @@ export async function sendImageOnlyMessage(
     };
   });
   if (!response.ok || !data.success) {
+    if (data?.code === 'MEMBERSHIP_ROTATION_PENDING') {
+      requestSelfLeaveRecoveryScan('message_send_membership_pending');
+    }
     throw createApiError(data, {
       status: response.status,
       statusCode: response.status,

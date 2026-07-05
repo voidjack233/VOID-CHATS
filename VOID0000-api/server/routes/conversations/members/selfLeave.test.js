@@ -2,7 +2,10 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { pool } from '../../../db.js';
 import valkey from '../../../valkey.js';
-import { parseMembershipFinalizeArtifacts } from '../mls/finalizeArtifacts.js';
+import {
+  parseMembershipFinalizeArtifacts,
+  resolveMembershipRepairWelcomeUserIds,
+} from '../mls/finalizeArtifacts.js';
 import {
   lockMembershipRotation,
   reserveMembershipRotation,
@@ -109,7 +112,7 @@ test('self_leave lock permits a different active finalizer only when explicitly 
   assert.equal(result.operation.actorUserId, LEAVER_ID);
 });
 
-test('self_leave artifacts accept no welcomes and reject any supplied welcome', () => {
+test('self_leave artifacts accept no welcomes in the normal removal path', () => {
   const baseArtifacts = {
     snapshot: {
       groupId: 'group-id',
@@ -128,20 +131,51 @@ test('self_leave artifacts accept no welcomes and reject any supplied welcome', 
   });
   assert.ok(valid.artifacts);
   assert.deepEqual(valid.artifacts.welcomes, []);
+});
 
-  const invalid = parseMembershipFinalizeArtifacts({
-    ...baseArtifacts,
+test('self_leave artifacts allow repair welcomes only for active survivors', () => {
+  const repairArtifacts = {
+    snapshot: {
+      groupId: 'group-id',
+      stateBlob: 'state-blob',
+      epoch: 5,
+      keyVersion: 5,
+    },
+    welcomes: [{
+      userId: SURVIVOR_ID,
+      welcomeRef: OPERATION_ID,
+      payload: 'welcome',
+    }],
+    commit: {
+      commitRef: '55555555-5555-4555-8555-555555555555',
+      payload: 'commit',
+      epoch: 4,
+    },
+  };
+  const welcomeResolution = resolveMembershipRepairWelcomeUserIds(
+    repairArtifacts,
+    [SURVIVOR_ID],
+  );
+  assert.deepEqual(welcomeResolution.welcomeUserIds, [SURVIVOR_ID]);
+
+  const valid = parseMembershipFinalizeArtifacts(repairArtifacts, {
+    expectedWelcomeUserIds: welcomeResolution.welcomeUserIds,
+    pendingKeyVersion: 5,
+    requireCommit: true,
+  });
+  assert.ok(valid.artifacts);
+
+  const invalidResolution = resolveMembershipRepairWelcomeUserIds({
+    snapshot: repairArtifacts.snapshot,
     welcomes: [{
       userId: LEAVER_ID,
       welcomeRef: OPERATION_ID,
       payload: 'welcome',
     }],
-  }, {
-    expectedWelcomeUserIds: [],
-    pendingKeyVersion: 5,
-    requireCommit: false,
-  });
-  assert.equal(invalid.code, 'MLS_ARTIFACTS_INVALID');
+    commit: repairArtifacts.commit,
+  }, [SURVIVOR_ID]);
+  assert.equal(invalidResolution.code, 'MLS_ARTIFACTS_INVALID');
+  assert.match(invalidResolution.error, /active remaining members/i);
 });
 
 test('multi-survivor self_leave artifacts require a commit', () => {

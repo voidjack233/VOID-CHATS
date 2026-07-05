@@ -15,6 +15,7 @@ import {
   CHAT_API_PREFIX,
   createApiError,
   ensureKeyRotationEnabled,
+  fetchActiveConversationMemberIds,
   getConversationKeyId,
   getErrorMessage,
   isRollbackableMlsAddFailure,
@@ -293,7 +294,7 @@ export async function ensureGroupKeyDistribution(
 export function rotateAddMembers(
   conversation: Conversation,
   currentUserId: string,
-  currentMemberIds: string[],
+  _currentMemberIds: string[],
   newMemberIds: string[],
 ): Promise<{ added: string[]; key_version: number }> {
   const keyConversationId = getConversationKeyId(conversation);
@@ -306,7 +307,8 @@ export function rotateAddMembers(
     }
 
     const freshConversation = await refreshConversationKeyVersion(keyConversationId, conversation);
-    const finalMemberIds = [...new Set([...currentMemberIds, ...additions, currentUserId])];
+    const activeMemberIds = await fetchActiveConversationMemberIds(keyConversationId);
+    const finalMemberIds = [...new Set([...activeMemberIds, ...additions, currentUserId])];
     const nextKeyVersion = normalizeKeyVersion(freshConversation.current_key_version, 1) + 1;
     const localMemberIds = await chatCryptoProtocolService.getLocalGroupMemberUserIds(keyConversationId);
     if (localMemberIds?.some((memberId) => additions.includes(memberId))) {
@@ -398,17 +400,19 @@ export function rotateAddMembers(
 export function rotateRemoveMember(
   conversation: Conversation,
   currentUserId: string,
-  remainingMemberIds: string[],
+  _remainingMemberIds: string[],
   targetUserId: string,
 ): Promise<{ key_version: number }> {
   const keyConversationId = getConversationKeyId(conversation);
   return withMembershipLock(keyConversationId, async () => {
     ensureKeyRotationEnabled();
-    const survivors = [...new Set(remainingMemberIds.filter(Boolean))];
 
     if (!targetUserId) {
       throw new Error('targetUserId required');
     }
+
+    const activeMemberIds = await fetchActiveConversationMemberIds(keyConversationId);
+    const survivors = activeMemberIds.filter((memberId) => memberId !== targetUserId);
 
     if (survivors.length === 0) {
       throw new Error('At least one member must remain in the group');
@@ -662,7 +666,10 @@ export function finalizeSelfLeaveRotation(
       throw new Error('Secure self-leave artifacts could not be prepared');
     }
     if (mlsArtifacts.welcomes.length > 0) {
-      throw new Error('Secure self-leave must not create Welcome payloads');
+      debugLog('[SELF_LEAVE] repairing MLS roster drift for active survivors', {
+        conversation_id: rotation.conversation_id,
+        welcome_user_ids: mlsArtifacts.welcomes.map((welcome) => welcome.userId),
+      });
     }
 
     const finalizeResponse = await fetchWithAuth(

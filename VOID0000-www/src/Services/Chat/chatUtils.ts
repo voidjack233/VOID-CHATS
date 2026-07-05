@@ -146,6 +146,22 @@ export function getConversationKeyId(conversation: Conversation): string {
   return conversation.parent_conversation_id || conversation.id;
 }
 
+export async function fetchActiveConversationMemberIds(conversationId: string): Promise<string[]> {
+  const response = await fetchWithAuth(`${CHAT_API_PREFIX}/${conversationId}`);
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw createApiError(data, { status: response.status });
+  }
+
+  const members = Array.isArray(data.conversation?.members) ? data.conversation.members : [];
+  const memberIds = members.flatMap((member: unknown) => {
+    if (!member || typeof member !== 'object') return [];
+    const userId = (member as { user_id?: unknown }).user_id;
+    return typeof userId === 'string' && userId.length > 0 ? [userId] : [];
+  });
+  return [...new Set<string>(memberIds)];
+}
+
 export async function refreshConversationKeyVersion(
   keyConversationId: string,
   fallback: Conversation,
