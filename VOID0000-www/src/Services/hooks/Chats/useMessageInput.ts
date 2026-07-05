@@ -47,8 +47,7 @@ interface UseMessageInputProps {
   keyVersion: number;
   conversationSecurityState?: ConversationSecurityState;
   onMessageSent: (message: Message) => void;
-  shouldJumpToPresentAfterOwnSend?: () => boolean;
-  onOwnMessageSentFromHistory?: (message: Message) => Promise<void> | void;
+  prepareOwnSend?: () => boolean;
   onSendError?: (message: string | null) => void;
   onEncryptionKeyResolved?: (key: CryptoKey, version: number) => void;
   editingMessage?: Message | null;
@@ -215,8 +214,7 @@ export const useMessageInput = ({
   keyVersion,
   conversationSecurityState,
   onMessageSent,
-  shouldJumpToPresentAfterOwnSend,
-  onOwnMessageSentFromHistory,
+  prepareOwnSend,
   onSendError,
   onEncryptionKeyResolved,
   editingMessage,
@@ -859,16 +857,12 @@ export const useMessageInput = ({
           local_client_id: localClientId as string,
         }
       : null;
-    const shouldJumpAfterOwnSend = Boolean(
+    const shouldFollowOwnSend = Boolean(
       shouldCreatePendingMessage &&
       !editingMessage &&
-      shouldJumpToPresentAfterOwnSend?.()
+      prepareOwnSend?.()
     );
     const applyOwnSendResult = async (message: Message) => {
-      if (shouldJumpAfterOwnSend && onOwnMessageSentFromHistory) {
-        await onOwnMessageSentFromHistory(message);
-      }
-
       onMessageSent(message);
     };
 
@@ -879,8 +873,8 @@ export const useMessageInput = ({
     setDismissedLinkPreviewUrl(null);
     setSending(true);
     onSendError?.(null);
-    const didRenderOptimisticMessage = Boolean(optimisticMessage && !shouldJumpAfterOwnSend);
-    if (optimisticMessage && !shouldJumpAfterOwnSend) {
+    const didRenderOptimisticMessage = Boolean(optimisticMessage && shouldFollowOwnSend);
+    if (optimisticMessage && shouldFollowOwnSend) {
       onMessageSent(optimisticMessage);
     }
 

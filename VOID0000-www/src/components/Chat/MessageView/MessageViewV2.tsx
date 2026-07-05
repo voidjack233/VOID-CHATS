@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMessageList } from '../../../Services/hooks/Chats/useMessageList';
 import { useMessageDisplay } from '../../../Services/hooks/Chats/useMessageDisplay';
 import { useReactions } from '../../../Services/hooks/Chats/useReactions';
@@ -42,6 +42,7 @@ import { useMessageHistoryViewportRestoration } from './useMessageHistoryViewpor
 import { useMobileKeyboardOpen } from './useMobileKeyboardOpen';
 import { useMessageRowMeasurements } from './useMessageRowMeasurements';
 import { useMessageViewportResizeObserver } from './useMessageViewportResizeObserver';
+import { isNearMessageBottom } from './messageScrollPosition';
 import {
   getMessageAnchorsAroundViewport,
   getMessageElementById,
@@ -73,9 +74,10 @@ interface MessageViewProps {
   gateway?: any;
   messageUpdate?: MessageUpdate | null;
   messageDelete?: MessageDelete | null;
-  ownSendJumpRequest?: number;
-  onOwnSendHistoryModeChange?: (shouldJumpToPresent: boolean) => void;
-  onOwnSendJumpSettled?: () => void;
+}
+
+export interface MessageViewHandle {
+  prepareOwnSend: () => boolean;
 }
 
 type MessageListItem =
@@ -105,7 +107,7 @@ const NEWER_HISTORY_PREFETCH_DISTANCE: Record<Density, number> = {
   comfortable: 640,
 };
 
-const MessageViewV2 = memo(function MessageViewV2({
+const MessageViewV2 = memo(forwardRef<MessageViewHandle, MessageViewProps>(function MessageViewV2({
   conversation,
   encryptionKey,
   keyVersion,
@@ -122,10 +124,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   gateway,
   messageUpdate,
   messageDelete,
-  ownSendJumpRequest = 0,
-  onOwnSendHistoryModeChange,
-  onOwnSendJumpSettled,
-}: MessageViewProps) {
+}: MessageViewProps, ref) {
   const { user } = useUser();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const [scrollerElement, setScrollerElement] = useState<HTMLDivElement | null>(null);
@@ -136,7 +135,6 @@ const MessageViewV2 = memo(function MessageViewV2({
   const initialLatestRestoreDoneRef = useRef(false);
   const previousListCountRef = useRef(0);
   const lastFollowedMessageEventSequenceRef = useRef(0);
-  const lastOwnSendJumpRequestRef = useRef(ownSendJumpRequest);
   const pendingOlderLoadScrollSnapshotRef = useRef<HistoryLoadScrollSnapshot | null>(null);
   const pendingNewerLoadScrollSnapshotRef = useRef<NewerHistoryLoadScrollSnapshot | null>(null);
   const historyScrollTransactionActiveRef = useRef(false);
@@ -151,10 +149,9 @@ const MessageViewV2 = memo(function MessageViewV2({
   const loadingOlderRequestInFlightRef = useRef(false);
   const loadingNewerRequestInFlightRef = useRef(false);
   const autofillOlderRequestInFlightRef = useRef(false);
+  const suppressOlderAutofillUntilRef = useRef(0);
   const messageHeightCacheRef = useRef<Map<string, number>>(new Map());
   const historyLoadPausedUntilRef = useRef(0);
-  const ownSendJumpRequestRef = useRef(ownSendJumpRequest);
-  const onOwnSendHistoryModeChangeRef = useRef(onOwnSendHistoryModeChange);
   const messageHighlightTimeoutRef = useRef<number | null>(null);
   const messageJumpNoticeTimeoutRef = useRef<number | null>(null);
   const messageJumpFallbackTimeoutRef = useRef<number | null>(null);
@@ -171,6 +168,18 @@ const MessageViewV2 = memo(function MessageViewV2({
     scrollerRef.current = element;
     setScrollerElement(element);
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    prepareOwnSend: () => {
+      const scroller = scrollerRef.current;
+      const nearBottom = Boolean(scroller && isNearMessageBottom(scroller));
+      if (nearBottom) {
+        forceFollowOutputRef.current = true;
+        suppressOlderAutofillUntilRef.current = Date.now() + 1_000;
+      }
+      return nearBottom;
+    },
+  }), []);
 
 
   const { density, messageGroupSpacing, chatFontScale } = useTheme();
@@ -249,8 +258,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       onHistoryRateLimited: handleHistoryRateLimited,
     },
   );
-  ownSendJumpRequestRef.current = ownSendJumpRequest;
-  onOwnSendHistoryModeChangeRef.current = onOwnSendHistoryModeChange;
   hasOlderRef.current = hasOlder;
   hasNewerRef.current = hasNewer;
   loadingOlderStateRef.current = loadingOlder;
@@ -456,8 +463,7 @@ const MessageViewV2 = memo(function MessageViewV2({
     autofillOlderRequestInFlightRef.current = false;
     messageHeightCacheRef.current.clear();
     historyLoadPausedUntilRef.current = 0;
-    lastOwnSendJumpRequestRef.current = ownSendJumpRequestRef.current;
-    onOwnSendHistoryModeChangeRef.current?.(false);
+    suppressOlderAutofillUntilRef.current = 0;
     if (messageHighlightTimeoutRef.current) {
       window.clearTimeout(messageHighlightTimeoutRef.current);
       messageHighlightTimeoutRef.current = null;
@@ -522,8 +528,11 @@ const MessageViewV2 = memo(function MessageViewV2({
       message.sender_id === user?.id
     ));
 
-    if (hasOwnMessageEvent) {
+    if (hasOwnMessageEvent && scrollerRef.current && isNearMessageBottom(scrollerRef.current)) {
       forceFollowOutputRef.current = true;
+    }
+    if (hasOwnMessageEvent) {
+      suppressOlderAutofillUntilRef.current = Date.now() + 1_000;
     }
   }, [conversation.id, messageEvents, user?.id]);
 
@@ -627,7 +636,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     !encryptionKey &&
     !encryptionError &&
     conversationSecurityState?.status !== 'blocked';
-
   useConversationPreviewCache({
     conversation,
     messages,
@@ -653,7 +661,7 @@ const MessageViewV2 = memo(function MessageViewV2({
   const restoreViewportAnchorLock = useCallback(() => {
     const scroller = scrollerRef.current;
     const lock = viewportAnchorLockRef.current;
-    if (!scroller || !lock || atBottomRef.current) {
+    if (!scroller || !lock || atBottomRef.current || forceFollowOutputRef.current) {
       return false;
     }
 
@@ -787,7 +795,6 @@ const MessageViewV2 = memo(function MessageViewV2({
     setNewerRangeError,
     setShowJumpToPresent,
     setIsAtPresent,
-    onOwnSendHistoryModeChange,
   });
 
   const scrollToMessageById = useCallback((
@@ -965,9 +972,8 @@ const MessageViewV2 = memo(function MessageViewV2({
       return false;
     }
 
-    scrollToBottom('auto');
+    scrollToBottom(forceFollowOutputRef.current ? 'smooth' : 'auto');
     syncScrollState();
-    forceFollowOutputRef.current = false;
     return true;
   }, [initialHydrationSettled, loadingNewer, loadingOlder, scrollToBottom, syncScrollState]);
 
@@ -1021,17 +1027,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       });
     });
   }, [jumpToPresent, scrollToBottom, syncScrollState]);
-
-  useEffect(() => {
-    if (!ownSendJumpRequest || ownSendJumpRequest === lastOwnSendJumpRequestRef.current) {
-      return;
-    }
-
-    lastOwnSendJumpRequestRef.current = ownSendJumpRequest;
-    void jumpToPresentAndScroll().finally(() => {
-      onOwnSendJumpSettled?.();
-    });
-  }, [jumpToPresentAndScroll, onOwnSendJumpSettled, ownSendJumpRequest]);
 
   const handleJumpToPresent = useCallback(async () => {
     await jumpToPresentAndScroll();
@@ -1111,8 +1106,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       (forceFollowOutputRef.current || atBottomRef.current)
     ) {
       requestAnimationFrame(() => {
-        scrollToBottom(forceFollowOutputRef.current ? 'auto' : 'smooth');
-        forceFollowOutputRef.current = false;
+        scrollToBottom('smooth');
         syncScrollState();
       });
     }
@@ -1139,6 +1133,7 @@ const MessageViewV2 = memo(function MessageViewV2({
       loading ||
       loadingOlder ||
       !hasOlder ||
+      Date.now() < suppressOlderAutofillUntilRef.current ||
       autofillOlderRequestInFlightRef.current ||
       scroller.clientHeight <= 0
     ) {
@@ -1315,19 +1310,18 @@ const MessageViewV2 = memo(function MessageViewV2({
         newerSentinelRef={newerSentinelRef}
         density={density}
       >
-        {listItems.length === 0 ? (
+        {listItems.length === 0 && !isSecureChatPreparing ? (
           <EmptyMessageTimelineState
-            isSecureChatPreparing={isSecureChatPreparing}
             showCachedHistoryFallback={showCachedHistoryFallback}
             conversationSecurityState={conversationSecurityState}
           />
-        ) : (
+        ) : listItems.length > 0 ? (
           listItems.map((item) => (
             <Fragment key={item.kind === 'message' ? item.message.message_id : item.id}>
               {renderListItem(item)}
             </Fragment>
           ))
-        )}
+        ) : null}
       </MessageTimelineViewport>
 
       <JumpToPresentButton
@@ -1369,6 +1363,6 @@ const MessageViewV2 = memo(function MessageViewV2({
       />
     </div>
   );
-});
+}));
 
 export default MessageViewV2;

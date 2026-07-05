@@ -50,9 +50,11 @@ const useMessageListRealtime = ({
   initialHydrationSettled,
 }: UseMessageListRealtimeParams) => {
   const lastProcessedMessageEventSequenceRef = useRef(0);
+  const visibleOptimisticMessageIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     lastProcessedMessageEventSequenceRef.current = 0;
+    visibleOptimisticMessageIdsRef.current.clear();
   }, [conversationId]);
 
   useEffect(() => {
@@ -62,6 +64,9 @@ const useMessageListRealtime = ({
       try {
         const queued = await queuedSendStore.getByConversation(conversationId);
         if (ignore || queued.length === 0) return;
+        queued.forEach((record) => {
+          visibleOptimisticMessageIdsRef.current.add(record.local_client_id);
+        });
 
         const queuedMessages: Message[] = queued.map((record) => ({
           conversation_id: record.conversation_id,
@@ -148,6 +153,13 @@ const useMessageListRealtime = ({
         normalizedMessage.local_status === 'queued' ||
         normalizedMessage.local_status === 'failed'
       ) && Boolean(localClientId);
+      const reconcilesVisibleOptimisticMessage = Boolean(
+        localClientId && visibleOptimisticMessageIdsRef.current.has(localClientId),
+      );
+
+      if (isLocalOnlyStatus && localClientId) {
+        visibleOptimisticMessageIdsRef.current.add(localClientId);
+      }
 
       if (!isLocalOnlyStatus) {
         const localMessage: LocalMessage = {
@@ -177,9 +189,8 @@ const useMessageListRealtime = ({
       const shouldApplyImmediately = (
         !initialHydrationSettled ||
         isAtPresent ||
-        normalizedMessage.local_status === 'sending' ||
-        normalizedMessage.local_status === 'queued' ||
-        normalizedMessage.local_status === 'failed'
+        reconcilesVisibleOptimisticMessage ||
+        normalizedMessage.local_status === 'sending'
       );
 
       if (shouldApplyImmediately) {
@@ -188,6 +199,9 @@ const useMessageListRealtime = ({
           currentUserId: userId,
           trimFrom: 'old',
         });
+        if (!isLocalOnlyStatus && localClientId) {
+          visibleOptimisticMessageIdsRef.current.delete(localClientId);
+        }
         return;
       }
 

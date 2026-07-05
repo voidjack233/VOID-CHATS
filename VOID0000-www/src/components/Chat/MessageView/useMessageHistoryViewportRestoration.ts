@@ -55,7 +55,6 @@ interface UseMessageHistoryViewportRestorationOptions {
   setNewerRangeError: (value: boolean) => void;
   setShowJumpToPresent: (value: boolean) => void;
   setIsAtPresent: (value: boolean) => void;
-  onOwnSendHistoryModeChange?: (shouldJumpToPresent: boolean) => void;
 }
 
 export function useMessageHistoryViewportRestoration({
@@ -91,7 +90,6 @@ export function useMessageHistoryViewportRestoration({
   setNewerRangeError,
   setShowJumpToPresent,
   setIsAtPresent,
-  onOwnSendHistoryModeChange,
 }: UseMessageHistoryViewportRestorationOptions) {
   const [historyRestoreRevision, setHistoryRestoreRevision] = useState(0);
 
@@ -293,13 +291,6 @@ export function useMessageHistoryViewportRestoration({
     atBottomRef.current = scrollState.atBottom;
     showJumpToPresentRef.current = scrollState.shouldShowJumpToPresent;
     setShowJumpToPresent(scrollState.shouldShowJumpToPresent);
-    onOwnSendHistoryModeChange?.(
-      !scrollState.atBottom ||
-      scrollState.shouldShowJumpToPresent ||
-      hasNewer ||
-      !scrollState.isAtPresent ||
-      !isAtPresent
-    );
 
     if (scrollState.atBottom) {
       forceFollowOutputRef.current = false;
@@ -319,7 +310,6 @@ export function useMessageHistoryViewportRestoration({
     hasNewer,
     historyScrollTransactionActiveRef,
     isAtPresent,
-    onOwnSendHistoryModeChange,
     pendingNewerLoadScrollSnapshotRef,
     pendingOlderLoadScrollSnapshotRef,
     scrollerRef,
@@ -382,14 +372,16 @@ export function useMessageHistoryViewportRestoration({
       return true;
     }
 
-    if (restoreVisibleMessageAnchor(scroller, snapshot)) {
+    // This path only runs for an explicit older-page transaction. Preserve
+    // the viewport by offsetting the exact height added above the user.
+    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
+    if (Math.abs(scrollHeightDelta) > 0.5) {
+      scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
       syncScrollState();
       return true;
     }
 
-    const scrollHeightDelta = scroller.scrollHeight - snapshot.scrollHeight;
-    if (Math.abs(scrollHeightDelta) > 0.5) {
-      scroller.scrollTop = snapshot.scrollTop + scrollHeightDelta;
+    if (restoreVisibleMessageAnchor(scroller, snapshot)) {
       syncScrollState();
       return true;
     }
