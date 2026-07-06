@@ -17,6 +17,7 @@ router.get('/', async (req, res) => {
   const { conversationId: conversationIdentifier } = req.params;
   const { before, after, limit } = req.query;
   const pageSize = Math.min(parseInt(limit, 10) || 50, 100);
+  const visibleTargetSize = pageSize + 1;
   const fetchChunkSize = Math.min(Math.max(pageSize * 2, 50), 200);
   const maxFetchIterations = 12;
 
@@ -57,7 +58,7 @@ router.get('/', async (req, res) => {
     let exhausted = false;
     let iterations = 0;
 
-    while (collectedVisibleMessages.length < pageSize && !exhausted && iterations < maxFetchIterations) {
+    while (collectedVisibleMessages.length < visibleTargetSize && !exhausted && iterations < maxFetchIterations) {
       iterations += 1;
 
       let query;
@@ -100,7 +101,7 @@ router.get('/', async (req, res) => {
         if (seenMessageIds.has(message.message_id)) continue;
         seenMessageIds.add(message.message_id);
         collectedVisibleMessages.push(message);
-        if (collectedVisibleMessages.length >= pageSize) break;
+        if (collectedVisibleMessages.length >= visibleTargetSize) break;
       }
 
       if (!afterCursor && conversation.type !== 'dm' && visibleChunk.length === 0) {
@@ -122,9 +123,15 @@ router.get('/', async (req, res) => {
       }
     }
 
+    const hasMore = collectedVisibleMessages.length > pageSize || (
+      !exhausted &&
+      iterations >= maxFetchIterations &&
+      collectedVisibleMessages.length > 0
+    );
+    const pageMessages = collectedVisibleMessages.slice(0, pageSize);
     const visibleMessages = after
-      ? [...collectedVisibleMessages].reverse()
-      : collectedVisibleMessages;
+      ? [...pageMessages].reverse()
+      : pageMessages;
 
     const messageIds = visibleMessages.map((message) => message.message_id);
     const reactions = await batchFetchReactions(storageConversationId, messageIds, userId);
@@ -137,7 +144,7 @@ router.get('/', async (req, res) => {
     res.json({
       success: true,
       messages: messagesWithReactions,
-      has_more: !exhausted,
+      has_more: hasMore,
     });
   } catch (err) {
     console.error('Message history error:', err);

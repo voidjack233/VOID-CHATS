@@ -27,8 +27,6 @@ export const saveConversationScrollPosition = (conversationId: string, messageId
 
 export const resolveInitialHasOlder = ({
   localHasMore,
-  localCount,
-  requestedLimit,
   sessionSnapshot,
   syncHasMore = false,
 }: {
@@ -41,7 +39,6 @@ export const resolveInitialHasOlder = ({
   return (
     localHasMore ||
     syncHasMore ||
-    localCount >= requestedLimit ||
     sessionSnapshot?.hasOlder === true
   );
 };

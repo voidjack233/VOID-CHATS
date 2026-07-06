@@ -134,7 +134,7 @@ class MessageSync {
         encryptionKey,
         { limit: syncLimit, ...decryptContext }
       );
-      const hasMore = has_more || serverMsgs.length >= syncLimit;
+      const hasMore = has_more;
 
       // FIX: Always update the sync cursor so the 60-second timer resets, 
       // even if the server says there are zero new messages.

@@ -414,7 +414,7 @@ const useMessageListPagination = ({
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       result = {
         messages: localMessages,
-        has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+        has_more: serverResult.has_more,
       };
     } catch (error) {
       if (!isOfflineHistoryFallbackError(error)) {
@@ -601,7 +601,7 @@ const useMessageListPagination = ({
           // contain a far-future live message, so merging sparse local rows here
           // can create a fake gap like "Thursday -> Today".
           messages: localMessages,
-          has_more: serverResult.has_more || serverResult.messages.length >= FETCH_SIZE,
+          has_more: serverResult.has_more,
         };
       } catch (error) {
         if (!isOfflineHistoryFallbackError(error)) {
@@ -744,7 +744,7 @@ const useMessageListPagination = ({
       const localMessages = await persistFetchedMessagesSafely(serverResult.messages);
       const visibleServerMessages = filterMessagesByHistoryFence(localMessages, historyAccessFence);
       const newerUI = sortMessages(visibleServerMessages.map(toUIMessage));
-      const hasNewerAfterMerge = serverResult.has_more || serverResult.messages.length >= FETCH_SIZE;
+      const hasNewerAfterMerge = serverResult.has_more;
       const isAtPresentAfterMerge = !hasNewerAfterMerge;
 
       if (newerUI.length === 0) {
@@ -865,7 +865,7 @@ const useMessageListPagination = ({
         groupBreakBeforeIds: new Set(),
         loadingOlder: false,
         loadingNewer: false,
-        hasOlder: serverResult.has_more || serverResult.messages.length >= presentLimit,
+        hasOlder: serverResult.has_more,
         hasNewer: false,
         isAtPresent: true,
       });

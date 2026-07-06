@@ -68,17 +68,23 @@ export const useMessageTimelineVirtualizer = ({
     older: 0,
     newer: 0,
   });
-  const retryHistoryLoadRef = useRef<() => void>(() => {});
+  const retryHistoryLoadRef = useRef<(preferredDirection?: HistoryLoadDirection) => void>(() => {});
   const historyLoadRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyLoadRetryDirectionRef = useRef<HistoryLoadDirection | null>(null);
 
-  const scheduleHistoryLoadRetry = useCallback((delayMs: number) => {
+  const scheduleHistoryLoadRetry = useCallback((delayMs: number, preferredDirection?: HistoryLoadDirection) => {
     if (historyLoadRetryTimeoutRef.current) {
       clearTimeout(historyLoadRetryTimeoutRef.current);
+    }
+    if (preferredDirection) {
+      historyLoadRetryDirectionRef.current = preferredDirection;
     }
 
     historyLoadRetryTimeoutRef.current = setTimeout(() => {
       historyLoadRetryTimeoutRef.current = null;
-      retryHistoryLoadRef.current();
+      const retryDirection = historyLoadRetryDirectionRef.current;
+      historyLoadRetryDirectionRef.current = null;
+      retryHistoryLoadRef.current(retryDirection ?? undefined);
     }, Math.max(0, delayMs));
   }, []);
 
@@ -88,6 +94,7 @@ export const useMessageTimelineVirtualizer = ({
     lastScrollTopRef.current = scrollerRef.current?.scrollTop ?? null;
     lastScrollDirectionSignalRef.current = null;
     retainedScrollSignalRef.current = null;
+    historyLoadRetryDirectionRef.current = null;
     consumedScrollSignalAtRef.current = {
       older: 0,
       newer: 0,
@@ -114,7 +121,7 @@ export const useMessageTimelineVirtualizer = ({
       void loadOlderPreservingViewport().finally(() => {
         loadingOlderRequestInFlightRef.current = false;
         historyLoadInFlightRef.current = null;
-        scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS);
+        scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS, 'older');
       });
       return true;
     }
@@ -123,7 +130,7 @@ export const useMessageTimelineVirtualizer = ({
     void loadNewerPreservingViewport().finally(() => {
       loadingNewerRequestInFlightRef.current = false;
       historyLoadInFlightRef.current = null;
-      scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS);
+      scheduleHistoryLoadRetry(HISTORY_LOAD_COOLDOWN_MS, 'newer');
     });
     return true;
   }, [
@@ -156,6 +163,12 @@ export const useMessageTimelineVirtualizer = ({
 
     lastScrollTopRef.current = currentScrollTop;
     if (scrollDirection) {
+      if (
+        historyLoadRetryDirectionRef.current &&
+        historyLoadRetryDirectionRef.current !== scrollDirection
+      ) {
+        historyLoadRetryDirectionRef.current = null;
+      }
       if (
         retainedScrollSignalRef.current &&
         retainedScrollSignalRef.current.direction !== scrollDirection
@@ -207,10 +220,12 @@ export const useMessageTimelineVirtualizer = ({
     const requestedDirection = preferredDirection ?? scrollSignal.direction;
     const olderDistance = getOlderBoundaryDistance(scroller);
     const newerDistance = getNewerBoundaryDistance(scroller);
-    const olderVisible = olderRangeStatus === 'idle' && isOlderRangeVisible(scroller);
-    const newerVisible = newerRangeStatus === 'idle' && isNewerRangeVisible(scroller);
-    const nearOlder = hasOlder && (olderVisible || olderDistance <= olderTopLoadThreshold);
-    const nearNewer = hasNewer && (newerVisible || newerDistance <= newerBottomLoadThreshold);
+    const canLoadOlder = olderRangeStatus === 'idle';
+    const canLoadNewer = newerRangeStatus === 'idle';
+    const olderVisible = canLoadOlder && isOlderRangeVisible(scroller);
+    const newerVisible = canLoadNewer && isNewerRangeVisible(scroller);
+    const nearOlder = hasOlder && canLoadOlder && (olderVisible || olderDistance <= olderTopLoadThreshold);
+    const nearNewer = hasNewer && canLoadNewer && (newerVisible || newerDistance <= newerBottomLoadThreshold);
     const isRequestedBoundaryNear = requestedDirection === 'older' ? nearOlder : nearNewer;
 
     if (!isRequestedBoundaryNear) {
@@ -286,9 +301,9 @@ export const useMessageTimelineVirtualizer = ({
     startHistoryLoad,
   ]);
 
-  retryHistoryLoadRef.current = () => {
+  retryHistoryLoadRef.current = (preferredDirection) => {
     const retained = retainedScrollSignalRef.current;
-    void maybeStartBestHistoryLoad(retained?.direction);
+    void maybeStartBestHistoryLoad(preferredDirection ?? retained?.direction);
   };
 
   useEffect(() => {
@@ -310,6 +325,7 @@ export const useMessageTimelineVirtualizer = ({
     if (historyLoadRetryTimeoutRef.current) {
       clearTimeout(historyLoadRetryTimeoutRef.current);
     }
+    historyLoadRetryDirectionRef.current = null;
   }, []);
 
   const handleScroll = useCallback(() => {

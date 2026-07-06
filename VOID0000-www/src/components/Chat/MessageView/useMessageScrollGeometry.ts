@@ -48,7 +48,7 @@ export const useMessageScrollGeometry = ({
   maxPhysicalSpacerHeight = Number.POSITIVE_INFINITY,
   maxPhysicalBottomSpacerHeight,
 }: ScrollGeometryInput) => {
-  const topTrimmedSpacerHeight = Math.max(0, topSpacerHeight);
+  const topTrimmedSpacerHeight = hasOlder ? Math.max(0, topSpacerHeight) : 0;
   const bottomTrimmedSpacerHeight = Math.max(0, bottomSpacerHeight);
   const topEstimatedLoadingHeight = hasOlder && topTrimmedSpacerHeight <= 1 ? historyLogicalSlotHeight : 0;
   const bottomEstimatedLoadingHeight = hasNewer && bottomTrimmedSpacerHeight <= 1 ? historyLogicalSlotHeight : 0;
